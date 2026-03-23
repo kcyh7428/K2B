@@ -15,7 +15,7 @@ Keith operates Signhub Tech Limited (Hong Kong), providing recruitment technolog
 
 His content angle: How a senior executive in traditional corporations uses AI to 10x effectiveness — bridging the gap between cutting-edge AI tools and real-world corporate talent acquisition.
 
-Keith also has a BenAI partnership (Chief AI Officer in Partner Network) and runs Agency at Scale (AI-powered outreach automation).
+Keith partners with Andrew on TalentSignals (AI automations for recruiting firms -- product design, ideas, prototypes) and runs Agency at Scale (AI-powered outreach automation).
 
 ## Architecture Overview
 
@@ -103,9 +103,9 @@ K2B-Vault/
 │   ├── Drafts/                  # Work-in-progress content
 │   ├── Published/               # Archive of published content
 │   └── Calendar/                # Content schedule
-├── 04-Business/                 # Signhub, BenAI, Agency at Scale
+├── 04-Business/                 # Signhub, TalentSignals, Agency at Scale
 │   ├── Signhub/
-│   ├── BenAI/
+│   ├── TalentSignals/
 │   └── AgencyAtScale/
 ├── 05-Knowledge/                # Reference material, learnings
 │   ├── AI-Tools/                # AI tool notes, configs, learnings
@@ -158,10 +158,18 @@ K2B-Vault/
 
 → See `K2B_PHASE3_CONTENT_PIPELINE.md` for Claude Code build instructions.
 
-### Phase 4: Advanced (Future)
+### Phase 4: Research Agent + Autoresearch (In Progress)
+**Goal**: Self-improving K2B through the Karpathy autoresearch pattern
+**What gets built**:
+- `k2b-research` skill -- on-demand research agent (internal audit + external scanning + URL deep dives)
+- `k2b-autoresearch` skill -- the Karpathy loop for iterative skill improvement
+- Eval infrastructure -- `eval/eval.json` + `eval/learnings.md` + `eval/results.tsv` per skill
+- Binary assertion testing for all core skills
+- Schedulable for overnight autonomous improvement runs (via CronCreate or ClaudeClaw)
+
+**Future additions**:
 - Webhook endpoint for direct transcript ingestion
 - Vector search layer if Obsidian search proves insufficient
-- Scheduled agents (daily briefing, content reminders)
 - WhatsApp bridge
 - Voice interface (ElevenLabs TTS)
 

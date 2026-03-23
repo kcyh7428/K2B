@@ -1,0 +1,34 @@
+{
+  "tests": [
+    {
+      "prompt": "Summarize this conversation: We discussed migrating the KIRA AirTable data to K2B. Decided to skip historical projects older than 6 months. Keith will export the People table this week. We also realized the meeting note template needs a 'project' field in frontmatter. Action: update the template, then process the backlog of 5 meeting transcripts from last week.",
+      "expected_output": "A concise TLDR note saved to Inbox",
+      "assertions": [
+        "Does the output include separate Decisions, Action Items, and Insights sections?",
+        "Are action items formatted as checkboxes (- [ ])?",
+        "Does the file path start with Inbox/ and follow the YYYY-MM-DD_tldr-topic.md convention?",
+        "Is the total content under 300 words (excluding frontmatter)?"
+      ]
+    },
+    {
+      "prompt": "Summarize this conversation: Built the k2b-vault-writer skill today. It handles creating and updating notes with proper frontmatter, cross-links, and MOC integration. Key insight: project notes were going stale because no skill was responsible for updating them. Fixed by adding an update workflow to vault-writer that other skills call into. Also added update triggers to tldr, meeting-processor, and daily-capture skills.",
+      "expected_output": "A TLDR capturing a development session",
+      "assertions": [
+        "Does it include a wikilink to [[project_k2b]] since this is about K2B development?",
+        "Does the Insights section capture the 'project notes going stale' insight?",
+        "Does the YAML frontmatter include type: tldr and source: claude-code-session?",
+        "Does the note avoid em dashes?"
+      ]
+    },
+    {
+      "prompt": "Summarize this conversation: Keith and I reviewed LinkedIn content strategy. Decided to focus on 3 content pillars: AI in traditional corporations, recruitment transformation, and building-in-public. First post should be about the K2B project itself. Keith wants posts under 200 words with a strong opening line. We looked at 5 competitor profiles for inspiration.",
+      "expected_output": "A TLDR capturing a content strategy discussion",
+      "assertions": [
+        "Does the Decisions section list the 3 content pillars?",
+        "Does it include a Content Seeds section or flag content potential?",
+        "Are there wikilinks to relevant notes (e.g., content pipeline MOC or project)?",
+        "Is the summary genuinely concise (not padding with filler)?"
+      ]
+    }
+  ]
+}

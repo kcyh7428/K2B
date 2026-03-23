@@ -90,6 +90,12 @@ Log a capability K2B doesn't have yet.
 ### /improve review
 Review self-improvement logs. Surface most-reinforced learnings, recurring errors, and open requests.
 
+### /research [focus] [topic-or-url]
+Run the K2B research agent. Internal audit (vault health, eval dashboard) + external scanning (AI tools, techniques, ideas). Accepts optional focus (`internal`, `external`) and optional topic string or URL for deep dives. YouTube URLs get transcribed and analyzed. GitHub repos get explored. Articles get fetched. All filtered through "what can K2B learn from this?"
+
+### /autoresearch [skill-name]
+Run the Karpathy self-improvement loop on a K2B skill. Iteratively modifies the SKILL.md, tests against binary assertions in eval.json, commits improvements, reverts failures. Also: `/autoresearch plan` (setup wizard), `/autoresearch status` (eval dashboard).
+
 ## Email Safety
 
 - NEVER send emails. Only draft.
@@ -116,6 +122,7 @@ All vault notes must use `[[wiki links]]` to connect related content. This light
 - Projects: `Notes/Projects/project_name.md`
 - People: `Notes/People/person_Firstname-Lastname.md`
 - Decisions: `Notes/YYYY-MM-DD_decision-topic.md`
-- Insights: `Notes/insight_topic.md`
+- Insights: `Notes/Insights/insight_topic.md`
 - TLDRs: `Inbox/YYYY-MM-DD_tldr-topic.md` (always Inbox first)
-- Business overviews: `Notes/entityname_overview.md`
+- Context/background: `Notes/Context/context_topic.md`
+- Business overviews: `Notes/Context/entityname_overview.md`

@@ -1,0 +1,5 @@
+# Autoresearch iteration logs (per-skill, not committed)
+**/eval/results.tsv
+
+# OS files
+.DS_Store

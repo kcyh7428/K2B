@@ -1,0 +1,34 @@
+{
+  "tests": [
+    {
+      "prompt": "Create a daily note for 2026-03-25. Today's calendar has: 9am Team Standup, 11am 1:1 with Gerard Walker, 2pm Interview Panel for Senior Data Engineer.",
+      "expected_output": "A daily note with calendar events pre-populated",
+      "assertions": [
+        "Does the output use the file path Daily/2026-03-25.md?",
+        "Does the YAML frontmatter include tags with [daily] and the date 2026-03-25?",
+        "Does it include a Meetings section with at least 3 calendar entries?",
+        "Does it include wikilinks to people mentioned (e.g., [[person_Gerard-Walker]])?"
+      ]
+    },
+    {
+      "prompt": "Create a daily note for 2026-03-26. Yesterday's note (2026-03-25) had these open loops: '- [ ] Follow up with Anna on JD draft' and '- [ ] Send budget proposal to Gerard'. No calendar events today.",
+      "expected_output": "A daily note that carries forward open loops from yesterday",
+      "assertions": [
+        "Does it reference yesterday's note as [[2026-03-25]] somewhere in the content?",
+        "Does it carry forward or mention the open loop about Anna's JD draft?",
+        "Does it carry forward or mention the open loop about the budget proposal?",
+        "Does the file naming follow the YYYY-MM-DD.md convention?"
+      ]
+    },
+    {
+      "prompt": "Create a daily note for 2026-03-27. Calendar has: 10am Hiring Freeze Briefing, 3pm TalentSignals Sprint Review. No open loops from yesterday.",
+      "expected_output": "A clean daily note with calendar events and no carry-forwards",
+      "assertions": [
+        "Does it include a Content Seeds section (even if empty)?",
+        "Does the Meetings section include wikilinks in [[YYYY-MM-DD_Meeting-Topic]] format for the calendar events?",
+        "Does it avoid em dashes?",
+        "Does the YAML frontmatter include type: daily?"
+      ]
+    }
+  ]
+}
