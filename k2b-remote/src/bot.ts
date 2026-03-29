@@ -1,5 +1,5 @@
 import { request as httpsRequest } from 'node:https'
-import { Bot, Context } from 'grammy'
+import { Bot, Context, InlineKeyboard } from 'grammy'
 import {
   TELEGRAM_BOT_TOKEN,
   ALLOWED_CHAT_ID,
@@ -10,6 +10,7 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
+import { updateRecommendation } from './youtube.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 
@@ -173,6 +174,87 @@ async function handleMessage(
   }
 }
 
+// --- YouTube callback handler ---
+
+async function handleYouTubeCallback(
+  ctx: Context,
+  data: string,
+  chatId: string
+): Promise<void> {
+  const parts = data.split(':')
+  // Format: youtube:ACTION:VIDEO_ID or youtube:promote:TYPE:VIDEO_ID
+  const action = parts[1]
+  const videoId = parts[parts.length - 1]
+
+  if (action === 'highlights') {
+    await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+    const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} -- get the transcript and produce a highlights summary. Use the playlist prompt_focus if the video is tracked in youtube-recommended.jsonl. Keep it concise for Telegram reading.`
+    const { text } = await runAgent(prompt)
+    const result = text ?? '(could not generate highlights)'
+
+    updateRecommendation(videoId, {
+      status: 'highlights_sent',
+      outcome: 'highlights',
+    })
+
+    const formatted = formatForTelegram(result)
+    const chunks = splitMessage(formatted)
+    for (const chunk of chunks) {
+      try {
+        await ctx.api.sendMessage(ctx.chat!.id, chunk, { parse_mode: 'HTML' })
+      } catch {
+        await ctx.api.sendMessage(ctx.chat!.id, chunk.replace(/<[^>]+>/g, ''))
+      }
+    }
+
+    // Send promotion buttons
+    const promoKeyboard = new InlineKeyboard()
+      .text('Content idea', `youtube:promote:content-idea:${videoId}`)
+      .text('Feature', `youtube:promote:feature:${videoId}`)
+      .row()
+      .text('Insight', `youtube:promote:insight:${videoId}`)
+      .text('Nothing', `youtube:promote:nothing:${videoId}`)
+
+    await ctx.api.sendMessage(ctx.chat!.id, 'What do you want to do with this?', {
+      reply_markup: promoKeyboard,
+    })
+
+  } else if (action === 'skip') {
+    updateRecommendation(videoId, {
+      status: 'skipped',
+      outcome: 'skipped',
+    })
+    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Watch.')
+
+    // Remove from Watch playlist in background
+    runAgent(`Remove video ${videoId} from K2B Watch playlist using scripts/yt-playlist-remove.sh`).catch(err =>
+      logger.error({ err, videoId }, 'Failed to remove from Watch playlist')
+    )
+
+  } else if (action === 'promote') {
+    const promoteType = parts[2] // content-idea | feature | insight | nothing
+
+    if (promoteType === 'nothing') {
+      updateRecommendation(videoId, { promoted_to: null })
+      await ctx.api.sendMessage(ctx.chat!.id, 'Got it, no promotion.')
+      return
+    }
+
+    await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+    const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in Notes/Context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in Inbox/.`
+    const { text } = await runAgent(prompt)
+    const result = text ?? '(created)'
+
+    updateRecommendation(videoId, { promoted_to: promoteType })
+
+    await ctx.api.sendMessage(
+      ctx.chat!.id,
+      formatForTelegram(`Saved as ${promoteType}: ${result}`),
+      { parse_mode: 'HTML' }
+    )
+  }
+}
+
 // --- Bot creation ---
 
 export function createBot(): Bot {
@@ -304,6 +386,26 @@ export function createBot(): Bot {
     }
   })
 
+  // --- Callback query handler (inline buttons) ---
+  bot.on('callback_query:data', async (ctx) => {
+    const data = ctx.callbackQuery.data
+    const chatId = String(ctx.chat?.id)
+    if (!chatId) return
+
+    try {
+      await ctx.answerCallbackQuery()
+
+      if (data.startsWith('youtube:')) {
+        await handleYouTubeCallback(ctx, data, chatId)
+      }
+    } catch (err) {
+      logger.error({ err, data }, 'Callback query error')
+      try {
+        await ctx.answerCallbackQuery({ text: 'Something went wrong.' })
+      } catch { /* ignore */ }
+    }
+  })
+
   // Error handler
   bot.catch((err) => {
     logger.error({ err: err.error }, 'Bot error')
@@ -322,6 +424,45 @@ export async function sendTelegramMessage(
     chat_id: chatId,
     text: formatForTelegram(text),
     parse_mode: 'HTML',
+  })
+
+  return new Promise((resolvePromise, reject) => {
+    const req = httpsRequest(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        res.resume()
+        res.on('end', () => resolvePromise())
+      }
+    )
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
+export async function sendTelegramMessageWithButtons(
+  chatId: string,
+  text: string,
+  buttons: Array<{ label: string; callbackData: string }>
+): Promise<void> {
+  if (!TELEGRAM_BOT_TOKEN) return
+  const keyboard = new InlineKeyboard()
+  for (const btn of buttons) {
+    keyboard.text(btn.label, btn.callbackData)
+  }
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`
+  const body = JSON.stringify({
+    chat_id: chatId,
+    text: formatForTelegram(text),
+    parse_mode: 'HTML',
+    reply_markup: keyboard.toFlowed(2),
   })
 
   return new Promise((resolvePromise, reject) => {
