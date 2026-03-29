@@ -7,7 +7,17 @@ set -euo pipefail
 # --- Config ---
 MINIMAX_API_KEY="${MINIMAX_API_KEY:?Set MINIMAX_API_KEY in your environment}"
 MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
-K2B_VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
+
+# Detect vault path: Mac Mini (fastshower) vs MacBook (keithmbpm2)
+if [ -n "${K2B_VAULT:-}" ]; then
+  : # Already set via env
+elif [ -d "/Users/fastshower/Projects/K2B-Vault" ]; then
+  K2B_VAULT="/Users/fastshower/Projects/K2B-Vault"
+elif [ -d "/Users/keithmbpm2/Projects/K2B-Vault" ]; then
+  K2B_VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
+else
+  K2B_VAULT="$HOME/Projects/K2B-Vault"
+fi
 ASSETS_DIR="${K2B_VAULT}/Assets"
 
 # --- Helpers ---

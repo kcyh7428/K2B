@@ -21,17 +21,18 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - All global Claude Code skills in ~/.claude/skills/
 - **Google Workspace CLI** (`gws`) -- Gmail, Calendar, Drive, Sheets, and more via `gws` commands. JSON output, works from bash.
 - MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image, speech, video, music generation)
-- **MiniMax API** (minimaxi.com) -- image generation, TTS, audio transcription, video, music. API key in `MINIMAX_API_KEY` env var. Scripts in `scripts/minimax-*.sh`.
+- **MiniMax API** (minimaxi.com) -- image generation, TTS, audio transcription, video, music, and text completion (MiniMax-M2.5, used by background observer). API key in `MINIMAX_API_KEY` env var. Scripts in `scripts/minimax-*.sh`.
 - Bash, file system, web search, all standard Claude Code tools
 
 ## Mac Mini (K2B Always-On Server)
 
-K2B runs 24/7 on a Mac Mini, serving Telegram via k2b-remote (managed by pm2).
+K2B runs 24/7 on a Mac Mini, serving Telegram via k2b-remote and running the background observer (both managed by pm2).
 
 - **SSH**: `ssh macmini` (alias for `fastshower@Matthews-Mac-mini.local`)
 - **K2B project**: `/Users/fastshower/Projects/K2B/`
 - **K2B vault**: `/Users/fastshower/Projects/K2B-Vault/` (synced to MacBook via Syncthing)
-- **pm2 commands**: `ssh macmini "pm2 status"` / `ssh macmini "pm2 restart k2b-remote"` / `ssh macmini "pm2 logs k2b-remote --lines 50 --nostream"`
+- **pm2 processes**: `k2b-remote` (Telegram bot), `k2b-observer-loop` (MiniMax background observer)
+- **pm2 commands**: `ssh macmini "pm2 status"` / `ssh macmini "pm2 restart k2b-remote"` / `ssh macmini "pm2 logs k2b-observer-loop --lines 50 --nostream"`
 - **gws requires**: `GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file` (set in ~/.zshenv and pm2 ecosystem)
 - **Deploy code**: `rsync -av --exclude node_modules --exclude dist ~/Projects/K2B/k2b-remote/ macmini:~/Projects/K2B/k2b-remote/` then `ssh macmini "cd ~/Projects/K2B/k2b-remote && npm run build && pm2 restart k2b-remote"`
 - **Deploy CLAUDE.md / skills**: `rsync -av ~/Projects/K2B/CLAUDE.md macmini:~/Projects/K2B/CLAUDE.md` and `rsync -av ~/Projects/K2B/.claude/ macmini:~/Projects/K2B/.claude/`
@@ -188,11 +189,28 @@ TEACH K2B                     SYSTEM
 
 All Inbox notes MUST have `review-action:` and `review-notes:` fields (see vault-writer Inbox Write Contract). This is how Keith triages in Obsidian.
 
-## Session Start
+## Session Start (Automated via Hooks)
 
-On the first interaction of each new session, silently run `scripts/check-usage-triggers.sh` to check if any usage triggers are ready to fire. If any are ready, notify Keith before proceeding with his request.
+Session startup is handled by `scripts/hooks/session-start.sh` (configured in `.claude/settings.json`). The hook automatically:
+1. Runs `check-usage-triggers.sh` and surfaces any ready triggers
+2. Scans Inbox/Ready/ and Inbox/ for reviewed items and reports the count
+3. Surfaces findings from the background observer (`observer-candidates.md`)
+4. Loads high-confidence learnings (Reinforced 6+) into context
 
-Also check `Inbox/Ready/` and `Inbox/` for any notes Keith has reviewed (review-action set, or dragged to Ready/). If items are found, process them automatically using the /inbox skill and report what was done.
+If the hook reports inbox items ready, process them with /inbox.
+If the hook surfaces observer candidates, review them with Keith.
+
+## Background Observer
+
+K2B runs a continuous observation loop on Mac Mini (`scripts/observer-loop.sh`, pm2 name: `k2b-observer-loop`).
+
+- **Observation capture**: A Stop hook (`scripts/hooks/stop-observe.sh`) logs vault file changes after each Claude response to `observations.jsonl`
+- **Analysis**: When 20+ observations accumulate, calls MiniMax-M2.5 API to detect behavioral patterns
+- **Output**: Writes `observer-candidates.md` (surfaced at session start) and appends to `preference-signals.jsonl`
+- **Cost**: ~$0.007/analysis, ~$0.11/day
+- **Gate**: Only analyzes during 7am-11pm HKT, with 1hr cooldown between analyses
+
+The background observer complements (not replaces) the manual `/observe` command. The loop catches patterns continuously; `/observe` does deep synthesis on demand.
 
 ## Email Safety
 

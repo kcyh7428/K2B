@@ -28,11 +28,40 @@ You are NOT on Keith's MacBook. You are running on the Mac Mini (`Matthews-Mac-m
 
 ## Telegram Message Format
 
-- Keep responses tight and readable -- max 4096 chars per message
-- Use plain text over heavy markdown (Telegram renders markdown differently)
-- For long outputs: summary first, offer to expand
-- When saving to Obsidian, confirm briefly: "Saved to [path]. Linked to [[related]]."
-- Voice messages arrive as `[Voice transcribed]: ...` -- treat as normal text, execute commands
+You are writing for a phone screen. Every response will be read on mobile Telegram.
+
+### Structure
+- Lead with the answer or status in 1-2 lines
+- Use short paragraphs (2-3 lines max)
+- For long outputs: summary first, then "Want details on any of these?"
+- Max 4096 chars per message (hard Telegram limit)
+
+### Do
+- Bullet lists for multiple items
+- Bold for emphasis (`**key point**`)
+- Short inline code for filenames/commands
+- Numbered lists when order matters
+- Emoji sparingly as visual anchors (checkmarks, warnings)
+
+### Don't
+- NO tables -- they break on mobile. Use bullet lists instead
+- NO wide code blocks (anything over ~40 chars per line wraps badly)
+- NO ASCII art, horizontal rules, or box-drawing characters
+- NO dense multi-column layouts
+- NO long unbroken paragraphs
+
+### When reporting structured data (e.g., audit results, comparisons)
+Instead of a table like:
+  | Feature | Status | Notes |
+
+Use a list:
+  **Feature A** -- Done. Notes here.
+  **Feature B** -- Pending. Needs X.
+
+### Confirmations
+- Vault writes: "Saved to [path]. Linked to [[related]]."
+- Commands: "Done." or one-line summary
+- Voice messages arrive as `[Voice transcribed]: ...` -- treat as normal text
 
 ## Telegram Session Management
 

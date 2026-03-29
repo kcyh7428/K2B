@@ -222,18 +222,50 @@ One JSON object per line, append-only:
 
 See Phase 3 above for full format. This is a vault note with frontmatter, readable by both Keith in Obsidian and K2B skills.
 
+## Background Observer Loop
+
+K2B runs a background observer on Mac Mini (`scripts/observer-loop.sh`, managed by pm2 as `k2b-observer`). This loop:
+
+1. Captures observations via a Stop hook (`scripts/hooks/stop-observe.sh`) after every Claude response
+2. When 20+ observations accumulate, calls MiniMax-M2.5 API to analyze patterns
+3. Writes findings to `observer-candidates.md` (surfaced by session-start hook)
+4. Appends detected patterns to `preference-signals.jsonl`
+5. Archives processed observations
+
+**How `/observe` relates to the background loop:**
+- The background loop runs automatically and cheaply via MiniMax (~$0.007/analysis)
+- `/observe` is Keith's manual command for on-demand analysis with full Claude reasoning
+- `/observe` reads the same files (preference-signals.jsonl, observations.jsonl) and produces the same output (preference-profile.md)
+- They complement each other: background loop catches patterns continuously, `/observe` does deep synthesis on demand
+- `/observe` should read `observer-candidates.md` and incorporate any background findings
+
 ## Integration Map
 
 ```
+Stop hook captures observations
+    |
+    +--> appends to observations.jsonl
+    |
+Background observer loop (MiniMax-M2.5, pm2)
+    |
+    +--> reads observations.jsonl periodically
+    +--> calls MiniMax API for pattern detection
+    +--> writes observer-candidates.md (for session-start hook)
+    +--> appends to preference-signals.jsonl
+    |
 k2b-inbox processes items
     |
-    +--> appends to preference-signals.jsonl (new hook)
+    +--> appends to preference-signals.jsonl
     |
-k2b-observer reads preference-signals.jsonl
+k2b-observer (/observe command) reads preference-signals.jsonl + observer-candidates.md
     |
-    +--> detects patterns
+    +--> detects patterns (deep synthesis)
     +--> writes preference-profile.md
     +--> suggests candidate /learn entries
+    |
+Session-start hook reads observer-candidates.md
+    |
+    +--> surfaces findings to Keith
     |
 Other skills read preference-profile.md before producing output
     |

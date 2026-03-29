@@ -48,10 +48,28 @@ Entry format:
 - **Learning:** [what K2B should do differently]
 - **Context:** [what triggered this learning]
 - **Reinforced:** 1
+- **Confidence:** low
 - **Date:** YYYY-MM-DD
 ```
 
 ID format: `L-YYYY-MM-DD-NNN` where NNN auto-increments based on existing entries for that date.
+
+### Confidence Scoring
+
+Confidence is derived from the Reinforced count:
+
+| Reinforced | Confidence | Behavior |
+|------------|------------|----------|
+| 1-2 | low | Suggest but don't enforce. Mention when relevant. |
+| 3-5 | medium | Apply when relevant. Can be overridden without comment. |
+| 6+ | high | Treat as core behavior. Auto-apply. Loaded at session start. |
+
+When updating `Reinforced`, always recalculate and update `Confidence`:
+- Set `low` for 1-2
+- Set `medium` for 3-5
+- Set `high` for 6+
+
+When confidence reaches `high`, the session-start hook automatically surfaces the learning so all skills apply it.
 
 ## Command: /error [description]
 
