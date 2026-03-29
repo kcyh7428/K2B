@@ -1,5 +1,5 @@
 import cronParser from 'cron-parser'
-import { getDueTasks, updateTaskAfterRun, deleteTask } from './db.js'
+import { getDueTasks, updateTaskAfterRun, updateTaskNextRun, deleteTask } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 import { sendPendingNudges } from './bot.js'
@@ -9,6 +9,7 @@ type Sender = (chatId: string, text: string) => Promise<void>
 
 let sendFn: Sender
 let pollInterval: ReturnType<typeof setInterval>
+let isRunning = false
 
 export function computeNextRun(cronExpression: string): number {
   const interval = cronParser.parseExpression(cronExpression)
@@ -26,13 +27,26 @@ export function stopScheduler(): void {
 }
 
 async function runDueTasks(): Promise<void> {
+  if (isRunning) {
+    logger.debug('Scheduler poll skipped: previous run still in progress')
+    return
+  }
+
   const tasks = getDueTasks()
   if (tasks.length === 0) return
 
+  isRunning = true
   logger.info({ count: tasks.length }, 'Running due scheduled tasks')
 
   for (const task of tasks) {
     try {
+      // For recurring tasks, advance next_run IMMEDIATELY to prevent re-picking
+      // during the minutes-long agent execution
+      if (task.type !== 'one-time') {
+        const nextRun = computeNextRun(task.schedule)
+        updateTaskNextRun(task.id, nextRun)
+      }
+
       const label = task.type === 'one-time' ? 'Reminder' : 'Scheduled task'
       await sendFn(task.chat_id, `[${label} running: ${task.prompt.slice(0, 80)}...]`)
 
@@ -43,8 +57,7 @@ async function runDueTasks(): Promise<void> {
         deleteTask(task.id)
         logger.info({ taskId: task.id }, 'One-time reminder fired and deleted')
       } else {
-        const nextRun = computeNextRun(task.schedule)
-        updateTaskAfterRun(task.id, nextRun, result)
+        updateTaskAfterRun(task.id, computeNextRun(task.schedule), result)
       }
 
       await sendFn(task.chat_id, result)
@@ -67,4 +80,5 @@ async function runDueTasks(): Promise<void> {
       }
     }
   }
+  isRunning = false
 }

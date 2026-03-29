@@ -278,6 +278,12 @@ export function getDueTasks(): Array<{
   }>
 }
 
+export function updateTaskNextRun(id: string, nextRun: number): void {
+  getDb()
+    .prepare('UPDATE scheduled_tasks SET next_run = ? WHERE id = ?')
+    .run(nextRun, id)
+}
+
 export function updateTaskAfterRun(
   id: string,
   nextRun: number,
