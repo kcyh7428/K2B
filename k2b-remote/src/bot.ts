@@ -22,7 +22,7 @@ export function formatForTelegram(text: string): string {
     const idx = codeBlocks.length
     const escaped = escapeHtml(code.trimEnd())
     codeBlocks.push(lang ? `<pre><code class="language-${lang}">${escaped}</code></pre>` : `<pre>${escaped}</pre>`)
-    return `__CODEBLOCK_${idx}__`
+    return `\x00CB${idx}\x00`
   })
 
   // Protect inline code
@@ -30,7 +30,7 @@ export function formatForTelegram(text: string): string {
   result = result.replace(/`([^`]+)`/g, (_match, code) => {
     const idx = inlineCodes.length
     inlineCodes.push(`<code>${escapeHtml(code)}</code>`)
-    return `__INLINE_${idx}__`
+    return `\x00IC${idx}\x00`
   })
 
   // Escape HTML in remaining text
@@ -63,10 +63,10 @@ export function formatForTelegram(text: string): string {
 
   // Restore code blocks and inline code
   for (let i = 0; i < codeBlocks.length; i++) {
-    result = result.replace(`__CODEBLOCK_${i}__`, codeBlocks[i])
+    result = result.replace(`\x00CB${i}\x00`, codeBlocks[i])
   }
   for (let i = 0; i < inlineCodes.length; i++) {
-    result = result.replace(`__INLINE_${i}__`, inlineCodes[i])
+    result = result.replace(`\x00IC${i}\x00`, inlineCodes[i])
   }
 
   return result.trim()
