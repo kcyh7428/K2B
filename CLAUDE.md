@@ -227,5 +227,6 @@ All vault notes must use `[[wiki links]]` to connect related content. This light
 
 At the END of every Claude Code session, before closing:
 - Stage and commit all changes with a descriptive commit message
+- Push to GitHub (`git push origin main`) so the Claude project on claude.ai sees the latest code
 - Append a devlog entry to DEVLOG.md covering what was done
 - If any architecture decisions were made that differ from the specs in the K2B claude.ai project, note them clearly in the devlog entry under "Key decisions"
