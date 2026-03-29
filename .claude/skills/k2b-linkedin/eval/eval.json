@@ -1,0 +1,48 @@
+{
+  "tests": [
+    {
+      "prompt": "/linkedin draft corporate-ai-restrictions",
+      "expected_output": "Socratic challenge questions followed by a LinkedIn post draft about using AI in a locked-down corporate environment",
+      "assertions": [
+        "Does the output include a Socratic challenge step with 2-3 questions before presenting the draft?",
+        "Does the draft contain a hook in the first 2 lines that is under 210 characters?",
+        "Is the total draft body between 400 and 1500 characters?",
+        "Does the draft reference a specific Keith experience (e.g., SJM, locked desktop, 19000-person company, team restructuring, observe-describe-draft) rather than generic AI advice?",
+        "Does the draft avoid em dashes (the unicode characters U+2014 and U+2013)?"
+      ]
+    },
+    {
+      "prompt": "/linkedin draft loaded-career-into-ai",
+      "expected_output": "Socratic challenge followed by a LinkedIn post draft about loading career context into AI using structured documents",
+      "assertions": [
+        "Does the draft have 3 or fewer hashtags, positioned at the end and not inline within the text?",
+        "Does the draft avoid AI cliches such as game-changer, unlock, leverage, in today's fast-paced world, paradigm shift?",
+        "Does the output save or propose saving to a file path matching Inbox/linkedin_YYYY-MM-DD_loaded-career-into-ai.md?",
+        "Does the draft YAML frontmatter include type: linkedin-draft and a source field linking to the content idea?",
+        "Does the draft have a clear closing takeaway or call to reflection rather than trailing off or using a generic CTA?"
+      ]
+    },
+    {
+      "prompt": "/linkedin draft",
+      "expected_output": "A numbered list of available content ideas for Keith to choose from",
+      "assertions": [
+        "Does the output list available content ideas with titles before asking Keith to pick one?",
+        "Does the list include at least the 2 known adopted ideas (corporate-ai-restrictions and loaded-career-into-ai)?",
+        "Does each listed idea show its current status?",
+        "Does the output wait for Keith's selection rather than auto-picking an idea and drafting?",
+        "Does the output avoid em dashes (the unicode characters U+2014 and U+2013)?"
+      ]
+    },
+    {
+      "prompt": "/linkedin publish",
+      "expected_output": "Show the most recent draft text, character count, and ask for confirmation before publishing",
+      "assertions": [
+        "Does the output show Keith the full post text before publishing?",
+        "Does the output display the character count of the draft?",
+        "Does the output explicitly ask Keith to confirm before publishing (not auto-publish)?",
+        "Does the output reference the linkedin-publish.sh script or a curl command for the API call?",
+        "Does the output mention updating the draft's status to published and recording the post URN after successful posting?"
+      ]
+    }
+  ]
+}

@@ -38,7 +38,17 @@ Keith partners with Andrew on TalentSignals (AI automations for recruiting firms
 │    │ • content │      │ • local     │     │           │ │
 │    │ • meeting │      │ • graph     │     │           │ │
 │    │ • insight │      │ • CLI       │     │           │ │
+│    │ • schedule│      │             │     │           │ │
+│    │ • usage   │      │             │     │           │ │
+│    │ • media   │      │             │     │           │ │
 │    └───────────┘      └────────────┘     └───────────┘ │
+│                                                         │
+│    ┌─────────────────────────────────────────────────┐  │
+│    │  Scheduled Tasks (persistent, autonomous)       │  │
+│    │  weekly-vault-health │ weekly-external-research  │  │
+│    │  daily-inbox-check   │ friday-self-improvement   │  │
+│    │  + usage-based triggers + one-time reminders    │  │
+│    └─────────────────────────────────────────────────┘  │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -80,45 +90,40 @@ Keith partners with Andrew on TalentSignals (AI automations for recruiting firms
 - **YouTube Script skill** — Video scripts from accumulated knowledge
 - **PowerPoint skill** — On-brand presentations
 
+### Multi-Modal Media (Phase 6)
+- **MiniMax API** (minimaxi.com) -- image, speech, video, music generation
+- `k2b-media-generator` skill -- `/media` command for all modalities
+- MCP server: `minimax-mcp-js` for direct tool access
+- Bash scripts: `scripts/minimax-*.sh` as fallback/CLI interface
+- Generated assets stored in `K2B-Vault/Assets/` (images/, audio/, video/)
+
 ### Integrations (via MCP, wrapped as Skills)
 - Gmail (read + draft only)
 - Google Calendar
 - Fireflies (meeting transcripts)
+- MiniMax (image generation, TTS, STT, video, music)
 
 ## Obsidian Vault Structure
 
+Simplified flat structure (restructured 2026-03-23). Folders earn their place (10+ files). Links do the navigation, not folders.
+
 ```
 K2B-Vault/
-├── 00-Inbox/                    # Unsorted captures, quick notes
-├── 01-Daily/                    # Daily notes (auto-generated)
-│   └── 2026-03-18.md
-├── 02-Work/                     # SJM Resorts TA role
-│   ├── Meetings/                # Meeting notes & transcripts
-│   ├── Projects/                # Active TA projects
-│   ├── People/                  # Key stakeholders, team notes
-│   ├── Insights/                # Observations, patterns, learnings
-│   └── Decisions/               # Decision log with rationale
-├── 03-Content/                  # Content pipeline
-│   ├── Ideas/                   # Raw content ideas
-│   ├── Drafts/                  # Work-in-progress content
-│   ├── Published/               # Archive of published content
-│   └── Calendar/                # Content schedule
-├── 04-Business/                 # Signhub, TalentSignals, Agency at Scale
-│   ├── Signhub/
-│   ├── TalentSignals/
-│   └── AgencyAtScale/
-├── 05-Knowledge/                # Reference material, learnings
-│   ├── AI-Tools/                # AI tool notes, configs, learnings
-│   ├── Recruitment/             # Domain expertise
-│   └── Resources/               # Bookmarks, references
-├── 06-Personal/                 # Personal notes, goals
+├── Inbox/                       # New captures, TLDRs, agent output (always land here first)
+├── Daily/                       # Daily notes (YYYY-MM-DD.md)
+├── Notes/                       # All processed notes
+│   ├── People/                  # Person notes (18+)
+│   ├── Projects/                # Project notes (13+)
+│   ├── Content-Ideas/            # Adopted content ideas only (20+)
+│   ├── Context/                 # Reference docs, research topics, usage tracking
+│   └── (flat)                   # Insights, decisions, meetings, business overviews
+├── Assets/                      # Generated media
+│   ├── images/                  # AI-generated images (LinkedIn headers, thumbnails)
+│   ├── audio/                   # TTS output, transcriptions, music
+│   └── video/                   # Generated video clips
 ├── Templates/                   # Note templates
-│   ├── daily-note.md
-│   ├── meeting-note.md
-│   ├── content-idea.md
-│   ├── decision-log.md
-│   └── project-note.md
-└── .obsidian/                   # Obsidian config
+├── Home.md                      # Front door
+└── MOC_*.md                     # Maps of Content at vault root
 ```
 
 ## Build Phases
@@ -158,20 +163,62 @@ K2B-Vault/
 
 → See `K2B_PHASE3_CONTENT_PIPELINE.md` for Claude Code build instructions.
 
-### Phase 4: Research Agent + Autoresearch (In Progress)
+### Phase 4: Research Agent + Autoresearch (Complete)
 **Goal**: Self-improving K2B through the Karpathy autoresearch pattern
 **What gets built**:
 - `k2b-research` skill -- on-demand research agent (internal audit + external scanning + URL deep dives)
 - `k2b-autoresearch` skill -- the Karpathy loop for iterative skill improvement
 - Eval infrastructure -- `eval/eval.json` + `eval/learnings.md` + `eval/results.tsv` per skill
 - Binary assertion testing for all core skills
-- Schedulable for overnight autonomous improvement runs (via CronCreate or ClaudeClaw)
+
+### Phase 5: Scheduling & Automation (Complete)
+**Goal**: K2B runs tasks autonomously on schedules and reacts to usage patterns
+**What gets built**:
+- `k2b-scheduler` skill -- wraps Scheduled Tasks MCP for persistent recurring/one-time tasks
+- `k2b-usage-tracker` skill -- tracks skill invocations, fires actions at configurable thresholds
+- Usage logging across all 13 k2b-* skills (append-only TSV)
+- Trigger rules system (`usage-triggers.md`) for threshold-based automation
+- Session-start check for ready triggers (`scripts/check-usage-triggers.sh`)
+- 4 seeded tasks: weekly vault health, weekly external research (Perplexity + YouTube + web), daily inbox check, Friday self-improvement review
+
+**3-tier scheduling model**:
+1. **Quick reminders** -- CronCreate / `/loop` (session-only, ephemeral)
+2. **Persistent tasks** -- Scheduled Tasks MCP via `/schedule` (survives restarts, runs autonomously)
+3. **Usage triggers** -- Threshold-based actions via `/usage` (e.g., after 10 meeting transcripts, auto-run insight extraction)
+
+### Phase 6: Multi-Modal Media Generation (Complete)
+**Goal**: Generate images, speech, and audio transcriptions using MiniMax AI (minimaxi.com)
+**What gets built**:
+- `k2b-media-generator` skill -- `/media` command wrapping image, speech, transcription, video, music
+- MiniMax MCP server (`minimax-mcp-js`) in `.mcp.json` for direct Claude Code tool access
+- Bash scripts: `minimax-common.sh`, `minimax-image.sh`, `minimax-speech.sh`, `minimax-transcribe.sh`
+- `Assets/` folder in vault (images/, audio/, video/) with naming convention `YYYY-MM-DD_type_slug.ext`
+- Image generation via `image-01` model (50/day on Plus tier)
+- Text-to-speech via `speech-2.8-hd` (40 languages, Mandarin/Cantonese/English, 7 emotions)
+- Audio transcription (Chinese/English STT) for meeting recordings
+- Video generation (Hailuo 2.3) and music (Music 2.5+) ready in code, requires Max tier upgrade
+- Keith's subscription: Plus (98 RMB/mo). Max tier (198 RMB/mo) unlocks video + music.
+
+### Phase 7: YouTube Capture & Recommendations (Complete)
+**Goal**: Process YouTube videos from playlists with playlist-specific analysis. Auto-recommend content for Keith's commute.
+**What gets built**:
+- `k2b-youtube-capture` skill -- `/youtube` command for playlist polling, single URL processing, recommendations
+- 7 YouTube playlists: K2B (general), K2B Claude (enhancement ideas), K2B Invest (market insights), K2B Recruit (TA insights), K2B Content (content hooks), K2B Learn (learning paths), K2B Watch (outbound recommendations)
+- Playlist config in vault note (`Notes/Context/youtube-playlists.md`) -- editable in Obsidian
+- Transcript cascade: YouTube Transcript MCP (free) -> OpenAI Whisper (for Chinese/no-caption videos) -> metadata-only fallback
+- YouTube Data API v3 with OAuth for playlist writes (adding recommended videos)
+- Bash scripts: `yt-playlist-poll.sh`, `yt-search.sh`, `yt-playlist-add.sh`, `yt-auth.sh`
+- Processed video tracking in `Notes/Context/youtube-processed.md`
+- Per-playlist `prompt_focus` drives different analysis for each playlist
+- Recommendation engine: searches YouTube based on Keith's interests, scores relevance, adds top picks to K2B Watch playlist
 
 **Future additions**:
+- Voice cloning (upload Keith's voice sample for consistent narration)
 - Webhook endpoint for direct transcript ingestion
 - Vector search layer if Obsidian search proves insufficient
 - WhatsApp bridge
-- Voice interface (ElevenLabs TTS)
+- Conditional triggers beyond usage count (e.g., vault orphan detection)
+- n8n integration for complex multi-step conditional workflows
 
 ## Key Design Principles
 
@@ -181,6 +228,48 @@ K2B-Vault/
 4. **Claude Code is the workhorse**: It reads, writes, searches, and creates. Obsidian is passive storage.
 5. **Content is a byproduct**: Daily work naturally feeds the content pipeline. Don't create content for its own sake.
 6. **Start simple, iterate**: Each phase should be usable on its own before moving to the next.
+7. **Validate before acting**: Every vault write checks frontmatter completeness, wikilink integrity, and folder placement before saving. Inspired by GStack's "careful" pattern.
+8. **Completeness is cheap**: When the cost of doing the complete thing (all frontmatter fields, all cross-links, all MOC updates) is seconds, do the complete thing. Inspired by GStack's "boil the lake" principle.
+
+## Skill Data Flow
+
+Skills are organized by user intent: **Capture** (things come in), **Think** (K2B processes), **Create** (things go out).
+
+```
+CAPTURE                       THINK                          CREATE
+-------                       -----                          ------
+/daily   --> Daily/            /inbox   --> promotes to        /linkedin --> publishes
+/meeting --> Notes/               Notes/ or Archive/          /media    --> Assets/
+/tldr    --> Inbox/            /insight --> Notes/Insights/
+/youtube --> Inbox/            /content --> Inbox/ (ideas)
+/email   --> (read only)       /research --> Inbox/ (briefings)
+                               /improve --> (surfaces patterns)
+
+TEACH K2B                     SYSTEM
+---------                     ------
+/learn   --> learnings.md      /schedule --> Mac Mini cron
+/error   --> errors.md         /usage    --> usage-log.tsv
+/request --> requests.md       /autoresearch --> skill SKILL.md
+```
+
+### Inbox Write Contract
+
+All notes saved to `Inbox/` MUST include `review-action:` and `review-notes: ""` in frontmatter. This is how Keith triages in Obsidian. Skills that write to Inbox (tldr, research, youtube, insight-extractor for /content) are required to include these fields. Vault-writer enforces this as a pre-write validation step.
+
+### Skill I/O Contracts
+
+| Skill | Reads From | Writes To | Also Updates |
+|-------|-----------|----------|-------------|
+| /daily | Google Calendar, open loops from yesterday | Daily/ | Project notes (status, milestones) |
+| /meeting | Fireflies transcript or manual input | Notes/ | Project notes, person notes |
+| /tldr | Current conversation context | Inbox/ | Project notes (progress) |
+| /youtube | Playlist config, YouTube transcripts | Inbox/ | youtube-processed.md |
+| /inbox | Inbox/ notes with review-action set | Notes/, Archive/ | MOCs (after promote) |
+| /insight | Vault-wide search | Notes/Insights/ | MOC_Content-Pipeline |
+| /content | Recent daily + meeting + insight notes | Inbox/ | -- |
+| /research | Vault health, web search, URLs | Inbox/ | -- |
+| /linkedin | Notes/Content-Ideas/ | (external: LinkedIn API) | Content idea status |
+| /media | Content ideas, direct prompts | Assets/ | Content idea (embeds) |
 
 ## File Naming Conventions
 

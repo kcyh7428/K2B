@@ -1,19 +1,19 @@
 ---
 name: k2b-meeting-processor
-description: This skill should be used when Keith provides a meeting transcript (from Fireflies or any other source), asks to process meeting notes, or uses the /meeting command. It extracts structured information from raw transcripts and creates organized Obsidian notes. Use this whenever Keith mentions "meeting", "transcript", "Fireflies", "meeting notes", "process this call", or provides a transcript to summarize.
+description: Capture meeting notes -- processes transcripts into structured vault notes with summary, decisions, action items, and insights. Use when Keith says /meeting, provides a transcript, or mentions "meeting", "Fireflies", "meeting notes", or "process this call".
 ---
 
 # K2B Meeting Processor
 
 ## Vault Path
 
-`/Users/keithmbpm2/Projects/K2B-Vault`
+`~/Projects/K2B-Vault`
 
 ## Workflow
 
 When a transcript is provided:
 
-1. Read the meeting note template from `/Users/keithmbpm2/Projects/K2B-Vault/Templates/meeting-note.md`
+1. Read the meeting note template from `~/Projects/K2B-Vault/Templates/meeting-note.md`
 2. Analyze the transcript to extract:
    - **Participants**: Who was in the meeting
    - **Key Discussion Points**: Main topics covered (3-7 bullet points)
@@ -21,7 +21,7 @@ When a transcript is provided:
    - **Action Items**: Tasks with owners and deadlines where mentioned
    - **Insights**: Patterns, observations, or strategic points worth remembering
    - **Content Potential**: Anything that could become content (a teaching moment, a unique approach, a lesson learned)
-3. Create the note at `/Users/keithmbpm2/Projects/K2B-Vault/Notes/YYYY-MM-DD_Meeting-Topic.md`
+3. Create the note at `~/Projects/K2B-Vault/Notes/YYYY-MM-DD_Meeting-Topic.md`
 4. **Cross-link the note** (see Cross-Linking section below)
 5. Update today's daily note to add `[[YYYY-MM-DD_Meeting-Topic]]` in the Meetings section
 6. **Update related project notes**: If the meeting is tied to a project, use the vault-writer update workflow to:
@@ -47,7 +47,7 @@ Flag as content potential if the meeting contains:
 
 ## File Convention
 
-Meeting notes go to: `/Users/keithmbpm2/Projects/K2B-Vault/Notes/YYYY-MM-DD_Meeting-Topic.md`
+Meeting notes go to: `~/Projects/K2B-Vault/Notes/YYYY-MM-DD_Meeting-Topic.md`
 
 ## Cross-Linking
 
@@ -61,6 +61,14 @@ When creating a meeting note, always add `[[wiki links]]`:
 6. **Person note backlinks**: For each participant with a person note, append this meeting under their Key Interactions section as `### YYYY-MM-DD\n- [[YYYY-MM-DD_Meeting-Topic]]`.
 7. **Linked Notes section**: Collect all wiki links at the bottom of the meeting note.
 
+## Usage Logging
+
+After completing the main task, log this skill invocation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-meeting-processor\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed meeting transcript: TITLE" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+```
+
 ## Notes
 - No em dashes, no AI cliches, no sycophancy
-- Always add YAML frontmatter with tags, date, type, project, and participants
+- Always add YAML frontmatter with tags, date, type, origin, project, and participants
+- Always set `origin: k2b-extract` in frontmatter (these notes are derived from Keith's meeting transcripts)

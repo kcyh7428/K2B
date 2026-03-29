@@ -1,18 +1,18 @@
 ---
 name: k2b-daily-capture
-description: This skill should be used when Keith asks to create or update his daily note, do a daily review, or when starting a new work day. It handles the /daily slash command and daily note management in the K2B Obsidian vault. Use this whenever Keith mentions "daily", "today", "start the day", "end of day", "EOD", "what's on today", or anything about daily planning/review.
+description: Start or end the day -- creates/updates today's daily note with calendar, open loops, and progress. Use when Keith says /daily, "today", "start the day", "end of day", "EOD", "what's on today", or anything about daily planning/review.
 ---
 
 # K2B Daily Capture
 
 ## Vault Path
 
-`/Users/keithmbpm2/Projects/K2B-Vault`
+`~/Projects/K2B-Vault`
 
 ## Workflow
 
-1. Read the daily note template from `/Users/keithmbpm2/Projects/K2B-Vault/Templates/daily-note.md`
-2. Check if today's daily note already exists at `/Users/keithmbpm2/Projects/K2B-Vault/Daily/YYYY-MM-DD.md`
+1. Read the daily note template from `~/Projects/K2B-Vault/Templates/daily-note.md`
+2. Check if today's daily note already exists at `~/Projects/K2B-Vault/Daily/YYYY-MM-DD.md`
 3. If it exists, open it and offer to update. If not, create it.
 4. When creating:
    a. Use the template structure
@@ -29,7 +29,7 @@ description: This skill should be used when Keith asks to create or update his d
 
 ## File Convention
 
-Daily notes go to: `/Users/keithmbpm2/Projects/K2B-Vault/Daily/YYYY-MM-DD.md`
+Daily notes go to: `~/Projects/K2B-Vault/Daily/YYYY-MM-DD.md`
 
 ## Cross-Linking
 
@@ -43,8 +43,15 @@ When creating or updating the daily note, always add `[[wiki links]]`:
 
 Before linking, glob the vault to confirm the target note exists. If it doesn't exist and it's a person or project, create a stub note from the appropriate template.
 
+## Usage Logging
+
+After completing the main task, log this skill invocation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-daily-capture\t$(echo $RANDOM | md5sum | head -c 8)\tcreated daily note for YYYY-MM-DD" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+```
+
 ## Notes
-- Always use YAML frontmatter with today's date and [daily] tag
+- Always use YAML frontmatter with today's date, [daily] tag, and `origin: keith` (daily notes are Keith's own capture)
 - Keep the format clean and consistent
 - Don't over-structure -- Keith will fill in details naturally
 - No em dashes, no AI cliches, no sycophancy

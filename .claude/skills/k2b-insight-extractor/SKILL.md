@@ -1,13 +1,13 @@
 ---
 name: k2b-insight-extractor
-description: This skill should be used when Keith asks to find patterns, surface insights, review recent notes for themes, or uses the /insight or /content commands. It searches across the K2B Obsidian vault to synthesize connections and surface non-obvious patterns. Use this whenever Keith mentions "patterns", "insights", "themes", "what have I been", "content ideas", "what should I write about", "review my notes", or asks about trends across his work.
+description: Find patterns and surface content ideas -- searches the vault to synthesize connections and non-obvious patterns. Use when Keith says /insight, /content, "find patterns", "what should I write about", "review my notes", or asks about themes and trends across his work.
 ---
 
 # K2B Insight Extractor
 
 ## Vault Path
 
-`/Users/keithmbpm2/Projects/K2B-Vault`
+`~/Projects/K2B-Vault`
 
 ## Workflow
 
@@ -49,10 +49,51 @@ When classifying insights, use these lenses:
 - **Culture**: Organizational culture, change management
 - **Content**: Meta-observations about what resonates with audiences
 
+## Origin Rules
+
+- `/insight` notes get `origin: k2b-extract` (K2B synthesizing patterns from Keith's own notes)
+- `/content` idea notes get `origin: k2b-generate` (K2B's own suggestions based on analysis)
+- `/content` ideas are saved to `Inbox/` (not Notes/Content-Ideas/) because they are K2B suggestions, not Keith's ideas
+- Only when Keith explicitly adopts an idea (says "promote this", "I like this one", "let's do this") should it be moved to `Notes/Content-Ideas/` with `origin: keith`
+
+## Frontmatter Templates
+
+### /insight notes (saved to Notes/Insights/)
+```yaml
+---
+tags: [insight, {domain-tags}]
+date: YYYY-MM-DD
+type: insight
+origin: k2b-extract
+domain: {sjm|talentsignals|agency-at-scale|technical|career}
+content-potential: {true|false}
+up: "[[relevant MOC]]"
+---
+```
+
+### /content idea notes (saved to Inbox/) -- MANDATORY Inbox Write Contract
+```yaml
+---
+tags: [content-idea, {topic-tags}]
+date: YYYY-MM-DD
+type: content-idea
+origin: k2b-generate
+platform: [linkedin]
+status: idea
+source: "[[source note]]"
+up: "[[MOC_Content-Pipeline]]"
+review-action:
+review-notes: ""
+---
+```
+
+Before saving any note to Inbox/, verify: review-action and review-notes are present. All Inbox notes require these for Keith's Obsidian review workflow.
+
 ## File Conventions
 
-- Insight notes: `/Users/keithmbpm2/Projects/K2B-Vault/Notes/insight_topic.md`
-- Content ideas: `/Users/keithmbpm2/Projects/K2B-Vault/Notes/Ideas/idea_short-slug.md`
+- Insight notes: `~/Projects/K2B-Vault/Notes/Insights/insight_topic.md`
+- Content ideas from /content: `~/Projects/K2B-Vault/Inbox/content_short-slug.md` (with `origin: k2b-generate`)
+- Promoted content ideas: `~/Projects/K2B-Vault/Notes/Content-Ideas/content_short-slug.md` (with `origin: keith`)
 
 ## Cross-Linking
 
@@ -64,6 +105,13 @@ When creating insight or content idea notes, always add `[[wiki links]]`:
 4. **Content ideas from insights**: When `/content` creates a content idea note, link it back to the source insight notes in the Source Experience section.
 5. **Related insights**: If a new insight connects to an existing one, cross-link them.
 6. Glob the vault before linking to confirm targets exist.
+
+## Usage Logging
+
+After completing the main task, log this skill invocation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-insight-extractor\t$(echo $RANDOM | md5sum | head -c 8)\textracted insights on TOPIC" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+```
 
 ## Notes
 - No em dashes, no AI cliches, no sycophancy

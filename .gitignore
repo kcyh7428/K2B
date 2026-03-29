@@ -1,3 +1,21 @@
+# Secrets
+.env
+*.env
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Runtime data
+store/
+*.log
+*.pid
+
+# Temp media
+workspace/uploads/
+
 # Autoresearch iteration logs (per-skill, not committed)
 **/eval/results.tsv
 

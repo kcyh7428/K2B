@@ -5,7 +5,11 @@ description: Create or update notes in the K2B Obsidian vault with correct front
 
 # K2B Vault Writer
 
-Create notes in the K2B Obsidian vault at `/Users/keithmbpm2/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
+Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
+
+## System Reference
+
+Before writing any note, review the lifecycle rules in [[context_k2b-note-lifecycle]] (`Notes/Context/context_k2b-note-lifecycle.md`). That note is the single source of truth for origin tagging, review properties, promote destinations, and the content pipeline.
 
 ## Before Writing Any Note
 
@@ -51,11 +55,12 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | Person | `person_Firstname-Lastname.md` | `person_Gerard-Walker.md` |
 | Insight | `insight_topic-slug.md` | `insight_two-stage-ai-prevents-hallucination.md` |
 | Decision | `YYYY-MM-DD_decision-topic.md` | `2026-03-19_hiring-freeze-communication.md` |
-| Content Idea | `idea_short-slug.md` | `idea_corporate-ai-restrictions.md` |
+| Content Idea | `content_short-slug.md` | `content_corporate-ai-restrictions.md` |
 | Meeting | `YYYY-MM-DD_Meeting-Topic.md` | `2026-03-22_Hiring-Sync.md` |
 | MOC | `MOC_Topic-Name.md` | `MOC_SJM-Work.md` |
 | Daily | `YYYY-MM-DD.md` | `2026-03-22.md` |
 | Business | `entityname_overview.md` | `talentsignals_overview.md` |
+| K2B Feature | `feature_short-slug.md` | `feature_content-feed-system.md` |
 
 ## File Locations
 
@@ -63,15 +68,21 @@ When progress is made on a project, person interaction occurs, or a decision evo
 |-----------|--------|
 | Project | `Notes/Projects/` |
 | Person | `Notes/People/` |
-| Content Idea | `Notes/Ideas/` |
-| Insight | `Notes/` (flat) |
+| Content Idea (unadopted) | `Inbox/` |
+| Content Idea (adopted) | `Notes/Content-Ideas/` |
+| Insight | `Notes/Insights/` |
 | Decision | `Notes/` (flat) |
 | Meeting | `Notes/` (flat) |
 | Reference | `Notes/` (flat) |
-| Business overview | `Notes/` (flat) |
+| Context | `Notes/Context/` |
+| Business overview | `Notes/Context/` |
+| K2B Feature | `Notes/Projects/` |
 | MOC | Vault root |
 | Daily | `Daily/` |
 | TLDR | `Inbox/` |
+| Generated images | `Assets/images/` |
+| Generated audio | `Assets/audio/` |
+| Generated video | `Assets/video/` |
 | Home | Vault root |
 
 ## Frontmatter Conventions
@@ -81,10 +92,27 @@ When progress is made on a project, person interaction occurs, or a decision evo
 ---
 tags: [type-tag, domain-tags...]
 date: YYYY-MM-DD
-type: project | person | insight | decision | content-idea | moc | meeting | daily | reference
+type: project | person | insight | decision | content-idea | moc | meeting | daily | reference | k2b-feature
+origin: keith | k2b-extract | k2b-generate
 up: "[[relevant MOC or Home]]"
 ---
 ```
+
+### Origin field guide:
+- `keith` -- Keith's direct input, words, ideas, decisions
+- `k2b-extract` -- K2B extracted/summarized from Keith's input (meeting summaries, video takeaways from Keith's reactions)
+- `k2b-generate` -- K2B generated independently (connections, patterns, suggestions, recommendations)
+- When a note mixes both, use the primary origin and distinguish sections with callouts: `> [!quote] Keith's input` and `> [!robot] K2B analysis`
+
+### Inbox review properties
+All notes saved to Inbox/ must include these properties for Keith's Obsidian review:
+- `review-action:` -- empty until Keith decides (promote, archive, delete, revise)
+- `review-notes: ""` -- Keith's feedback/comments
+
+### Content Pipeline
+- `/content` suggestions land in `Inbox/` with `origin: k2b-generate`
+- Only when Keith says "promote this" does it move to `Notes/Content-Ideas/` with `origin: keith`
+- `Notes/Content-Ideas/` is Keith's curated list of adopted content ideas
 
 ### Type-specific fields:
 
@@ -151,9 +179,13 @@ A note can appear in multiple MOCs (e.g., an insight about AI that also has cont
 - Populate sections with real data, not placeholder text. If data isn't available, use `> [!todo] To be populated` callout.
 - Keep notes scannable. Bullet points over paragraphs where appropriate.
 
+## Obsidian Syntax Reference
+
+For Obsidian-specific syntax beyond standard markdown (callouts, embeds, math, mermaid diagrams, footnotes, block IDs, comments, highlights), read `references/obsidian-syntax.md` in this skill's directory.
+
 ## Template Reference
 
-Templates are at `/Users/keithmbpm2/Projects/K2B-Vault/Templates/`:
+Templates are at `~/Projects/K2B-Vault/Templates/`:
 - `daily-note.md`
 - `project-note.md`
 - `person-note.md`
@@ -163,13 +195,66 @@ Templates are at `/Users/keithmbpm2/Projects/K2B-Vault/Templates/`:
 
 For MOCs, insights, and reference docs, no template exists. Use the frontmatter conventions above and a clean markdown structure.
 
+## Asset Embedding
+
+When notes reference generated media (from `/media` or MiniMax MCP tools), use Obsidian embed syntax:
+
+- Images: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
+- Audio: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
+- Video: `![[Assets/video/YYYY-MM-DD_video_slug.mp4]]`
+
+Asset naming: `YYYY-MM-DD_type_slug.ext` where type is `image`, `speech`, `music`, or `video`.
+
+Content ideas with generated assets should have a `## Generated Assets` section containing embed links.
+
+## Inbox Write Contract (MANDATORY)
+
+**Every note saved to `Inbox/` MUST have these frontmatter fields. No exceptions.**
+
+```yaml
+review-action:       # empty string -- Keith fills this in Obsidian
+review-notes: ""     # empty string -- Keith fills this in Obsidian
+```
+
+This applies to ALL skills that write to Inbox: k2b-tldr, k2b-research, k2b-youtube-capture, k2b-insight-extractor (for /content), and any future skill. If a note lands in Inbox/ without these fields, Keith's review workflow breaks -- he can't triage it in Obsidian.
+
+**Before writing any Inbox note, verify:**
+1. `review-action:` is present in frontmatter (empty value is correct)
+2. `review-notes: ""` is present in frontmatter
+3. File path starts with `Inbox/`
+
+If you're updating an existing Inbox note, preserve any `review-action` or `review-notes` values Keith has already set.
+
+## Pre-Write Validation (Safety Check)
+
+Before writing or editing ANY vault note, run this checklist. Stop and fix issues before saving.
+
+1. **Frontmatter completeness**: All required fields for the note type are present (tags, date, type, origin, up)
+2. **Inbox contract**: If destination is `Inbox/`, review-action and review-notes are present
+3. **Folder placement**: File path matches the convention for its type (see File Locations table above)
+4. **Wikilink integrity**: Glob to verify each `[[target]]` exists. Create stubs for missing targets.
+5. **MOC link**: `up:` points to a valid MOC that exists at vault root
+6. **No em dashes**: Scan content for em dashes (--) and replace with double hyphens
+7. **Date format**: `date:` field is YYYY-MM-DD
+
+This is the "careful" pattern: validate before acting, not after.
+
 ## Quality Checklist
 
-Before finishing any note:
+After writing, confirm:
 - [ ] Frontmatter is valid YAML with all required fields
+- [ ] Inbox notes have review-action and review-notes
 - [ ] `up` link points to the correct MOC
 - [ ] All `[[wikilinks]]` use correct file names (glob-verified)
 - [ ] `date` field uses YYYY-MM-DD format
 - [ ] No em dashes in the content
 - [ ] File is saved in the correct folder
+- [ ] `origin` field is set (keith, k2b-extract, or k2b-generate)
 - [ ] Relevant MOC has been updated with a link to this note
+
+## Usage Logging
+
+After completing the main task, log this skill invocation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-vault-writer\t$(echo $RANDOM | md5sum | head -c 8)\twrote/updated vault note: FILENAME" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+```

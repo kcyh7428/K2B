@@ -15,8 +15,8 @@ The Karpathy loop adapted for K2B skills. Iteratively improves a target file usi
 
 ## Vault & Skill Paths
 
-- Vault: `/Users/keithmbpm2/Projects/K2B-Vault`
-- Skills: `/Users/keithmbpm2/Projects/K2B/.claude/skills/`
+- Vault: `~/Projects/K2B-Vault`
+- Skills: `~/Projects/K2B/.claude/skills/`
 - Each skill's eval infrastructure: `.claude/skills/k2b-[name]/eval/`
 
 ## The Loop Protocol
@@ -214,6 +214,13 @@ Read from each skill's `eval/results.tsv` to populate this table.
 5. **Mechanical verification** -- assertions must be answerable by reading the output
 6. **Learnings accumulate** -- results.tsv + learnings.md + git history compound over time
 7. **Never stop, never ask** -- autonomous until interrupted or perfect
+
+## Usage Logging
+
+After completing the main task, log this skill invocation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-autoresearch\t$(echo $RANDOM | md5sum | head -c 8)\tran autoresearch on SKILL" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+```
 
 ## Notes
 

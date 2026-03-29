@@ -1,5 +1,5 @@
 import cronParser from 'cron-parser'
-import { getDueTasks, updateTaskAfterRun } from './db.js'
+import { getDueTasks, updateTaskAfterRun, deleteTask } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 
@@ -31,16 +31,22 @@ async function runDueTasks(): Promise<void> {
 
   for (const task of tasks) {
     try {
-      await sendFn(task.chat_id, `[Scheduled task running: ${task.prompt.slice(0, 80)}...]`)
+      const label = task.type === 'one-time' ? 'Reminder' : 'Scheduled task'
+      await sendFn(task.chat_id, `[${label} running: ${task.prompt.slice(0, 80)}...]`)
 
       const { text } = await runAgent(task.prompt)
       const result = text ?? '(no response)'
 
-      const nextRun = computeNextRun(task.schedule)
-      updateTaskAfterRun(task.id, nextRun, result)
+      if (task.type === 'one-time') {
+        deleteTask(task.id)
+        logger.info({ taskId: task.id }, 'One-time reminder fired and deleted')
+      } else {
+        const nextRun = computeNextRun(task.schedule)
+        updateTaskAfterRun(task.id, nextRun, result)
+      }
 
       await sendFn(task.chat_id, result)
-      logger.info({ taskId: task.id }, 'Scheduled task completed')
+      logger.info({ taskId: task.id }, `${label} completed`)
     } catch (err) {
       logger.error({ err, taskId: task.id }, 'Scheduled task failed')
       try {

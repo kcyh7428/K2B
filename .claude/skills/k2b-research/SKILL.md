@@ -1,52 +1,28 @@
 ---
 name: k2b-research
-description: On-demand research agent that audits K2B vault health, reviews self-improvement status, scans for external ideas, and produces a structured research briefing note. Use when Keith says /research, "research", "improve K2B", "what's new in AI", "how can K2B be better", "scan for ideas", "look into this", or wants to deep-dive into a topic or URL for K2B-applicable insights.
+description: Deep dive into external topics -- scan for new AI tools, techniques, and ideas; analyze URLs, YouTube videos, and GitHub repos. This skill should be used when Keith says /research, "look into this", "what's new in AI", or wants to deep-dive into a topic, URL, or repo. For internal system health, use /improve instead.
 ---
 
 # K2B Research Agent
 
-On-demand research that finds what to improve -- both internally (vault health, skill quality) and externally (new tools, techniques, ideas).
+On-demand research that scans externally for new tools, techniques, and ideas, and deep dives into specific topics or URLs.
 
 ## Commands
 
-- `/research` -- Run both internal audit + external scanning
-- `/research internal` -- Vault health and eval dashboard only
-- `/research external` -- External scanning using research-topics.md
-- `/research external "topic"` -- Deep dive on a specific topic
-- `/research external <url>` -- Deep dive on a specific URL (YouTube, GitHub, article)
+- `/research` -- External scanning using research-topics.md
+- `/research "topic"` -- Deep dive on a specific topic
+- `/research <url>` -- Deep dive on a specific URL (YouTube, GitHub, article)
+
+> For internal vault health and system auditing, use `/improve vault` instead.
 
 ## Vault & Skill Paths
 
-- Vault: `/Users/keithmbpm2/Projects/K2B-Vault`
-- Skills: `/Users/keithmbpm2/Projects/K2B/.claude/skills/`
-- Research topics: `/Users/keithmbpm2/Projects/K2B-Vault/Notes/Context/research-topics.md`
-- Output: `/Users/keithmbpm2/Projects/K2B-Vault/Inbox/`
+- Vault: `~/Projects/K2B-Vault`
+- Skills: `~/Projects/K2B/.claude/skills/`
+- Research topics: `~/Projects/K2B-Vault/Notes/Context/research-topics.md`
+- Output: `~/Projects/K2B-Vault/Inbox/`
 
-## Phase 1: Internal Audit
-
-### Vault Health Check
-1. **Orphaned notes**: Glob all notes in `Notes/` and check for `up:` field in frontmatter. List any without an `up:` link.
-2. **Stale Inbox items**: Check `Inbox/` for files older than 7 days. These should be processed or moved.
-3. **MOC freshness**: Read each MOC file. Compare links in MOCs against actual files in vault. Flag notes that exist but aren't linked from any MOC.
-4. **Broken wikilinks**: Sample 10-15 notes and check that `[[wikilinks]]` point to existing files.
-5. **Vault metrics**: Count notes by folder, count total wikilinks, check daily note streak (consecutive days with a daily note).
-
-### Self-Improvement Status
-1. Read `self_improve_learnings.md` -- surface top 5 most-reinforced learnings
-2. Read `self_improve_errors.md` -- list any unresolved errors
-3. Read `self_improve_requests.md` -- list open feature requests
-4. Flag patterns: are errors recurring? Are requests accumulating in one area?
-
-### Skill Eval Dashboard
-1. For each skill in `.claude/skills/k2b-*/`:
-   a. Check if `eval/eval.json` exists
-   b. Check if `eval/results.tsv` exists and has entries
-   c. Read latest pass rate from results.tsv
-   d. Read best pass rate from results.tsv
-   e. Count total iterations run
-2. Present as a table showing which skills need attention
-
-## Phase 2: External Scanning
+## External Scanning
 
 ### Default Mode (no topic/URL)
 
@@ -58,14 +34,14 @@ On-demand research that finds what to improve -- both internally (vault health, 
    - Actionability: is this something Keith could use now, soon, or someday?
 4. Prioritize findings by relevance to K2B
 
-### Topic Mode (`/research external "topic"`)
+### Topic Mode (`/research "topic"`)
 
 1. Run 3-5 targeted web searches on the specific topic
 2. Read and synthesize findings
 3. Produce a deep-dive analysis focused on K2B applicability
 4. Include specific recommendations: "K2B could implement X by doing Y"
 
-### URL Mode (`/research external <url>`)
+### URL Mode (`/research <url>`)
 
 Detect URL type and handle accordingly:
 
@@ -97,30 +73,20 @@ Detect URL type and handle accordingly:
 
 Save to `Inbox/YYYY-MM-DD_research-briefing.md` (or `Inbox/YYYY-MM-DD_research-[topic-slug].md` for focused research).
 
-Use the k2b-vault-writer conventions for frontmatter and cross-linking.
+**MANDATORY: All research notes go to Inbox/ and MUST include review-action and review-notes. See vault-writer Inbox Write Contract.** Before saving, verify these fields are present. If they're missing, Keith can't triage the note in Obsidian.
 
 ```markdown
 ---
 tags: [research, k2b-system]
 date: YYYY-MM-DD
 type: research-briefing
+origin: k2b-generate
 up: "[[MOC_K2B-System]]"
+review-action:
+review-notes: ""
 ---
 
 # Research Briefing -- YYYY-MM-DD
-
-## Vault Health
-[metrics table + issues found]
-
-## Self-Improvement Status
-[learnings summary, errors, requests]
-
-## Skill Eval Dashboard
-| Skill | Has Eval | Assertions | Pass Rate | Best | Iterations |
-|-------|----------|-----------|-----------|------|------------|
-| k2b-meeting-processor | Yes | 15 | 80% | 86% | 12 |
-| k2b-daily-capture | Yes | 12 | 92% | 92% | 5 |
-| ... | ... | ... | ... | ... | ... |
 
 ## External Findings
 ### [Finding 1 Title]
@@ -133,12 +99,6 @@ up: "[[MOC_K2B-System]]"
 ...
 
 ## Recommendations
-### Vault Maintenance
-- [ ] [specific action]
-
-### Skill Improvements (requires /autoresearch)
-- [ ] k2b-meeting-processor: [what to improve and why]
-
 ### New Ideas from Research
 - [ ] [actionable idea with implementation sketch]
 
@@ -155,8 +115,11 @@ Use a more focused output format:
 tags: [research, deep-dive, {topic-tags}]
 date: YYYY-MM-DD
 type: research-briefing
+origin: k2b-generate
 source: "[Title](URL)"
 up: "[[MOC_K2B-System]]"
+review-action:
+review-notes: ""
 ---
 
 # Deep Dive: [Topic/Source Title]
@@ -180,6 +143,13 @@ up: "[[MOC_K2B-System]]"
 
 ## Linked Notes
 [wikilinks to related vault notes]
+```
+
+## Usage Logging
+
+After completing the main task, log this skill invocation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-research\t$(echo $RANDOM | md5sum | head -c 8)\tran research: FOCUS" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
 ```
 
 ## Notes

@@ -1,11 +1,13 @@
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { STORE_DIR, TELEGRAM_BOT_TOKEN } from './config.js'
+import { hostname } from 'node:os'
+import { STORE_DIR, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from './config.js'
 import { initDatabase } from './db.js'
 import { runDecaySweep } from './memory.js'
 import { cleanupOldUploads } from './media.js'
 import { createBot, sendTelegramMessage } from './bot.js'
 import { initScheduler, stopScheduler } from './scheduler.js'
+import { startHeartbeat, stopHeartbeat } from './health.js'
 import { logger } from './logger.js'
 
 const PID_FILE = resolve(STORE_DIR, 'k2b-remote.pid')
@@ -75,9 +77,13 @@ async function main(): Promise<void> {
   // Initialize scheduler with send function
   initScheduler(sendTelegramMessage)
 
+  // Start health heartbeat
+  startHeartbeat()
+
   // Graceful shutdown
   const shutdown = async () => {
     logger.info('Shutting down...')
+    stopHeartbeat()
     stopScheduler()
     bot.stop()
     releaseLock()
@@ -90,8 +96,22 @@ async function main(): Promise<void> {
   // Start the bot
   try {
     await bot.start({
-      onStart: (botInfo) => {
+      onStart: async (botInfo) => {
         logger.info({ username: botInfo.username }, 'K2B Remote is running')
+        if (ALLOWED_CHAT_ID) {
+          const startMsg = [
+            '--- K2B Online ---',
+            `Host: ${hostname()}`,
+            `PID: ${process.pid}`,
+            `Time: ${new Date().toLocaleString('en-HK', { timeZone: 'Asia/Hong_Kong' })}`,
+            `Bot: @${botInfo.username}`,
+          ].join('\n')
+          try {
+            await sendTelegramMessage(ALLOWED_CHAT_ID, startMsg)
+          } catch (err) {
+            logger.error({ err }, 'Failed to send startup notification')
+          }
+        }
       },
     })
   } catch (err) {

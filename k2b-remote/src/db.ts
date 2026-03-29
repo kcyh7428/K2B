@@ -87,6 +87,13 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_tasks_status_next ON scheduled_tasks(status, next_run)
   `)
 
+  // Migration: add type column for one-time reminders
+  const cols = db.prepare("PRAGMA table_info(scheduled_tasks)").all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'type')) {
+    db.exec("ALTER TABLE scheduled_tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'recurring'")
+    logger.info('Migrated scheduled_tasks: added type column')
+  }
+
   logger.info('Database initialized')
 }
 
@@ -238,13 +245,14 @@ export function createTask(
   chatId: string,
   prompt: string,
   schedule: string,
-  nextRun: number
+  nextRun: number,
+  type: 'recurring' | 'one-time' = 'recurring'
 ): void {
   getDb()
     .prepare(
-      'INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, status, created_at, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(id, chatId, prompt, schedule, nextRun, 'active', Date.now())
+    .run(id, chatId, prompt, schedule, nextRun, 'active', Date.now(), type)
 }
 
 export function getDueTasks(): Array<{
@@ -252,11 +260,12 @@ export function getDueTasks(): Array<{
   chat_id: string
   prompt: string
   schedule: string
+  type: string
 }> {
   const now = Date.now()
   return getDb()
     .prepare(
-      `SELECT id, chat_id, prompt, schedule
+      `SELECT id, chat_id, prompt, schedule, type
        FROM scheduled_tasks
        WHERE status = 'active' AND next_run <= ?`
     )
@@ -265,6 +274,7 @@ export function getDueTasks(): Array<{
     chat_id: string
     prompt: string
     schedule: string
+    type: string
   }>
 }
 
@@ -311,9 +321,10 @@ export function listAllTasks(): Array<{
   next_run: number
   last_run: number | null
   status: string
+  type: string
 }> {
   return getDb()
-    .prepare('SELECT id, chat_id, prompt, schedule, next_run, last_run, status FROM scheduled_tasks ORDER BY created_at')
+    .prepare('SELECT id, chat_id, prompt, schedule, next_run, last_run, status, type FROM scheduled_tasks ORDER BY created_at')
     .all() as Array<{
     id: string
     chat_id: string
@@ -322,5 +333,6 @@ export function listAllTasks(): Array<{
     next_run: number
     last_run: number | null
     status: string
+    type: string
   }>
 }
