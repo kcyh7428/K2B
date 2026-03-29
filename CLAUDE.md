@@ -48,7 +48,9 @@ K2B-Vault/
   Archive/            Archived notes (reviewed and set aside)
   Notes/              All processed notes
     People/           Person notes (18+)
-    Projects/         Project notes (13+)
+    Projects/         Things Keith builds (10 -- K2B, TalentSignals, personal brand)
+    Work/             SJM role responsibilities Keith drives (6)
+    Features/         K2B feature specs (linked from MOC_K2B-Roadmap)
     Content-Ideas/    Adopted content ideas (20+)
     (flat)            Insights, decisions, meetings, reference, business overviews
   Assets/             Generated media (images/, audio/, video/)
@@ -214,7 +216,8 @@ All vault notes must use `[[wiki links]]` to connect related content. This light
 - Meeting notes: `Notes/YYYY-MM-DD_Meeting-Topic.md`
 - Content idea suggestions (unadopted): `Inbox/content_short-slug.md`
 - Adopted content ideas: `Notes/Content-Ideas/content_short-slug.md`
-- Projects: `Notes/Projects/project_name.md`
+- Projects (things Keith builds): `Notes/Projects/project_name.md`
+- Work (SJM responsibilities): `Notes/Work/work_name.md`
 - People: `Notes/People/person_Firstname-Lastname.md`
 - Decisions: `Notes/YYYY-MM-DD_decision-topic.md`
 - Insights: `Notes/Insights/insight_topic.md`

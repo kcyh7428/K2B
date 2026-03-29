@@ -61,6 +61,7 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | Daily | `YYYY-MM-DD.md` | `2026-03-22.md` |
 | Business | `entityname_overview.md` | `talentsignals_overview.md` |
 | K2B Feature | `feature_short-slug.md` | `feature_content-feed-system.md` |
+| Work (SJM) | `work_lowercase-slug.md` | `work_the-eight-chef-search.md` |
 
 ## File Locations
 
@@ -76,7 +77,8 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | Reference | `Notes/` (flat) |
 | Context | `Notes/Context/` |
 | Business overview | `Notes/Context/` |
-| K2B Feature | `Notes/Projects/` |
+| K2B Feature | `Notes/Features/` |
+| Work (SJM) | `Notes/Work/` |
 | MOC | Vault root |
 | Daily | `Daily/` |
 | TLDR | `Inbox/` |
@@ -92,7 +94,7 @@ When progress is made on a project, person interaction occurs, or a decision evo
 ---
 tags: [type-tag, domain-tags...]
 date: YYYY-MM-DD
-type: project | person | insight | decision | content-idea | moc | meeting | daily | reference | k2b-feature
+type: project | work | person | insight | decision | content-idea | moc | meeting | daily | reference | k2b-feature
 origin: keith | k2b-extract | k2b-generate
 up: "[[relevant MOC or Home]]"
 ---
@@ -116,11 +118,20 @@ All notes saved to Inbox/ must include these properties for Keith's Obsidian rev
 
 ### Type-specific fields:
 
-**Project:**
+**Project** (things Keith builds/creates personally):
 ```yaml
-status: on | ongoing | simmering | sleeping
-domain: sjm | talentsignals | agency-at-scale | signhub | personal | k2b
+status: on | ongoing | simmering | sleeping | parked
+priority: high | medium | low
+domain: talentsignals | agency-at-scale | signhub | personal | k2b
 ```
+
+**Work** (SJM role responsibilities Keith drives/oversees):
+```yaml
+status: on | active | simmering
+priority: high | medium | low
+domain: sjm
+```
+Work notes use a simpler structure: Context, Current Status, Key Decisions, People, Open Questions, Updates. No milestones -- Keith drives these through his team, not as personal deliverables.
 
 **Person:**
 ```yaml
