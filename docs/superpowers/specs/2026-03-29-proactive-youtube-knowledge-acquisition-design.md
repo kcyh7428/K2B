@@ -63,9 +63,9 @@ processed        Inbound playlist video auto-processed (not a recommendation, no
 
 ## Components
 
-### 1. k2b-youtube-morning (new skill)
+### 1. /youtube morning (new subcommand in k2b-youtube-capture)
 
-**Trigger:** Scheduled task, daily at 7am HKT.
+**Trigger:** Scheduled task, daily at 7am HKT. Can also be run manually via `/youtube morning`.
 
 **Step 1 -- Handle stale nudges:**
 - Read `youtube-recommended.jsonl` for entries with `status: "nudge_sent"`
@@ -156,7 +156,7 @@ Morning task added via K2B's scheduler system, runs on Mac Mini:
 
 - **Name:** `youtube-morning`
 - **Schedule:** Daily at 7:00 HKT (23:00 UTC previous day)
-- **Prompt:** "Run /youtube morning -- check Watch playlist for unwatched videos, send nudges with inline buttons, poll inbound playlists for new content."
+- **Prompt:** "Run /youtube morning"
 
 ## Telegram Message Formats
 
@@ -254,24 +254,23 @@ Observer loop (background, MiniMax M2.5)
 
 | File | Type | Purpose |
 |------|------|---------|
-| `.claude/skills/k2b-youtube-morning/SKILL.md` | New skill | Morning automation logic |
 | `Notes/Context/youtube-recommended.jsonl` | New data file | Recommendation tracking + dedup + observer signals |
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
+| `.claude/skills/k2b-youtube-capture/SKILL.md` | Add `/youtube morning` subcommand with full morning automation logic |
 | `k2b-remote/src/bot.ts` | Add inline keyboard builder, callback_query handler, promotion flow |
 | `scripts/observer-prompt.md` | Add YouTube behavior pattern analysis section |
-| `CLAUDE.md` | Document youtube-morning skill, scheduled task |
-| `.claude/skills/k2b-youtube-capture/SKILL.md` | Cross-reference the new k2b-youtube-morning skill for automated daily runs |
+| `CLAUDE.md` | Document `/youtube morning`, scheduled task |
 
 ## What This Does NOT Do
 
 - **No YouTube watch history API** -- removed from API in 2016. K2B Watch playlist is the proxy.
 - **No automatic recommendation generation** -- morning run processes what Keith saved to Watch and what arrived in inbound playlists. The `/youtube recommend` command remains for on-demand discovery.
 - **No auto-processing of Watch videos** -- Keith controls when highlights are generated. K2B nudges, Keith decides.
-- **No changes to existing youtube-capture skill** -- the morning skill is a new skill that orchestrates existing capabilities.
+- **No new skill** -- `/youtube morning` is a subcommand within the existing k2b-youtube-capture skill, keeping all YouTube logic in one place.
 
 ## Success Criteria
 
