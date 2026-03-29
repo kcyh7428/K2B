@@ -32,6 +32,17 @@ Analyze the observations to detect:
 - Do any existing learnings get additional evidence from these observations?
 - Should any learning's confidence increase or decrease?
 
+### YouTube Behavior Patterns
+Also read Notes/Context/youtube-recommended.jsonl for:
+- Watch rate by playlist: which playlists have highest watched/total ratio?
+- Watch rate by channel: which channels does Keith consistently watch vs skip?
+- Promotion rate: what percentage of watched/highlighted videos get promoted?
+- Promotion type by playlist: do K2B Claude videos become features while K2B Recruit becomes content ideas?
+- Highlight vs full watch: does Keith prefer quick highlights or watching the video?
+- Skip rate by playlist/channel: consistently skipped sources should be flagged
+- Time to action: how quickly does Keith respond to nudges? (nudge_date vs outcome timestamp)
+- Expiry rate: high expiry rate means recommendations aren't relevant enough
+
 ## Output Format
 
 Return valid JSON only, no markdown wrapping:
@@ -42,7 +53,7 @@ Return valid JSON only, no markdown wrapping:
   "observations_analyzed": 0,
   "patterns": [
     {
-      "type": "skill_adoption|revision|cross_skill|timing",
+      "type": "skill_adoption|revision|cross_skill|timing|youtube_behavior",
       "description": "Human-readable pattern description",
       "evidence_count": 0,
       "confidence": "low|medium|high",
