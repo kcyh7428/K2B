@@ -2,6 +2,66 @@
 
 ---
 
+## 2026-03-30 -- Claude Code Hooks, MiniMax Background Observer, Proactive YouTube
+
+**What was built/changed:**
+
+### 1. Claude Code Hooks (inspired by Everything Claude Code repo)
+- Created `scripts/hooks/session-start.sh` -- deterministic session startup (usage triggers, inbox scan, observer candidates, high-confidence learnings)
+- Created `scripts/hooks/stop-observe.sh` -- captures vault file changes after every Claude response to `observations.jsonl`
+- Created `.claude/settings.json` -- project-level hooks config wiring both hooks
+
+### 2. MiniMax Background Observer
+- Created `scripts/observer-loop.sh` -- background process calling MiniMax-M2.5 API to analyze K2B usage patterns (~$0.007/analysis)
+- Created `scripts/observer-prompt.md` -- structured analysis prompt (skill patterns, revision patterns, YouTube behavior)
+- Fixed `scripts/minimax-common.sh` -- platform-aware vault path detection (MacBook vs Mac Mini)
+- Deployed to Mac Mini as pm2 process `k2b-observer-loop`
+- Gate: 20+ observations, 1hr cooldown, 7am-11pm HKT active hours
+
+### 3. Confidence-Scored Learnings
+- Updated `k2b-feedback` skill -- learnings now carry low/medium/high confidence based on reinforcement count
+- Session-start hook auto-loads high-confidence (6+) learnings into context
+
+### 4. Proactive YouTube Knowledge Acquisition
+- Created `k2b-remote/src/youtube.ts` -- JSONL data layer for recommendation tracking + dedup
+- Added Telegram inline keyboard buttons to `bot.ts` -- [Get highlights] [Skip] + promotion flow [Content idea] [Feature] [Insight] [Nothing]
+- Added `callback_query:data` handler for all YouTube button interactions
+- Added `/youtube morning` subcommand to k2b-youtube-capture skill
+- Wired `sendPendingNudges` into scheduler.ts -- buttons sent after morning task completes
+- Created scheduled task: daily 7am HKT `Run /youtube morning`
+- Observer prompt updated to analyze YouTube watch/skip/promote patterns
+
+### 5. Documentation
+- Updated CLAUDE.md -- hooks, observer loop, Mac Mini pm2 processes, /youtube morning
+- Updated README.md -- full architecture diagram, skills table, self-improvement loop, tech stack
+- Updated vault: Home.md, MOC_K2B-Roadmap.md, project_k2b.md, new feature_background-observer.md
+- Created spec: `docs/superpowers/specs/2026-03-29-proactive-youtube-knowledge-acquisition-design.md`
+- Created plan: `docs/superpowers/plans/2026-03-29-proactive-youtube-knowledge-acquisition.md`
+
+**Key decisions:**
+- MiniMax-M2.5 (minimaxi.com, $0.30/M in) chosen over Claude Haiku for background observer -- cheaper, Keith's existing subscription is underused
+- Vault JSONL over SQLite for YouTube tracking -- observer needs to read the data, SQLite is opaque to it
+- Extended existing k2b-youtube-capture skill rather than creating new k2b-youtube-morning skill -- one skill, cleaner
+- Inline Telegram buttons via Grammy InlineKeyboard rather than text-based replies -- better UX
+
+**Files affected:**
+- `.claude/settings.json` -- new (hooks config)
+- `.claude/skills/k2b-feedback/SKILL.md` -- confidence scoring
+- `.claude/skills/k2b-observer/SKILL.md` -- background observer integration
+- `.claude/skills/k2b-youtube-capture/SKILL.md` -- /youtube morning subcommand
+- `k2b-remote/src/bot.ts` -- inline buttons, callback handler, sendPendingNudges
+- `k2b-remote/src/scheduler.ts` -- post-task nudge sending
+- `k2b-remote/src/youtube.ts` -- new (JSONL data layer)
+- `scripts/hooks/session-start.sh` -- new
+- `scripts/hooks/stop-observe.sh` -- new
+- `scripts/observer-loop.sh` -- new
+- `scripts/observer-prompt.md` -- new + YouTube patterns
+- `scripts/minimax-common.sh` -- platform-aware vault path
+- `CLAUDE.md` -- hooks, observer, youtube morning docs
+- `README.md` -- comprehensive rewrite
+
+---
+
 ## 2026-03-29 -- Git Setup & Session Discipline
 
 **What was built/changed:**
