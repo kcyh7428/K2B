@@ -10,7 +10,7 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
-import { updateRecommendation } from './youtube.js'
+import { updateRecommendation, getPendingNudges } from './youtube.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 
@@ -412,6 +412,33 @@ export function createBot(): Bot {
   })
 
   return bot
+}
+
+const sentNudgeIds = new Set<string>()
+
+export async function sendPendingNudges(chatId: string): Promise<number> {
+  const pending = getPendingNudges()
+  let sent = 0
+
+  for (const rec of pending) {
+    if (sentNudgeIds.has(rec.video_id)) continue
+
+    const isRenudge = rec.nudge_date && rec.nudge_date < new Date().toISOString().slice(0, 10)
+    const text = isRenudge
+      ? `Still in your Watch list (added ${rec.nudge_date}):\n\n<b>${rec.title}</b>\n${rec.channel}\nPlaylist: ${rec.playlist}`
+      : `New in your Watch list:\n\n<b>${rec.title}</b>\n${rec.channel}\nPlaylist: ${rec.playlist}`
+
+    const buttons = [
+      { label: 'Get highlights', callbackData: `youtube:highlights:${rec.video_id}` },
+      { label: 'Skip', callbackData: `youtube:skip:${rec.video_id}` },
+    ]
+
+    await sendTelegramMessageWithButtons(chatId, text, buttons)
+    sentNudgeIds.add(rec.video_id)
+    sent++
+  }
+
+  return sent
 }
 
 export async function sendTelegramMessage(

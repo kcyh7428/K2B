@@ -2,6 +2,8 @@ import cronParser from 'cron-parser'
 import { getDueTasks, updateTaskAfterRun, deleteTask } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
+import { sendPendingNudges } from './bot.js'
+import { ALLOWED_CHAT_ID } from './config.js'
 
 type Sender = (chatId: string, text: string) => Promise<void>
 
@@ -46,6 +48,15 @@ async function runDueTasks(): Promise<void> {
       }
 
       await sendFn(task.chat_id, result)
+
+      // After YouTube morning task, send nudge buttons for any pending videos
+      if (task.prompt.includes('/youtube morning') && ALLOWED_CHAT_ID) {
+        const nudged = await sendPendingNudges(ALLOWED_CHAT_ID)
+        if (nudged > 0) {
+          logger.info({ nudged }, 'Sent YouTube nudge buttons')
+        }
+      }
+
       logger.info({ taskId: task.id }, `${label} completed`)
     } catch (err) {
       logger.error({ err, taskId: task.id }, 'Scheduled task failed')
