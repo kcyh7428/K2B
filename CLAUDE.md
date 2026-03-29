@@ -113,7 +113,7 @@ Commands are organized by what you're trying to do: capture something, think abo
 
 **`/tldr`** -- Save this conversation. Extract key decisions, action items, and insights. Always saves to `Inbox/`.
 
-**`/youtube [url]`** -- Capture from YouTube. `/youtube` polls all playlists for new videos. `/youtube <url>` processes a single video. `/youtube recommend` finds new videos for Keith's commute playlist.
+**`/youtube [subcommand]`** -- YouTube knowledge pipeline. `/youtube` polls all playlists manually. `/youtube <url>` processes a single video. `/youtube recommend` finds new videos. `/youtube morning` runs the automated daily routine (nudge unwatched, poll inbound, send via Telegram). `/youtube status` shows stats. Morning routine runs automatically at 7am HKT via scheduler.
 
 **`/email`** -- Read and triage Gmail. Search, read, draft replies. Never sends -- only drafts.
 
@@ -173,7 +173,7 @@ CAPTURE                    THINK                     CREATE
 /daily  --> Daily/         /inbox --> promotes to     /linkedin --> publishes
 /meeting --> Notes/           Notes/ or Archive/      /media --> Assets/
 /tldr   --> Inbox/         /insight --> Notes/Insights/
-/youtube --> Inbox/        /content --> Inbox/ (ideas)
+/youtube --> Inbox/ + youtube-recommended.jsonl        /content --> Inbox/ (ideas)
 /email  --> (read only)    /research --> Inbox/ (briefings)
                            /observe --> Notes/Context/
                            /improve --> (surfaces patterns)
