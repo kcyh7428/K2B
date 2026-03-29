@@ -52,7 +52,9 @@ K2B-Vault/
     Work/             SJM role responsibilities Keith drives (6)
     Features/         K2B feature specs (linked from MOC_K2B-Roadmap)
     Content-Ideas/    Adopted content ideas (20+)
-    (flat)            Insights, decisions, meetings, reference, business overviews
+    Insights/         Keith's own patterns and observations
+    Reference/        External captures (videos, repos, articles)
+    Context/          Internal reference docs, preference profile, usage tracking
   Assets/             Generated media (images/, audio/, video/)
   Daily/              Daily notes
   Templates/          Note templates
@@ -213,18 +215,19 @@ All vault notes must use `[[wiki links]]` to connect related content. This light
 ## File Conventions
 
 - Daily notes: `Daily/YYYY-MM-DD.md`
-- Meeting notes: `Notes/YYYY-MM-DD_Meeting-Topic.md`
 - Content idea suggestions (unadopted): `Inbox/content_short-slug.md`
 - Adopted content ideas: `Notes/Content-Ideas/content_short-slug.md`
 - Projects (things Keith builds): `Notes/Projects/project_name.md`
 - Work (SJM responsibilities): `Notes/Work/work_name.md`
 - People: `Notes/People/person_Firstname-Lastname.md`
-- Decisions: `Notes/YYYY-MM-DD_decision-topic.md`
 - Insights: `Notes/Insights/insight_topic.md`
-- TLDRs: `Inbox/YYYY-MM-DD_tldr-topic.md` (always Inbox first)
+- Reference (external captures): `Notes/Reference/YYYY-MM-DD_source_topic.md`
 - Context/background: `Notes/Context/context_topic.md`
 - Business overviews: `Notes/Context/entityname_overview.md`
+- K2B Features: `Notes/Features/feature_name.md`
+- TLDRs: `Inbox/YYYY-MM-DD_tldr-topic.md` (always Inbox first)
 - Archived notes: `Archive/` (moved from Inbox after review)
+- Decisions go inside their parent project/work notes, not as standalone files
 
 ## Session Discipline
 

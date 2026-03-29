@@ -54,7 +54,7 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | Project | `project_lowercase-slug.md` | `project_signal-monitoring.md` |
 | Person | `person_Firstname-Lastname.md` | `person_Gerard-Walker.md` |
 | Insight | `insight_topic-slug.md` | `insight_two-stage-ai-prevents-hallucination.md` |
-| Decision | `YYYY-MM-DD_decision-topic.md` | `2026-03-19_hiring-freeze-communication.md` |
+| Reference | `YYYY-MM-DD_source_topic-slug.md` | `2026-03-25_youtube_ai-writing-dan-koe.md` |
 | Content Idea | `content_short-slug.md` | `content_corporate-ai-restrictions.md` |
 | Meeting | `YYYY-MM-DD_Meeting-Topic.md` | `2026-03-22_Hiring-Sync.md` |
 | MOC | `MOC_Topic-Name.md` | `MOC_SJM-Work.md` |
@@ -72,9 +72,7 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | Content Idea (unadopted) | `Inbox/` |
 | Content Idea (adopted) | `Notes/Content-Ideas/` |
 | Insight | `Notes/Insights/` |
-| Decision | `Notes/` (flat) |
-| Meeting | `Notes/` (flat) |
-| Reference | `Notes/` (flat) |
+| Reference (external) | `Notes/Reference/` |
 | Context | `Notes/Context/` |
 | Business overview | `Notes/Context/` |
 | K2B Feature | `Notes/Features/` |
@@ -94,7 +92,7 @@ When progress is made on a project, person interaction occurs, or a decision evo
 ---
 tags: [type-tag, domain-tags...]
 date: YYYY-MM-DD
-type: project | work | person | insight | decision | content-idea | moc | meeting | daily | reference | k2b-feature
+type: project | work | person | insight | content-idea | moc | daily | reference | k2b-feature
 origin: keith | k2b-extract | k2b-generate
 up: "[[relevant MOC or Home]]"
 ---
