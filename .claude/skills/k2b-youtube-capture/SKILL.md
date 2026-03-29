@@ -13,6 +13,7 @@ Process YouTube videos saved to playlists with playlist-specific analysis. Also 
 - `/youtube <url>` -- Process a single YouTube video (standard analysis)
 - `/youtube recommend` -- Run the recommendation engine (find new videos, add to K2B Watch)
 - `/youtube status` -- Show processing stats and playlist config
+- `/youtube morning` -- Automated morning routine: nudge unwatched videos, poll inbound playlists (runs daily via scheduler, can also run manually)
 
 ## Paths
 
@@ -237,6 +238,76 @@ Find relevant YouTube content and add to Keith's K2B Watch playlist.
 9. Create `Inbox/YYYY-MM-DD_youtube-recommendations.md` with the picks and reasoning
 10. Log each as `recommended` in youtube-processed.md
 
+## Workflow: Morning Routine (`/youtube morning`)
+
+Automated daily check. Runs via scheduled task at 7am HKT. Can also be triggered manually.
+
+### Paths (additional)
+
+- Recommendations JSONL: `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl`
+
+### 1. Handle Stale Nudges
+
+Read `youtube-recommended.jsonl` for entries with `status: "nudge_sent"`.
+
+For each:
+- If `nudge_date` was yesterday: send a re-nudge via Telegram with inline buttons:
+  ```
+  Still in your Watch list (added yesterday):
+
+  {title}
+  {channel} | {duration}
+
+  [Get highlights]  [Skip]
+  ```
+  The buttons use callback data format: `youtube:highlights:{video_id}` and `youtube:skip:{video_id}`
+
+- If `nudge_date` was 2+ days ago and still no response: mark `status: "expired"` in JSONL, remove from K2B Watch playlist via `scripts/yt-playlist-remove.sh`.
+
+### 2. Check K2B Watch for New Additions
+
+Poll K2B Watch playlist:
+```bash
+~/Projects/K2B/scripts/yt-playlist-poll.sh "<watch-playlist-url>" "~/Projects/K2B-Vault/Notes/Context/youtube-processed.md" --max 10
+```
+
+For each video found:
+1. Check if `video_id` exists in `youtube-recommended.jsonl` -- if yes, skip (already tracked)
+2. Get video metadata via `mcp__YouTube_Transcript_MCP_Server__get_video_info`
+3. Append entry to `youtube-recommended.jsonl`:
+   ```json
+   {"ts":"...","video_id":"...","title":"...","channel":"...","playlist":"K2B Watch","recommended_date":"YYYY-MM-DD","status":"nudge_sent","nudge_sent":true,"nudge_date":"YYYY-MM-DD","outcome":null,"rating":null,"promoted_to":null,"vault_note":null}
+   ```
+4. Send Telegram nudge with inline buttons:
+   ```
+   New in your Watch list:
+
+   {title}
+   {channel} | {duration}
+   Playlist: K2B Watch
+
+   [Get highlights]  [Skip]
+   ```
+
+### 3. Poll Inbound Playlists
+
+Run the standard playlist polling workflow (same as `/youtube`):
+- Poll each inbound playlist via `yt-playlist-poll.sh`
+- Filter against BOTH `youtube-processed.md` AND `youtube-recommended.jsonl`
+- Process each new video (transcript, analysis, vault note)
+- Append to `youtube-recommended.jsonl` with `status: "processed"`
+- Send Telegram notification: "New video processed: {title} from {playlist}. Note in Inbox."
+
+### 4. Summary
+
+After all checks, send one summary message:
+```
+YouTube Morning Report:
+- {N} stale nudges handled ({M} re-nudged, {K} expired)
+- {N} new Watch videos nudged
+- {N} new inbound videos processed
+```
+
 ## Workflow: Status (`/youtube status`)
 
 1. Read youtube-processed.md, count videos by playlist and by month
@@ -245,10 +316,13 @@ Find relevant YouTube content and add to Keith's K2B Watch playlist.
 
 ## Scheduled Task
 
-For automated polling, set up via `/schedule`:
+YouTube morning runs daily at 7am HKT via the K2B scheduler on Mac Mini:
+
 ```
-/schedule daily 10am "You are K2B. Working directory: ~/Projects/K2B. Vault: ~/Projects/K2B-Vault. Run the YouTube playlist capture workflow: read playlist config from Notes/Context/youtube-playlists.md, poll each playlist for new videos using scripts/yt-playlist-poll.sh, process each new video (get transcript, analyze with playlist focus, create vault note), update youtube-processed.md. Use the k2b-youtube-capture skill instructions."
+/schedule daily 7am "Run /youtube morning"
 ```
+
+This replaces the previous manual polling approach. Keith can still run `/youtube` manually for on-demand processing.
 
 ## Error Handling
 
