@@ -13,6 +13,7 @@ import { voiceCapabilities, transcribeAudio } from './voice.js'
 import { updateRecommendation, getPendingNudges } from './youtube.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
+import { markObservationStart, logObservations } from './observe.js'
 
 // --- Telegram formatting ---
 
@@ -143,8 +144,13 @@ async function handleMessage(
   await sendTyping()
   typingInterval = setInterval(sendTyping, TYPING_REFRESH_MS)
 
+  const obsMarker = markObservationStart()
+
   try {
     const { text, newSessionId } = await runAgent(fullMessage, sessionId, sendTyping)
+
+    // Log observations (vault file changes from this agent run)
+    logObservations(obsMarker, newSessionId ?? sessionId ?? 'telegram-interactive', rawText)
 
     // Save session
     if (newSessionId) {
@@ -189,7 +195,9 @@ async function handleYouTubeCallback(
   if (action === 'highlights') {
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} -- get the transcript and produce a highlights summary. Use the playlist prompt_focus if the video is tracked in youtube-recommended.jsonl. Keep it concise for Telegram reading.`
+    const highlightsMarker = markObservationStart()
     const { text } = await runAgent(prompt)
+    logObservations(highlightsMarker, `youtube-highlights-${videoId}`, prompt)
     const result = text ?? '(could not generate highlights)'
 
     updateRecommendation(videoId, {
@@ -242,7 +250,9 @@ async function handleYouTubeCallback(
 
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in Notes/Context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in Inbox/.`
+    const promoteMarker = markObservationStart()
     const { text } = await runAgent(prompt)
+    logObservations(promoteMarker, `youtube-promote-${videoId}`, prompt)
     const result = text ?? '(created)'
 
     updateRecommendation(videoId, { promoted_to: promoteType })

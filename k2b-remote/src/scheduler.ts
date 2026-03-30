@@ -4,6 +4,7 @@ import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 import { sendPendingNudges } from './bot.js'
 import { ALLOWED_CHAT_ID } from './config.js'
+import { markObservationStart, logObservations } from './observe.js'
 
 type Sender = (chatId: string, text: string) => Promise<void>
 
@@ -50,8 +51,10 @@ async function runDueTasks(): Promise<void> {
       const label = task.type === 'one-time' ? 'Reminder' : 'Scheduled task'
       await sendFn(task.chat_id, `[${label} running: ${task.prompt.slice(0, 80)}...]`)
 
+      const obsMarker = markObservationStart()
       const { text } = await runAgent(task.prompt)
       const result = text ?? '(no response)'
+      logObservations(obsMarker, `scheduled-${task.id}`, task.prompt)
 
       if (task.type === 'one-time') {
         deleteTask(task.id)
