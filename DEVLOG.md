@@ -2,6 +2,46 @@
 
 ---
 
+## 2026-03-30 -- Tailscale Remote Access + Proxy Support for System Proxy Mode
+
+**What was built/changed:**
+
+### 1. Proxy Support for k2b-remote
+- Installed `https-proxy-agent` for Grammy bot proxy routing
+- Wired proxy into Grammy bot constructor (`bot.ts`) via `client.baseFetchConfig.agent` -- only activates when `HTTP_PROXY` env var is set
+- Wired proxy into Agent SDK (`agent.ts`) via `options.env` passing `HTTPS_PROXY`/`HTTP_PROXY` to Claude Code subprocess
+- Added `HTTP_PROXY` config to `config.ts` with fallback chain: `.env` file -> `process.env`
+- Created `ecosystem.config.cjs` locally (was previously Mac Mini only) with proxy env vars defaulting to port 7897
+
+### 2. Mac Mini Network Mode Change
+- Switched Mac Mini Clash Verge from TUN mode to System Proxy mode (port 7897)
+- Added `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` to Mac Mini `~/.zshenv` for all CLI tools (gws, curl, etc.)
+- Restarted observer loop with proxy env vars (curl in minimax-common.sh needs proxy)
+- All external APIs verified working through proxy: Telegram, Anthropic, Groq, MiniMax, Google
+
+### 3. Tailscale Mesh Networking
+- Installed Tailscale standalone on Mac Mini (IP: `100.116.205.17`, full mode)
+- Installed Tailscale standalone on MacBook (IP: `100.68.35.19`, full mode)
+- No TUN conflict on Mac Mini (System Proxy mode) or MacBook (Tailscale coexists with Clash TUN)
+- Added `macmini-ts` SSH alias in `~/.ssh/config` for remote access via Tailscale
+- Tested from mobile hotspot (different network) -- SSH works
+
+### 4. Vault Documentation
+- Updated `project_k2b-always-on.md` with Phase 7 (Tailscale + proxy), updated specs table, known issues, operational commands
+- Updated `MOC_K2B-System.md` architecture diagram with Tailscale IPs and proxy details
+- Updated TLDR action items (3 of 4 remote gaps now resolved)
+- Updated Mac Mini memory reference with Tailscale and proxy info
+
+**Key decisions:**
+- Mac Mini uses System Proxy (not TUN) so Tailscale can run in full mode as SSH target
+- MacBook keeps TUN mode (Claude Desktop requires it) -- Tailscale works alongside it
+- Proxy wiring is conditional: code works identically with or without `HTTP_PROXY` set
+- Port 7897 (not 7890) is Clash Verge's default on the Mac Mini
+
+**Learnings captured:** L-2026-03-30-003 through L-2026-03-30-008 (Grammy restart after mode change, config.ts env source, port mismatch, proxy wiring architecture, Tailscale+Clash compatibility, all-processes-need-proxy)
+
+---
+
 ## 2026-03-30 -- Claude Code Hooks, MiniMax Background Observer, Proactive YouTube
 
 **What was built/changed:**

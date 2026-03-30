@@ -1,5 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { K2B_PROJECT_ROOT, TYPING_REFRESH_MS } from './config.js'
+import { K2B_PROJECT_ROOT, TYPING_REFRESH_MS, HTTP_PROXY } from './config.js'
 import { logger } from './logger.js'
 
 export async function runAgent(
@@ -24,6 +24,14 @@ export async function runAgent(
         permissionMode: 'bypassPermissions' as const,
         settingSources: ['project', 'user'] as const,
         ...(sessionId ? { resume: sessionId } : {}),
+        ...(HTTP_PROXY ? {
+          env: {
+            ...process.env,
+            HTTPS_PROXY: HTTP_PROXY,
+            HTTP_PROXY: HTTP_PROXY,
+            NO_PROXY: 'localhost,127.0.0.1',
+          },
+        } : {}),
       },
     }
 

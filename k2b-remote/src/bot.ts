@@ -1,10 +1,12 @@
 import { request as httpsRequest } from 'node:https'
 import { Bot, Context, InlineKeyboard } from 'grammy'
+import { HttpsProxyAgent } from 'https-proxy-agent'
 import {
   TELEGRAM_BOT_TOKEN,
   ALLOWED_CHAT_ID,
   MAX_MESSAGE_LENGTH,
   TYPING_REFRESH_MS,
+  HTTP_PROXY,
 } from './config.js'
 import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount } from './db.js'
 import { runAgent } from './agent.js'
@@ -272,7 +274,14 @@ export function createBot(): Bot {
     throw new Error('TELEGRAM_BOT_TOKEN not set. Run: npm run setup')
   }
 
-  const bot = new Bot(TELEGRAM_BOT_TOKEN)
+  const bot = new Bot(TELEGRAM_BOT_TOKEN, HTTP_PROXY ? {
+    client: {
+      baseFetchConfig: {
+        agent: new HttpsProxyAgent(HTTP_PROXY),
+        compress: true,
+      },
+    },
+  } : {})
 
   // Auth middleware
   bot.use(async (ctx, next) => {

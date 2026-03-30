@@ -21,6 +21,9 @@ export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 // Voice - Groq
 export const GROQ_API_KEY = env['GROQ_API_KEY'] ?? ''
 
+// Proxy (for System Proxy mode on Mac Mini -- check .env then process.env)
+export const HTTP_PROXY = env['HTTP_PROXY'] || env['HTTPS_PROXY'] || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || ''
+
 // Limits
 export const MAX_MESSAGE_LENGTH = 4096
 export const TYPING_REFRESH_MS = 4000
