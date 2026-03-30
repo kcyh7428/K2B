@@ -289,14 +289,29 @@ For each video found:
    [Get highlights]  [Skip]
    ```
 
-### 3. Poll Inbound Playlists
+### 3. Process K2B Queue
 
-Run the standard playlist polling workflow (same as `/youtube`):
-- Poll each inbound playlist via `yt-playlist-poll.sh`
-- Filter against BOTH `youtube-processed.md` AND `youtube-recommended.jsonl`
-- Process each new video (transcript, analysis, vault note)
-- Append to `youtube-recommended.jsonl` with `status: "processed"`
-- Send Telegram notification: "New video processed: {title} from {playlist}. Note in Inbox."
+Poll ONLY the K2B Queue playlist (`type: inbound`). This is the triage playlist where Keith drops videos for K2B to handle.
+
+```bash
+~/Projects/K2B/scripts/yt-playlist-poll.sh "<queue-playlist-url>" "~/Projects/K2B-Vault/Notes/Context/youtube-processed.md" --max 5
+```
+
+For each new video:
+1. Check if `video_id` exists in `youtube-recommended.jsonl` -- if yes, skip
+2. Process via the standard capture pipeline (transcript, analysis, vault note in Inbox/)
+3. Append to `youtube-recommended.jsonl` with `status: "processed"`
+4. Send Telegram notification: "Processed from Queue: {title}. Note in Inbox."
+
+**Do NOT auto-process other playlists.** K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn are Keith's category playlists. He processes those manually with `/youtube` when he's ready.
+
+### Playlist Roles
+
+| Playlist | Type | Morning behavior |
+|----------|------|-----------------|
+| K2B Queue | inbound | Auto-process (Keith dropped videos here for K2B to handle) |
+| K2B Watch | outbound | Nudge only (buttons, no processing until Keith decides) |
+| K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn | category | Not touched by morning. Keith runs `/youtube` manually. |
 
 ### 4. Summary
 
@@ -305,7 +320,7 @@ After all checks, send one summary message:
 YouTube Morning Report:
 - {N} stale nudges handled ({M} re-nudged, {K} expired)
 - {N} new Watch videos nudged
-- {N} new inbound videos processed
+- {N} Queue videos processed
 ```
 
 ## Workflow: Status (`/youtube status`)
