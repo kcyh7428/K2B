@@ -43,6 +43,26 @@ Also read Notes/Context/youtube-recommended.jsonl for:
 - Time to action: how quickly does Keith respond to nudges? (nudge_date vs outcome timestamp)
 - Expiry rate: high expiry rate means recommendations aren't relevant enough
 
+### YouTube Taste Synthesis
+Also read Notes/Context/youtube-feedback-signals.jsonl for explicit feedback signals:
+- Aggregate skip reasons by channel and topic (e.g., "Channel X: 3x too-basic, 1x clickbait")
+- Aggregate value signals by channel and topic (e.g., "agentic-ai: 2x exactly-my-level, 1x gave-idea")
+- Calculate channel trust scores: (watched + valued) / total recommended per channel
+- Detect depth preference: ratio of "too basic" / "good but basic" vs "exactly my level"
+- When 10+ feedback signals exist, include a `youtube_taste` object in the output JSON:
+  ```json
+  "youtube_taste": {
+    "signal_count": 15,
+    "confidence": "low",
+    "channel_scores": { "Nate Herk": 1.5, "Cole Medin": -1.0 },
+    "topic_scores": { "agentic-ai": 1.0, "beginner-tutorials": -2.0 },
+    "depth_preference": "intermediate-to-advanced",
+    "anti_patterns": ["clickbait AI news roundups", "entry-level tutorials"]
+  }
+  ```
+- Confidence levels: low (< 20 signals, max adjustment +/- 1.0), medium (20-50, +/- 2.0), high (50+, +/- 3.0)
+- Do NOT hard-exclude anything. Scores are soft weights that adjust ranking, not filters
+
 ## Output Format
 
 Return valid JSON only, no markdown wrapping:

@@ -12,7 +12,7 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
-import { updateRecommendation, getPendingNudges } from './youtube.js'
+import { updateRecommendation, getPendingNudges, appendFeedbackSignal } from './youtube.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -229,6 +229,18 @@ async function handleYouTubeCallback(
       reply_markup: promoKeyboard,
     })
 
+    // Ask how valuable it was (optional)
+    const valueKeyboard = new InlineKeyboard()
+      .text('Exactly my level', `youtube:value:exactly-my-level:${videoId}`)
+      .text('Gave me an idea', `youtube:value:gave-idea:${videoId}`)
+      .row()
+      .text('Good but basic', `youtube:value:good-but-basic:${videoId}`)
+      .text('Not worth it', `youtube:value:not-worth-it:${videoId}`)
+
+    await ctx.api.sendMessage(ctx.chat!.id, 'How was it?', {
+      reply_markup: valueKeyboard,
+    })
+
   } else if (action === 'skip') {
     updateRecommendation(videoId, {
       status: 'skipped',
@@ -236,10 +248,34 @@ async function handleYouTubeCallback(
     })
     await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Watch.')
 
+    // Ask why (optional -- ignored if Keith doesn't tap)
+    const reasonKeyboard = new InlineKeyboard()
+      .text('Too basic', `youtube:skipreason:too-basic:${videoId}`)
+      .text('Clickbait', `youtube:skipreason:clickbait:${videoId}`)
+      .row()
+      .text('Not relevant', `youtube:skipreason:not-relevant:${videoId}`)
+      .text('Too long', `youtube:skipreason:too-long:${videoId}`)
+
+    await ctx.api.sendMessage(ctx.chat!.id, 'Quick -- why?', {
+      reply_markup: reasonKeyboard,
+    })
+
     // Remove from Watch playlist in background
     runAgent(`Remove video ${videoId} from K2B Watch playlist using scripts/yt-playlist-remove.sh`).catch(err =>
       logger.error({ err, videoId }, 'Failed to remove from Watch playlist')
     )
+
+  } else if (action === 'skipreason') {
+    const reason = parts[2] // too-basic | clickbait | not-relevant | too-long
+    updateRecommendation(videoId, { skip_reason: reason })
+    appendFeedbackSignal(videoId, 'skip_reason', reason)
+    await ctx.api.sendMessage(ctx.chat!.id, `Got it -- ${reason.replace('-', ' ')}.`)
+
+  } else if (action === 'value') {
+    const value = parts[2] // exactly-my-level | gave-idea | good-but-basic | not-worth-it
+    updateRecommendation(videoId, { value_signal: value })
+    appendFeedbackSignal(videoId, 'value_feedback', value)
+    await ctx.api.sendMessage(ctx.chat!.id, `Noted -- ${value.replace(/-/g, ' ')}.`)
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -481,6 +517,7 @@ export async function sendTelegramMessage(
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
         },
+        ...(HTTP_PROXY ? { agent: new HttpsProxyAgent(HTTP_PROXY) } : {}),
       },
       (res) => {
         res.resume()
@@ -520,6 +557,7 @@ export async function sendTelegramMessageWithButtons(
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
         },
+        ...(HTTP_PROXY ? { agent: new HttpsProxyAgent(HTTP_PROXY) } : {}),
       },
       (res) => {
         res.resume()

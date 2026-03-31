@@ -2,21 +2,45 @@
 
 ---
 
-## 2026-03-31 -- Feature Notes Shipped Subfolder + Roadmap Convention
+## 2026-03-31 -- YouTube Taste Learning Loop + Vault Housekeeping
 
-**What was done:**
-- Created `Notes/Features/Shipped/` subfolder for completed feature specs
-- Moved `feature_ai-human-guardrail` and `feature_proactive-youtube` to Shipped (both status: shipped)
-- Added "Roadmap & Feature Notes" section to CLAUDE.md codifying the convention:
-  - Roadmap MOC = single index of all ideas (one-liners and links)
-  - Feature notes = detailed specs, only when design work is needed
-  - Shipped features move to `Features/Shipped/`
-- Updated vault structure tree and file conventions in CLAUDE.md
-- Synced CLAUDE.md to Mac Mini
+### 1. Features/Shipped subfolder convention
+- Created `Notes/Features/Shipped/` for completed feature specs (distinct from Archive)
+- Added "Roadmap & Feature Notes" section to CLAUDE.md: Roadmap MOC = index, feature notes = detailed specs only when needed
+- Moved ai-human-guardrail, proactive-youtube, playlist-redesign to Shipped
+
+### 2. YouTube taste learning loop
+- Added skip-why buttons to Telegram: [Too basic] [Clickbait] [Not relevant] [Too long]
+- Added value-feedback buttons after highlights: [Exactly my level] [Gave me an idea] [Good but basic] [Not worth it]
+- New `appendFeedbackSignal()` in youtube.ts writes to `youtube-feedback-signals.jsonl`
+- Extended `YouTubeRecommendation` interface: topics, skip_reason, value_signal, search_query
+- Updated observer-prompt.md with YouTube Taste Synthesis section (generates youtube_taste object)
+- Updated observer-loop.sh to write `youtube-taste-profile.md` when taste data present
+- Updated SKILL.md: recommend workflow now reads taste profile, 5-dimension scoring with confidence-weighted taste fit
+- Scheduled `/youtube recommend` every other day at 11am HKT
+
+### 3. Scheduled tasks wiped (again) and restored
+- Manual rsync overwrote Mac Mini production SQLite database (SAME bug as E-2026-03-29-002)
+- Restored all 5 original tasks + added new youtube recommend task (6 total)
+- Logged as E-2026-03-31-001, reinforced L-2026-03-29-002 to 3x (medium confidence)
+- Rule: NEVER manual rsync for k2b-remote. ALWAYS use `scripts/deploy-to-mini.sh code`
+
+### 4. Agent SDK systemPrompt 403 fix
+- Uncommitted agent.ts changes (systemPrompt preset/append) were synced to Mac Mini for the first time
+- SDK 0.1.77 doesn't support systemPrompt config -- caused 403 Forbidden on all agent calls
+- Reverted systemPrompt block, redeployed via deploy-to-mini.sh (not manual rsync)
+
+### 5. SSH Keychain limitation documented
+- macOS Keychain blocks credential access from non-interactive SSH sessions
+- Claude CLI auth works interactively on Mac Mini but fails via SSH
+- All pm2-based paths (Telegram, scheduled tasks) work fine -- only direct SSH agent invocation affected
+- Documented in project_k2b-always-on.md Known Issues
 
 **Key decisions:**
-- Shipped features stay in Features/Shipped/ (not Archive/) because they're reference material for design decisions and implementation history, distinct from dismissed inbox items
-- Not every roadmap item needs a feature note -- small ideas live as one-liners in the MOC
+- Taste profile starts permissive (weight 0.15 at low confidence) and tightens as signals accumulate (0.30 at high confidence)
+- No hard filtering -- taste scores are soft ranking adjustments, never exclusions
+- Feedback buttons are optional -- ignoring them still records the skip/watch as a signal
+- deploy-to-mini.sh is the ONLY acceptable way to deploy k2b-remote code
 
 ---
 

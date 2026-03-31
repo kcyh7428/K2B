@@ -234,6 +234,49 @@ Analyze these observations and return your findings as JSON."
 
   log "Updated observer-candidates.md"
 
+  # Write youtube-taste-profile.md if analysis contains youtube_taste
+  local has_taste
+  has_taste=$(echo "$json_content" | jq -r '.youtube_taste // empty' 2>/dev/null)
+  if [ -n "$has_taste" ]; then
+    local taste_file="$CONTEXT_DIR/youtube-taste-profile.md"
+    local signal_count confidence
+    signal_count=$(echo "$json_content" | jq -r '.youtube_taste.signal_count // 0' 2>/dev/null)
+    confidence=$(echo "$json_content" | jq -r '.youtube_taste.confidence // "low"' 2>/dev/null)
+    {
+      echo "---"
+      echo "tags: [k2b-system, youtube, taste-profile]"
+      echo "date: $(date '+%Y-%m-%d')"
+      echo "type: reference"
+      echo "origin: k2b-observer"
+      echo "up: \"[[MOC_K2B-System]]\""
+      echo "---"
+      echo ""
+      echo "# YouTube Taste Profile"
+      echo ""
+      echo "Last updated: $(date '+%Y-%m-%d %H:%M') ($signal_count signals, confidence: $confidence)"
+      echo ""
+      echo "## Channel Scores"
+      echo "$json_content" | jq -r '.youtube_taste.channel_scores // {} | to_entries[] | "- **\(.key)**: \(.value)"' 2>/dev/null
+      echo ""
+      echo "## Topic Scores"
+      echo "$json_content" | jq -r '.youtube_taste.topic_scores // {} | to_entries[] | "- **\(.key)**: \(.value)"' 2>/dev/null
+      echo ""
+      echo "## Depth Preference"
+      echo "$json_content" | jq -r '.youtube_taste.depth_preference // "unknown"' 2>/dev/null
+      echo ""
+      echo "## Anti-Patterns"
+      echo "$json_content" | jq -r '.youtube_taste.anti_patterns[]? // empty | "- \(.)"' 2>/dev/null
+      echo ""
+      echo "## Scoring Adjustments"
+      echo "confidence_level: $confidence"
+      echo "channel_boost: $(echo "$json_content" | jq -c '[.youtube_taste.channel_scores // {} | to_entries[] | select(.value > 0)] | from_entries' 2>/dev/null)"
+      echo "channel_dampen: $(echo "$json_content" | jq -c '[.youtube_taste.channel_scores // {} | to_entries[] | select(.value < 0)] | from_entries' 2>/dev/null)"
+      echo "topic_boost: $(echo "$json_content" | jq -c '[.youtube_taste.topic_scores // {} | to_entries[] | select(.value > 0)] | from_entries' 2>/dev/null)"
+      echo "topic_dampen: $(echo "$json_content" | jq -c '[.youtube_taste.topic_scores // {} | to_entries[] | select(.value < 0)] | from_entries' 2>/dev/null)"
+    } > "$taste_file"
+    log "Updated youtube-taste-profile.md ($signal_count signals, confidence: $confidence)"
+  fi
+
   # Append patterns to preference-signals.jsonl
   echo "$json_content" | jq -c '
     .patterns[]? |
