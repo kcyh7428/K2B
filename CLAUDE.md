@@ -28,7 +28,7 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 
 K2B runs 24/7 on a Mac Mini, serving Telegram via k2b-remote and running the background observer (both managed by pm2).
 
-- **SSH**: `ssh macmini` (alias for `fastshower@Matthews-Mac-mini.local`)
+- **SSH**: `ssh macmini` (uses Tailscale IP 100.116.205.17 -- works from anywhere). `ssh macmini-local` for LAN-only `.local` fallback.
 - **K2B project**: `/Users/fastshower/Projects/K2B/`
 - **K2B vault**: `/Users/fastshower/Projects/K2B-Vault/` (synced to MacBook via Syncthing)
 - **pm2 processes**: `k2b-remote` (Telegram bot), `k2b-observer-loop` (MiniMax background observer)
@@ -51,7 +51,8 @@ K2B-Vault/
     People/           Person notes (18+)
     Projects/         Things Keith builds (10 -- K2B, TalentSignals, personal brand)
     Work/             SJM role responsibilities Keith drives (6)
-    Features/         K2B feature specs (linked from MOC_K2B-Roadmap)
+    Features/         K2B feature specs (detailed design docs for roadmap items)
+      Shipped/        Completed feature specs (status: shipped)
     Content-Ideas/    Adopted content ideas (20+)
     Insights/         Keith's own patterns and observations
     Reference/        External captures (videos, repos, articles)
@@ -242,10 +243,21 @@ All vault notes must use `[[wiki links]]` to connect related content. This light
 - Reference (external captures): `Notes/Reference/YYYY-MM-DD_source_topic.md`
 - Context/background: `Notes/Context/context_topic.md`
 - Business overviews: `Notes/Context/entityname_overview.md`
-- K2B Features: `Notes/Features/feature_name.md`
+- K2B Features (backlog/in-progress): `Notes/Features/feature_name.md`
+- K2B Features (shipped): `Notes/Features/Shipped/feature_name.md`
 - TLDRs: `Inbox/YYYY-MM-DD_tldr-topic.md` (always Inbox first)
 - Archived notes: `Archive/` (moved from Inbox after review)
 - Decisions go inside their parent project/work notes, not as standalone files
+
+## Roadmap & Feature Notes
+
+`MOC_K2B-Roadmap` is the single index of all K2B improvement ideas -- backlog, in-progress, shipped, and parked. Every idea gets a line here, even one-liners.
+
+Feature notes (`Notes/Features/feature_name.md`) are detailed spec documents. Only create a feature note when an idea needs real design work -- rationale, design decisions, implementation checklist. Not every roadmap item needs one.
+
+- **Small ideas** (scheduled tasks, config changes, minor tweaks): one-liner in the Roadmap MOC, no feature note
+- **Bigger ideas** (new capabilities, architectural changes, multi-step implementations): add to Roadmap MOC AND create a feature note with full spec
+- **When a feature ships**: set `status: shipped` in frontmatter, move the file to `Notes/Features/Shipped/`, update the Roadmap MOC to list it under Shipped
 
 ## Session Discipline
 

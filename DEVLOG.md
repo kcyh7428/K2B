@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-03-31 -- Feature Notes Shipped Subfolder + Roadmap Convention
+
+**What was done:**
+- Created `Notes/Features/Shipped/` subfolder for completed feature specs
+- Moved `feature_ai-human-guardrail` and `feature_proactive-youtube` to Shipped (both status: shipped)
+- Added "Roadmap & Feature Notes" section to CLAUDE.md codifying the convention:
+  - Roadmap MOC = single index of all ideas (one-liners and links)
+  - Feature notes = detailed specs, only when design work is needed
+  - Shipped features move to `Features/Shipped/`
+- Updated vault structure tree and file conventions in CLAUDE.md
+- Synced CLAUDE.md to Mac Mini
+
+**Key decisions:**
+- Shipped features stay in Features/Shipped/ (not Archive/) because they're reference material for design decisions and implementation history, distinct from dismissed inbox items
+- Not every roadmap item needs a feature note -- small ideas live as one-liners in the MOC
+
+---
+
 ## 2026-03-30 -- Tailscale Remote Access + Proxy Support for System Proxy Mode
 
 **What was built/changed:**
