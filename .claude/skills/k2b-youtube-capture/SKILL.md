@@ -258,7 +258,11 @@ Find relevant YouTube content and add to Keith's K2B Watch playlist.
 
 8. Pick top 3-5 videos
 9. Add each to K2B Watch playlist: `scripts/yt-playlist-add.sh <playlist-id> <video-id>`
-10. For each video added, append to youtube-recommended.jsonl with fields: `topics` (from the search query), `search_query` (the query that found it)
+10. For each video added, append to youtube-recommended.jsonl with fields:
+    - `topics` (from the search query)
+    - `search_query` (the query that found it)
+    - `pick_reason` (one-line explanation: "Relates to your skill architecture work" or "New channel covering advanced Claude patterns")
+    - `duration` (from YouTube API metadata, e.g. "14:32")
 11. Create `Inbox/YYYY-MM-DD_youtube-recommendations.md` with the picks and reasoning
 12. Log each as `recommended` in youtube-processed.md
 

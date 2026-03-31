@@ -62,6 +62,10 @@ Also read Notes/Context/youtube-feedback-signals.jsonl for explicit feedback sig
   ```
 - Confidence levels: low (< 20 signals, max adjustment +/- 1.0), medium (20-50, +/- 2.0), high (50+, +/- 3.0)
 - Do NOT hard-exclude anything. Scores are soft weights that adjust ranking, not filters
+- Parse `signal_text` fields for richer patterns than structured signals alone:
+  - Extract recurring phrases ("too basic" appearing 5x, "already know this" 3x)
+  - Detect positive topics ("the migration pattern was useful" -> topic: migration-patterns)
+  - Weight free-text signals higher than structured-only signals (richer data)
 
 ## Output Format
 

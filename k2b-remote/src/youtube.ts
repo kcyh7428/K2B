@@ -22,6 +22,9 @@ export interface YouTubeRecommendation {
   skip_reason?: string
   value_signal?: string
   search_query?: string
+  pick_reason?: string
+  duration?: string
+  feedback_text?: string
 }
 
 export interface FeedbackSignal {
@@ -31,6 +34,7 @@ export interface FeedbackSignal {
   title: string
   signal_type: 'skip_reason' | 'value_feedback' | 'promotion' | 'expiry'
   signal: string
+  signal_text?: string
   topics: string[]
 }
 
@@ -63,7 +67,8 @@ export function getPendingNudges(): YouTubeRecommendation[] {
 export function appendFeedbackSignal(
   videoId: string,
   signalType: FeedbackSignal['signal_type'],
-  signal: string
+  signal: string,
+  signalText?: string
 ): void {
   const rec = readRecommendations().find(r => r.video_id === videoId)
   const entry: FeedbackSignal = {
@@ -73,6 +78,7 @@ export function appendFeedbackSignal(
     title: rec?.title ?? 'unknown',
     signal_type: signalType,
     signal,
+    ...(signalText ? { signal_text: signalText } : {}),
     topics: rec?.topics ?? [],
   }
   appendFileSync(FEEDBACK_SIGNALS_FILE, JSON.stringify(entry) + '\n')

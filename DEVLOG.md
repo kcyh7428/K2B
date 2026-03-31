@@ -9,7 +9,7 @@
 - Added "Roadmap & Feature Notes" section to CLAUDE.md: Roadmap MOC = index, feature notes = detailed specs only when needed
 - Moved ai-human-guardrail, proactive-youtube, playlist-redesign to Shipped
 
-### 2. YouTube taste learning loop
+### 2. YouTube taste learning loop (Phase 1 + Phase 2 conversational redesign)
 - Added skip-why buttons to Telegram: [Too basic] [Clickbait] [Not relevant] [Too long]
 - Added value-feedback buttons after highlights: [Exactly my level] [Gave me an idea] [Good but basic] [Not worth it]
 - New `appendFeedbackSignal()` in youtube.ts writes to `youtube-feedback-signals.jsonl`
@@ -18,6 +18,13 @@
 - Updated observer-loop.sh to write `youtube-taste-profile.md` when taste data present
 - Updated SKILL.md: recommend workflow now reads taste profile, 5-dimension scoring with confidence-weighted taste fit
 - Scheduled `/youtube recommend` every other day at 11am HKT
+- **v2 redesign**: Replaced rigid button-based feedback with conversational flow
+  - Removed skip-why buttons and value-feedback buttons
+  - Skip now triggers agent conversation: "What put you off?" -> Keith responds naturally -> K2B extracts and logs reason
+  - Highlights now includes K2B's honest assessment of whether it's worth Keith's time, asks his opinion conversationally
+  - Removed rigid [Content idea] [Feature] [Insight] [Nothing] promotion buttons -- agent handles promotion/playlist moves through conversation
+  - Nudge messages redesigned: added YouTube link, duration, pick_reason, [Watch] URL button
+  - Free-text feedback (`signal_text`) captured alongside structured signals for richer observer pattern detection
 
 ### 3. Scheduled tasks wiped (again) and restored
 - Manual rsync overwrote Mac Mini production SQLite database (SAME bug as E-2026-03-29-002)
@@ -39,8 +46,9 @@
 **Key decisions:**
 - Taste profile starts permissive (weight 0.15 at low confidence) and tightens as signals accumulate (0.30 at high confidence)
 - No hard filtering -- taste scores are soft ranking adjustments, never exclusions
-- Feedback buttons are optional -- ignoring them still records the skip/watch as a signal
+- Conversational feedback captures richer signals than rigid buttons -- Keith's actual words are more valuable than 4 fixed categories
 - deploy-to-mini.sh is the ONLY acceptable way to deploy k2b-remote code
+- All Telegram sends go through the bot process (Grammy), never through the agent directly
 
 ---
 
