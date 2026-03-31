@@ -2,6 +2,46 @@
 
 ---
 
+## 2026-03-31 -- K2B Mission Control Dashboard v1
+
+Built a full web dashboard for K2B -- single-page dark theme mission control that shows the state of the entire system at a glance.
+
+### What was built
+- **k2b-dashboard/** -- standalone Express + React + Vite app (TypeScript throughout)
+- 9 API endpoints reading from vault files, SQLite, JSONL, TSV, git, and pm2
+- 10 panel components: System Status, Vault Stats, Roadmap, YouTube Digest, Inbox, Intelligence, Skill Activity, Scheduled Tasks, Content Pipeline, Activity Feed
+- SSH fallback to Mac Mini for pm2 status and scheduled tasks when running on MacBook
+- Live YouTube playlist polling via yt-dlp (cached 1 hour)
+- Dark monospace theme (#0a0a0a background, JetBrains Mono, mission control aesthetic)
+- Click-to-expand rows with always-visible subtitles
+- Responsive layout (stacks on mobile for Tailscale commute access)
+
+### Key decisions
+- **Standalone app** (not embedded in k2b-remote) -- separate pm2 process, dashboard stays up even when iterating on bot code
+- **Read-only v1** -- no write operations. Action buttons (YouTube skip, inbox triage) are v2
+- **SSH to Mac Mini** for remote data -- system status and scheduled tasks pulled from Mini when local data unavailable
+- **Polling (30s)** not WebSocket -- simple, reliable for v1
+- **Skill Activity heatmap** with bar chart showing which skills are hot vs dormant, with "Try:" hints for never-used skills
+- **K2B Intelligence panel** shows observer candidates, recent learnings with reinforcement counts, observer status
+- **YouTube Queue** shows live playlist items (via yt-dlp on Mac Mini) not just processed history
+
+### Bug fixes during build
+- Fixed API/component field mismatches (contentPipeline, scheduledTasks, activity feed, skills, intelligence)
+- Fixed learnings parser (markdown list prefix `- **Field:**` not matched by regex)
+- Added bar chart CSS for skill activity
+- Fixed Header always showing "offline" (was checking nonexistent `status` field)
+- Fixed YouTube Queue showing processed history instead of current playlist items
+
+### Vault updates
+- Created `feature_mission-control.md` (shipped)
+- Updated `project_k2b.md`, `project_k2b-always-on.md`, `MOC_K2B-Roadmap.md`, `MOC_K2B-System.md`
+
+### Deploy
+- Not yet deployed to Mac Mini. Run `/sync` to push.
+- On Mini: `npm install && npm run build && pm2 start dist/server/index.js --name k2b-dashboard`
+
+---
+
 ## 2026-03-31 -- YouTube Taste Learning Loop + Vault Housekeeping
 
 ### 1. Features/Shipped subfolder convention

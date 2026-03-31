@@ -21,3 +21,6 @@ workspace/uploads/
 
 # OS files
 .DS_Store
+k2b-dashboard/.env
+k2b-dashboard/node_modules/
+k2b-dashboard/dist/
