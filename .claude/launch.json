@@ -6,6 +6,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "/Users/keithmbpm2/Projects/signhub-io"],
       "port": 4321
+    },
+    {
+      "name": "allhands",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8090", "--directory", "/Users/keithmbpm2/Projects/K2B/allhands"],
+      "port": 8090
+    },
+    {
+      "name": "mission-control",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/keithmbpm2/Projects/K2B/k2b-dashboard"],
+      "url": "http://localhost:5173"
     }
   ]
 }

@@ -1,4 +1,4 @@
-import React from "react";
+import { useState } from "react";
 import { usePolling } from "../hooks/usePolling.js";
 import { StatusDot } from "./StatusDot.js";
 
@@ -36,6 +36,45 @@ function barColor(count: number): string {
 
 function stripPrefix(name: string): string {
   return name.replace(/^k2b-/, "");
+}
+
+function shortDescription(desc: string): string {
+  // Extract the first sentence (before "Use when" or second "--")
+  const cleaned = desc.replace(/^k2b-\S+\s*/, "");
+  const firstSentence = cleaned.split(/\.\s|--\s/)[0]?.trim();
+  if (!firstSentence || firstSentence.length < 5) return cleaned.slice(0, 80);
+  return firstSentence.length > 80 ? firstSentence.slice(0, 77) + "..." : firstSentence;
+}
+
+function DormantSection({ dormant }: { dormant: DormantSkill[] }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="skill-section">
+      <div
+        className="skill-section-label"
+        style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span>{dormant.length} skills never used</span>
+        <span style={{ fontSize: 10, transition: "transform 0.2s", transform: expanded ? "rotate(90deg)" : "none" }}>
+          &#9654;
+        </span>
+      </div>
+      {expanded && dormant.map((s, i) => (
+        <div key={i} className="skill-dormant-card-v2">
+          <div className="skill-dormant-header">
+            <span className="skill-name">{stripPrefix(s.skill)}</span>
+            {s.tryHint && <span className="skill-try-hint">{s.tryHint}</span>}
+          </div>
+          {s.description && (
+            <div className="skill-dormant-desc text-secondary">
+              {shortDescription(s.description)}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function SkillActivity() {
@@ -81,27 +120,9 @@ export function SkillActivity() {
             })()}
           </div>
 
-          {/* Never Used */}
+          {/* Never Used -- collapsible */}
           {data.dormant.length > 0 && (
-            <div className="skill-section">
-              <div className="skill-section-label">Never Used</div>
-              {data.dormant.map((s, i) => (
-                <div key={i} className="skill-dormant-card">
-                  <div className="skill-dormant-bar" />
-                  <div className="skill-dormant-content">
-                    <div className="skill-name">{stripPrefix(s.skill)}</div>
-                    {s.description && (
-                      <div className="text-secondary" style={{ fontSize: 11 }}>
-                        {s.description}
-                      </div>
-                    )}
-                    {s.tryHint && (
-                      <div className="skill-try-hint">{s.tryHint}</div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <DormantSection dormant={data.dormant} />
           )}
 
           {/* Footer */}

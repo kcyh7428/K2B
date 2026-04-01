@@ -12,6 +12,7 @@ interface Stage {
   label: string;
   count: number;
   colorClass: string;
+  dotColor: string;
 }
 
 export function ContentPipeline() {
@@ -22,10 +23,10 @@ export function ContentPipeline() {
 
   const stages: Stage[] = data
     ? [
-        { label: "ideas", count: data.ideas, colorClass: "text-blue" },
-        { label: "adopted", count: data.adopted, colorClass: "text-amber" },
-        { label: "drafts", count: data.drafts, colorClass: "text-secondary" },
-        { label: "published", count: data.published, colorClass: "text-green" },
+        { label: "ideas", count: data.ideas, colorClass: "text-amber", dotColor: "var(--amber)" },
+        { label: "adopted", count: data.adopted, colorClass: "text-blue", dotColor: "var(--blue)" },
+        { label: "drafts", count: data.drafts, colorClass: "text-secondary", dotColor: "var(--text-secondary)" },
+        { label: "published", count: data.published, colorClass: "text-green", dotColor: "var(--green)" },
       ]
     : [];
 
@@ -47,6 +48,10 @@ export function ContentPipeline() {
                 <span className="pipeline-arrow text-muted">&rsaquo;</span>
               )}
               <div className="pipeline-stage">
+                <div
+                  className="pipeline-dot"
+                  style={{ background: stage.dotColor }}
+                />
                 <span className={`pipeline-count ${stage.colorClass}`}>
                   {stage.count}
                 </span>

@@ -1,4 +1,4 @@
-import React from "react";
+import { useState } from "react";
 import { usePolling } from "../hooks/usePolling.js";
 import { ExpandableRow } from "./ExpandableRow.js";
 import { Tag } from "./Tag.js";
@@ -35,6 +35,42 @@ interface IntelligenceData {
     currentObservations: number;
     summary: string;
   };
+}
+
+function LearningsSection({ learnings }: { learnings: Learning[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const filtered = learnings.filter(l => l.learning);
+  const visible = showAll ? filtered : filtered.slice(0, 3);
+
+  return (
+    <div className="intelligence-section">
+      <div className="intelligence-section-label">Recently Learned</div>
+      {visible.map((l, i) => (
+        <div key={i} className="intelligence-learning-row">
+          <span
+            className={`intelligence-badge ${l.reinforced >= 6 ? "intelligence-badge-high" : l.reinforced >= 3 ? "intelligence-badge-mid" : "intelligence-badge-low"}`}
+          >
+            &times;{l.reinforced}
+          </span>
+          <span className="intelligence-learning-text">{l.learning}</span>
+        </div>
+      ))}
+      {filtered.length === 0 && (
+        <div className="text-muted" style={{ fontSize: 12 }}>
+          No learnings captured yet
+        </div>
+      )}
+      {filtered.length > 3 && (
+        <button
+          className="btn btn-neutral"
+          style={{ fontSize: 10, marginTop: 4, padding: "2px 8px" }}
+          onClick={() => setShowAll(!showAll)}
+        >
+          {showAll ? "Show less" : `+${filtered.length - 3} more`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function Intelligence() {
@@ -107,41 +143,40 @@ export function Intelligence() {
           </div>
 
           {/* Recently Learned */}
-          <div className="intelligence-section">
-            <div className="intelligence-section-label">Recently Learned</div>
-            {data.learnings.filter(l => l.learning).slice(0, 5).map((l, i) => (
-              <div key={i} className="intelligence-learning-row">
-                <span
-                  className={`intelligence-badge ${l.reinforced >= 6 ? "intelligence-badge-high" : l.reinforced >= 3 ? "intelligence-badge-mid" : "intelligence-badge-low"}`}
-                >
-                  &times;{l.reinforced}
-                </span>
-                <span className="intelligence-learning-text">{l.learning}</span>
-              </div>
-            ))}
-            {data.learnings.filter(l => l.learning).length === 0 && (
-              <div className="text-muted" style={{ fontSize: 12 }}>
-                No learnings captured yet
-              </div>
-            )}
-          </div>
+          <LearningsSection learnings={data.learnings} />
 
-          {/* Observer */}
-          <div className="intelligence-section">
-            <div className="intelligence-section-label">Observer</div>
-            <div className="text-secondary" style={{ fontSize: 12 }}>
-              Last analysis: {data.observer.lastAnalysis || "never"}
-              {" \u00b7 "}
-              {data.observer.observationsAnalyzed} analyzed
-              {" \u00b7 "}
-              {data.patterns.length} patterns
+          {/* Observer -- hidden when empty */}
+          {(data.observer.observationsAnalyzed > 0 || data.patterns.length > 0) ? (
+            <div className="intelligence-section">
+              <div className="intelligence-section-label">Observer</div>
+              <div className="text-secondary" style={{ fontSize: 12 }}>
+                Last analysis: {data.observer.lastAnalysis || "never"}
+                {" \u00b7 "}
+                {data.observer.observationsAnalyzed} analyzed
+                {" \u00b7 "}
+                {data.patterns.length} patterns
+              </div>
+              {data.observer.currentObservations > 0 && (
+                <div className="text-muted" style={{ fontSize: 11 }}>
+                  {data.observer.currentObservations} observations queued
+                </div>
+              )}
             </div>
-            <div className="text-muted" style={{ fontSize: 11 }}>
-              Next: when 20+ new observations
-              {data.observer.currentObservations > 0 &&
-                ` (${data.observer.currentObservations} current)`}
+          ) : (
+            <div className="intelligence-section">
+              <div className="intelligence-section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span className="text-muted">Observer inactive</span>
+                <button
+                  className="btn btn-neutral"
+                  style={{ fontSize: 10, padding: "2px 6px" }}
+                  onClick={() => navigator.clipboard.writeText("/observe")}
+                  title="Copy /observe to clipboard"
+                >
+                  Run /observe
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </>
       )}
     </div>

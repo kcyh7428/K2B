@@ -1,24 +1,29 @@
+import { useState } from "react";
 import { usePolling } from "../hooks/usePolling.js";
-import { ExpandableRow } from "./ExpandableRow.js";
 import { Tag } from "./Tag.js";
 
-interface RecommendedVideo {
+interface Recommendation {
   video_id: string;
   title: string;
   channel: string;
   duration: string;
   status: string;
-  nudge_date: string;
+  outcome: string | null;
+  rating: string | null;
+  recommended_date: string;
+  pick_reason: string;
+  topics: string[];
+  verdict_value?: string;
 }
 
-interface CurrentQueueVideo {
+interface PendingVideo {
   videoId: string;
   title: string;
   duration: string;
   channel: string;
 }
 
-interface ProcessedVideo {
+interface ExtractedVideo {
   videoId: string;
   date: string;
   title: string;
@@ -26,138 +31,200 @@ interface ProcessedVideo {
 }
 
 interface YouTubeData {
-  watch: {
-    pending: RecommendedVideo[];
-    totalCount: number;
+  stats: {
+    totalRecs: number;
+    responseRate: number;
+    lastRun: string;
   };
-  queue: {
-    current: CurrentQueueVideo[];
-    recentlyProcessed: ProcessedVideo[];
-    totalProcessed: number;
-  };
+  recommendations: Recommendation[];
+  pending: PendingVideo[];
+  extracted: ExtractedVideo[];
+  skippedCount: number;
+  totalProcessed: number;
 }
 
-function formatNudgeDate(dateStr: string): string {
-  if (!dateStr) return "";
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+type ResponseType = "watch" | "screen" | "skip" | "comment" | "expired" | "pending";
+
+function getResponseType(rec: Recommendation): ResponseType {
+  if (rec.outcome === "promoted" || rec.outcome === "implemented") return "watch";
+  if (rec.status === "promoted" || rec.status === "done") return "watch";
+  if (rec.outcome === "screen") return "screen";
+  if (rec.outcome === "skip" || rec.status === "skipped") return "skip";
+  if (rec.outcome === "comment") return "comment";
+  if (rec.status === "expired") return "expired";
+  return "pending";
+}
+
+function responseBadgeClass(type: ResponseType): string {
+  switch (type) {
+    case "watch": return "yt-badge-watch";
+    case "screen": return "yt-badge-screen";
+    case "skip": return "yt-badge-skip";
+    case "comment": return "yt-badge-comment";
+    case "expired": return "yt-badge-expired";
+    default: return "yt-badge-pending";
+  }
+}
+
+function responseLabel(type: ResponseType): string {
+  switch (type) {
+    case "watch": return "Watch";
+    case "screen": return "Screen";
+    case "skip": return "Skip";
+    case "comment": return "Comment";
+    case "expired": return "Expired";
+    default: return "Pending";
+  }
+}
+
+function verdictLabel(rec: Recommendation): string | null {
+  if (rec.verdict_value) return rec.verdict_value.toUpperCase();
+  // Infer from pick_reason length / specificity
+  if (rec.pick_reason && rec.pick_reason.length > 60) return "HIGH";
+  return null;
 }
 
 export function YouTubeDigest() {
   const { data, loading } = usePolling<YouTubeData>("/api/youtube", 60000);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (loading && !data) {
     return (
       <div className="panel panel-priority">
         <span className="panel-title panel-title-priority">
-          {"\u2605"} YouTube Digest
+          {"\u2605"} YouTube
         </span>
         <div className="text-muted">Loading...</div>
       </div>
     );
   }
 
-  const watchVideos = data?.watch.pending ?? [];
-  const currentQueue = data?.queue.current ?? [];
-  const recentlyProcessed = data?.queue.recentlyProcessed ?? [];
-  const totalProcessed = data?.queue.totalProcessed ?? 0;
+  const stats = data?.stats;
+  const recs = data?.recommendations ?? [];
+  const pending = data?.pending ?? [];
+  const extracted = data?.extracted ?? [];
+  const skippedCount = data?.skippedCount ?? 0;
 
   return (
     <div className="panel panel-priority">
-      <span className="panel-title panel-title-priority">
-        {"\u2605"} YouTube Digest
-      </span>
+      {/* Header stats line */}
+      <div className="yt-header">
+        <span className="panel-title panel-title-priority" style={{ marginBottom: 0 }}>
+          {"\u2605"} YouTube
+        </span>
+        <div className="yt-stats">
+          <span>{stats?.totalRecs ?? 0} recs</span>
+          <span className="yt-stats-sep">&middot;</span>
+          <span>{stats?.responseRate ?? 0}% response rate</span>
+          <span className="yt-stats-sep">&middot;</span>
+          <span>last run: {stats?.lastRun || "never"}</span>
+        </div>
+      </div>
+
       <div className="youtube-columns">
+        {/* Left: Recent Recommendations */}
         <div className="youtube-column">
           <div className="youtube-column-header text-secondary">
-            K2B Watch -- recommended to you ({watchVideos.length})
+            Recommendations ({recs.length})
           </div>
-          <div className="panel-rows">
-            {watchVideos.map((video) => {
-              const nudge = video.nudge_date
-                ? `nudged ${formatNudgeDate(video.nudge_date)}`
-                : "";
-              const parts = [video.channel, video.duration, nudge].filter(Boolean);
+          <div className="yt-rec-list">
+            {recs.slice(0, 7).map((rec) => {
+              const response = getResponseType(rec);
+              const verdict = verdictLabel(rec);
+              const isExpanded = expandedId === rec.video_id;
+
               return (
-                <ExpandableRow
-                  key={video.video_id}
-                  title={video.title}
-                  subtitle={parts.join(" \u00b7 ")}
+                <div
+                  key={rec.video_id}
+                  className={`yt-rec-item ${isExpanded ? "yt-rec-expanded" : ""}`}
+                  onClick={() => setExpandedId(isExpanded ? null : rec.video_id)}
                 >
-                  <div className="row-detail-actions">
-                    <button className="btn" disabled title="Coming in v2">
-                      Watch
-                    </button>
-                    <button className="btn" disabled title="Coming in v2">
-                      Skip
-                    </button>
+                  <div className="yt-rec-row">
+                    <span className={`yt-badge ${responseBadgeClass(response)}`}>
+                      {responseLabel(response)}
+                    </span>
+                    <span className="yt-rec-title">{rec.title}</span>
+                    {verdict && (
+                      <span className="yt-verdict">{verdict}</span>
+                    )}
                   </div>
-                </ExpandableRow>
+                  <div className="yt-rec-meta text-muted">
+                    {rec.channel} &middot; {rec.duration}
+                    {rec.topics.length > 0 && (
+                      <> &middot; {rec.topics.slice(0, 2).join(", ")}</>
+                    )}
+                  </div>
+                  {isExpanded && rec.pick_reason && (
+                    <div className="yt-rec-reason text-secondary">
+                      {rec.pick_reason}
+                    </div>
+                  )}
+                </div>
               );
             })}
-            {watchVideos.length === 0 && (
-              <div className="text-muted">No pending recommendations</div>
+            {recs.length === 0 && (
+              <div className="text-muted">No recommendations yet</div>
             )}
           </div>
         </div>
+
+        {/* Right: Screening Pipeline */}
         <div className="youtube-column">
           <div className="youtube-column-header text-secondary">
-            K2B Queue -- in playlist ({currentQueue.length})
+            Screening Pipeline
           </div>
-          <div className="panel-rows">
-            {currentQueue.map((video) => (
-              <ExpandableRow
-                key={video.videoId}
-                title={video.title}
-                subtitle={`${video.channel} \u00b7 ${video.duration}`}
-                rightContent={<Tag variant="next">pending</Tag>}
-              >
-                <div className="row-detail-actions">
-                  <button className="btn" disabled title="Coming in v2">
-                    Process
-                  </button>
-                  <button className="btn" disabled title="Coming in v2">
-                    Skip
-                  </button>
+
+          {/* Pending screening */}
+          {pending.length > 0 && (
+            <div className="yt-pipeline-section">
+              <div className="yt-pipeline-label text-muted">
+                Pending extraction ({pending.length})
+              </div>
+              {pending.map((v) => (
+                <div key={v.videoId} className="yt-pipeline-item">
+                  <Tag variant="next">pending</Tag>
+                  <span className="yt-pipeline-title">{v.title}</span>
+                  <span className="text-muted" style={{ fontSize: 10, flexShrink: 0 }}>
+                    {v.duration}
+                  </span>
                 </div>
-              </ExpandableRow>
-            ))}
-            {currentQueue.length === 0 && (
-              <div className="text-muted">Queue empty</div>
+              ))}
+            </div>
+          )}
+
+          {/* Recently Extracted */}
+          <div className="yt-pipeline-section">
+            <div className="yt-pipeline-label text-muted">
+              Recently Extracted ({extracted.length})
+            </div>
+            {extracted.slice(0, 5).map((v) => {
+              const takeaway = v.notes
+                ? v.notes.split("|")[0]?.trim().slice(0, 80)
+                : "";
+              return (
+                <div key={v.videoId + v.date} className="yt-pipeline-item">
+                  <Tag variant="shipped">done</Tag>
+                  <span className="yt-pipeline-title">
+                    {v.title || v.videoId}
+                  </span>
+                  {takeaway && (
+                    <span className="yt-takeaway text-secondary">{takeaway}</span>
+                  )}
+                </div>
+              );
+            })}
+            {extracted.length === 0 && (
+              <div className="text-muted" style={{ fontSize: 12 }}>
+                No extractions yet
+              </div>
             )}
           </div>
 
-          {recentlyProcessed.length > 0 && (
-            <>
-              <div className="youtube-column-header text-muted" style={{ marginTop: 12 }}>
-                Recently processed ({totalProcessed} total)
-              </div>
-              <div className="panel-rows">
-                {recentlyProcessed.slice(0, 3).map((video) => {
-                  const notesLower = (video.notes || "").toLowerCase();
-                  const outcome = notesLower.includes("skip") ? "skipped" : "done";
-                  return (
-                    <ExpandableRow
-                      key={video.videoId + video.date}
-                      title={video.title || video.videoId}
-                      subtitle={`${video.date} \u00b7 ${outcome}`}
-                      rightContent={
-                        <Tag variant={outcome === "done" ? "shipped" : "default"}>
-                          {outcome}
-                        </Tag>
-                      }
-                    >
-                      <div className="row-detail-text">
-                        <p className="text-secondary">
-                          {video.notes || "No processing notes"}
-                        </p>
-                      </div>
-                    </ExpandableRow>
-                  );
-                })}
-              </div>
-            </>
+          {/* Skipped count */}
+          {skippedCount > 0 && (
+            <div className="yt-skipped-count text-muted">
+              {skippedCount} skipped
+            </div>
           )}
         </div>
       </div>
