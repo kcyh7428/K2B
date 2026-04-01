@@ -25,6 +25,10 @@ export interface YouTubeRecommendation {
   pick_reason?: string
   duration?: string
   feedback_text?: string
+  verdict?: string                              // 3-5 sentence screening verdict from Pass 2
+  verdict_value?: 'HIGH' | 'MEDIUM' | 'LOW'    // estimated value from transcript screening
+  pillars_matched?: string[]                     // matched content pillars
+  comment_text?: string                          // Keith's comment (text or transcribed voice)
 }
 
 export interface FeedbackSignal {
@@ -32,7 +36,7 @@ export interface FeedbackSignal {
   video_id: string
   channel: string
   title: string
-  signal_type: 'skip_reason' | 'value_feedback' | 'promotion' | 'expiry'
+  signal_type: 'skip_reason' | 'value_feedback' | 'promotion' | 'expiry' | 'comment' | 'screen' | 'watch'
   signal: string
   signal_text?: string
   topics: string[]
@@ -82,4 +86,8 @@ export function appendFeedbackSignal(
     topics: rec?.topics ?? [],
   }
   appendFileSync(FEEDBACK_SIGNALS_FILE, JSON.stringify(entry) + '\n')
+}
+
+export function getRecommendationsByStatus(status: string): YouTubeRecommendation[] {
+  return readRecommendations().filter(r => r.status === status)
 }

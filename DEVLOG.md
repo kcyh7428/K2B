@@ -2,6 +2,41 @@
 
 ---
 
+## 2026-04-01 -- Two-Pass YouTube Recommendation Pipeline
+
+Upgraded `/youtube recommend` from metadata-only scoring to transcript-screened verdicts with a closed learning loop.
+
+### What was built
+- **Two-pass recommend pipeline**: Pass 1 filters 24-40 candidates by metadata + preference profile, Pass 2 screens 5-7 finalists via transcript excerpts generating 3-5 sentence verdicts with HIGH/MEDIUM/LOW value estimates
+- **4-button Telegram layout**: Watch (logs + sends link), Comment (captures text/voice), Skip (logs + optional reason), Screen (sends to K2B Screen playlist for full processing)
+- **Comment capture system**: `awaitingComment` Map in bot.ts intercepts next text or voice message after Comment/Skip buttons
+- **youtube-preference-profile.md**: New vault file maintained by observer, read by recommend Pass 1. Tracks channel affinity, pillar patterns, duration preferences, verdict accuracy, machine-readable scoring adjustments
+- **Observer extension**: Phase 1e harvests YouTube signals from recommended.jsonl + feedback-signals.jsonl. Phase 3b synthesizes youtube-preference-profile.md
+- **Morning routine revamp**: 48-hour expiry (was day-based), profile freshness check, verdict-aware nudge format, 4-button layout
+
+### Key decisions
+- **"Screen" not "Queue"** -- renamed K2B Queue playlist to K2B Screen. "Screen this" is clearer than "Queue this" for "K2B, check if this is worth watching"
+- **45-min duration cap** (not 20 min) -- Keith watches longer videos if good. Cap only for unknown/low-affinity channels
+- **Truncate to 2000 words for screening** -- full transcript unnecessary for verdict generation, saves time
+- **Optional skip reason** -- skip logs immediately (zero friction), "Why?" asked as ignorable follow-up
+- **Watch as callback not URL button** -- enables logging watch action for learning loop
+- **Separate youtube-preference-profile.md** from general preference-profile.md -- domain-specific, read directly by recommend workflow
+
+### Files changed
+- `k2b-remote/src/youtube.ts` -- verdict, verdict_value, pillars_matched, comment_text fields + screen/watch/comment signal types
+- `k2b-remote/src/bot.ts` -- 4 new callback handlers, awaitingComment state, handleCommentOrSkipReason, revamped sendPendingNudges
+- `.claude/skills/k2b-youtube-capture/SKILL.md` -- two-pass pipeline replacing single-pass, revamped morning routine
+- `.claude/skills/k2b-observer/SKILL.md` -- Phase 1e YouTube harvesting, Phase 3b preference profile synthesis, updated integration map
+- `K2B-Vault/Notes/Context/youtube-preference-profile.md` -- initial empty structure (confidence: low)
+- `K2B-Vault/Notes/Context/youtube-playlists.md` -- K2B Queue renamed to K2B Screen
+- `K2B-Vault/Notes/Features/feature_two-pass-youtube.md` -- feature spec
+- `K2B-Vault/MOC_K2B-Roadmap.md` -- added to In Progress
+
+### Deploy
+- Synced to Mac Mini: skills + CLAUDE.md + k2b-remote code. Built clean, pm2 restarted.
+
+---
+
 ## 2026-03-31 -- K2B Mission Control Dashboard v1
 
 Built a full web dashboard for K2B -- single-page dark theme mission control that shows the state of the entire system at a glance.

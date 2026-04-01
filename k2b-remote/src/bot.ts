@@ -238,30 +238,50 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       }
     }
 
-  } else if (action === 'skip') {
+  } else if (action === 'watch') {
     const rec = readRecommendations().find(r => r.video_id === videoId)
+    updateRecommendation(videoId, {
+      status: 'watched',
+      outcome: 'watched',
+    })
+    appendFeedbackSignal(videoId, 'watch', 'watched')
+
+    const link = `https://youtu.be/${videoId}`
+    await ctx.api.sendMessage(ctx.chat!.id, `${link}`, { parse_mode: 'HTML' })
+
+  } else if (action === 'comment') {
+    awaitingComment.set(chatId, videoId)
+    await ctx.api.sendMessage(ctx.chat!.id, "What's your take?")
+
+  } else if (action === 'screen') {
+    updateRecommendation(videoId, {
+      status: 'processed',
+      outcome: 'screened',
+    })
+    appendFeedbackSignal(videoId, 'screen', 'screened-for-processing')
+
+    // Add to K2B Screen playlist and remove from Watch in background
+    runAgent(`Add video ${videoId} to K2B Screen playlist using scripts/yt-playlist-add.sh. Remove from K2B Watch playlist using scripts/yt-playlist-remove.sh.`).catch(err =>
+      logger.error({ err, videoId }, 'Failed to screen video')
+    )
+
+    await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen for full processing.')
+
+  } else if (action === 'skip') {
     updateRecommendation(videoId, {
       status: 'skipped',
       outcome: 'skipped',
     })
-
-    // Conversational skip -- agent asks why and logs feedback when Keith responds
-    await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
-    const skipPrompt = `Keith just skipped YouTube video "${rec?.title ?? videoId}" by ${rec?.channel ?? 'unknown'}. ` +
-      `It's been removed from his Watch list. Ask him briefly why he skipped it -- ` +
-      `keep it to one short question. When he responds, extract the skip reason and run these two updates:\n` +
-      `1. Update youtube-recommended.jsonl: set skip_reason for video ${videoId}\n` +
-      `2. Append to youtube-feedback-signals.jsonl: signal_type "skip_reason", signal (categorize as too-basic/clickbait/not-relevant/too-long/other), signal_text (Keith's actual words)`
-    const { text: skipResponse } = await runAgent(skipPrompt)
-    if (skipResponse) {
-      const formatted = formatForTelegram(skipResponse)
-      await ctx.api.sendMessage(ctx.chat!.id, formatted, { parse_mode: 'HTML' })
-    }
+    appendFeedbackSignal(videoId, 'skip_reason', 'skipped')
 
     // Remove from Watch playlist in background
     runAgent(`Remove video ${videoId} from K2B Watch playlist using scripts/yt-playlist-remove.sh`).catch(err =>
       logger.error({ err, videoId }, 'Failed to remove from Watch playlist')
     )
+
+    // Optional reason: log skip immediately, then ask why
+    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped. Why?')
+    awaitingComment.set(chatId, `skip:${videoId}`)
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -286,6 +306,29 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       formatForTelegram(`Saved as ${promoteType}: ${result}`),
       { parse_mode: 'HTML' }
     )
+  }
+}
+
+// --- YouTube comment/skip-reason capture ---
+
+async function handleCommentOrSkipReason(
+  ctx: Context,
+  pendingKey: string,
+  text: string,
+  _chatId: string
+): Promise<void> {
+  if (pendingKey.startsWith('skip:')) {
+    // Skip reason capture
+    const videoId = pendingKey.slice(5)
+    updateRecommendation(videoId, { skip_reason: text, feedback_text: text })
+    appendFeedbackSignal(videoId, 'skip_reason', 'user-provided', text)
+    await ctx.api.sendMessage(ctx.chat!.id, 'Got it, skip reason noted.')
+  } else {
+    // Regular comment capture
+    const videoId = pendingKey
+    updateRecommendation(videoId, { comment_text: text, feedback_text: text })
+    appendFeedbackSignal(videoId, 'comment', 'user-comment', text)
+    await ctx.api.sendMessage(ctx.chat!.id, 'Got it, comment saved.')
   }
 }
 
@@ -377,6 +420,16 @@ export function createBot(): Bot {
 
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text
+    const chatId = String(ctx.chat?.id)
+
+    // Check if we're awaiting a comment/skip-reason for a YouTube video
+    const pendingKey = awaitingComment.get(chatId)
+    if (pendingKey && !text.startsWith('/')) {
+      awaitingComment.delete(chatId)
+      await handleCommentOrSkipReason(ctx, pendingKey, text, chatId)
+      return
+    }
+
     if (text.startsWith('/')) return // skip unhandled commands
     await handleMessage(ctx, text)
   })
@@ -393,6 +446,16 @@ export function createBot(): Bot {
       const localPath = await downloadMedia(file.file_id)
       const transcript = await transcribeAudio(localPath)
       await ctx.reply(`[Transcribed]: ${transcript}`)
+
+      // Check if we're awaiting a comment/skip-reason (voice note as response)
+      const chatId = String(ctx.chat?.id)
+      const pendingKey = awaitingComment.get(chatId)
+      if (pendingKey) {
+        awaitingComment.delete(chatId)
+        await handleCommentOrSkipReason(ctx, pendingKey, transcript, chatId)
+        return
+      }
+
       await handleMessage(ctx, `[Voice transcribed]: ${transcript}`, true)
     } catch (err) {
       logger.error({ err }, 'Voice transcription failed')
@@ -456,6 +519,7 @@ export function createBot(): Bot {
 }
 
 const sentNudgeIds = new Set<string>()
+const awaitingComment = new Map<string, string>()  // chatId -> videoId awaiting comment
 
 export async function sendPendingNudges(chatId: string): Promise<number> {
   const pending = getPendingNudges()
@@ -465,17 +529,28 @@ export async function sendPendingNudges(chatId: string): Promise<number> {
     if (sentNudgeIds.has(rec.video_id)) continue
 
     const isRenudge = rec.nudge_date && rec.nudge_date < new Date().toISOString().slice(0, 10)
-    const prefix = isRenudge ? `Still in your Watch list (added ${rec.nudge_date}):` : 'New in your Watch list:'
-    const duration = rec.duration ? ` (${rec.duration})` : ''
-    const link = `https://youtu.be/${rec.video_id}`
-    const reason = rec.pick_reason ? `\n\n${rec.pick_reason}` : ''
+    const prefix = isRenudge ? `Still in your Watch list (added ${rec.nudge_date}):` : '<b>K2B YouTube Recommendation</b>'
+    const duration = rec.duration ? rec.duration : ''
+    const date = rec.recommended_date ?? ''
+    const meta = [rec.channel, duration, date].filter(Boolean).join(' -- ')
 
-    const text = `${prefix}\n\n<b>${rec.title}</b>${duration}\n${rec.channel}\n${link}${reason}`
+    // Use verdict if available, fall back to pick_reason for legacy entries
+    let verdictBlock = ''
+    if (rec.verdict) {
+      const value = rec.verdict_value ? `\nEstimated value: <b>${rec.verdict_value}</b>` : ''
+      verdictBlock = `\n\n<b>K2B Verdict:</b> ${rec.verdict}${value}`
+    } else if (rec.pick_reason) {
+      verdictBlock = `\n\n${rec.pick_reason}`
+    }
+
+    const text = `${prefix}\n\n"<b>${rec.title}</b>"\n${meta}${verdictBlock}`
 
     const keyboard = new InlineKeyboard()
-      .url('Watch', link)
-      .text('Highlights', `youtube:highlights:${rec.video_id}`)
+      .text('Watch', `youtube:watch:${rec.video_id}`)
+      .text('Comment', `youtube:comment:${rec.video_id}`)
+      .row()
       .text('Skip', `youtube:skip:${rec.video_id}`)
+      .text('Screen', `youtube:screen:${rec.video_id}`)
 
     await sendTelegramMessageWithButtons(chatId, text, [], keyboard)
     sentNudgeIds.add(rec.video_id)

@@ -12,8 +12,20 @@ Harvest implicit preference signals from Keith's vault behavior. Synthesize patt
 - Vault: `~/Projects/K2B-Vault`
 - Preference signals log: `~/Projects/K2B-Vault/Notes/Context/preference-signals.jsonl`
 - Preference profile: `~/Projects/K2B-Vault/Notes/Context/preference-profile.md`
+- YouTube preference profile: `~/Projects/K2B-Vault/Notes/Context/youtube-preference-profile.md`
+- YouTube recommendations: `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl`
+- YouTube feedback signals: `~/Projects/K2B-Vault/Notes/Context/youtube-feedback-signals.jsonl`
 - Skills: `~/Projects/K2B/.claude/skills/`
 - Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
+
+## Vault Query Tools
+
+- **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
+- **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
+- **Read file**: `mcp__obsidian__get_file_contents` or Read tool
+- **List files**: `mcp__obsidian__list_files_in_dir`
+
+Prefer DQL queries over Glob+Read+Filter when scanning multiple files for frontmatter fields.
 
 ## Commands
 
@@ -62,6 +74,37 @@ For content-specific tracking:
 - How many content ideas (origin: k2b-generate) got adopted vs archived?
 - How many LinkedIn drafts were published as-is vs revised vs scrapped?
 - Which content pillars produce ideas Keith adopts?
+
+### 1e. YouTube Signal Harvesting
+
+Read `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl` and `~/Projects/K2B-Vault/Notes/Context/youtube-feedback-signals.jsonl`.
+
+For each recommendation entry, extract:
+- **Action taken**: outcome field (watched, skipped, screened, expired, highlights)
+- **Channel**: for channel affinity tracking
+- **Duration**: for duration preference tracking
+- **Verdict accuracy**: compare `verdict_value` (HIGH/MEDIUM/LOW) against actual outcome:
+  - HIGH + watched/screened = accurate prediction
+  - HIGH + skipped = overestimated value
+  - LOW + watched = underestimated value
+  - Track accuracy percentage over time
+- **Pillar engagement**: which `pillars_matched` entries correlate with watch vs skip
+- **Comment content**: `comment_text` for topic interest signals and depth of engagement
+- **Time to action**: difference between `nudge_date` and when outcome was recorded
+
+From feedback signals file, extract:
+- Skip reasons by channel and topic (signal_type: skip_reason)
+- Value feedback categories (signal_type: value_feedback)
+- Comment themes and topics (signal_type: comment)
+- Screen requests (signal_type: screen) -- indicates Keith wants deeper evaluation
+
+Aggregate into per-channel stats:
+- Total recommendations, watch rate, skip rate, screen rate, expire rate
+- Average time to action per channel
+
+Aggregate into per-pillar stats:
+- Watch/screen rate by content pillar
+- Skip rate by content pillar
 
 ## Phase 2: Detect Patterns
 
@@ -160,6 +203,88 @@ These patterns are strong enough to consider promoting to k2b-feedback:
 - Note: Patterns with <3 occurrences are excluded. More data improves accuracy.
 ```
 
+## Phase 3b: Synthesize YouTube Preference Profile
+
+Write to `~/Projects/K2B-Vault/Notes/Context/youtube-preference-profile.md`. This is a SEPARATE file from preference-profile.md, specifically for the YouTube recommendation pipeline. The `/youtube recommend` workflow reads this directly for Pass 1 metadata filtering.
+
+```yaml
+---
+tags: [k2b-system, youtube, preferences]
+date: YYYY-MM-DD
+type: reference
+origin: k2b-generate
+up: "[[MOC_K2B-System]]"
+---
+```
+
+Body structure:
+
+```markdown
+# YouTube Preference Profile
+
+Last updated: YYYY-MM-DD
+Based on: N recommendations over N days
+Confidence: low | medium | high (low = <10 recs, medium = 10-30, high = 30+)
+
+## Channel Affinity
+
+### High Affinity (>70% watch/screen rate, min 3 recs)
+- **Channel Name**: N/N watched/screened, topics: [...]
+
+### Low Affinity (>70% skip rate, min 3 recs)
+- **Channel Name**: N/N skipped, common skip reasons: [...]
+
+### Neutral (insufficient data or mixed signals)
+- **Channel Name**: N recs, X% watch rate
+
+## Topic & Pillar Patterns
+
+### Most Engaged Pillars (by watch+screen rate)
+1. **Pillar Name**: X% engagement (N videos)
+
+### Least Engaged Pillars
+1. **Pillar Name**: X% engagement (N videos)
+
+## Duration Preferences
+
+- Average watched duration: X min
+- Average skipped duration: X min
+- Sweet spot: X-Y minutes
+- Cap: videos >Z min need high-affinity channel
+
+## Verdict Accuracy
+
+- Total verdicts: N
+- HIGH accurate: X% (predicted HIGH, actually watched/screened)
+- HIGH overestimated: X% (predicted HIGH, actually skipped)
+- LOW underestimated: X% (predicted LOW, actually watched)
+- Calibration note: [observer assessment]
+
+## Action Distribution
+
+- Watch: X% (N)
+- Screen: X% (N)
+- Skip: X% (N)
+- Comment: X% (N)
+- Expired (no response): X% (N)
+
+## Scoring Adjustments
+
+Machine-readable section for /youtube recommend Pass 1:
+
+- channel_boost: {"Channel A": +2, "Channel B": -3}
+- pillar_weights: {"workflow-automation": 1.3, "second-brain": 0.8}
+- duration_cap: 45
+- confidence: low | medium | high
+
+## Recent Comments
+
+Last 5 comments with context:
+- [date] [video title]: "comment text" (pillars: [...])
+```
+
+If youtube-recommended.jsonl has fewer than 5 entries, write a minimal profile with `confidence: low` and empty sections marked "Insufficient data". The profile improves as more feedback accumulates.
+
 ## Phase 4: Candidate Learnings Promotion
 
 When patterns reach high confidence, present them to Keith as candidate /learn entries:
@@ -187,13 +312,21 @@ This is NOT an automated modification -- it's a reference document. Skills read 
 
 On first `/observe`, if preference-signals.jsonl is empty or doesn't exist:
 
-1. Do a retrospective scan of the Archive folder
-   - Read each archived note's frontmatter: what type was it? What skill produced it? When was it created?
-   - Archived items are implicit "not valuable enough to keep" signals
-2. Scan Notes/Content-Ideas/ for adopted content ideas
-   - These are implicit "this was valuable" signals
-3. Scan Inbox/ for items currently sitting unprocessed
-   - Items older than 7 days with no review-action = low urgency signal
+1. Query archived notes via DQL:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, date FROM "Archive"'
+   ```
+   Archived items are implicit "not valuable enough to keep" signals.
+2. Query adopted content ideas:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, status FROM "Notes/Content-Ideas"'
+   ```
+   These are implicit "this was valuable" signals.
+3. Query stale inbox items:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE date, review-action AS "action" FROM "Inbox" WHERE date <= date(today) - dur(7 days)'
+   ```
+   Items older than 7 days with no review-action = low urgency signal.
 4. Generate an initial preference-signals.jsonl from this retrospective data
 5. Run the full synthesis to produce the first preference-profile.md
 
@@ -270,6 +403,18 @@ Session-start hook reads observer-candidates.md
 Other skills read preference-profile.md before producing output
     |
 k2b-improve reviews preference-profile.md alongside learnings/errors/requests
+
+YouTube Learning Loop:
+    |
+youtube-recommended.jsonl + youtube-feedback-signals.jsonl
+    |
+    +--> k2b-observer Phase 1e harvests YouTube signals
+    +--> Phase 3b synthesizes youtube-preference-profile.md
+    |
+/youtube recommend reads youtube-preference-profile.md
+    |
+    +--> Pass 1 metadata filter uses channel skip/watch rates
+    +--> Pass 2 verdict accuracy informs calibration
 ```
 
 ## Usage Logging
