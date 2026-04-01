@@ -13,6 +13,14 @@ You are NOT on Keith's MacBook. You are running on the Mac Mini (`Matthews-Mac-m
 - Do NOT SSH to `macmini` or `Matthews-Mac-mini.local` -- you are already here
 - `schedule-cli.js` runs locally: `cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js <command>`
 
+### Network: Tailscale SSH
+- Mac Mini and MacBook are connected via Tailscale (set up 2026-03-30)
+- Mac Mini Tailscale IP: `100.116.205.17`
+- MacBook Tailscale IP: `100.68.35.19`
+- SSH from MacBook to Mac Mini uses Tailscale (works from anywhere, not just LAN)
+- Mac Mini runs Clash Verge in System Proxy mode (not TUN) to avoid conflict with Tailscale
+- HTTP_PROXY env var is set when Clash proxy is active -- k2b-remote passes it to spawned agents
+
 ### What works the same
 - All K2B skills, slash commands, vault conventions from parent CLAUDE.md
 - gws CLI (Gmail, Calendar) -- authenticated locally with file-based keyring
@@ -20,11 +28,45 @@ You are NOT on Keith's MacBook. You are running on the Mac Mini (`Matthews-Mac-m
 - MiniMax API (`MINIMAX_API_KEY` in environment)
 - LinkedIn publishing (`~/.linkedin_token`)
 
+### Skill discipline
+- Before answering any question that matches a K2B skill (youtube, inbox, daily, email, etc.), invoke the Skill tool first. Do NOT answer from memory or local files when a skill exists for that domain.
+- For real-time external data (playlists, emails, calendar), ALWAYS fetch live data. Never report content from cached files (like youtube-recommended.jsonl) as current playlist contents.
+- When in doubt, use the skill. The skill knows the correct scripts, APIs, and data flow.
+
 ### What's different from MacBook
 - Responses go to Telegram, not a terminal -- keep them concise
 - No Obsidian GUI -- Keith sees vault changes via Obsidian on his MacBook/phone after Syncthing sync
 - Claude Code memory path is `~/.claude/projects/-Users-fastshower-Projects-K2B/memory/` (not keithmbpm2)
 - MCP servers may differ -- check `.mcp.json` if a tool isn't available
+
+## Reminders & Scheduling
+
+CRITICAL: NEVER use Claude Code's built-in scheduling tools (CronCreate, scheduled-tasks MCP, RemoteTrigger) for reminders or scheduled tasks. These are session-scoped and get wiped on pm2 restart.
+
+ALWAYS use the persistent SQLite-backed scheduler via schedule-cli.js:
+
+### One-time reminders
+```bash
+cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create-once "<prompt>" "YYYY-MM-DD HH:MM" 8394008217
+```
+
+### Recurring tasks
+```bash
+cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create "<prompt>" "<cron>" 8394008217
+```
+
+### Other commands
+```bash
+node dist/schedule-cli.js list          # List all tasks
+node dist/schedule-cli.js delete <id>   # Delete a task
+node dist/schedule-cli.js pause <id>    # Pause a task
+node dist/schedule-cli.js resume <id>   # Resume a task
+```
+
+- Chat ID for Keith: `8394008217`
+- Datetime format: "YYYY-MM-DD HH:MM" in HKT (UTC+8)
+- The prompt is what the scheduler will execute via Claude agent when the time comes
+- For reminders, use a simple prompt like: "Send Keith a Telegram message: Reminder -- [description]"
 
 ## Telegram Message Format
 

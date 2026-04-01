@@ -1,8 +1,11 @@
 import { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { resolve, basename } from 'node:path'
 import { request as httpsRequest } from 'node:https'
-import { UPLOADS_DIR, TELEGRAM_BOT_TOKEN } from './config.js'
+import { HttpsProxyAgent } from 'https-proxy-agent'
+import { UPLOADS_DIR, TELEGRAM_BOT_TOKEN, HTTP_PROXY } from './config.js'
 import { logger } from './logger.js'
+
+const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : undefined
 
 // Ensure uploads dir exists
 mkdirSync(UPLOADS_DIR, { recursive: true })
@@ -16,14 +19,14 @@ async function httpGet(url: string): Promise<Buffer> {
     const handler = (res: import('node:http').IncomingMessage) => {
       // Follow redirects
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        httpsRequest(res.headers.location, handler).on('error', reject).end()
+        httpsRequest(res.headers.location, { agent: proxyAgent }, handler).on('error', reject).end()
         return
       }
       const chunks: Buffer[] = []
       res.on('data', (chunk: Buffer) => chunks.push(chunk))
       res.on('end', () => resolvePromise(Buffer.concat(chunks)))
     }
-    httpsRequest(url, handler).on('error', reject).end()
+    httpsRequest(url, { agent: proxyAgent }, handler).on('error', reject).end()
   })
 }
 

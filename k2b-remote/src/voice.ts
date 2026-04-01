@@ -1,8 +1,11 @@
 import { readFileSync, renameSync } from 'node:fs'
 import { request } from 'node:https'
 import { basename, extname, dirname, resolve } from 'node:path'
-import { GROQ_API_KEY } from './config.js'
+import { HttpsProxyAgent } from 'https-proxy-agent'
+import { GROQ_API_KEY, HTTP_PROXY } from './config.js'
 import { logger } from './logger.js'
+
+const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : undefined
 
 export function voiceCapabilities(): { stt: boolean; tts: boolean } {
   return {
@@ -62,6 +65,7 @@ export async function transcribeAudio(filePath: string): Promise<string> {
           'Content-Type': `multipart/form-data; boundary=${boundary}`,
           'Content-Length': body.length,
         },
+        agent: proxyAgent,
       },
       (res) => {
         const chunks: Buffer[] = []
