@@ -2,6 +2,57 @@
 
 ---
 
+## 2026-04-01 -- Mission Control v2
+
+Major dashboard overhaul: from status board to command center.
+
+### What was built
+
+**New panels (Wave 1-2)**
+- Health & Alerts strip -- checks pm2, inbox age, task failures. Green "nominal" or colored alert bar
+- Suggested Next Action -- priority-ranked "what should I do?" card. Click copies command
+- Quick Actions bar -- 5 preset buttons (/daily, /inbox, /content, /sync, /observe) + custom command input
+- Vault Growth chart -- 30-day bar chart of notes created per day (+134 notes in period)
+- LinkedIn Performance placeholder -- ready for metrics when API connected
+
+**YouTube Digest redesigned**
+- Response badges: Watch (green), Screen (blue), Skip (gray), Comment (amber), Pending (dashed)
+- Verdict value labels (HIGH/MED/LOW) from two-pass pipeline
+- Screening Pipeline: pending extraction + recently extracted (successful only)
+- Skipped count collapsed to footer. Old Watch/Skip buttons removed
+
+**Inbox redesigned**
+- Filter tabs: All | Videos | Research | Features with counts
+- Inline Snooze/Archive action buttons per item (POST /api/inbox/:filename/action)
+- Accordion preview on click (200-char excerpt)
+- Age-based urgency: amber 2d+, red 5d+, sorted oldest-first
+
+**Improved existing panels**
+- Activity Feed: collapsible time blocks (This morning/afternoon/Yesterday)
+- Scheduled Tasks: status dots (green/red/gray) + per-task next run countdown
+- Skills: Never Used collapsed into accordion with descriptions and try hints
+- Intelligence: Observer hidden when empty, learnings capped at 3 with expand
+- Content Pipeline: color-coded stage dots
+
+**New API endpoints**
+- GET /api/health -- system alert aggregation
+- GET /api/vault/growth -- 30-day notes/day (cached 5m)
+- GET /api/suggested-action -- composite next-action recommendation
+- POST /api/command -- command relay (v1: clipboard copy)
+- POST /api/inbox/:filename/action -- archive/snooze inbox items
+
+### Key decisions
+- Quick Actions copies to clipboard in v1 (not direct execution) -- avoids auth complexity
+- Suggested Action shows only highest-priority item -- one line, one action
+- Vault growth uses file birthtime not frontmatter date -- more reliable
+- YouTube shows last 7 recs newest-first with click-to-expand pick_reason
+
+### Files changed
+- 11 modified components, 5 new components, 5 new server routes, 570+ lines CSS
+- launch.json updated with mission-control preview config
+
+---
+
 ## 2026-04-01 -- Two-Pass YouTube Recommendation Pipeline
 
 Upgraded `/youtube recommend` from metadata-only scoring to transcript-screened verdicts with a closed learning loop.
