@@ -1,0 +1,290 @@
+<h2>K2B Mission Control -- Layout v2</h2>
+<p class="subtitle">Blending reference design density with your priority panels</p>
+
+<style>
+  .dash { background: #0a0a0a; border-radius: 12px; padding: 20px 24px; margin: 20px 0; font-family: 'JetBrains Mono', 'SF Mono', monospace; color: #e0e0e0; font-size: 13px; }
+  .dash * { box-sizing: border-box; }
+
+  /* Header bar */
+  .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 1px solid #1e1e1e; margin-bottom: 16px; }
+  .header h3 { margin: 0; font-size: 15px; text-transform: uppercase; letter-spacing: 2px; color: #e0e0e0; }
+  .header-right { font-size: 11px; color: #888; display: flex; gap: 12px; align-items: center; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; display: inline-block; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* Top 3-col row */
+  .row-top { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .panel { background: #141414; border: 1px solid #1e1e1e; border-radius: 6px; padding: 14px; }
+  .panel-title { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+
+  /* System panel */
+  .sys-status { font-size: 12px; margin-bottom: 6px; }
+  .sys-status .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .dot-g { background: #22c55e; }
+  .dot-a { background: #f59e0b; }
+  .sys-detail { font-size: 11px; color: #888; line-height: 1.6; }
+
+  /* Vault stats */
+  .vault-big { font-size: 28px; font-weight: bold; color: #e0e0e0; }
+  .vault-label { font-size: 11px; color: #888; margin-left: 4px; }
+  .vault-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; font-size: 11px; color: #888; margin-top: 6px; line-height: 1.7; }
+  .vault-grid span:first-child { color: #ccc; }
+
+  /* Roadmap - priority */
+  .roadmap-item { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .roadmap-item:last-child { border-bottom: none; }
+  .tag { padding: 2px 7px; border-radius: 3px; font-size: 10px; font-weight: 500; }
+  .tag-next { background: #3b82f622; color: #3b82f6; }
+  .tag-planned { background: #88888822; color: #888; }
+  .tag-shipped { background: #22c55e18; color: #22c55e; }
+  .roadmap-footer { font-size: 10px; color: #555; margin-top: 8px; padding-top: 6px; border-top: 1px solid #1a1a1a; }
+
+  /* Full width panels */
+  .row-full { margin-bottom: 12px; }
+
+  /* YouTube digest */
+  .yt-section { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
+  .yt-section:first-of-type { margin-top: 0; }
+  .yt-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1a1a1a; }
+  .yt-item:last-child { border-bottom: none; }
+  .yt-title { font-size: 12px; }
+  .yt-meta { font-size: 10px; color: #666; margin-top: 2px; }
+  .yt-actions { display: flex; gap: 5px; flex-shrink: 0; }
+  .btn { padding: 3px 10px; border-radius: 3px; font-size: 10px; border: 1px solid #333; background: #1a1a1a; color: #999; cursor: pointer; font-family: inherit; }
+  .btn-watch { border-color: #22c55e33; color: #22c55e; }
+  .btn-skip { border-color: #ef444433; color: #ef4444; }
+  .btn-done { border-color: #22c55e33; color: #22c55e; background: transparent; cursor: default; }
+
+  /* Inbox */
+  .inbox-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .inbox-row:last-child { border-bottom: none; }
+  .inbox-badges { display: flex; gap: 6px; align-items: center; font-size: 10px; }
+  .badge { padding: 1px 6px; border-radius: 3px; }
+  .badge-type { background: #ffffff08; color: #888; }
+  .badge-origin { background: #ffffff08; color: #666; }
+  .badge-action { color: #f59e0b; }
+  .inbox-date { color: #555; font-size: 11px; }
+  .inbox-header-right { font-size: 11px; color: #888; }
+
+  /* Bottom 3-col */
+  .row-bottom { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+  /* Activity feed */
+  .activity-line { padding: 3px 0; font-size: 11px; color: #999; }
+  .activity-time { color: #555; margin-right: 6px; }
+  .activity-sep { color: #333; margin: 6px 0; font-size: 10px; }
+  .activity-highlight { color: #ccc; }
+
+  /* Scheduled tasks */
+  .task-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; }
+  .task-name { color: #ccc; }
+  .task-schedule { color: #666; }
+
+  /* Content pipeline */
+  .pipe-flow { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; }
+  .pipe-stage { text-align: center; flex: 1; }
+  .pipe-num { font-size: 18px; font-weight: bold; }
+  .pipe-label { font-size: 9px; color: #666; text-transform: uppercase; margin-top: 2px; }
+  .pipe-arrow { color: #333; font-size: 14px; flex-shrink: 0; }
+  .pipe-num-blue { color: #3b82f6; }
+  .pipe-num-green { color: #22c55e; }
+  .pipe-num-amber { color: #f59e0b; }
+  .pipe-num-dim { color: #888; }
+  .pipe-footer { font-size: 10px; color: #555; margin-top: 8px; padding-top: 6px; border-top: 1px solid #1a1a1a; }
+</style>
+
+<div class="dash">
+  <!-- HEADER -->
+  <div class="header">
+    <h3>K2B Mission Control</h3>
+    <div class="header-right">
+      <span><span class="live-dot"></span> online</span>
+      <span>uptime 3d 7h</span>
+      <span>live</span>
+    </div>
+  </div>
+
+  <!-- ROW 1: System + Vault + Roadmap -->
+  <div class="row-top">
+    <div class="panel">
+      <div class="panel-title">System</div>
+      <div class="sys-status"><span class="dot dot-g"></span> all systems operational</div>
+      <div class="sys-detail">
+        k2b-remote <span style="color:#22c55e">running</span><br>
+        k2b-observer <span style="color:#22c55e">running</span><br>
+        mem 134mb &middot; sessions 3
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Vault</div>
+      <span class="vault-big">109</span><span class="vault-label">notes</span>
+      <div class="vault-grid">
+        <span>daily 42</span><span>people 20</span>
+        <span>projects 10</span><span>insights 3</span>
+        <span>features 8</span><span>content 4</span>
+      </div>
+    </div>
+
+    <div class="panel" style="border-color: #3b82f633;">
+      <div class="panel-title" style="color: #3b82f6;">★ Roadmap -- What's Next</div>
+      <div class="roadmap-item"><span>Content Feed System</span><span class="tag tag-next">next</span></div>
+      <div class="roadmap-item"><span>Vault Housekeeping</span><span class="tag tag-next">next</span></div>
+      <div class="roadmap-item"><span>Knowledge Graph</span><span class="tag tag-planned">planned</span></div>
+      <div class="roadmap-item"><span>Mission Control</span><span class="tag tag-planned">planned</span></div>
+      <div class="roadmap-footer">5 shipped &middot; 4 planned &middot; last shipped Mar 30</div>
+    </div>
+  </div>
+
+  <!-- ROW 2: YouTube Digest (full width, priority) -->
+  <div class="row-full">
+    <div class="panel" style="border-color: #3b82f633;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="panel-title" style="color: #3b82f6; margin-bottom: 0;">★ YouTube Digest</div>
+        <span style="font-size: 10px; color: #555;">37 processed &middot; 2 pending &middot; this week</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 10px;">
+        <div>
+          <div class="yt-section">K2B Watch -- recommended to you (2)</div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">Claude Code + Paperclip Just Destroyed OpenClaw</div>
+              <div class="yt-meta">Nate Herk &middot; 20:33 &middot; nudged Mar 30</div>
+            </div>
+            <div class="yt-actions">
+              <button class="btn btn-watch">Watch</button>
+              <button class="btn btn-skip">Skip</button>
+            </div>
+          </div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">NotebookLM + Claude Code Workflow Is Insane</div>
+              <div class="yt-meta">Eric Tech &middot; 12:24 &middot; nudged Mar 30</div>
+            </div>
+            <div class="yt-actions">
+              <button class="btn btn-watch">Watch</button>
+              <button class="btn btn-skip">Skip</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="yt-section">K2B Queue -- you sent for review (3 recent)</div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">5 Open Source Repos That Make Claude Code UNSTOPPABLE</div>
+              <div class="yt-meta">processed Mar 31 &middot; vault note created</div>
+            </div>
+            <span class="tag tag-shipped">done</span>
+          </div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">Obsidian + AI: How to Do It The Right Way</div>
+              <div class="yt-meta">processed Mar 28 &middot; skip (K2B already more advanced)</div>
+            </div>
+            <span class="tag" style="color:#666;background:#ffffff08;">skipped</span>
+          </div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">Claude Cowork + Obsidian Will Change How You Work</div>
+              <div class="yt-meta">processed Mar 28 &middot; skip (K2B already does this)</div>
+            </div>
+            <span class="tag" style="color:#666;background:#ffffff08;">skipped</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: Inbox (full width) -->
+  <div class="row-full">
+    <div class="panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div class="panel-title" style="margin-bottom: 0;">Inbox &middot; 3 items</div>
+        <span class="inbox-header-right">0 ready for processing</span>
+      </div>
+      <div class="inbox-row">
+        <span>research-everything-claude-code.md</span>
+        <div class="inbox-badges">
+          <span class="badge badge-type">research</span>
+          <span class="badge badge-origin">k2b-extract</span>
+          <span class="inbox-date">mar 29</span>
+        </div>
+      </div>
+      <div class="inbox-row">
+        <span>obsidian-knowledge-graph-strategy.md</span>
+        <div class="inbox-badges">
+          <span class="badge badge-type">feature-idea</span>
+          <span class="badge badge-origin">keith</span>
+          <span class="inbox-date">mar 29</span>
+        </div>
+      </div>
+      <div class="inbox-row">
+        <span>youtube_5-opensource-repos-claude-code.md</span>
+        <div class="inbox-badges">
+          <span class="badge badge-type">video</span>
+          <span class="badge badge-origin">k2b-extract</span>
+          <span class="inbox-date">mar 31</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 4: Activity + Tasks + Content Pipeline -->
+  <div class="row-bottom">
+    <div class="panel">
+      <div class="panel-title">Activity Feed</div>
+      <div class="activity-line"><span class="activity-time">08:15</span> <span class="activity-highlight">+</span> daily note created</div>
+      <div class="activity-line"><span class="activity-time">07:30</span> k2b-daily-capture triggered</div>
+      <div class="activity-line"><span class="activity-time">07:05</span> observer analyzed 21 signals</div>
+      <div class="activity-line"><span class="activity-time">07:00</span> <span class="activity-highlight">+</span> youtube morning completed</div>
+      <div class="activity-sep">yesterday</div>
+      <div class="activity-line"><span class="activity-time">14:00</span> linkedin post published</div>
+      <div class="activity-line"><span class="activity-time">11:30</span> meeting processed: TA sync</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Scheduled Tasks</div>
+      <div class="task-row"><span class="task-name">YouTube Morning</span><span class="task-schedule">7:00am daily</span></div>
+      <div class="task-row"><span class="task-name">Observer Loop</span><span class="task-schedule">every 5m (pm2)</span></div>
+      <div style="margin-top: 10px; font-size: 10px; color: #555; border-top: 1px solid #1a1a1a; padding-top: 6px;">
+        0 DB tasks &middot; 2 pm2 managed<br>
+        next run: YouTube 7:00am tomorrow
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Content Pipeline</div>
+      <div class="pipe-flow">
+        <div class="pipe-stage"><div class="pipe-num pipe-num-blue">3</div><div class="pipe-label">ideas</div></div>
+        <span class="pipe-arrow">›</span>
+        <div class="pipe-stage"><div class="pipe-num pipe-num-amber">4</div><div class="pipe-label">adopted</div></div>
+        <span class="pipe-arrow">›</span>
+        <div class="pipe-stage"><div class="pipe-num pipe-num-dim">0</div><div class="pipe-label">drafts</div></div>
+        <span class="pipe-arrow">›</span>
+        <div class="pipe-stage"><div class="pipe-num pipe-num-green">0</div><div class="pipe-label">published</div></div>
+      </div>
+      <div class="pipe-footer">no posts published yet</div>
+    </div>
+  </div>
+</div>
+
+<h2>Does this layout work?</h2>
+<p class="subtitle">Compared to v1: YouTube gets full width, roadmap promoted to top row, reference design density preserved</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>This is the right direction</h3>
+      <p>Priority panels highlighted, good information density, move forward with this structure.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Needs changes</h3>
+      <p>I'll describe what to adjust in the terminal.</p>
+    </div>
+  </div>
+</div>

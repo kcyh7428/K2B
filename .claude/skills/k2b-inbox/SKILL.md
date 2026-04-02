@@ -15,14 +15,27 @@ All lifecycle rules (origin tagging, review properties, promote destinations, co
 - Ready queue: `~/Projects/K2B-Vault/Inbox/Ready/`
 - Archive: `~/Projects/K2B-Vault/Archive/`
 
+## Vault Query Tools
+
+- **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
+- **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
+- **Read file**: `mcp__obsidian__get_file_contents` or Read tool
+- **List files**: `mcp__obsidian__list_files_in_dir`
+
+Prefer DQL queries over Glob+Read+Filter when querying frontmatter across multiple files.
+
 ## Workflow
 
 ### Step 1: Scan for actionable items
 
 Check two locations for items Keith has reviewed:
 
-1. **`Inbox/Ready/`** -- notes Keith dragged here in Obsidian (any note here is ready to process)
-2. **`Inbox/`** -- notes where `review-action:` is set to a non-empty value (promote, archive, delete, revise)
+1. **`Inbox/Ready/`** -- notes Keith dragged here in Obsidian (any note here is ready to process). Use `mcp__obsidian__list_files_in_dir` or Glob to check.
+2. **`Inbox/`** -- notes where `review-action:` is set. Query with:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE review-action AS "action", review-notes AS "notes", type, origin, date FROM "Inbox" WHERE review-action != null AND review-action != ""'
+   ```
+   This returns all actionable items with their frontmatter in one call -- no need to glob and read each file individually.
 
 ### Step 2: Process actionable items
 
@@ -95,8 +108,12 @@ If the file `preference-signals.jsonl` doesn't exist, create it (first run).
 
 ### Step 3: Show remaining Inbox
 
-After processing actionable items, list all remaining Inbox items:
+After processing actionable items, query remaining Inbox items with:
+```bash
+~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, date, review-action AS "status" FROM "Inbox" SORT date DESC'
+```
 
+Present as:
 ```
 ## Inbox (X items)
 
@@ -104,8 +121,6 @@ After processing actionable items, list all remaining Inbox items:
 |---|------|------|--------|------|---------------|
 | 1 | content_corporate-ai... | content-idea | k2b-generate | 2026-03-22 | pending |
 ```
-
-Show: filename (truncated), type, origin, date, and whether review-action is set.
 
 Group by type if there are many items.
 

@@ -17,6 +17,15 @@ Single command for the full picture of how K2B is doing -- learnings, errors, re
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.claude/skills/`
 
+## Vault Query Tools
+
+- **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
+- **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
+- **Read file**: `mcp__obsidian__get_file_contents` or Read tool
+- **List files**: `mcp__obsidian__list_files_in_dir`
+
+Prefer DQL queries over Glob+Read+Filter for vault health checks.
+
 ## Command: /improve
 
 Generate the full system health report. Sections can be run individually for speed:
@@ -53,10 +62,17 @@ Generate the full system health report. Sections can be run individually for spe
 
 ## Section 3: Vault Health
 
-1. **Orphaned notes**: Glob all notes in `Notes/` and check for `up:` field in frontmatter. List any without an `up:` link.
-2. **Stale Inbox items**: Check `Inbox/` for files older than 7 days. These should be processed or moved.
+1. **Orphaned notes**: Query notes missing `up:` field:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE up FROM "Notes" WHERE up = null'
+   ```
+   List any without an `up:` link.
+2. **Stale Inbox items**: Query inbox items older than 7 days:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE date, review-action AS "action" FROM "Inbox" WHERE date <= date(today) - dur(7 days)'
+   ```
 3. **MOC freshness**: Read each MOC file. Compare links in MOCs against actual files in vault. Flag notes that exist but aren't linked from any MOC.
-4. **Broken wikilinks**: Sample 10-15 notes and check that `[[wikilinks]]` point to existing files.
+4. **Broken wikilinks**: Sample 10-15 notes and check that `[[wikilinks]]` point to existing files (use `mcp__obsidian__search` or Glob to verify targets).
 5. **Vault metrics**: Count notes by folder, count total wikilinks, check daily note streak (consecutive days with a daily note).
 
 ## Section 4: Skill Eval Dashboard

@@ -1,0 +1,231 @@
+<h2>K2B Self-Improvement Panel</h2>
+<p class="subtitle">How to visualize the learning loop on the dashboard</p>
+
+<style>
+  .dash { background: #0a0a0a; border-radius: 12px; padding: 20px 24px; margin: 20px 0; font-family: 'JetBrains Mono', 'SF Mono', monospace; color: #e0e0e0; font-size: 13px; }
+  .dash * { box-sizing: border-box; }
+  .panel { background: #141414; border: 1px solid #1e1e1e; border-radius: 6px; padding: 14px; }
+  .panel-title { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .tag { padding: 2px 7px; border-radius: 3px; font-size: 10px; }
+
+  /* Option A: Compact summary */
+  .improve-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+  .improve-stat { text-align: center; padding: 10px; background: #0e0e0e; border-radius: 4px; border: 1px solid #1a1a1a; }
+  .improve-num { font-size: 22px; font-weight: bold; }
+  .improve-label { font-size: 9px; color: #666; text-transform: uppercase; margin-top: 2px; }
+  .num-green { color: #22c55e; }
+  .num-blue { color: #3b82f6; }
+  .num-amber { color: #f59e0b; }
+  .num-red { color: #ef4444; }
+
+  /* Candidate learnings */
+  .candidate { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .candidate:last-child { border-bottom: none; }
+  .candidate-conf { font-size: 10px; padding: 2px 6px; border-radius: 3px; }
+  .conf-med { background: #f59e0b18; color: #f59e0b; }
+  .conf-high { background: #22c55e18; color: #22c55e; }
+  .candidate-actions { display: flex; gap: 5px; }
+  .btn { padding: 3px 10px; border-radius: 3px; font-size: 10px; border: 1px solid #333; background: #1a1a1a; color: #999; cursor: pointer; font-family: inherit; }
+  .btn-confirm { border-color: #22c55e33; color: #22c55e; }
+  .btn-dismiss { border-color: #ef444433; color: #ef4444; }
+
+  /* Skill heatmap */
+  .skill-row { display: flex; align-items: center; padding: 4px 0; font-size: 11px; gap: 8px; }
+  .skill-name { width: 140px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .skill-bar-bg { flex: 1; height: 12px; background: #1a1a1a; border-radius: 2px; position: relative; overflow: hidden; }
+  .skill-bar { height: 100%; border-radius: 2px; }
+  .skill-count { width: 30px; text-align: right; color: #888; font-size: 10px; }
+  .skill-last { width: 50px; text-align: right; color: #555; font-size: 10px; }
+  .bar-hot { background: #22c55e; }
+  .bar-warm { background: #3b82f6; }
+  .bar-cold { background: #333; }
+  .bar-dead { background: #1e1e1e; }
+
+  /* Observer timeline */
+  .obs-entry { display: flex; gap: 10px; padding: 5px 0; font-size: 11px; border-bottom: 1px solid #1a1a1a; }
+  .obs-entry:last-child { border-bottom: none; }
+  .obs-time { color: #555; flex-shrink: 0; width: 60px; }
+  .obs-text { color: #999; }
+  .obs-tag { font-size: 9px; padding: 1px 5px; border-radius: 2px; background: #ffffff08; color: #888; margin-left: 6px; }
+
+  .section-gap { margin: 20px 0 8px; font-size: 10px; color: #3b82f6; text-transform: uppercase; letter-spacing: 1px; }
+</style>
+
+<div class="section-gap">Option A: Combined "K2B Intelligence" Panel</div>
+<div class="dash">
+  <div class="panel" style="border-color: #8b5cf633;">
+    <div class="panel-title" style="color: #8b5cf6;">★ K2B Intelligence</div>
+
+    <!-- Stats row -->
+    <div class="improve-stats">
+      <div class="improve-stat">
+        <div class="improve-num num-green">49</div>
+        <div class="improve-label">learnings</div>
+      </div>
+      <div class="improve-stat">
+        <div class="improve-num num-amber">2</div>
+        <div class="improve-label">candidates</div>
+      </div>
+      <div class="improve-stat">
+        <div class="improve-num num-red">8</div>
+        <div class="improve-label">errors logged</div>
+      </div>
+      <div class="improve-stat">
+        <div class="improve-num num-blue">21</div>
+        <div class="improve-label">signals</div>
+      </div>
+    </div>
+
+    <!-- Candidate learnings needing confirmation -->
+    <div style="font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 6px;">Pending Confirmation</div>
+    <div class="candidate">
+      <div>
+        <span class="candidate-conf conf-med">medium</span>
+        <span style="margin-left: 6px;">YouTube pipeline: Telegram → tldr → inbox decision</span>
+      </div>
+      <div class="candidate-actions">
+        <button class="btn btn-confirm">Confirm</button>
+        <button class="btn btn-dismiss">Dismiss</button>
+      </div>
+    </div>
+    <div class="candidate">
+      <div>
+        <span class="candidate-conf conf-med">medium</span>
+        <span style="margin-left: 6px;">Keith updates MOCs alongside content changes</span>
+      </div>
+      <div class="candidate-actions">
+        <button class="btn btn-confirm">Confirm</button>
+        <button class="btn btn-dismiss">Dismiss</button>
+      </div>
+    </div>
+
+    <!-- Recent learnings -->
+    <div style="font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 6px;">Recently Learned</div>
+    <div style="font-size: 11px; color: #888; padding: 4px 0; border-bottom: 1px solid #1a1a1a;">
+      <span style="color: #22c55e; font-size: 10px;">×6</span> Use ssh macmini (Tailscale) not .local for remote commands
+    </div>
+    <div style="font-size: 11px; color: #888; padding: 4px 0; border-bottom: 1px solid #1a1a1a;">
+      <span style="color: #22c55e; font-size: 10px;">×4</span> Always use k2b-vault-writer for vault note creation
+    </div>
+    <div style="font-size: 11px; color: #888; padding: 4px 0;">
+      <span style="color: #3b82f6; font-size: 10px;">×1</span> Proxy config needed for Mac Mini API calls
+    </div>
+  </div>
+</div>
+
+<div class="section-gap">Option B: Skill Usage Heatmap (separate panel)</div>
+<div class="dash">
+  <div class="panel">
+    <div class="panel-title">Skill Activity <span style="color:#555; text-transform: none; letter-spacing: 0;">(last 7 days)</span></div>
+    <div class="skill-row">
+      <span class="skill-name">k2b-vault-writer</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-hot" style="width: 100%;"></div></div>
+      <span class="skill-count">18</span>
+      <span class="skill-last">today</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name">k2b-youtube</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-hot" style="width: 72%;"></div></div>
+      <span class="skill-count">13</span>
+      <span class="skill-last">today</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name">k2b-tldr</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-warm" style="width: 50%;"></div></div>
+      <span class="skill-count">9</span>
+      <span class="skill-last">mar 30</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name">k2b-inbox</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-warm" style="width: 39%;"></div></div>
+      <span class="skill-count">7</span>
+      <span class="skill-last">mar 30</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name">k2b-daily-capture</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-warm" style="width: 33%;"></div></div>
+      <span class="skill-count">6</span>
+      <span class="skill-last">mar 29</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name">k2b-feedback</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-cold" style="width: 17%;"></div></div>
+      <span class="skill-count">3</span>
+      <span class="skill-last">mar 28</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name" style="color: #ef4444;">k2b-meeting-processor</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-dead" style="width: 0%;"></div></div>
+      <span class="skill-count" style="color: #ef4444;">0</span>
+      <span class="skill-last" style="color: #ef4444;">never</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name" style="color: #ef4444;">k2b-insight-extractor</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-dead" style="width: 0%;"></div></div>
+      <span class="skill-count" style="color: #ef4444;">0</span>
+      <span class="skill-last" style="color: #ef4444;">never</span>
+    </div>
+    <div class="skill-row">
+      <span class="skill-name" style="color: #ef4444;">k2b-email</span>
+      <div class="skill-bar-bg"><div class="skill-bar bar-dead" style="width: 0%;"></div></div>
+      <span class="skill-count" style="color: #ef4444;">0</span>
+      <span class="skill-last" style="color: #ef4444;">never</span>
+    </div>
+    <div style="margin-top: 8px; font-size: 10px; color: #555; border-top: 1px solid #1a1a1a; padding-top: 6px;">
+      71 total invocations &middot; 10 skills used &middot; 3 never used (red)
+    </div>
+  </div>
+</div>
+
+<div class="section-gap">Option C: Observer Feed (compact timeline)</div>
+<div class="dash">
+  <div class="panel">
+    <div class="panel-title">Observer Feed <span style="color:#555; text-transform: none; letter-spacing: 0;">last analysis: 2h ago &middot; 21 signals</span></div>
+    <div class="obs-entry">
+      <span class="obs-time">07:05</span>
+      <span class="obs-text">YouTube pipeline detected: Telegram → tldr → inbox with 50% archive rate <span class="obs-tag">medium</span></span>
+    </div>
+    <div class="obs-entry">
+      <span class="obs-time">07:05</span>
+      <span class="obs-text">Keith updates MOCs alongside content -- system maintenance behavior <span class="obs-tag">medium</span></span>
+    </div>
+    <div class="obs-entry">
+      <span class="obs-time">07:05</span>
+      <span class="obs-text">vault-writer batch-updates People + Projects notes <span class="obs-tag">medium</span></span>
+    </div>
+    <div class="obs-entry">
+      <span class="obs-time">07:05</span>
+      <span class="obs-text">Night-owl + afternoon work patterns both active <span class="obs-tag">medium</span></span>
+    </div>
+    <div style="margin-top: 8px; font-size: 10px; color: #555; border-top: 1px solid #1a1a1a; padding-top: 6px;">
+      next analysis: when 20+ new observations accumulate &middot; cost: ~$0.007/run
+    </div>
+  </div>
+</div>
+
+<h2>Which approach for self-improvement visibility?</h2>
+<p class="subtitle">These can be combined. Pick what matters most.</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>K2B Intelligence (combined)</h3>
+      <p>One panel with stats + pending confirmations + recent learnings. Dense, actionable -- the "brain health" overview.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Skill Usage Heatmap</h3>
+      <p>Visual bar chart of which skills are hot vs forgotten. Red highlights for never-used skills -- the "am I using what I built?" view.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Observer Feed</h3>
+      <p>Timeline of what the background observer has noticed. Pattern detection in real-time -- the "what is K2B learning about me?" view.</p>
+    </div>
+  </div>
+</div>

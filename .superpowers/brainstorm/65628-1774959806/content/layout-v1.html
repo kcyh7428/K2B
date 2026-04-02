@@ -1,0 +1,172 @@
+<h2>K2B Mission Control -- Layout</h2>
+<p class="subtitle">Single-page dashboard. Priority panels up top, supporting panels below.</p>
+
+<style>
+  .dash { background: #0a0a0a; border-radius: 12px; padding: 24px; margin: 20px 0; font-family: 'JetBrains Mono', 'SF Mono', monospace; color: #e0e0e0; }
+  .dash-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 16px; border-bottom: 1px solid #1e1e1e; margin-bottom: 20px; }
+  .dash-header h3 { margin: 0; color: #e0e0e0; font-size: 16px; }
+  .status-pill { background: #16a34a22; color: #22c55e; padding: 4px 12px; border-radius: 99px; font-size: 12px; }
+  .dash-grid { display: grid; gap: 16px; }
+  .top-row { grid-template-columns: 1fr 1fr; }
+  .bottom-row { grid-template-columns: 1fr 1fr 1fr; }
+  .panel { background: #141414; border: 1px solid #1e1e1e; border-radius: 8px; padding: 16px; }
+  .panel-title { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  .feature-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #1a1a1a; font-size: 13px; }
+  .feature-item:last-child { border-bottom: none; }
+  .tag { padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+  .tag-next { background: #3b82f622; color: #3b82f6; }
+  .tag-planned { background: #888888; color: #444; }
+  .tag-shipped { background: #16a34a22; color: #22c55e; }
+  .yt-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .yt-item:last-child { border-bottom: none; }
+  .yt-channel { color: #888; font-size: 11px; }
+  .yt-actions { display: flex; gap: 6px; }
+  .btn-sm { padding: 3px 10px; border-radius: 4px; font-size: 11px; border: 1px solid #333; background: #1a1a1a; color: #ccc; cursor: pointer; }
+  .btn-skip { border-color: #ef444444; color: #ef4444; }
+  .btn-watch { border-color: #22c55e44; color: #22c55e; }
+  .section-label { font-size: 11px; color: #666; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-row { display: flex; gap: 16px; margin-bottom: 12px; }
+  .stat { text-align: center; flex: 1; }
+  .stat-num { font-size: 20px; font-weight: bold; color: #e0e0e0; }
+  .stat-label { font-size: 10px; color: #666; text-transform: uppercase; }
+  .inbox-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .inbox-item:last-child { border-bottom: none; }
+  .task-item { display: flex; justify-content: space-between; padding: 6px 0; font-size: 12px; }
+  .task-time { color: #888; }
+  .service-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot-green { background: #22c55e; }
+  .dot-amber { background: #f59e0b; }
+  .priority-panels { font-size: 10px; color: #3b82f6; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .secondary-panels { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+</style>
+
+<div class="dash">
+  <div class="dash-header">
+    <h3>K2B Mission Control</h3>
+    <span class="status-pill">● All Systems Online</span>
+  </div>
+
+  <div class="priority-panels">★ Priority Panels</div>
+  <div class="dash-grid top-row" style="margin-bottom: 20px;">
+    <!-- ROADMAP PANEL -->
+    <div class="panel">
+      <div class="panel-title">Roadmap -- What's Next</div>
+      <div class="feature-item">
+        <span>Content Feed System (Phase 8)</span>
+        <span class="tag tag-next">next</span>
+      </div>
+      <div class="feature-item">
+        <span>Vault Housekeeping Agent</span>
+        <span class="tag tag-next">next</span>
+      </div>
+      <div class="feature-item">
+        <span>Knowledge Graph Strategy</span>
+        <span class="tag tag-planned">planned</span>
+      </div>
+      <div class="feature-item" style="color: #666;">
+        <span>Mission Control Dashboard</span>
+        <span class="tag tag-planned">planned</span>
+      </div>
+      <div style="border-top: 1px solid #1a1a1a; margin-top: 8px; padding-top: 8px; font-size: 11px; color: #666;">
+        5 shipped &middot; 3 planned &middot; last shipped Mar 30
+      </div>
+    </div>
+
+    <!-- YOUTUBE DIGEST PANEL -->
+    <div class="panel">
+      <div class="panel-title">YouTube Digest</div>
+      <div class="section-label">K2B Watch -- recommended to you (2)</div>
+      <div class="yt-item">
+        <div>
+          <div>Claude Code + Paperclip Just Destroyed OpenClaw</div>
+          <div class="yt-channel">Nate Herk &middot; 20:33</div>
+        </div>
+        <div class="yt-actions">
+          <button class="btn-sm btn-watch">Watch</button>
+          <button class="btn-sm btn-skip">Skip</button>
+        </div>
+      </div>
+      <div class="yt-item">
+        <div>
+          <div>NotebookLM + Claude Code Workflow Is Insane</div>
+          <div class="yt-channel">Eric Tech &middot; 12:24</div>
+        </div>
+        <div class="yt-actions">
+          <button class="btn-sm btn-watch">Watch</button>
+          <button class="btn-sm btn-skip">Skip</button>
+        </div>
+      </div>
+      <div class="section-label">K2B Queue -- you sent for processing (1)</div>
+      <div class="yt-item">
+        <div>
+          <div>5 Open Source Repos That Make Claude Code UNSTOPPABLE</div>
+          <div class="yt-channel">processed Mar 31 &middot; vault note created</div>
+        </div>
+        <div class="yt-actions">
+          <span class="tag tag-shipped">done</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="secondary-panels">Supporting Panels</div>
+  <div class="dash-grid bottom-row">
+    <!-- SYSTEM STATUS -->
+    <div class="panel">
+      <div class="panel-title">System</div>
+      <div class="service-row"><span><span class="dot dot-green"></span>k2b-remote</span><span style="color:#888">2d 14h</span></div>
+      <div class="service-row"><span><span class="dot dot-green"></span>k2b-observer</span><span style="color:#888">2d 14h</span></div>
+      <div class="service-row"><span><span class="dot dot-amber"></span>k2b-dashboard</span><span style="color:#888">just now</span></div>
+      <div style="margin-top: 8px; font-size: 11px; color: #666;">
+        vault: 109 notes &middot; 3 inbox &middot; last sync 2m ago
+      </div>
+    </div>
+
+    <!-- INBOX -->
+    <div class="panel">
+      <div class="panel-title">Inbox (3 pending)</div>
+      <div class="inbox-item"><span>research-everything-claude-code</span><span style="color:#888">Mar 29</span></div>
+      <div class="inbox-item"><span>obsidian-knowledge-graph-strategy</span><span style="color:#888">Mar 29</span></div>
+      <div class="inbox-item"><span>youtube_5-opensource-repos</span><span style="color:#888">Mar 31</span></div>
+    </div>
+
+    <!-- SCHEDULED TASKS -->
+    <div class="panel">
+      <div class="panel-title">Scheduled Tasks</div>
+      <div class="task-item"><span>YouTube Morning</span><span class="task-time">7:00 HKT daily</span></div>
+      <div class="task-item"><span>LinkedIn Check</span><span class="task-time">Mon/Thu 9am</span></div>
+      <div class="task-item"><span>Observer Loop</span><span class="task-time">every 5m (pm2)</span></div>
+      <div style="margin-top: 8px; font-size: 11px; color: #888;">
+        0 in DB &middot; showing pm2-managed + expected
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Layout Questions</h2>
+<p class="subtitle">Does this priority split feel right?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>This layout works</h3>
+      <p>Roadmap + YouTube as priority panels up top, system/inbox/tasks below. Good hierarchy.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>YouTube should be bigger</h3>
+      <p>Give YouTube its own full-width row -- it has two sub-sections (Watch + Queue) that need more room.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Add a skill usage panel</h3>
+      <p>You mentioned skills get forgotten. Add a "Skill Activity" panel showing which skills were used recently and which haven't been used in a while.</p>
+    </div>
+  </div>
+</div>

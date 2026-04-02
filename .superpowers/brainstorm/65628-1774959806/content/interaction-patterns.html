@@ -1,0 +1,240 @@
+<h2>Detail Expansion Patterns</h2>
+<p class="subtitle">How to show more info per item -- must work on desktop AND mobile</p>
+
+<style>
+  .demo { background: #0a0a0a; border-radius: 10px; padding: 16px 20px; margin: 16px 0; font-family: 'JetBrains Mono', 'SF Mono', monospace; color: #e0e0e0; font-size: 13px; }
+  .demo * { box-sizing: border-box; }
+  .panel { background: #141414; border: 1px solid #1e1e1e; border-radius: 6px; padding: 14px; }
+  .panel-title { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .demo-label { font-size: 10px; color: #3b82f6; text-transform: uppercase; letter-spacing: 1px; margin: 24px 0 8px; }
+  .demo-label:first-of-type { margin-top: 0; }
+
+  /* Pattern A: Click-to-expand rows */
+  .expand-row { border-bottom: 1px solid #1a1a1a; }
+  .expand-row:last-child { border-bottom: none; }
+  .expand-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 12px; cursor: pointer; }
+  .expand-header:hover { background: #1a1a1a; margin: 0 -8px; padding: 8px; border-radius: 4px; }
+  .expand-chevron { color: #555; font-size: 10px; transition: transform 0.15s; }
+  .expand-detail { display: none; padding: 0 0 10px; font-size: 11px; color: #888; line-height: 1.6; border-left: 2px solid #1e1e1e; margin-left: 4px; padding-left: 12px; }
+  .expand-row.open .expand-detail { display: block; }
+  .expand-row.open .expand-chevron { transform: rotate(90deg); }
+  .tag { padding: 2px 7px; border-radius: 3px; font-size: 10px; }
+  .tag-next { background: #3b82f622; color: #3b82f6; }
+  .tag-planned { background: #88888822; color: #888; }
+  .detail-meta { font-size: 10px; color: #555; margin-top: 4px; }
+  .detail-link { color: #3b82f6; text-decoration: none; font-size: 11px; }
+
+  /* Pattern B: Inline preview beneath */
+  .preview-row { padding: 8px 0; border-bottom: 1px solid #1a1a1a; }
+  .preview-row:last-child { border-bottom: none; }
+  .preview-header { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+  .preview-sub { font-size: 11px; color: #666; margin-top: 3px; line-height: 1.5; }
+  .preview-actions { display: flex; gap: 5px; margin-top: 6px; }
+  .btn { padding: 3px 10px; border-radius: 3px; font-size: 10px; border: 1px solid #333; background: #1a1a1a; color: #999; cursor: pointer; font-family: inherit; }
+  .btn-watch { border-color: #22c55e33; color: #22c55e; }
+  .btn-skip { border-color: #ef444433; color: #ef4444; }
+
+  /* Pattern C: Skill cards with description */
+  .skill-card { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1a1a1a; }
+  .skill-card:last-child { border-bottom: none; }
+  .skill-bar-mini { width: 4px; border-radius: 2px; flex-shrink: 0; }
+  .bar-hot { background: #22c55e; } .bar-warm { background: #3b82f6; } .bar-dead { background: #ef4444; }
+  .skill-info { flex: 1; }
+  .skill-name { font-size: 12px; color: #ccc; }
+  .skill-desc { font-size: 10px; color: #666; margin-top: 2px; line-height: 1.4; }
+  .skill-stats { font-size: 10px; color: #555; margin-top: 3px; }
+  .skill-hint { font-size: 10px; color: #3b82f6; margin-top: 3px; font-style: italic; }
+</style>
+
+<div class="demo-label">Pattern A: Click-to-expand (accordion)</div>
+<p class="subtitle" style="font-size: 11px; color: #888; margin: 0 0 8px;">Click any row to reveal detail. Works on mobile (tap). Keeps default view clean.</p>
+<div class="demo">
+  <div class="panel" style="border-color: #3b82f633;">
+    <div class="panel-title" style="color: #3b82f6;">★ Roadmap -- What's Next</div>
+
+    <div class="expand-row open" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>Content Feed System</span>
+        <span><span class="tag tag-next">next</span> <span class="expand-chevron">›</span></span>
+      </div>
+      <div class="expand-detail">
+        Multi-source content feed (RSS, newsletters, X bookmarks) with AI filtering. Phase 8A: source connectors, 8B: scoring pipeline, 8C: daily digest.<br>
+        <span class="detail-meta">Feature spec: feature_content-feed-system.md &middot; Has eval.json</span>
+      </div>
+    </div>
+
+    <div class="expand-row" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>Vault Housekeeping Agent</span>
+        <span><span class="tag tag-next">next</span> <span class="expand-chevron">›</span></span>
+      </div>
+      <div class="expand-detail">
+        Scheduled agent that checks vault health: orphaned notes, stale inbox items (>7 days), broken wikilinks, MOC freshness. Runs weekly.<br>
+        <span class="detail-meta">Feature spec: feature_vault-housekeeping-agent.md</span>
+      </div>
+    </div>
+
+    <div class="expand-row" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>Knowledge Graph Strategy</span>
+        <span><span class="tag tag-planned">planned</span> <span class="expand-chevron">›</span></span>
+      </div>
+      <div class="expand-detail">
+        Leverage Obsidian's graph view with intentional linking patterns. Currently in Inbox for review -- waiting for vault to reach critical mass (~200 notes).<br>
+        <span class="detail-meta">Inbox: obsidian-knowledge-graph-strategy.md &middot; Revisit: Apr 12</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="demo-label">Pattern A applied to YouTube</div>
+<div class="demo">
+  <div class="panel" style="border-color: #3b82f633;">
+    <div class="panel-title" style="color: #3b82f6;">★ YouTube Digest -- K2B Watch</div>
+
+    <div class="expand-row open" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>Claude Code + Paperclip Destroyed OpenClaw</span>
+        <span class="expand-chevron">›</span>
+      </div>
+      <div class="expand-detail">
+        <strong>Nate Herk</strong> &middot; 20:33 &middot; Nudged Mar 30<br>
+        Covers Paperclip's zero-human company approach using Claude Code. Relevant to K2B's autonomous agent direction and mission control concept.<br>
+        <div style="display:flex;gap:5px;margin-top:6px;">
+          <button class="btn btn-watch">Watch</button>
+          <button class="btn btn-skip">Skip</button>
+          <button class="btn">Summarize First</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="expand-row" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>NotebookLM + Claude Code Workflow</span>
+        <span class="expand-chevron">›</span>
+      </div>
+      <div class="expand-detail">
+        <strong>Eric Tech</strong> &middot; 12:24 &middot; Nudged Mar 30<br>
+        NotebookLM integration with Claude Code for research workflows.<br>
+        <div style="display:flex;gap:5px;margin-top:6px;">
+          <button class="btn btn-watch">Watch</button>
+          <button class="btn btn-skip">Skip</button>
+          <button class="btn">Summarize First</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="demo-label">Pattern A applied to Inbox</div>
+<div class="demo">
+  <div class="panel">
+    <div class="panel-title">Inbox &middot; 3 items</div>
+
+    <div class="expand-row open" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>youtube_5-opensource-repos-claude-code.md</span>
+        <span style="display:flex;gap:6px;align-items:center;"><span class="tag" style="background:#ffffff08;color:#888;font-size:9px">video</span> <span style="color:#555;font-size:10px">mar 31</span> <span class="expand-chevron">›</span></span>
+      </div>
+      <div class="expand-detail">
+        <strong>5 Open Source Repos That Make Claude Code UNSTOPPABLE</strong><br>
+        K2B processed this from Queue playlist. Extracted 5 repos with descriptions. Vault note created at Notes/Reference/.<br>
+        <span class="detail-meta">origin: k2b-extract &middot; source: youtube</span><br>
+        <div style="display:flex;gap:5px;margin-top:6px;">
+          <button class="btn" style="border-color:#22c55e33;color:#22c55e">Promote</button>
+          <button class="btn" style="border-color:#f59e0b33;color:#f59e0b">Archive</button>
+          <button class="btn" style="border-color:#ef444433;color:#ef4444">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="expand-row" onclick="this.classList.toggle('open')">
+      <div class="expand-header">
+        <span>research-everything-claude-code.md</span>
+        <span style="display:flex;gap:6px;align-items:center;"><span class="tag" style="background:#ffffff08;color:#888;font-size:9px">research</span> <span style="color:#555;font-size:10px">mar 29</span> <span class="expand-chevron">›</span></span>
+      </div>
+      <div class="expand-detail">
+        Research briefing on Claude Code ecosystem -- extensions, hooks, MCP servers, community tools. Generated from /research session.<br>
+        <span class="detail-meta">origin: k2b-extract &middot; 2 days in inbox</span><br>
+        <div style="display:flex;gap:5px;margin-top:6px;">
+          <button class="btn" style="border-color:#22c55e33;color:#22c55e">Promote</button>
+          <button class="btn" style="border-color:#f59e0b33;color:#f59e0b">Archive</button>
+          <button class="btn" style="border-color:#ef444433;color:#ef4444">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="demo-label">Skill Activity with descriptions for dormant skills</div>
+<div class="demo">
+  <div class="panel" style="border-color: #8b5cf633;">
+    <div class="panel-title" style="color: #8b5cf6;">★ Skill Activity</div>
+
+    <!-- Active skills: compact -->
+    <div style="font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Active (7 days)</div>
+    <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11px"><span style="color:#22c55e">● vault-writer</span><span style="color:#888">18 uses &middot; today</span></div>
+    <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11px"><span style="color:#22c55e">● youtube</span><span style="color:#888">13 uses &middot; today</span></div>
+    <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11px"><span style="color:#3b82f6">● tldr</span><span style="color:#888">9 uses &middot; mar 30</span></div>
+    <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11px"><span style="color:#3b82f6">● inbox</span><span style="color:#888">7 uses &middot; mar 30</span></div>
+    <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11px"><span style="color:#3b82f6">● daily-capture</span><span style="color:#888">6 uses &middot; mar 29</span></div>
+    <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11px;border-bottom:1px solid #1a1a1a;padding-bottom:8px"><span style="color:#555">● feedback</span><span style="color:#888">3 uses &middot; mar 28</span></div>
+
+    <!-- Dormant skills: with explanations -->
+    <div style="font-size: 10px; color: #ef4444; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px;">Never Used</div>
+
+    <div class="skill-card">
+      <div class="skill-bar-mini bar-dead"></div>
+      <div class="skill-info">
+        <div class="skill-name">k2b-meeting-processor</div>
+        <div class="skill-desc">Process meeting transcripts into structured vault notes with summary, decisions, action items. Works with Fireflies transcripts.</div>
+        <div class="skill-hint">Try: /meeting after your next call, or paste a Fireflies transcript</div>
+      </div>
+    </div>
+
+    <div class="skill-card">
+      <div class="skill-bar-mini bar-dead"></div>
+      <div class="skill-info">
+        <div class="skill-name">k2b-insight-extractor</div>
+        <div class="skill-desc">Searches vault notes to find patterns and surface non-obvious connections. Generates content ideas from themes across your work.</div>
+        <div class="skill-hint">Try: /insight recruiting -- finds patterns across meetings and daily notes</div>
+      </div>
+    </div>
+
+    <div class="skill-card">
+      <div class="skill-bar-mini bar-dead"></div>
+      <div class="skill-info">
+        <div class="skill-name">k2b-email</div>
+        <div class="skill-desc">Read, search, and triage Gmail. Draft replies. Never sends -- drafts only.</div>
+        <div class="skill-hint">Try: /email -- shows recent unread with triage suggestions</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Which interaction pattern?</h2>
+<p class="subtitle">Click-to-expand works on both desktop and mobile (tap)</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Click-to-expand everywhere</h3>
+      <p>Consistent accordion pattern across all panels. Clean default, detail on demand. Tap-friendly on mobile.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Hover on desktop, tap on mobile</h3>
+      <p>Hover tooltips for quick preview on desktop. Falls back to tap-to-expand on touch devices. More polished but two code paths.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Always show 1-line preview, expand for full</h3>
+      <p>Every item gets a subtitle line by default (no click needed). Click/tap still expands for actions and full detail. More info at a glance but denser.</p>
+    </div>
+  </div>
+</div>

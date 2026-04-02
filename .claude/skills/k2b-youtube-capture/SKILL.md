@@ -406,28 +406,25 @@ YouTube Morning Report:
 
 On-demand processing of videos in the K2B Screen playlist. Keith drops videos here when he wants K2B to evaluate and create vault notes. Uses Telegram button cards so Keith can pick which videos to process.
 
-### 1. Poll K2B Screen Playlist
+### 1. List What's in the Screen Playlist
+
+Do NOT use `yt-playlist-poll.sh` (that deduplicates). Just list the raw playlist contents:
 
 ```bash
-~/Projects/K2B/scripts/yt-playlist-poll.sh "<screen-playlist-url>" "~/Projects/K2B-Vault/Notes/Context/youtube-processed.md" --max 10
+yt-dlp --flat-playlist --print "%(id)s\t%(title)s\t%(channel)s\t%(duration_string)s" "<screen-playlist-url>"
 ```
 
 If the playlist is empty: "K2B Screen is empty. Nothing to process." and stop.
 
 ### 2. Write Screen-Pending Entries
 
-For each video found in the playlist:
-1. Check if `video_id` exists in `youtube-recommended.jsonl` -- if yes and status is already `processed`, skip
-2. Get video metadata via `mcp__youtube-transcript__get_video_info` or YouTube API
-3. Append to (or update in) `youtube-recommended.jsonl` with:
-   - `status`: "screen_pending"
-   - `nudge_sent`: false
-   - `playlist`: "K2B Screen"
-   - All standard fields (`ts`, `video_id`, `title`, `channel`, `duration`, `recommended_date`, etc.)
+For EVERY video returned from step 1 -- no skipping, no filtering:
+1. If `video_id` already exists in `youtube-recommended.jsonl`: update its `status` to `"screen_pending"`
+2. If `video_id` does NOT exist: append a new entry with all standard fields and `status: "screen_pending"`, `playlist: "K2B Screen"`
 
 ### 3. Report Count
 
-Output a short summary: "Found {N} videos in K2B Screen. Sending buttons."
+Output ONLY: "Found {N} videos in K2B Screen. Sending buttons."
 
 The k2b-remote bot automatically detects the `/youtube screen` command and sends Telegram button cards for each `screen_pending` entry. Each card shows:
 - Video title, channel, duration

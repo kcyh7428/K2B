@@ -1,0 +1,311 @@
+<h2>K2B Mission Control -- Final Layout</h2>
+<p class="subtitle">All panels assembled. Priority panels highlighted with ★</p>
+
+<style>
+  .dash { background: #0a0a0a; border-radius: 12px; padding: 20px 24px; margin: 20px 0; font-family: 'JetBrains Mono', 'SF Mono', monospace; color: #e0e0e0; font-size: 13px; }
+  .dash * { box-sizing: border-box; }
+
+  /* Header */
+  .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 1px solid #1e1e1e; margin-bottom: 16px; }
+  .header h3 { margin: 0; font-size: 15px; text-transform: uppercase; letter-spacing: 2px; color: #e0e0e0; }
+  .header-right { font-size: 11px; color: #888; display: flex; gap: 12px; align-items: center; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; display: inline-block; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* Grid helpers */
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .row-full { margin-bottom: 12px; }
+  .panel { background: #141414; border: 1px solid #1e1e1e; border-radius: 6px; padding: 14px; }
+  .panel-pri { border-color: #3b82f633; }
+  .panel-title { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .panel-title-pri { color: #3b82f6; }
+  .row-label { font-size: 9px; color: #333; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+
+  /* System */
+  .sys-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .dot-g { background: #22c55e; } .dot-a { background: #f59e0b; }
+  .sys-detail { font-size: 11px; color: #555; margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a1a; }
+
+  /* Vault */
+  .vault-big { font-size: 28px; font-weight: bold; }
+  .vault-label { font-size: 11px; color: #888; margin-left: 4px; }
+  .vault-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; font-size: 11px; color: #888; margin-top: 6px; line-height: 1.7; }
+
+  /* Roadmap */
+  .rm-item { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .rm-item:last-child { border-bottom: none; }
+  .tag { padding: 2px 7px; border-radius: 3px; font-size: 10px; }
+  .tag-next { background: #3b82f622; color: #3b82f6; }
+  .tag-planned { background: #88888822; color: #888; }
+  .rm-footer { font-size: 10px; color: #555; margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a1a; }
+
+  /* YouTube */
+  .yt-section { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
+  .yt-section:first-of-type { margin-top: 0; }
+  .yt-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1a1a1a; }
+  .yt-item:last-child { border-bottom: none; }
+  .yt-title { font-size: 12px; }
+  .yt-meta { font-size: 10px; color: #666; margin-top: 2px; }
+  .yt-actions { display: flex; gap: 5px; flex-shrink: 0; }
+  .btn { padding: 3px 10px; border-radius: 3px; font-size: 10px; border: 1px solid #333; background: #1a1a1a; color: #999; cursor: pointer; font-family: inherit; }
+  .btn-watch { border-color: #22c55e33; color: #22c55e; }
+  .btn-skip { border-color: #ef444433; color: #ef4444; }
+  .btn-confirm { border-color: #22c55e33; color: #22c55e; }
+  .btn-dismiss { border-color: #ef444433; color: #ef4444; }
+  .tag-done { background: #22c55e18; color: #22c55e; padding: 2px 7px; border-radius: 3px; font-size: 10px; }
+  .tag-skip { background: #ffffff08; color: #666; padding: 2px 7px; border-radius: 3px; font-size: 10px; }
+
+  /* Inbox */
+  .inbox-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .inbox-row:last-child { border-bottom: none; }
+  .inbox-badges { display: flex; gap: 6px; align-items: center; font-size: 10px; }
+  .badge { padding: 1px 6px; border-radius: 3px; background: #ffffff08; color: #888; }
+
+  /* Intelligence */
+  .intel-section { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
+  .intel-section:first-of-type { margin-top: 0; }
+  .candidate { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }
+  .candidate:last-child { border-bottom: none; }
+  .conf-tag { font-size: 9px; padding: 1px 5px; border-radius: 2px; background: #f59e0b18; color: #f59e0b; margin-right: 6px; }
+  .learning-item { font-size: 11px; color: #888; padding: 4px 0; border-bottom: 1px solid #1a1a1a; }
+  .learning-item:last-child { border-bottom: none; }
+  .reinforce { font-size: 10px; margin-right: 4px; }
+  .r-high { color: #22c55e; }
+  .r-med { color: #3b82f6; }
+  .r-low { color: #666; }
+
+  /* Skill heatmap */
+  .skill-row { display: flex; align-items: center; padding: 3px 0; font-size: 11px; gap: 8px; }
+  .skill-name { width: 130px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .skill-name-dead { color: #ef4444; }
+  .skill-bar-bg { flex: 1; height: 10px; background: #1a1a1a; border-radius: 2px; overflow: hidden; }
+  .skill-bar { height: 100%; border-radius: 2px; }
+  .bar-hot { background: #22c55e; } .bar-warm { background: #3b82f6; } .bar-cold { background: #333; } .bar-dead { background: #1e1e1e; }
+  .skill-count { width: 24px; text-align: right; color: #888; font-size: 10px; }
+  .skill-last { width: 46px; text-align: right; color: #555; font-size: 10px; }
+  .skill-footer { font-size: 10px; color: #555; margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a1a; }
+
+  /* Activity + Tasks + Content */
+  .activity-line { padding: 3px 0; font-size: 11px; color: #999; }
+  .activity-time { color: #555; margin-right: 6px; }
+  .activity-sep { color: #333; margin: 4px 0; font-size: 10px; }
+  .task-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; }
+  .task-name { color: #ccc; } .task-schedule { color: #666; }
+  .pipe-flow { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; }
+  .pipe-stage { text-align: center; flex: 1; }
+  .pipe-num { font-size: 18px; font-weight: bold; }
+  .pipe-label { font-size: 9px; color: #666; text-transform: uppercase; margin-top: 2px; }
+  .pipe-arrow { color: #333; font-size: 14px; }
+</style>
+
+<div class="dash">
+  <!-- HEADER -->
+  <div class="header">
+    <h3>K2B Mission Control</h3>
+    <div class="header-right">
+      <span><span class="live-dot"></span> online</span>
+      <span>uptime 3d 7h</span>
+      <span>refreshed 12s ago</span>
+    </div>
+  </div>
+
+  <!-- ROW 1: System | Vault | ★ Roadmap -->
+  <div class="row-3">
+    <div class="panel">
+      <div class="panel-title">System</div>
+      <div class="sys-row"><span><span class="dot dot-g"></span>k2b-remote</span><span style="color:#888">2d 14h</span></div>
+      <div class="sys-row"><span><span class="dot dot-g"></span>k2b-observer</span><span style="color:#888">2d 14h</span></div>
+      <div class="sys-row"><span><span class="dot dot-g"></span>k2b-dashboard</span><span style="color:#888">just now</span></div>
+      <div class="sys-detail">mem 134mb &middot; sessions 3 &middot; vault synced 2m ago</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Vault</div>
+      <span class="vault-big">109</span><span class="vault-label">notes</span>
+      <div class="vault-grid">
+        <span>daily 42</span><span>people 20</span>
+        <span>projects 10</span><span>features 8</span>
+        <span>insights 3</span><span>content 4</span>
+      </div>
+    </div>
+
+    <div class="panel panel-pri">
+      <div class="panel-title panel-title-pri">★ Roadmap -- What's Next</div>
+      <div class="rm-item"><span>Content Feed System</span><span class="tag tag-next">next</span></div>
+      <div class="rm-item"><span>Vault Housekeeping</span><span class="tag tag-next">next</span></div>
+      <div class="rm-item"><span>Knowledge Graph</span><span class="tag tag-planned">planned</span></div>
+      <div class="rm-item"><span>Mission Control</span><span class="tag tag-planned">planned</span></div>
+      <div class="rm-footer">5 shipped &middot; 4 planned</div>
+    </div>
+  </div>
+
+  <!-- ROW 2: ★ YouTube Digest (full width) -->
+  <div class="row-full">
+    <div class="panel panel-pri">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="panel-title panel-title-pri" style="margin-bottom: 0;">★ YouTube Digest</div>
+        <span style="font-size: 10px; color: #555;">37 processed total</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 10px;">
+        <div>
+          <div class="yt-section">K2B Watch -- recommended to you (2)</div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">Claude Code + Paperclip Destroyed OpenClaw</div>
+              <div class="yt-meta">Nate Herk &middot; 20:33 &middot; nudged Mar 30</div>
+            </div>
+            <div class="yt-actions"><button class="btn btn-watch">Watch</button><button class="btn btn-skip">Skip</button></div>
+          </div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">NotebookLM + Claude Code Workflow</div>
+              <div class="yt-meta">Eric Tech &middot; 12:24 &middot; nudged Mar 30</div>
+            </div>
+            <div class="yt-actions"><button class="btn btn-watch">Watch</button><button class="btn btn-skip">Skip</button></div>
+          </div>
+        </div>
+        <div>
+          <div class="yt-section">K2B Queue -- sent for review (3 recent)</div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">5 Open Source Repos for Claude Code</div>
+              <div class="yt-meta">Mar 31 &middot; vault note created</div>
+            </div>
+            <span class="tag-done">done</span>
+          </div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">Obsidian + AI: The Right Way</div>
+              <div class="yt-meta">Mar 28 &middot; K2B already more advanced</div>
+            </div>
+            <span class="tag-skip">skipped</span>
+          </div>
+          <div class="yt-item">
+            <div>
+              <div class="yt-title">Claude Cowork + Obsidian</div>
+              <div class="yt-meta">Mar 28 &middot; K2B already does this</div>
+            </div>
+            <span class="tag-skip">skipped</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: ★ K2B Intelligence | ★ Skill Activity -->
+  <div class="row-2">
+    <div class="panel" style="border-color: #8b5cf633;">
+      <div class="panel-title" style="color: #8b5cf6;">★ K2B Intelligence</div>
+
+      <div class="intel-section">Pending Confirmation</div>
+      <div class="candidate">
+        <div>
+          <span class="conf-tag">med</span>
+          YouTube pipeline: Telegram → tldr → inbox
+        </div>
+        <div class="yt-actions"><button class="btn btn-confirm">✓</button><button class="btn btn-dismiss">✕</button></div>
+      </div>
+      <div class="candidate">
+        <div>
+          <span class="conf-tag">med</span>
+          MOC updates alongside content changes
+        </div>
+        <div class="yt-actions"><button class="btn btn-confirm">✓</button><button class="btn btn-dismiss">✕</button></div>
+      </div>
+
+      <div class="intel-section">Recently Learned</div>
+      <div class="learning-item"><span class="reinforce r-high">×6</span> Use ssh macmini (Tailscale) for remote</div>
+      <div class="learning-item"><span class="reinforce r-med">×4</span> Always use vault-writer for note creation</div>
+      <div class="learning-item"><span class="reinforce r-low">×1</span> Proxy config needed for Mac Mini APIs</div>
+
+      <div class="intel-section">Observer</div>
+      <div style="font-size: 11px; color: #666;">
+        Last analysis 2h ago &middot; 21 signals &middot; 5 patterns detected<br>
+        <span style="color: #555;">Next: when 20+ new observations</span>
+      </div>
+    </div>
+
+    <div class="panel" style="border-color: #8b5cf633;">
+      <div class="panel-title" style="color: #8b5cf6;">★ Skill Activity <span style="color:#555; text-transform:none; letter-spacing:0;">(7 days)</span></div>
+      <div class="skill-row"><span class="skill-name">vault-writer</span><div class="skill-bar-bg"><div class="skill-bar bar-hot" style="width:100%"></div></div><span class="skill-count">18</span><span class="skill-last">today</span></div>
+      <div class="skill-row"><span class="skill-name">youtube</span><div class="skill-bar-bg"><div class="skill-bar bar-hot" style="width:72%"></div></div><span class="skill-count">13</span><span class="skill-last">today</span></div>
+      <div class="skill-row"><span class="skill-name">tldr</span><div class="skill-bar-bg"><div class="skill-bar bar-warm" style="width:50%"></div></div><span class="skill-count">9</span><span class="skill-last">mar 30</span></div>
+      <div class="skill-row"><span class="skill-name">inbox</span><div class="skill-bar-bg"><div class="skill-bar bar-warm" style="width:39%"></div></div><span class="skill-count">7</span><span class="skill-last">mar 30</span></div>
+      <div class="skill-row"><span class="skill-name">daily-capture</span><div class="skill-bar-bg"><div class="skill-bar bar-warm" style="width:33%"></div></div><span class="skill-count">6</span><span class="skill-last">mar 29</span></div>
+      <div class="skill-row"><span class="skill-name">feedback</span><div class="skill-bar-bg"><div class="skill-bar bar-cold" style="width:17%"></div></div><span class="skill-count">3</span><span class="skill-last">mar 28</span></div>
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a1a; font-size: 10px; color: #ef4444;">
+        ⚠ Never used: meeting-processor, insight-extractor, email
+      </div>
+      <div class="skill-footer">71 invocations &middot; 10 active &middot; 3 dormant</div>
+    </div>
+  </div>
+
+  <!-- ROW 4: Inbox (full width) -->
+  <div class="row-full">
+    <div class="panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div class="panel-title" style="margin-bottom: 0;">Inbox &middot; 3 items</div>
+        <span style="font-size: 11px; color: #888;">0 ready for processing</span>
+      </div>
+      <div class="inbox-row"><span>research-everything-claude-code.md</span><div class="inbox-badges"><span class="badge">research</span><span class="badge">k2b-extract</span><span style="color:#555;font-size:10px">mar 29</span></div></div>
+      <div class="inbox-row"><span>obsidian-knowledge-graph-strategy.md</span><div class="inbox-badges"><span class="badge">feature-idea</span><span class="badge">keith</span><span style="color:#555;font-size:10px">mar 29</span></div></div>
+      <div class="inbox-row"><span>youtube_5-opensource-repos-claude-code.md</span><div class="inbox-badges"><span class="badge">video</span><span class="badge">k2b-extract</span><span style="color:#555;font-size:10px">mar 31</span></div></div>
+    </div>
+  </div>
+
+  <!-- ROW 5: Activity | Tasks | Content Pipeline -->
+  <div class="row-3">
+    <div class="panel">
+      <div class="panel-title">Activity Feed</div>
+      <div class="activity-line"><span class="activity-time">08:15</span> daily note created</div>
+      <div class="activity-line"><span class="activity-time">07:30</span> daily-capture triggered</div>
+      <div class="activity-line"><span class="activity-time">07:05</span> observer: 21 signals analyzed</div>
+      <div class="activity-line"><span class="activity-time">07:00</span> youtube morning completed</div>
+      <div class="activity-sep">yesterday</div>
+      <div class="activity-line"><span class="activity-time">14:00</span> linkedin post published</div>
+      <div class="activity-line"><span class="activity-time">11:30</span> meeting processed</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Scheduled Tasks</div>
+      <div class="task-row"><span class="task-name">YouTube Morning</span><span class="task-schedule">7:00am daily</span></div>
+      <div class="task-row"><span class="task-name">Observer Loop</span><span class="task-schedule">every 5m</span></div>
+      <div style="margin-top: 8px; font-size: 10px; color: #555; border-top: 1px solid #1a1a1a; padding-top: 6px;">next: YouTube 7:00am tomorrow</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Content Pipeline</div>
+      <div class="pipe-flow">
+        <div class="pipe-stage"><div class="pipe-num" style="color:#3b82f6">3</div><div class="pipe-label">ideas</div></div>
+        <span class="pipe-arrow">›</span>
+        <div class="pipe-stage"><div class="pipe-num" style="color:#f59e0b">4</div><div class="pipe-label">adopted</div></div>
+        <span class="pipe-arrow">›</span>
+        <div class="pipe-stage"><div class="pipe-num" style="color:#888">0</div><div class="pipe-label">drafts</div></div>
+        <span class="pipe-arrow">›</span>
+        <div class="pipe-stage"><div class="pipe-num" style="color:#22c55e">0</div><div class="pipe-label">published</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Full Dashboard Layout</h2>
+<p class="subtitle">5 rows, 10 panels. Priority items (★) are Roadmap, YouTube, Intelligence, Skills.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Approved -- write the spec</h3>
+      <p>This layout is right. Proceed to the design document.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Needs tweaks</h3>
+      <p>Close but I want to adjust some panels. I'll describe in terminal.</p>
+    </div>
+  </div>
+</div>

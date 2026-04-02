@@ -9,13 +9,22 @@ description: Find patterns and surface content ideas -- searches the vault to sy
 
 `~/Projects/K2B-Vault`
 
+## Vault Query Tools
+
+- **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
+- **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
+- **Read file**: `mcp__obsidian__get_file_contents` or Read tool
+- **List files**: `mcp__obsidian__list_files_in_dir`
+
+Prefer `mcp__obsidian__search` over Grep for vault-wide content search. Prefer DQL over Glob+Read+Filter for frontmatter queries.
+
 ## Workflow
 
 ### For /insight [topic]:
 1. Search the vault for notes related to [topic]:
-   - Search file contents using Grep tool across the vault
+   - Use `mcp__obsidian__search` to find notes mentioning the topic across the vault (returns ranked results with context)
    - Look in Meetings, Insights, Daily notes, Projects, Decisions
-2. Read the relevant notes
+2. Read the relevant notes (use `mcp__obsidian__get_file_contents` or Read tool)
 3. Synthesize:
    - What patterns appear across multiple notes?
    - What has changed over time?
@@ -25,8 +34,12 @@ description: Find patterns and surface content ideas -- searches the vault to sy
 5. Offer to save as an insight note if the synthesis is valuable
 
 ### For /content (weekly content review):
-1. Read all daily notes from the past 7 days
-2. Read any new meeting notes from the past 7 days
+1. Query recent notes with DQL:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, tags, date FROM "Daily" WHERE date >= date(today) - dur(7 days)'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, tags, date FROM "Notes" WHERE date >= date(today) - dur(7 days)'
+   ```
+2. Read the matching daily notes and meeting notes
 3. Read any new insight notes
 4. Identify:
    - Recurring themes (3+ mentions = pattern)

@@ -1,4 +1,5 @@
 import { request as httpsRequest } from 'node:https'
+import { execSync } from 'node:child_process'
 import { Bot, Context, InlineKeyboard } from 'grammy'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import {
@@ -12,7 +13,7 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
-import { updateRecommendation, getPendingNudges, getScreenPending, readRecommendations, appendFeedbackSignal } from './youtube.js'
+import { updateRecommendation, getPendingNudges, readRecommendations, appendFeedbackSignal } from './youtube.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -350,39 +351,56 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
 
   } else if (action === 'screen-all') {
-    const screenPending = getScreenPending()
-    if (screenPending.length === 0) {
-      await ctx.api.sendMessage(ctx.chat!.id, 'No screen-pending videos found.')
+    // Poll the actual playlist
+    let output: string
+    try {
+      output = execSync(
+        `yt-dlp --flat-playlist --print "%(id)s\\t%(title)s" "https://www.youtube.com/playlist?list=${SCREEN_PLAYLIST_ID}" 2>/dev/null`,
+        { encoding: 'utf-8', timeout: 30_000 }
+      ).trim()
+    } catch (err) {
+      logger.error({ err }, 'Failed to poll Screen playlist for process-all')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Failed to read Screen playlist.')
       return
     }
 
-    await ctx.api.sendMessage(ctx.chat!.id, `Processing ${screenPending.length} videos from Screen...`)
+    if (!output) {
+      await ctx.api.sendMessage(ctx.chat!.id, 'K2B Screen is empty.')
+      return
+    }
+
+    const videos = output.split('\n').map(line => {
+      const [id, title] = line.split('\t')
+      return { id, title: title ?? id }
+    }).filter(v => v.id)
+
+    await ctx.api.sendMessage(ctx.chat!.id, `Processing ${videos.length} videos from Screen...`)
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
 
-    for (let i = 0; i < screenPending.length; i++) {
-      const rec = screenPending[i]
-      await ctx.api.sendMessage(ctx.chat!.id, `[${i + 1}/${screenPending.length}] Processing: "${rec.title}"`)
-      const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${rec.video_id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh). Create a vault note in Inbox/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${rec.video_id}. Log as processed in youtube-processed.md.`
+    for (let i = 0; i < videos.length; i++) {
+      const v = videos[i]
+      await ctx.api.sendMessage(ctx.chat!.id, `[${i + 1}/${videos.length}] Processing: "${v.title}"`)
+      const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${v.id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh). Create a vault note in Inbox/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${v.id}. Log as processed in youtube-processed.md.`
       const screenMarker = markObservationStart()
       try {
         const { text } = await runAgent(prompt)
-        logObservations(screenMarker, `youtube-screen-${rec.video_id}`, prompt)
-        updateRecommendation(rec.video_id, { status: 'processed', outcome: 'screen-processed' })
+        logObservations(screenMarker, `youtube-screen-${v.id}`, prompt)
+        updateRecommendation(v.id, { status: 'processed', outcome: 'screen-processed' })
 
         const result = text ?? '(processed)'
         await ctx.api.sendMessage(
           ctx.chat!.id,
-          formatForTelegram(`Processed: ${rec.title}\n${result}`),
+          formatForTelegram(`Processed: ${v.title}\n${result}`),
           { parse_mode: 'HTML' }
         )
       } catch (err) {
-        logger.error({ err, videoId: rec.video_id }, 'Screen processing failed')
-        await ctx.api.sendMessage(ctx.chat!.id, `Failed to process: ${rec.title}`)
+        logger.error({ err, videoId: v.id }, 'Screen processing failed')
+        await ctx.api.sendMessage(ctx.chat!.id, `Failed to process: ${v.title}`)
       }
       await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     }
 
-    await ctx.api.sendMessage(ctx.chat!.id, `Screen processing complete: ${screenPending.length} videos.`)
+    await ctx.api.sendMessage(ctx.chat!.id, `Screen processing complete: ${videos.length} videos.`)
   }
 }
 
@@ -638,38 +656,54 @@ export async function sendPendingNudges(chatId: string): Promise<number> {
   return sent
 }
 
+const SCREEN_PLAYLIST_ID = 'PLg0PUkz5itjzmQhB2s49SLfmkR-2zntQD'
+
 export async function sendScreenOptions(chatId: string): Promise<number> {
-  const pending = getScreenPending()
-  if (pending.length === 0) return 0
+  // Poll the actual playlist -- not JSONL
+  let output: string
+  try {
+    output = execSync(
+      `yt-dlp --flat-playlist --print "%(id)s\\t%(title)s\\t%(channel)s\\t%(duration_string)s" "https://www.youtube.com/playlist?list=${SCREEN_PLAYLIST_ID}" 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 30_000 }
+    ).trim()
+  } catch (err) {
+    logger.error({ err }, 'Failed to poll K2B Screen playlist')
+    return 0
+  }
 
-  // Send a card for each screen-pending video
-  for (const rec of pending) {
-    const duration = rec.duration ?? ''
-    const meta = [rec.channel, duration].filter(Boolean).join(' -- ')
+  if (!output) return 0
 
-    const text = `<b>K2B Screen</b>\n\n"<b>${rec.title}</b>"\n${meta}`
+  const videos = output.split('\n').map(line => {
+    const [id, title, channel, duration] = line.split('\t')
+    return { id, title: title ?? id, channel: channel ?? '', duration: duration ?? '' }
+  }).filter(v => v.id)
+
+  if (videos.length === 0) return 0
+
+  for (const v of videos) {
+    const meta = [v.channel, v.duration].filter(Boolean).join(' -- ')
+    const text = `<b>K2B Screen</b>\n\n"<b>${v.title}</b>"\n${meta}`
 
     const keyboard = new InlineKeyboard()
-      .text('Process', `youtube:screen-process:${rec.video_id}`)
-      .text('Skip', `youtube:screen-skip:${rec.video_id}`)
+      .text('Process', `youtube:screen-process:${v.id}`)
+      .text('Skip', `youtube:screen-skip:${v.id}`)
 
     await sendTelegramMessageWithButtons(chatId, text, [], keyboard)
   }
 
-  // Send a "Process All" button if there are multiple videos
-  if (pending.length > 1) {
+  if (videos.length > 1) {
     const keyboard = new InlineKeyboard()
-      .text(`Process All (${pending.length})`, 'youtube:screen-all')
+      .text(`Process All (${videos.length})`, 'youtube:screen-all')
 
     await sendTelegramMessageWithButtons(
       chatId,
-      `${pending.length} videos in K2B Screen. Process all at once?`,
+      `${videos.length} videos in K2B Screen. Process all at once?`,
       [],
       keyboard
     )
   }
 
-  return pending.length
+  return videos.length
 }
 
 export async function sendTelegramMessage(

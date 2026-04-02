@@ -23,6 +23,15 @@ Draft LinkedIn posts from Keith's content pipeline, generate post images, and pu
 - Auth Script: `~/Projects/signhub-io/scripts/linkedin-auth.sh`
 - Generated Images: `Assets/images/linkedin_YYYY-MM-DD_slug.png`
 
+## Vault Query Tools
+
+- **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
+- **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
+- **Read file**: `mcp__obsidian__get_file_contents` or Read tool
+- **List files**: `mcp__obsidian__list_files_in_dir`
+
+Prefer DQL queries over Glob+Read+Filter when querying frontmatter across multiple files. Use `mcp__obsidian__search` instead of Grep for vault-wide content search.
+
 ## Commands
 
 ### /linkedin draft \<source\>
@@ -65,7 +74,7 @@ Show recent LinkedIn posts. Engagement metrics available after Community Managem
 
 4. **Search the vault for related material:**
    - Follow `[[wiki links]]` from the source note -- read linked notes
-   - Grep vault for key terms from the source (across Notes/, Daily/, Inbox/)
+   - Use `mcp__obsidian__search` to find notes mentioning key terms from the source (replaces grep across Notes/, Daily/, Inbox/)
    - Look for meetings, insights, daily notes, context that mention the same topics
    - Collect Keith's actual words, specific details, numbers, anecdotes
 
@@ -147,11 +156,15 @@ After text is approved:
 
 ## Workflow: /linkedin draft (no arguments)
 
-1. Glob `Notes/Content-Ideas/content_*.md`
-2. Read each file's frontmatter
-3. Filter to ideas where `platform` includes `linkedin`
-4. Also check `Notes/Insights/insight_*.md` for notes with `content-potential: true`
-5. Show a numbered list:
+1. Query content ideas with LinkedIn platform:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE platform, status, source FROM "Notes/Content-Ideas" WHERE contains(platform, "linkedin")'
+   ```
+2. Query insights with content potential:
+   ```bash
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE domain, content-potential FROM "Notes/Insights" WHERE content-potential = true'
+   ```
+3. Show a numbered list:
 
 ```
 Available content sources for LinkedIn:

@@ -1,4 +1,41 @@
 {
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(git *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(python3 *)",
+      "Bash(node *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(ssh macmini *)",
+      "Bash(rsync *)",
+      "Bash(gws *)",
+      "Bash(jq *)",
+      "Bash(wc *)",
+      "Bash(mkdir *)",
+      "Bash(mv *)",
+      "Bash(cp *)",
+      "Bash(chmod *)",
+      "Bash(curl *)",
+      "Bash(brew *)",
+      "Bash(pm2 *)",
+      "Bash(yt-dlp *)",
+      "Bash(whisper *)",
+      "WebSearch",
+      "WebFetch",
+      "mcp__obsidian__*",
+      "mcp__youtube-transcript__*",
+      "mcp__exa__*",
+      "mcp__minimax__*",
+      "mcp__airtable-keith__*"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

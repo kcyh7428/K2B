@@ -11,11 +11,21 @@ Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct s
 
 Before writing any note, review the lifecycle rules in [[context_k2b-note-lifecycle]] (`Notes/Context/context_k2b-note-lifecycle.md`). That note is the single source of truth for origin tagging, review properties, promote destinations, and the content pipeline.
 
+## Vault Query Tools
+
+- **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
+- **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
+- **Read file**: `mcp__obsidian__get_file_contents` or Read tool
+- **List files**: `mcp__obsidian__list_files_in_dir`
+- **Patch content**: `mcp__obsidian__patch_content` for surgical frontmatter or section updates
+
+Use `mcp__obsidian__search` or `mcp__obsidian__list_files_in_dir` to verify wikilink targets exist. Use `mcp__obsidian__patch_content` for targeted frontmatter updates without rewriting entire files.
+
 ## Before Writing Any Note
 
 1. **Read the appropriate template** from `Templates/` to get the base structure
-2. **Glob the vault** to check if target note already exists (avoid duplicates)
-3. **Glob for link targets** -- before writing `[[person_Firstname-Lastname]]`, confirm the file exists. If not, note it as a stub to create later.
+2. **Check for duplicates** -- use `mcp__obsidian__search` or Glob to check if target note already exists
+3. **Verify link targets** -- before writing `[[person_Firstname-Lastname]]`, use `mcp__obsidian__search` or Glob to confirm the file exists. If not, note it as a stub to create later.
 
 ## Updating Existing Notes
 
@@ -241,7 +251,7 @@ Before writing or editing ANY vault note, run this checklist. Stop and fix issue
 1. **Frontmatter completeness**: All required fields for the note type are present (tags, date, type, origin, up)
 2. **Inbox contract**: If destination is `Inbox/`, review-action and review-notes are present
 3. **Folder placement**: File path matches the convention for its type (see File Locations table above)
-4. **Wikilink integrity**: Glob to verify each `[[target]]` exists. Create stubs for missing targets.
+4. **Wikilink integrity**: Use `mcp__obsidian__search` or Glob to verify each `[[target]]` exists. Create stubs for missing targets.
 5. **MOC link**: `up:` points to a valid MOC that exists at vault root
 6. **No em dashes**: Scan content for em dashes (--) and replace with double hyphens
 7. **Date format**: `date:` field is YYYY-MM-DD
