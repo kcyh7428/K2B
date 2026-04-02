@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-04-02 -- YouTube Telegram Button Fixes + /youtube screen
+
+**Problem**: YouTube morning routine and recommend commands sent plain text to Telegram instead of inline keyboard button cards. Keith never saw Watch/Comment/Skip/Screen buttons for recommended videos.
+
+**Root causes found**:
+1. `sentNudgeIds` was an in-memory `Set` that never cleared -- once a video's nudge was sent, it was blocked forever (until pm2 restart). Changed to `Map<string, number>` with 24h TTL.
+2. `/youtube recommend` skill didn't set `status: "nudge_sent"` in JSONL entries, so `getPendingNudges()` couldn't find new recommendations.
+3. Screen button callback set `status: "processed"` instead of `screen_pending`, making videos invisible to the new screen command.
+4. Scheduler only triggered nudge buttons after `/youtube morning`, not `/youtube recommend`.
+
+**New feature**: `/youtube screen` command with Telegram button cards
+- Polls K2B Screen playlist, writes `screen_pending` entries to JSONL
+- Bot sends individual cards with Process/Skip buttons per video
+- Process All button for batch processing
+- Immediate acknowledgment message when processing starts (can take minutes for transcript extraction)
+- Removed Screen processing from morning routine -- now on-demand only via `/youtube screen`
+
+**Key decisions**:
+- K2B Watch is exclusively populated by `/youtube recommend` -- Keith never adds there manually
+- Keith's manual video additions go to K2B Screen
+- Morning routine is lean: just stale nudge handling, no Screen processing
+- Screen button cards follow same UX pattern as Watch nudge cards
+
+---
+
 ## 2026-04-01 -- Mission Control v2
 
 Major dashboard overhaul: from status board to command center.
