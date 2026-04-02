@@ -11,7 +11,7 @@ export interface YouTubeRecommendation {
   channel: string
   playlist: string
   recommended_date: string
-  status: 'pending' | 'nudge_sent' | 'watched' | 'highlights_sent' | 'skipped' | 'expired' | 'processed'
+  status: 'pending' | 'nudge_sent' | 'watched' | 'highlights_sent' | 'skipped' | 'expired' | 'processed' | 'screen_pending'
   nudge_sent: boolean
   nudge_date: string | null
   outcome: string | null
@@ -90,4 +90,8 @@ export function appendFeedbackSignal(
 
 export function getRecommendationsByStatus(status: string): YouTubeRecommendation[] {
   return readRecommendations().filter(r => r.status === status)
+}
+
+export function getScreenPending(): YouTubeRecommendation[] {
+  return readRecommendations().filter(r => r.status === 'screen_pending')
 }

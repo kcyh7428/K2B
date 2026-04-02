@@ -12,7 +12,7 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
-import { updateRecommendation, getPendingNudges, readRecommendations, appendFeedbackSignal } from './youtube.js'
+import { updateRecommendation, getPendingNudges, getScreenPending, readRecommendations, appendFeedbackSignal } from './youtube.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -178,11 +178,18 @@ async function handleMessage(
       }
     }
 
-    // After YouTube-related messages, send nudge buttons for pending videos
+    // After YouTube-related messages, send appropriate buttons
     if (rawText.toLowerCase().includes('youtube') || rawText.toLowerCase().includes('/youtube')) {
-      const nudged = await sendPendingNudges(chatId)
-      if (nudged > 0) {
-        logger.info({ nudged }, 'Sent YouTube nudge buttons after message')
+      if (rawText.toLowerCase().includes('screen')) {
+        const screenCount = await sendScreenOptions(chatId)
+        if (screenCount > 0) {
+          logger.info({ screenCount }, 'Sent YouTube screen options after message')
+        }
+      } else {
+        const nudged = await sendPendingNudges(chatId)
+        if (nudged > 0) {
+          logger.info({ nudged }, 'Sent YouTube nudge buttons after message')
+        }
       }
     }
   } finally {
@@ -255,7 +262,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 
   } else if (action === 'screen') {
     updateRecommendation(videoId, {
-      status: 'processed',
+      status: 'screen_pending',
       outcome: 'screened',
     })
     appendFeedbackSignal(videoId, 'screen', 'screened-for-processing')
@@ -306,6 +313,76 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       formatForTelegram(`Saved as ${promoteType}: ${result}`),
       { parse_mode: 'HTML' }
     )
+
+  } else if (action === 'screen-process') {
+    await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    const title = rec?.title ?? videoId
+
+    await ctx.api.sendMessage(ctx.chat!.id, `Processing: "${title}"\nGetting transcript and creating vault note -- this may take a few minutes.`)
+    const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh). Create a vault note in Inbox/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${videoId}. Log as processed in youtube-processed.md.`
+    const screenMarker = markObservationStart()
+    const { text } = await runAgent(prompt)
+    logObservations(screenMarker, `youtube-screen-${videoId}`, prompt)
+
+    updateRecommendation(videoId, { status: 'processed', outcome: 'screen-processed' })
+
+    const result = text ?? '(processed)'
+    const formatted = formatForTelegram(result)
+    const chunks = splitMessage(formatted)
+    for (const chunk of chunks) {
+      try {
+        await ctx.api.sendMessage(ctx.chat!.id, chunk, { parse_mode: 'HTML' })
+      } catch {
+        await ctx.api.sendMessage(ctx.chat!.id, chunk.replace(/<[^>]+>/g, ''))
+      }
+    }
+
+  } else if (action === 'screen-skip') {
+    updateRecommendation(videoId, { status: 'skipped', outcome: 'screen-skipped' })
+    appendFeedbackSignal(videoId, 'skip_reason', 'screen-skipped')
+
+    // Remove from Screen playlist in background
+    runAgent(`Remove video ${videoId} from K2B Screen playlist using scripts/yt-playlist-remove.sh`).catch(err =>
+      logger.error({ err, videoId }, 'Failed to remove from Screen playlist')
+    )
+
+    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
+
+  } else if (action === 'screen-all') {
+    const screenPending = getScreenPending()
+    if (screenPending.length === 0) {
+      await ctx.api.sendMessage(ctx.chat!.id, 'No screen-pending videos found.')
+      return
+    }
+
+    await ctx.api.sendMessage(ctx.chat!.id, `Processing ${screenPending.length} videos from Screen...`)
+    await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+
+    for (let i = 0; i < screenPending.length; i++) {
+      const rec = screenPending[i]
+      await ctx.api.sendMessage(ctx.chat!.id, `[${i + 1}/${screenPending.length}] Processing: "${rec.title}"`)
+      const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${rec.video_id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh). Create a vault note in Inbox/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${rec.video_id}. Log as processed in youtube-processed.md.`
+      const screenMarker = markObservationStart()
+      try {
+        const { text } = await runAgent(prompt)
+        logObservations(screenMarker, `youtube-screen-${rec.video_id}`, prompt)
+        updateRecommendation(rec.video_id, { status: 'processed', outcome: 'screen-processed' })
+
+        const result = text ?? '(processed)'
+        await ctx.api.sendMessage(
+          ctx.chat!.id,
+          formatForTelegram(`Processed: ${rec.title}\n${result}`),
+          { parse_mode: 'HTML' }
+        )
+      } catch (err) {
+        logger.error({ err, videoId: rec.video_id }, 'Screen processing failed')
+        await ctx.api.sendMessage(ctx.chat!.id, `Failed to process: ${rec.title}`)
+      }
+      await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+    }
+
+    await ctx.api.sendMessage(ctx.chat!.id, `Screen processing complete: ${screenPending.length} videos.`)
   }
 }
 
@@ -518,7 +595,7 @@ export function createBot(): Bot {
   return bot
 }
 
-const sentNudgeIds = new Set<string>()
+const sentNudgeIds = new Map<string, number>()  // video_id -> timestamp when nudge was sent
 const awaitingComment = new Map<string, string>()  // chatId -> videoId awaiting comment
 
 export async function sendPendingNudges(chatId: string): Promise<number> {
@@ -526,7 +603,8 @@ export async function sendPendingNudges(chatId: string): Promise<number> {
   let sent = 0
 
   for (const rec of pending) {
-    if (sentNudgeIds.has(rec.video_id)) continue
+    const lastSent = sentNudgeIds.get(rec.video_id)
+    if (lastSent && Date.now() - lastSent < 24 * 60 * 60 * 1000) continue
 
     const isRenudge = rec.nudge_date && rec.nudge_date < new Date().toISOString().slice(0, 10)
     const prefix = isRenudge ? `Still in your Watch list (added ${rec.nudge_date}):` : '<b>K2B YouTube Recommendation</b>'
@@ -553,11 +631,45 @@ export async function sendPendingNudges(chatId: string): Promise<number> {
       .text('Screen', `youtube:screen:${rec.video_id}`)
 
     await sendTelegramMessageWithButtons(chatId, text, [], keyboard)
-    sentNudgeIds.add(rec.video_id)
+    sentNudgeIds.set(rec.video_id, Date.now())
     sent++
   }
 
   return sent
+}
+
+export async function sendScreenOptions(chatId: string): Promise<number> {
+  const pending = getScreenPending()
+  if (pending.length === 0) return 0
+
+  // Send a card for each screen-pending video
+  for (const rec of pending) {
+    const duration = rec.duration ?? ''
+    const meta = [rec.channel, duration].filter(Boolean).join(' -- ')
+
+    const text = `<b>K2B Screen</b>\n\n"<b>${rec.title}</b>"\n${meta}`
+
+    const keyboard = new InlineKeyboard()
+      .text('Process', `youtube:screen-process:${rec.video_id}`)
+      .text('Skip', `youtube:screen-skip:${rec.video_id}`)
+
+    await sendTelegramMessageWithButtons(chatId, text, [], keyboard)
+  }
+
+  // Send a "Process All" button if there are multiple videos
+  if (pending.length > 1) {
+    const keyboard = new InlineKeyboard()
+      .text(`Process All (${pending.length})`, 'youtube:screen-all')
+
+    await sendTelegramMessageWithButtons(
+      chatId,
+      `${pending.length} videos in K2B Screen. Process all at once?`,
+      [],
+      keyboard
+    )
+  }
+
+  return pending.length
 }
 
 export async function sendTelegramMessage(

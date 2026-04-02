@@ -114,7 +114,7 @@ Commands are organized by what you're trying to do: capture something, think abo
 
 **`/tldr`** -- Save this conversation. Extract key decisions, action items, and insights. Always saves to `Inbox/`.
 
-**`/youtube [subcommand]`** -- YouTube knowledge pipeline. `/youtube` polls all playlists manually. `/youtube <url>` processes a single video. `/youtube recommend` finds new videos. `/youtube morning` runs the automated daily routine (nudge unwatched, poll inbound, send via Telegram). `/youtube status` shows stats. Morning routine runs automatically at 7am HKT via scheduler.
+**`/youtube [subcommand]`** -- YouTube knowledge pipeline. `/youtube` polls all playlists manually. `/youtube <url>` processes a single video. `/youtube recommend` finds new videos. `/youtube screen` shows K2B Screen playlist and lets Keith pick which to process. `/youtube morning` runs the automated daily routine (nudge unwatched). `/youtube status` shows stats. Morning routine runs automatically at 7am HKT via scheduler.
 
 **`/email`** -- Read and triage Gmail. Search, read, draft replies. Never sends -- only drafts.
 

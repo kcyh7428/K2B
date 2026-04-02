@@ -13,7 +13,8 @@ Process YouTube videos saved to playlists with playlist-specific analysis. Also 
 - `/youtube <url>` -- Process a single YouTube video (standard analysis)
 - `/youtube recommend` -- Run the recommendation engine (find new videos, add to K2B Watch)
 - `/youtube status` -- Show processing stats and playlist config
-- `/youtube morning` -- Automated morning routine: nudge unwatched videos, poll inbound playlists (runs daily via scheduler, can also run manually)
+- `/youtube screen` -- Show videos in K2B Screen playlist, choose which to process
+- `/youtube morning` -- Automated morning routine: nudge unwatched videos (runs daily via scheduler, can also run manually)
 
 ## Paths
 
@@ -313,6 +314,19 @@ Output as JSON: {"verdict": "...", "verdict_value": "HIGH|MEDIUM|LOW", "pillars_
 
 5. Add each picked video to K2B Watch playlist: `scripts/yt-playlist-add.sh <playlist-id> <video-id>`
 6. For each video added, append to youtube-recommended.jsonl with fields:
+    - `ts` (ISO timestamp)
+    - `video_id` (YouTube video ID)
+    - `title` (video title)
+    - `channel` (channel name)
+    - `playlist` ("K2B Watch")
+    - `recommended_date` ("YYYY-MM-DD" today)
+    - `status`: "nudge_sent"
+    - `nudge_sent`: true
+    - `nudge_date`: "YYYY-MM-DD" (today)
+    - `outcome`: null
+    - `rating`: null
+    - `promoted_to`: null
+    - `vault_note`: null
     - `topics` (from the search query)
     - `search_query` (the query that found it)
     - `pick_reason` (one-line explanation)
@@ -369,65 +383,60 @@ For each, calculate hours since `nudge_date`:
 
 - If **>48 hours** old: mark `status: "expired"` in JSONL, append feedback signal with `signal_type: "expiry"`, remove from K2B Watch playlist via `scripts/yt-playlist-remove.sh`.
 
-### 2. Check K2B Watch for New Additions
-
-Poll K2B Watch playlist:
-```bash
-~/Projects/K2B/scripts/yt-playlist-poll.sh "<watch-playlist-url>" "~/Projects/K2B-Vault/Notes/Context/youtube-processed.md" --max 10
-```
-
-For each video found:
-1. Check if `video_id` exists in `youtube-recommended.jsonl` -- if yes, skip (already tracked)
-2. Get video metadata via `mcp__youtube-transcript__get_transcript` or `get_video_info`
-3. Append entry to `youtube-recommended.jsonl`:
-   ```json
-   {"ts":"...","video_id":"...","title":"...","channel":"...","playlist":"K2B Watch","recommended_date":"YYYY-MM-DD","status":"nudge_sent","nudge_sent":true,"nudge_date":"YYYY-MM-DD","outcome":null,"rating":null}
-   ```
-4. Send Telegram nudge with 4 buttons. For Keith's manual adds (no verdict), use "Added by you" instead of a verdict:
-   ```
-   New in your Watch list (added by you):
-
-   "{title}"
-   {channel} -- {duration}
-
-   [Watch]  [Comment]
-   [Skip]   [Screen]
-   ```
-
-### 3. Process K2B Screen
-
-Poll ONLY the K2B Screen playlist (`type: inbound`). This is the screening playlist where Keith drops videos for K2B to evaluate and process.
-
-```bash
-~/Projects/K2B/scripts/yt-playlist-poll.sh "<screen-playlist-url>" "~/Projects/K2B-Vault/Notes/Context/youtube-processed.md" --max 5
-```
-
-For each new video:
-1. Check if `video_id` exists in `youtube-recommended.jsonl` -- if yes, skip
-2. Process via the standard capture pipeline (transcript, analysis, vault note in Inbox/)
-3. Append to `youtube-recommended.jsonl` with `status: "processed"`
-4. Send Telegram notification: "Screened and processed: {title}. Note in Inbox."
-
-**Do NOT auto-process other playlists.** K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn are Keith's category playlists. He processes those manually with `/youtube` when he's ready.
+**Do NOT auto-process other playlists.** K2B Screen is processed on-demand via `/youtube screen`. K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn are Keith's category playlists -- processed manually with `/youtube`.
 
 ### Playlist Roles
 
-| Playlist | Type | Morning behavior |
-|----------|------|-----------------|
-| K2B Screen | inbound | Auto-process (Keith dropped videos for K2B to screen and evaluate) |
-| K2B Watch | outbound | Nudge only (buttons, no processing until Keith decides) |
+| Playlist | Type | Behavior |
+|----------|------|----------|
+| K2B Screen | inbound | On-demand via `/youtube screen`. Keith drops videos here for K2B to evaluate. |
+| K2B Watch | outbound | Nudge only (buttons via morning routine). Populated exclusively by `/youtube recommend` -- Keith never adds here manually. |
 | K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn | category | Not touched by morning. Keith runs `/youtube` manually. |
 
-### 4. Summary
+### 2. Summary
 
 After all checks, send one summary message:
 ```
 YouTube Morning Report:
 - {N} stale nudges handled ({M} re-nudged, {K} expired)
-- {N} new Watch videos nudged
-- {N} Screen videos processed
 - Preference profile: fresh / stale (last updated YYYY-MM-DD)
 ```
+
+## Workflow: Screen (`/youtube screen`)
+
+On-demand processing of videos in the K2B Screen playlist. Keith drops videos here when he wants K2B to evaluate and create vault notes. Uses Telegram button cards so Keith can pick which videos to process.
+
+### 1. Poll K2B Screen Playlist
+
+```bash
+~/Projects/K2B/scripts/yt-playlist-poll.sh "<screen-playlist-url>" "~/Projects/K2B-Vault/Notes/Context/youtube-processed.md" --max 10
+```
+
+If the playlist is empty: "K2B Screen is empty. Nothing to process." and stop.
+
+### 2. Write Screen-Pending Entries
+
+For each video found in the playlist:
+1. Check if `video_id` exists in `youtube-recommended.jsonl` -- if yes and status is already `processed`, skip
+2. Get video metadata via `mcp__youtube-transcript__get_video_info` or YouTube API
+3. Append to (or update in) `youtube-recommended.jsonl` with:
+   - `status`: "screen_pending"
+   - `nudge_sent`: false
+   - `playlist`: "K2B Screen"
+   - All standard fields (`ts`, `video_id`, `title`, `channel`, `duration`, `recommended_date`, etc.)
+
+### 3. Report Count
+
+Output a short summary: "Found {N} videos in K2B Screen. Sending buttons."
+
+The k2b-remote bot automatically detects the `/youtube screen` command and sends Telegram button cards for each `screen_pending` entry. Each card shows:
+- Video title, channel, duration
+- **Process** button -- triggers full capture pipeline (transcript, vault note, remove from playlist)
+- **Skip** button -- marks as skipped, removes from playlist
+
+If multiple videos, a "Process All" button is also sent.
+
+Keith taps buttons in Telegram to choose. The bot handles processing via agent callbacks -- no further skill involvement needed.
 
 ## Workflow: Status (`/youtube status`)
 

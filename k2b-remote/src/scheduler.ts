@@ -2,7 +2,7 @@ import cronParser from 'cron-parser'
 import { getDueTasks, updateTaskAfterRun, updateTaskNextRun, deleteTask } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
-import { sendPendingNudges } from './bot.js'
+import { sendPendingNudges, sendScreenOptions } from './bot.js'
 import { ALLOWED_CHAT_ID } from './config.js'
 import { markObservationStart, logObservations } from './observe.js'
 
@@ -65,11 +65,18 @@ async function runDueTasks(): Promise<void> {
 
       await sendFn(task.chat_id, result)
 
-      // After YouTube morning task, send nudge buttons for any pending videos
-      if (task.prompt.includes('/youtube morning') && ALLOWED_CHAT_ID) {
-        const nudged = await sendPendingNudges(ALLOWED_CHAT_ID)
-        if (nudged > 0) {
-          logger.info({ nudged }, 'Sent YouTube nudge buttons')
+      // After YouTube tasks, send appropriate buttons
+      if (ALLOWED_CHAT_ID) {
+        if (task.prompt.includes('/youtube screen')) {
+          const screenCount = await sendScreenOptions(ALLOWED_CHAT_ID)
+          if (screenCount > 0) {
+            logger.info({ screenCount }, 'Sent YouTube screen options')
+          }
+        } else if (task.prompt.includes('/youtube morning') || task.prompt.includes('/youtube recommend')) {
+          const nudged = await sendPendingNudges(ALLOWED_CHAT_ID)
+          if (nudged > 0) {
+            logger.info({ nudged }, 'Sent YouTube nudge buttons')
+          }
         }
       }
 
