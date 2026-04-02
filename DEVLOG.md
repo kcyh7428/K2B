@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-04-02 -- Slim CLAUDE.md from 268 to 161 lines
+
+**What was built/changed:**
+- Slimmed CLAUDE.md by removing skill-specific detail that's duplicated in SKILL.md files (loaded on-demand)
+- Removed: Skill Data Flow ASCII diagram, detailed /inbox workflow, /observe subcommand descriptions, Mac Mini deploy commands, Background Observer implementation details
+- Compressed: Slash commands to one-liners, vault structure tree, content pipeline, file conventions
+- All behavioral rules preserved intact
+- Synced to Mac Mini
+- Logged feature request R-2026-04-02-001: observer should harvest review-notes from archived items
+
+**Files affected:**
+- CLAUDE.md (268 -> 161 lines, ~40% reduction)
+
+**Key decisions:**
+- Pure subtraction approach: no skill files needed editing since all removed detail already existed in corresponding SKILL.md files
+- Inbox Write Contract rule relocated from Skill Data Flow section to Vault Structure section
+
+**Status:**
+- What works: All behavioral rules intact, slimmed file synced to Mac Mini
+- What's next: Smoke test in fresh session to confirm skill routing still works with compressed slash command descriptions
+
+---
+
 ## 2026-04-02 -- YouTube Telegram Button Fixes + /youtube screen
 
 **Problem**: YouTube morning routine and recommend commands sent plain text to Telegram instead of inline keyboard button cards. Keith never saw Watch/Comment/Skip/Screen buttons for recommended videos.
