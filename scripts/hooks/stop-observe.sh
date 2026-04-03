@@ -44,24 +44,32 @@ fi
 
 # Only log if there's something meaningful to capture
 if [ -n "$recent_vault_changes" ]; then
+  # Read active skill from PostToolUse tracker (set by post-tool-skill-track.sh)
+  tracked_skill=""
+  if [ -f /tmp/k2b-current-skill ]; then
+    tracked_skill=$(cat /tmp/k2b-current-skill 2>/dev/null || true)
+  fi
+
   # Build observation entries for each changed file
   while IFS= read -r filepath; do
     [ -z "$filepath" ] && continue
     # Get relative path from vault root
     relpath="${filepath#$VAULT/}"
-    # Detect skill from file path patterns
-    skill="unknown"
-    case "$relpath" in
-      Inbox/content_*) skill="k2b-insight-extractor" ;;
-      Inbox/*tldr*) skill="k2b-tldr" ;;
-      Inbox/*youtube*|Inbox/*video*) skill="k2b-youtube-capture" ;;
-      Daily/*) skill="k2b-daily-capture" ;;
-      Notes/People/*) skill="k2b-vault-writer" ;;
-      Notes/Projects/*) skill="k2b-vault-writer" ;;
-      Notes/Content-Ideas/*) skill="k2b-inbox" ;;
-      Archive/*) skill="k2b-inbox" ;;
-      Notes/Context/preference-*) skill="k2b-observer" ;;
-    esac
+    # Prefer tracked skill from PostToolUse hook; fall back to path-based guess
+    skill="${tracked_skill:-unknown}"
+    if [ "$skill" = "unknown" ]; then
+      case "$relpath" in
+        Inbox/content_*) skill="k2b-insight-extractor" ;;
+        Inbox/*tldr*) skill="k2b-tldr" ;;
+        Inbox/*youtube*|Inbox/*video*) skill="k2b-youtube-capture" ;;
+        Daily/*) skill="k2b-daily-capture" ;;
+        Notes/People/*) skill="k2b-vault-writer" ;;
+        Notes/Projects/*) skill="k2b-vault-writer" ;;
+        Notes/Content-Ideas/*) skill="k2b-inbox" ;;
+        Archive/*) skill="k2b-inbox" ;;
+        Notes/Context/preference-*) skill="k2b-observer" ;;
+      esac
+    fi
 
     # Detect action from file location
     action="modify"
