@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-04-04 -- Redesign /daily from blank template to multi-turn compilation
+
+**What was built/changed:**
+- Full rewrite of k2b-daily-capture SKILL.md -- flipped from "blank morning template" to "end-of-day compilation from existing captures"
+- New model: K2B harvests Telegram messages (via SSH to Mac Mini SQLite), vault notes created today, TLDRs, and yesterday's open loops, then classifies into context sections and refines through conversation
+- Sections are dynamic: SJM Work, Signhub/TalentSignals/Agency at Scale, K2B Build, Insights, Content Seeds, Open Loops -- only rendered if they have content
+- Morning mode: brief open-loops-only view, not a full template
+- Channel-aware: full preview on terminal, compact summary on Telegram
+- Multi-turn conversation flow: harvest -> draft -> ask about gaps -> Keith refines -> save
+- Simplified daily-note.md template (vault) -- removed blank prompts, now just frontmatter + dynamic section comments
+- New eval.json with 4 test cases: mixed Telegram classification, quiet day, morning mode, all-Telegram with voice notes
+
+**Files affected:**
+- .claude/skills/k2b-daily-capture/SKILL.md (full rewrite)
+- .claude/skills/k2b-daily-capture/eval/eval.json (4 new test cases)
+- K2B-Vault/Templates/daily-note.md (simplified)
+
+**Key decisions:**
+- /daily is a conversation, not a one-shot generator. K2B asks clarifying questions before saving.
+- Git log excluded from K2B Build section -- /daily captures the day as an executive, not a changelog
+- Telegram messages are mixed across all contexts (SJM, side ventures, personal) -- skill must classify, not assume
+- Design originated from Keith's Claude Chat spec, refined through discussion about message classification and iterative flow
+
+---
+
 ## 2026-04-04 -- Stabilization audit, memory layer fix, inbox processing
 
 **What was built/changed:**
