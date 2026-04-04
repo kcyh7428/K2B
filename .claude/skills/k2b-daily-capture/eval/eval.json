@@ -1,33 +1,52 @@
 {
   "tests": [
     {
-      "prompt": "Create a daily note for 2026-03-25. Today's calendar has: 9am Team Standup, 11am 1:1 with Gerard Walker, 2pm Interview Panel for Senior Data Engineer.",
-      "expected_output": "A daily note with calendar events pre-populated",
+      "prompt": "Run /daily for 2026-04-03 (evening). Today's Telegram messages include: 'Had a call with Gerard about grad program timeline - he wants to push to Q3', 'TalentSignals demo went well, Andrew closing the lead', 'Content idea: how corporate TA leaders actually use AI day to day', and a voice note '[Voice transcribed]: Met with the SJM procurement team about ATS renewal, they want three vendor options by Friday'. Yesterday's daily note (2026-04-02) has open loops: '- [ ] Follow up with Anna on JD draft' and '- [ ] Review ATS vendor shortlist'.",
+      "expected_output": "A compiled daily note with SJM Work, Signhub/TalentSignals, Content Seeds, and Open Loops sections. Should ask clarifying questions before saving.",
       "assertions": [
-        "Does the output use the file path Daily/2026-03-25.md?",
-        "Does the YAML frontmatter include tags with [daily] and the date 2026-03-25?",
-        "Does it include a Meetings section with at least 3 calendar entries?",
-        "Does it include wikilinks to people mentioned (e.g., [[person_Gerard-Walker]])?"
+        "Does the output use the file path Daily/2026-04-03.md?",
+        "Does the YAML frontmatter include tags with [daily] and the date 2026-04-03?",
+        "Does it classify the Gerard call and ATS renewal under SJM Work (not under another section)?",
+        "Does it classify the TalentSignals demo under Signhub / TalentSignals / Agency at Scale?",
+        "Does it classify the content idea under Content Seeds?",
+        "Does it carry forward at least one open loop from yesterday?",
+        "Does K2B ask at least one clarifying question about the captures before saving?",
+        "Are empty sections omitted (no K2B Build section since there was no build activity)?",
+        "Does it treat the voice transcription the same as regular text messages?"
       ]
     },
     {
-      "prompt": "Create a daily note for 2026-03-26. Yesterday's note (2026-03-25) had these open loops: '- [ ] Follow up with Anna on JD draft' and '- [ ] Send budget proposal to Gerard'. No calendar events today.",
-      "expected_output": "A daily note that carries forward open loops from yesterday",
+      "prompt": "Run /daily for 2026-04-04 (evening). No Telegram messages today. One TLDR exists in Inbox: '2026-04-04_tldr-daily-redesign.md' about redesigning the /daily skill. Yesterday's daily note has open loop: '- [ ] Send ATS vendor shortlist to procurement'. No other vault notes created today.",
+      "expected_output": "A minimal daily note with just K2B Build and Open Loops. Should note the quiet day and ask if anything was missed.",
       "assertions": [
-        "Does it reference yesterday's note as [[2026-03-25]] somewhere in the content?",
-        "Does it carry forward or mention the open loop about Anna's JD draft?",
-        "Does it carry forward or mention the open loop about the budget proposal?",
-        "Does the file naming follow the YYYY-MM-DD.md convention?"
+        "Does it include K2B Build section referencing the daily redesign work?",
+        "Does it carry forward the ATS vendor shortlist open loop?",
+        "Does it omit SJM Work section (no SJM captures)?",
+        "Does it omit Signhub / TalentSignals section (no side venture captures)?",
+        "Does K2B ask something like 'quiet day for SJM - anything I missed?' or similar?",
+        "Does each section use bullet points, not paragraphs?"
       ]
     },
     {
-      "prompt": "Create a daily note for 2026-03-27. Calendar has: 10am Hiring Freeze Briefing, 3pm TalentSignals Sprint Review. No open loops from yesterday.",
-      "expected_output": "A clean daily note with calendar events and no carry-forwards",
+      "prompt": "Run /daily for 2026-04-05 (morning). No Telegram messages yet today. Yesterday's daily note (2026-04-04) has open loops: '- [ ] Send ATS vendor shortlist to procurement' and '- [ ] Follow up with Andrew on TalentSignals pricing'.",
+      "expected_output": "A brief morning mode response showing yesterday's open loops and inviting Keith to capture throughout the day.",
       "assertions": [
-        "Does it include a Content Seeds section (even if empty)?",
-        "Does the Meetings section include wikilinks in [[YYYY-MM-DD_Meeting-Topic]] format for the calendar events?",
-        "Does it avoid em dashes?",
-        "Does the YAML frontmatter include type: daily?"
+        "Does it show yesterday's open loops (ATS vendor shortlist and TalentSignals pricing)?",
+        "Does it link to yesterday's note as [[2026-04-04]]?",
+        "Does it NOT create a full compiled daily note (morning mode should be brief)?",
+        "Does it suggest running /daily again later to compile?",
+        "Does the filename follow YYYY-MM-DD.md convention?"
+      ]
+    },
+    {
+      "prompt": "Run /daily for 2026-04-06 (evening). Telegram messages: 'Spent the whole day at the recruitment fair, talked to maybe 200 candidates', 'The booth design was terrible, need to escalate to marketing', '[Voice transcribed]: Quick thought - the grad program pipeline numbers are actually better than last year, might be worth a LinkedIn post about how we turned it around'. No yesterday open loops. No TLDRs.",
+      "expected_output": "A daily note with SJM Work, Content Seeds, and possibly Insights. All from Telegram captures only.",
+      "assertions": [
+        "Does it classify recruitment fair activity under SJM Work?",
+        "Does it classify the LinkedIn post idea under Content Seeds?",
+        "Does it handle the voice transcription without treating it differently from text?",
+        "Are there no empty sections with blank bullets?",
+        "Does it ask at least one question (e.g., about the marketing escalation or any open loops)?"
       ]
     }
   ]
