@@ -288,7 +288,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     )
 
     // Optional reason: log skip immediately, then ask why
-    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped. Why?')
+    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Watch playlist. Why?')
     awaitingComment.set(chatId, `skip:${videoId}`)
 
   } else if (action === 'promote') {

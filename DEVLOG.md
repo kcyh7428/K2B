@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-04-04 -- Stabilization audit, memory layer fix, inbox processing
+
+**What was built/changed:**
+- Full K2B stabilization audit comparing architecture against Cole Medin's second brain framework
+- Audit covers: architecture health (5 layers), recurring friction analysis (30+ learnings categorized), skill-by-skill status (18 skills), k2b-remote health, config parity, reference implementation comparison
+- Fixed memory layer: split learnings into two tiers -- active_rules.md (12 distilled behavioral rules, loaded every session) + self_improve_learnings.md (historical reference, not loaded at startup)
+- Session-start hook rewritten to load active_rules.md instead of broken reinforcement threshold filter (was >= 6, max in file was 3, so zero learnings ever surfaced)
+- Weekly memory promotion task scheduled (Sunday 10am HKT) -- reviews new learnings + observer candidates, updates active rules, prunes stale rules
+- Fixed Telegram bot skip confirmation: "Skipped. Why?" -> "Skipped and removed from Watch playlist. Why?" (UX clarity)
+- Updated settings.json permission allowlist: added ~20 missing bash commands, fixed MCP tool names to actual IDs, added all MCP servers
+- Processed 3 inbox items (1 deleted, 2 archived with review-notes for observer)
+- Captured learning L-2026-04-04-001: "shipped != finished" -- features aren't done until config surface is complete
+
+**Files affected:**
+- scripts/hooks/session-start.sh (active_rules.md loading replaces broken filter)
+- .claude/settings.json (permission allowlist expanded + MCP names fixed)
+- k2b-remote/src/bot.ts (skip confirmation message)
+- memory/active_rules.md (new -- 12 distilled rules)
+- memory/MEMORY.md (index updated)
+- memory/self_improve_learnings.md (new learning added)
+- K2B-Vault/Inbox/2026-04-04_k2b-stabilization-audit.md (new audit note)
+- K2B-Vault/Notes/Context/preference-signals.jsonl (3 new signals)
+- K2B-Vault/Notes/Context/self-improve-errors.jsonl (1 new error logged)
+
+**Key decisions:**
+- Memory layer follows capture -> distill -> apply -> prune loop (inspired by Cole Medin's daily reflection pattern)
+- Active rules capped at ~15 entries to stay concise and always-loaded
+- Audit is findings-only, no prescriptions -- Keith reviews and decides what to act on
+- Mac Mini settings.json still needs the updated permissions (noted as config drift in audit)
+
+---
+
 ## 2026-04-02 -- Slim CLAUDE.md from 268 to 161 lines
 
 **What was built/changed:**

@@ -54,26 +54,11 @@ if [ -f "$candidates" ] && [ -s "$candidates" ]; then
   output+="$(cat "$candidates")"$'\n\n'
 fi
 
-# --- 4. Load high-confidence learnings ---
-learnings_file=$(find /Users/keithmbpm2/.claude/projects/ -name "self_improve_learnings.md" -type f 2>/dev/null | head -1)
-if [ -f "$learnings_file" 2>/dev/null ]; then
-  # Extract learnings with Reinforced >= 6 (high confidence)
-  high_conf=$(awk '
-    /^### L-/ { entry=""; collecting=1; next }
-    collecting && /^\*\*Reinforced:\*\*/ {
-      match($0, /[0-9]+/);
-      count = substr($0, RSTART, RLENGTH) + 0;
-      if (count >= 6) { print entry; print $0 }
-      collecting=0;
-      next
-    }
-    collecting { entry = entry "\n" $0 }
-  ' "$learnings_file" 2>/dev/null)
-
-  if [ -n "$high_conf" ]; then
-    output+="HIGH-CONFIDENCE LEARNINGS (apply these):"$'\n'
-    output+="$high_conf"$'\n\n'
-  fi
+# --- 4. Load active rules ---
+active_rules=$(find ~/.claude/projects/ -name "active_rules.md" -type f 2>/dev/null | head -1)
+if [ -f "$active_rules" 2>/dev/null ]; then
+  output+="ACTIVE RULES (follow these every session):"$'\n'
+  output+="$(cat "$active_rules")"$'\n\n'
 fi
 
 # --- Output ---
