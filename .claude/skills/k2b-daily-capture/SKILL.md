@@ -21,7 +21,7 @@ Gather from all available sources in parallel:
 
 **a) Telegram messages from k2b-remote (Mac Mini):**
 ```bash
-ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/k2b.db \
+ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/store/k2b-remote.db \
   \"SELECT content, created_at FROM memories \
     WHERE chat_id='8394008217' \
     AND created_at >= $(date -u -d 'today 00:00' +%s)000 \
@@ -29,7 +29,7 @@ ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/k2b.db \
 ```
 On macOS the date command differs -- use:
 ```bash
-ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/k2b.db \
+ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/store/k2b-remote.db \
   \"SELECT content, created_at FROM memories \
     WHERE chat_id='8394008217' \
     AND created_at >= $(python3 -c 'import datetime; print(int(datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp() * 1000))') \
