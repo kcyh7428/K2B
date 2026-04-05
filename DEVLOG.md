@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-04-05 -- Memory sync architecture fix (symlink to vault)
+
+**What was built/changed:**
+- Fixed memory drift between MacBook and Mac Mini: Claude Code memory dir `~/.claude/projects/-Users-{user}-Projects-K2B/memory/` is machine-local and doesn't sync via Syncthing or /sync
+- Weekly promotion task (Sunday 10am HKT) ran on Mac Mini and created a fresh active_rules.md with only 2 rules, while MacBook had 12 rules -- Telegram-K2B was missing 10 behavioral rules
+- Solution: symlink the machine-local memory dir to `K2B-Vault/System/memory/` on both machines
+- Moved all 13 memory files to `K2B-Vault/System/memory/`
+- Replaced machine-local memory dirs with symlinks pointing to vault location
+- Syncthing now handles memory sync automatically
+- Zero code changes: session-start hook's `find` command follows symlinks transparently
+- Deleted backup directories after verifying both machines read correctly through symlinks
+
+**Files affected:**
+- K2B-Vault/System/memory/ (new canonical location, 13 files)
+- ~/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory (now symlink)
+- ~/.claude/projects/-Users-fastshower-Projects-K2B/memory (now symlink, on Mac Mini)
+- CLAUDE.md (documented memory sync architecture)
+- K2B-Vault/System/memory/reference_mac_mini.md (documented symlink setup)
+
+**Key decisions:**
+- Symlink approach chosen over moving files + updating hook paths: zero code changes, works for MEMORY.md auto-loading by Claude Code harness
+- Memory files live in vault under `System/` (non-standard folder to discourage accidental Obsidian edits)
+- Scheduled tasks on either machine now write to the shared location automatically
+- Architecture supports future machines: just create a symlink from their machine-local path to the vault
+
+---
+
 ## 2026-04-04 -- Redesign /daily from blank template to multi-turn compilation
 
 **What was built/changed:**

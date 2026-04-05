@@ -30,6 +30,7 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - **Paths**: Project `/Users/fastshower/Projects/K2B/`, Vault `/Users/fastshower/Projects/K2B-Vault/`
 - **pm2 processes**: `k2b-remote` (Telegram bot), `k2b-observer-loop` (background observer)
 - Vault syncs via Syncthing. Code does NOT auto-sync -- use /sync to deploy project changes.
+- **Memory sync**: Claude Code memory dir is symlinked to `K2B-Vault/System/memory/` on both machines. Active rules, learnings, errors, and requests stay in sync automatically via Syncthing.
 
 ## Vault Structure
 
