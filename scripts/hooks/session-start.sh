@@ -5,8 +5,8 @@
 
 set -euo pipefail
 
-VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
-K2B="/Users/keithmbpm2/Projects/K2B"
+VAULT="$HOME/Projects/K2B-Vault"
+K2B="$HOME/Projects/K2B"
 CONTEXT_DIR="$VAULT/Notes/Context"
 
 output=""
@@ -55,7 +55,7 @@ if [ -f "$candidates" ] && [ -s "$candidates" ]; then
 fi
 
 # --- 4. Load active rules ---
-active_rules=$(find ~/.claude/projects/ -name "active_rules.md" -type f 2>/dev/null | head -1)
+active_rules=$(find -L ~/.claude/projects/ -name "active_rules.md" -type f 2>/dev/null | head -1)
 if [ -f "$active_rules" 2>/dev/null ]; then
   output+="ACTIVE RULES (follow these every session):"$'\n'
   output+="$(cat "$active_rules")"$'\n\n'
