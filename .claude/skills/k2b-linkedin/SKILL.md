@@ -11,11 +11,17 @@ Draft LinkedIn posts from Keith's content pipeline, generate post images, and pu
 
 `~/Projects/K2B-Vault`
 
+## Vault Redesign Note
+
+LinkedIn drafts remain in `Inbox/` as an exception to the content-ideas-only rule -- they need Keith's approval before publishing. This is tracked in k2b-inbox as an expected Inbox item type alongside k2b-generate content ideas.
+
+On publish, update `Notes/Content-Ideas/index.md` and append to `System/log.md`.
+
 ## Key Paths
 
 - Content Ideas: `Notes/Content-Ideas/content_*.md`
 - Insights: `Notes/Insights/insight_*.md`
-- Drafts: `Inbox/linkedin_YYYY-MM-DD_slug.md`
+- Drafts: `Inbox/linkedin_YYYY-MM-DD_slug.md` (stays in Inbox until published -- exception to content-ideas-only rule)
 - Brand Voice: `~/Projects/K2B/.claude/skills/k2b-linkedin/resource.md`
 - Publish Script: `~/Projects/K2B/scripts/linkedin-publish.sh`
 - Status Script: `~/Projects/K2B/scripts/linkedin-status.sh`
@@ -198,6 +204,8 @@ Insights with content potential:
       - Update draft frontmatter: `status: published`, `post-urn: <urn>`
       - Update source content idea: add `## Published Posts` section with link to draft
       - Log to resource.md Post Performance table (date, slug, chars, image y/n)
+      - **Update `Notes/Content-Ideas/index.md`** if source content idea was updated
+      - **Append to `System/log.md`**: record publish action with post-urn
    d. On failure:
       - If 401: "Token expired. Run: `cd ~/Projects/signhub-io/scripts && ./linkedin-auth.sh`"
       - If rate limit: "LinkedIn rate limit hit. Try again later."

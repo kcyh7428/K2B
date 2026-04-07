@@ -1,9 +1,15 @@
 ---
 name: k2b-inbox
-description: Review and process pending items -- triage inbox notes by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /inbox, "check inbox", "process inbox", "what's in inbox", or wants to review/triage Inbox items.
+description: Review and process pending content ideas and LinkedIn drafts -- triage Inbox notes (now content-ideas-only queue) by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /inbox, "check inbox", "process inbox", "what's in inbox", or wants to review/triage Inbox items.
 ---
 
 # K2B Inbox Manager
+
+## Narrowed Scope (Vault Redesign)
+
+**Inbox/ now ONLY contains `origin: k2b-generate` content suggestions** that need Keith's review. All other captures auto-promote to their destination folder (meeting notes to Notes/Work/, insights to Notes/Insights/, references to Notes/Reference/, etc.). If non-content items appear in Inbox, they are misrouted -- flag and relocate them.
+
+LinkedIn drafts also live in Inbox temporarily (origin: k2b-extract) since they need Keith's approval before publishing.
 
 ## System Reference
 
@@ -47,13 +53,12 @@ Auto-detect destination from the `type:` frontmatter field:
 | `type:` value | Destination folder | Notes |
 |---------------|-------------------|-------|
 | `content-idea` | `Notes/Content-Ideas/` | Set `origin: keith` (Keith adopted it) |
-| `project` | `Notes/Projects/` | |
-| `insight` | `Notes/Insights/` | |
-| `video-capture` | `Notes/` (flat) | |
-| `reference` | `Notes/` (flat) | |
-| `decision` | `Notes/` (flat) | |
-| `meeting-note` | `Notes/` (flat) | |
-| Other | `Notes/` (flat) | |
+| `linkedin-draft` | `Notes/Content-Ideas/` | Keith approved the draft |
+| `project` | `Notes/Projects/` | Misrouted -- should not be in Inbox |
+| `insight` | `Notes/Insights/` | Misrouted -- should not be in Inbox |
+| `reference` | `Notes/Reference/` | Misrouted -- should not be in Inbox |
+| `meeting-note` | `Notes/Work/` | Misrouted -- should not be in Inbox |
+| Other | `Notes/` (flat) | Flag as misrouted |
 
 On promote:
 - Move file to destination folder
@@ -61,6 +66,8 @@ On promote:
 - If content-idea: change `origin:` to `keith`
 - If `review-notes:` has feedback, incorporate it into the note content before promoting
 - Update the relevant MOC with a wikilink to the promoted note
+- **Update the destination folder's `index.md`** (mandatory per vault-writer contract)
+- **Append to `System/log.md`** recording the promote action
 
 #### archive
 - Move file to `Archive/`

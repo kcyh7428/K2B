@@ -51,7 +51,7 @@ Prefer `mcp__obsidian__search` over Grep for vault-wide content search. Prefer D
    - Hook / angle
    - Source notes (linked)
    - Suggested platform (LinkedIn short post, LinkedIn long-form, YouTube)
-6. Offer to create content idea notes for any Keith wants to pursue
+6. Offer to create content idea notes for any Keith wants to pursue (saved to `Inbox/` with `origin: k2b-generate` -- the only skill output that goes to Inbox)
 
 ## Insight Categories
 When classifying insights, use these lenses:
@@ -62,12 +62,25 @@ When classifying insights, use these lenses:
 - **Culture**: Organizational culture, change management
 - **Content**: Meta-observations about what resonates with audiences
 
-## Origin Rules
+## Origin Rules & Auto-Promote
 
-- `/insight` notes get `origin: k2b-extract` (K2B synthesizing patterns from Keith's own notes)
-- `/content` idea notes get `origin: k2b-generate` (K2B's own suggestions based on analysis)
-- `/content` ideas are saved to `Inbox/` (not Notes/Content-Ideas/) because they are K2B suggestions, not Keith's ideas
+- `/insight` notes get `origin: k2b-extract` -- saved directly to `Notes/Insights/` (auto-promote, bypasses Inbox)
+- `/content` idea notes get `origin: k2b-generate` -- saved to `Inbox/` (the ONLY type of content that goes to Inbox)
 - Only when Keith explicitly adopts an idea (says "promote this", "I like this one", "let's do this") should it be moved to `Notes/Content-Ideas/` with `origin: keith`
+
+## Post-Write Contract
+
+After saving any note, run the vault-writer post-write pass:
+
+**For /insight notes (Notes/Insights/):**
+1. Update `Notes/Insights/index.md` with new row
+2. Cross-link: update person/project pages mentioned in the insight
+3. Append to `System/log.md`
+
+**For /content idea notes (Inbox/):**
+1. No index update needed (Inbox has no index)
+2. Verify `review-action:` and `review-notes: ""` are present (Inbox write contract)
+3. Append to `System/log.md`
 
 ## Frontmatter Templates
 
@@ -130,3 +143,4 @@ echo -e "$(date +%Y-%m-%d)\tk2b-insight-extractor\t$(echo $RANDOM | md5sum | hea
 - No em dashes, no AI cliches, no sycophancy
 - Synthesize, don't just list search results
 - Always flag content potential
+- Use k2b-vault-writer conventions for all note creation and cross-linking

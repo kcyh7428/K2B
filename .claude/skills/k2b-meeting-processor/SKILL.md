@@ -21,14 +21,14 @@ When a transcript is provided:
    - **Action Items**: Tasks with owners and deadlines where mentioned
    - **Insights**: Patterns, observations, or strategic points worth remembering
    - **Content Potential**: Anything that could become content (a teaching moment, a unique approach, a lesson learned)
-3. Create the note at `~/Projects/K2B-Vault/Notes/YYYY-MM-DD_Meeting-Topic.md`
-4. **Cross-link the note** (see Cross-Linking section below)
+3. Create the note at `~/Projects/K2B-Vault/Notes/Work/YYYY-MM-DD_Meeting-Topic.md` (auto-promote -- bypasses Inbox)
+4. **Run the vault-writer post-write pass** (see Post-Write Contract below)
 5. Update today's daily note to add `[[YYYY-MM-DD_Meeting-Topic]]` in the Meetings section
 6. **Update related project notes**: If the meeting is tied to a project, use the vault-writer update workflow to:
    - Append a dated entry to the project note's `## Updates` section summarizing what the meeting covered
    - Check off any milestones that were completed or confirmed
    - Add `[[YYYY-MM-DD_Meeting-Topic]]` to the project's `## Related Notes`
-7. If significant insights found, offer to create a standalone insight note
+7. If significant insights found, offer to create a standalone insight note in `Notes/Insights/`
 
 ## Processing Guidelines
 - Be concise. Keith wants signal, not noise.
@@ -47,7 +47,20 @@ Flag as content potential if the meeting contains:
 
 ## File Convention
 
-Meeting notes go to: `~/Projects/K2B-Vault/Notes/YYYY-MM-DD_Meeting-Topic.md`
+Meeting notes go to: `~/Projects/K2B-Vault/Notes/Work/YYYY-MM-DD_Meeting-Topic.md` (auto-promote, bypasses Inbox)
+
+## Post-Write Contract
+
+After saving the meeting note, run the vault-writer cross-link pass:
+1. **Cross-link**: Update person/project pages with backlinks (see Cross-Linking below)
+2. **Index update**: Add/update a row in `Notes/Work/index.md` with `[[filename]]`, one-line summary, date
+3. **System log**: Append entry to `System/log.md`:
+   ```markdown
+   ## [YYYY-MM-DD HH:MM] k2b-meeting-processor | Meeting Title
+   - Created: Notes/Work/YYYY-MM-DD_Meeting-Topic.md
+   - Cross-linked: [list of entity pages updated]
+   - Index updated: Notes/Work/index.md
+   ```
 
 ## Cross-Linking
 
@@ -70,5 +83,7 @@ echo -e "$(date +%Y-%m-%d)\tk2b-meeting-processor\t$(echo $RANDOM | md5sum | hea
 
 ## Notes
 - No em dashes, no AI cliches, no sycophancy
-- Always add YAML frontmatter with tags, date, type, origin, project, and participants
+- Always add YAML frontmatter with tags, date, type, origin, up, project, and participants
 - Always set `origin: k2b-extract` in frontmatter (these notes are derived from Keith's meeting transcripts)
+- Always set `up: "[[MOC_SJM-Work]]"` (or appropriate MOC based on meeting domain)
+- Use the k2b-vault-writer skill conventions for all note creation and updates

@@ -44,8 +44,11 @@ find ~/Projects/K2B-Vault/{Inbox,Notes,Daily} -name "*.md" -newer ~/Projects/K2B
 ```
 Or glob for today's date prefix in filenames.
 
-**c) TLDR outputs from today:**
-Check `~/Projects/K2B-Vault/Inbox/` for files matching `$(date +%Y-%m-%d)_tldr*.md`
+**c) TLDR decomposed outputs from today:**
+TLDRs are now decomposed immediately (Active Rule #3). Check for today's outputs in:
+- `Notes/Insights/` for extracted insights
+- `Notes/Content-Ideas/` or `Inbox/` for content seeds
+- `Archive/` for TLDR shells (read for context of what was discussed)
 
 **d) Yesterday's daily note:**
 Read `~/Projects/K2B-Vault/Daily/$(date -v-1d +%Y-%m-%d).md` for open loops to carry forward.
@@ -90,9 +93,10 @@ Based on Keith's responses:
 
 ### Step 5: Save
 
-- Save to `~/Projects/K2B-Vault/Daily/YYYY-MM-DD.md`
+- Save to `~/Projects/K2B-Vault/Daily/YYYY-MM-DD.md` (auto-promote -- Daily/ notes never go through Inbox)
 - If the file already exists (morning + evening use), **merge** new content into existing note rather than overwriting
 - Use the k2b-vault-writer skill for the actual write
+- After saving, append to `System/log.md` with cross-linked entities
 
 **Channel-aware preview:**
 - On Claude Code terminal: show the full note before saving
@@ -147,6 +151,13 @@ After completing the main task:
 echo -e "$(date +%Y-%m-%d)\tk2b-daily-capture\t$(echo $RANDOM | md5sum | head -c 8)\tcompiled daily note for YYYY-MM-DD" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
 ```
 
+## Vault Redesign Awareness
+
+- All captures auto-promote to destination folders (not Inbox). Inbox is only for k2b-generate content ideas.
+- Meeting notes go to `Notes/Work/`, insights to `Notes/Insights/`, references to `Notes/Reference/`.
+- TLDRs are decomposed immediately (Active Rule #3) -- insights, content seeds, and action items are distributed to their destination folders.
+- When the daily note references items that were created today by other skills, link to them where they live (not in Inbox).
+
 ## Rules
 
 - No em dashes. No AI cliches. No sycophancy.
@@ -154,3 +165,4 @@ echo -e "$(date +%Y-%m-%d)\tk2b-daily-capture\t$(echo $RANDOM | md5sum | head -c
 - Keep it concise. Bullet points over paragraphs.
 - A short daily note is better than a padded one.
 - The conversation IS the skill. Don't rush to save -- iterate until Keith's satisfied.
+- Use k2b-vault-writer conventions for all note creation and cross-linking.
