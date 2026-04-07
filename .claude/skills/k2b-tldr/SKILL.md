@@ -17,8 +17,13 @@ description: Capture a conversation summary -- extracts decisions, action items,
    - **Decisions**: Any choices made
    - **Action Items**: Next steps with context
    - **Insights**: Technical/operational things learned during the session (e.g., "auth codes expire in 30 seconds"). These inform K2B's behavior and future sessions.
-   - **Content Seeds**: Raw angles from the session that could become public content (e.g., "built a full publishing stack in 3 hours"). These are loose sparks, not fully formed ideas. They stay in the TLDR -- do NOT create separate content idea notes from them. Keith reviews content seeds during collective inbox review and promotes the ones worth developing.
-3. Always save to `Inbox/` with filename format `YYYY-MM-DD_tldr-topic-slug.md`
+   - **Content Seeds**: Raw angles from the session that could become public content (e.g., "built a full publishing stack in 3 hours"). These are loose sparks. During decomposition, promising seeds become content idea notes in `Inbox/` (origin: k2b-generate) for Keith's review.
+3. TLDRs are disposable (Active Rule #3). Save temporarily then decompose immediately:
+   - Extract insights --> create/update `Notes/Insights/` pages
+   - Extract content seeds --> create content idea notes in `Inbox/` (origin: k2b-generate, for Keith's review)
+   - Extract action items --> update relevant project/work notes
+   - Archive the TLDR shell --> `Archive/`
+   - Update relevant index.md files and append to `System/log.md`
 4. Save with proper frontmatter and linking
 5. **Update related project notes**: If the conversation involved progress on a project, use the vault-writer update workflow to:
    - Append a dated entry to the project note's `## Updates` section
@@ -29,7 +34,7 @@ description: Capture a conversation summary -- extracts decisions, action items,
 
 ## Frontmatter Format
 
-**MANDATORY: All TLDR notes go to Inbox/ and MUST include review-action and review-notes. See vault-writer Inbox Write Contract.**
+TLDRs are disposable (Active Rule #3). Save temporarily for decomposition, then archive the shell.
 
 ```yaml
 ---
@@ -39,12 +44,10 @@ type: tldr
 origin: k2b-extract
 source: claude-code-session
 up: "[[MOC_K2B-System]]"
-review-action:
-review-notes: ""
 ---
 ```
 
-Before saving, verify: review-action and review-notes are present. If they're missing, the note is broken and Keith can't triage it in Obsidian.
+After saving, immediately decompose: extract insights to Notes/Insights/, content seeds to Inbox/ (as k2b-generate ideas), action items to project/work notes. Then move the TLDR shell to Archive/. Update relevant index.md files and append to System/log.md.
 
 ## Cross-Linking
 

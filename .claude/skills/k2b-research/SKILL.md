@@ -20,7 +20,7 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.claude/skills/`
 - Research topics: `~/Projects/K2B-Vault/Notes/Context/research-topics.md`
-- Output: `~/Projects/K2B-Vault/Inbox/`
+- Output: `~/Projects/K2B-Vault/Notes/Reference/` (auto-promote, bypasses Inbox)
 
 ## External Scanning
 
@@ -71,19 +71,17 @@ Detect URL type and handle accordingly:
 
 ## Output Format
 
-Save to `Inbox/YYYY-MM-DD_research-briefing.md` (or `Inbox/YYYY-MM-DD_research-[topic-slug].md` for focused research).
+Save to `Notes/Reference/YYYY-MM-DD_research-briefing.md` (or `Notes/Reference/YYYY-MM-DD_research-[topic-slug].md` for focused research). Auto-promote -- bypasses Inbox.
 
-**MANDATORY: All research notes go to Inbox/ and MUST include review-action and review-notes. See vault-writer Inbox Write Contract.** Before saving, verify these fields are present. If they're missing, Keith can't triage the note in Obsidian.
+After saving, run the vault-writer cross-link pass: update person/project pages, update `Notes/Reference/index.md`, append to `System/log.md`.
 
 ```markdown
 ---
 tags: [research, k2b-system]
 date: YYYY-MM-DD
-type: research-briefing
+type: reference
 origin: k2b-generate
 up: "[[MOC_K2B-System]]"
-review-action:
-review-notes: ""
 ---
 
 # Research Briefing -- YYYY-MM-DD
@@ -118,8 +116,6 @@ type: research-briefing
 origin: k2b-generate
 source: "[Title](URL)"
 up: "[[MOC_K2B-System]]"
-review-action:
-review-notes: ""
 ---
 
 # Deep Dive: [Topic/Source Title]

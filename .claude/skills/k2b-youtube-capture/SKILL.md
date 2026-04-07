@@ -15,6 +15,7 @@ Process YouTube videos saved to playlists with playlist-specific analysis. Also 
 - `/youtube status` -- Show processing stats and playlist config
 - `/youtube screen` -- Show videos in K2B Screen playlist, choose which to process
 - `/youtube morning` -- Automated morning routine: nudge unwatched videos (runs daily via scheduler, can also run manually)
+- `/youtube cleanup` -- Sync tracking after Keith manually removes videos from playlists
 
 ## Paths
 
@@ -22,7 +23,7 @@ Process YouTube videos saved to playlists with playlist-specific analysis. Also 
 - Scripts: `~/Projects/K2B/scripts/`
 - Playlist config: `~/Projects/K2B-Vault/Notes/Context/youtube-playlists.md`
 - Processed log: `~/Projects/K2B-Vault/Notes/Context/youtube-processed.md`
-- Output notes: `~/Projects/K2B-Vault/Inbox/`
+- Output notes: `~/Projects/K2B-Vault/Notes/Reference/` (auto-promote, bypasses Inbox)
 - YouTube token: `~/.config/k2b/youtube-token.json`
 - OAuth client: `~/.config/gws/client_secret.json`
 - Recommendation tracking: `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl`
@@ -111,7 +112,17 @@ Same pre-split logic applies. Set `transcript_method: openai-whisper`.
 **Tier 3 -- No transcript:**
 If all tiers fail, create a minimal note with `transcript_method: failed` and the video metadata only. Flag for manual review.
 
-#### 3c. Analyze with Playlist Focus
+#### 3c. Dedup Check
+
+Before analyzing, check if `video_id` already exists in the processed log:
+```bash
+grep -cF "{video_id}" ~/Projects/K2B-Vault/Notes/Context/youtube-processed.md
+```
+
+- If **already exists**: log a warning ("Video {video_id} already processed from another playlist -- skipping"). Skip steps 3d-3e (no analysis, no vault note). Still append to processed log in 3f for audit trail, then continue to next video.
+- If **not found**: proceed with analysis below.
+
+#### 3d. Analyze with Playlist Focus
 
 Use the playlist's `prompt_focus` to guide analysis. Build this prompt:
 
@@ -144,26 +155,30 @@ Produce the following in English (even if the video is in another language):
 
 #### 3d. Create Vault Note
 
-Save to `Inbox/YYYY-MM-DD_youtube_<video-slug>.md` using the k2b-vault-writer conventions.
+Save to `Notes/Reference/YYYY-MM-DD_youtube_<video-slug>.md` (auto-promote, bypasses Inbox).
 
-Frontmatter (**MANDATORY: includes Inbox Write Contract fields**):
+Frontmatter:
 ```yaml
 ---
 tags: [youtube, video-capture, {playlist-specific-tags}]
 date: YYYY-MM-DD
-type: video-capture
+type: reference
 origin: k2b-extract
 source: "[{title}]({url})"
 channel: {channel_name}
 playlist: {playlist_name}
 transcript_method: {youtube-api|openai-whisper|failed}
 up: "{playlist up link}"
-review-action:
-review-notes: ""
 ---
 ```
 
-Before saving, verify: review-action and review-notes are present. All Inbox notes require these for Keith's Obsidian review workflow.
+#### 3e. Post-Write Cross-Link Pass
+
+After saving the note, run the vault-writer cross-link pass:
+1. Scan note for mentioned people --> update person pages (or create stubs)
+2. Scan for mentioned projects --> update project pages
+3. Update `Notes/Reference/index.md` with a new row
+4. Append to `System/log.md`
 
 Body sections:
 ```markdown
@@ -196,14 +211,16 @@ For **K2B Content** playlist: also create `Notes/Content-Ideas/idea_<slug>.md` f
 
 For **K2B Learn** playlist: append to or create `Notes/Context/learning-paths.md` linking this video in sequence.
 
-#### 3e. Update Processed Log
+#### 3f. Update Processed Log
 
 Append to `~/Projects/K2B-Vault/Notes/Context/youtube-processed.md`:
 ```
 {video_id} | {YYYY-MM-DD} | {playlist_name} | {title}
 ```
 
-#### 3f. Log Usage
+(Always append, even for duplicates caught in 3c -- the audit trail shows cross-playlist appearances.)
+
+#### 3g. Log Usage
 
 Append to skill-usage-log.tsv following the k2b-usage-tracker pattern.
 
@@ -360,11 +377,34 @@ Automated daily check. Runs via scheduled task at 7am HKT. Can also be triggered
 
 Read `youtube-preference-profile.md`. If the `date:` in frontmatter is >7 days old, flag it in the summary: "YouTube preference profile is stale (last updated YYYY-MM-DD). Run /observe to refresh."
 
-### 1. Handle Stale Nudges
+### 1. Poll Watch Playlist & Detect Manual Removals
 
-Read `youtube-recommended.jsonl` for entries with `status: "nudge_sent"`.
+Before processing nudges, get the actual playlist state. Read playlist config for the K2B Watch playlist URL, then:
 
-For each, calculate hours since `nudge_date`:
+```bash
+yt-dlp --flat-playlist --print "%(id)s" "<watch-playlist-url>"
+```
+
+**If yt-dlp fails or returns an error** (non-zero exit code, network error, empty stderr with no stdout): skip the manual removal detection entirely and proceed directly to step 2 (stale nudge handling). Log a warning: "Could not poll Watch playlist -- skipping manual removal detection." Do NOT mark any entries as `removed-manual` when the playlist state is unknown.
+
+If yt-dlp succeeds, collect the set of video IDs currently in the playlist (`actual_ids`). An empty result with exit code 0 means the playlist is genuinely empty.
+
+Read `youtube-recommended.jsonl` for entries with `status: "nudge_sent"`. For each entry, check if its `video_id` is in `actual_ids`:
+
+- If **NOT in playlist** (Keith removed it manually):
+  1. Update the JSONL entry: set `status: "removed-manual"`, add `removed_date: "YYYY-MM-DD"` (today)
+  2. Append a feedback signal to `youtube-feedback-signals.jsonl`:
+     ```json
+     {"ts": "<ISO>", "video_id": "<id>", "channel": "<channel>", "title": "<title>", "signal_type": "manual_removal", "signal": "Video removed from Watch playlist outside K2B system"}
+     ```
+  3. **Skip this video** -- do not re-nudge or expire it
+  4. Add to the morning report as "detected manual removal"
+
+- If **in playlist**: proceed to stale nudge handling below.
+
+### 2. Handle Stale Nudges
+
+For each remaining entry (still in playlist, `status: "nudge_sent"`), calculate hours since `nudge_date`:
 
 - If **24-48 hours** old: re-nudge with verdict-aware format and 4 buttons:
   ```
@@ -393,13 +433,56 @@ For each, calculate hours since `nudge_date`:
 | K2B Watch | outbound | Nudge only (buttons via morning routine). Populated exclusively by `/youtube recommend` -- Keith never adds here manually. |
 | K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn | category | Not touched by morning. Keith runs `/youtube` manually. |
 
-### 2. Summary
+### 3. Summary
 
 After all checks, send one summary message:
 ```
 YouTube Morning Report:
-- {N} stale nudges handled ({M} re-nudged, {K} expired)
+- {N} manual removals detected (synced to tracking)
+- {M} stale nudges handled ({P} re-nudged, {K} expired)
 - Preference profile: fresh / stale (last updated YYYY-MM-DD)
+```
+
+## Workflow: Cleanup (`/youtube cleanup`)
+
+Sync tracking after Keith manually removes videos from playlists. Also triggered by natural language like "I removed videos from the playlist" or "I cleaned up the watch list."
+
+### 1. Poll Actual Playlist State
+
+Read playlist config for K2B Watch playlist URL, then get current video IDs:
+
+```bash
+yt-dlp --flat-playlist --print "%(id)s" "<watch-playlist-url>"
+```
+
+### 2. Diff Against Tracking
+
+Read `youtube-recommended.jsonl` for all entries with `status: "nudge_sent"` (Watch playlist only). Do NOT include `screen_pending` entries -- those belong to K2B Screen, not K2B Watch. Compare each entry's `video_id` against the actual Watch playlist contents.
+
+For each entry whose video is **no longer in the playlist**:
+1. Update the JSONL entry: set `status: "removed-manual"`, add `removed_date: "YYYY-MM-DD"` (today)
+2. If Keith provided a reason (in the message that triggered cleanup), add `removed_reason` to the entry
+3. Append a feedback signal to `youtube-feedback-signals.jsonl`:
+   ```json
+   {"ts": "<ISO>", "video_id": "<id>", "channel": "<channel>", "title": "<title>", "signal_type": "manual_removal", "signal": "user-provided", "signal_text": "<reason if given>"}
+   ```
+
+### 3. Capture Preference Signal
+
+If >1 video was removed, ask Keith: "You removed {N} videos. Any pattern in why? (e.g., 'too basic', 'outdated', 'wrong topic')"
+
+Record his response as a single preference signal in `youtube-feedback-signals.jsonl`:
+```json
+{"ts": "<ISO>", "signal_type": "bulk_removal_reason", "signal": "user-provided", "signal_text": "<Keith's response>", "video_ids": ["<id1>", "<id2>", ...]}
+```
+
+### 4. Summary
+
+```
+Cleanup complete:
+- {N} manual removals synced to tracking
+- {M} videos still active in Watch playlist
+- Feedback signals recorded
 ```
 
 ## Workflow: Screen (`/youtube screen`)

@@ -36,20 +36,25 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 
 ```
 K2B-Vault/
-  Inbox/          Ready/
+  Inbox/          Content review queue ONLY (k2b-generate content ideas)
   Archive/
   Notes/          People/ Projects/ Work/ Features/ (Shipped/) Content-Ideas/ Insights/ Reference/ Context/
   Assets/         images/ audio/ video/
   Daily/
+  System/         memory/ log.md
   Templates/
   Home.md + MOC_*.md
 ```
 
+- **Per-folder index.md** in every Notes/ subfolder. LLM reads index first to navigate.
+- **System/log.md** -- append-only record of all vault operations.
+- **Auto-promote**: Captures go directly to destination folder by type. Only k2b-generate content ideas go to Inbox/.
+- **Cross-link pass**: Every capture skill updates related person/project pages and indexes after writing.
 - **MOCs** live at vault root, linking related notes by domain.
 - All notes use `up:` in frontmatter to point to their parent MOC.
 - Use **k2b-vault-writer** skill to create or update vault notes.
 - New subfolders only when a note type hits 10+ files.
-- All Inbox notes MUST have `review-action:` and `review-notes:` fields (Inbox Write Contract).
+- Inbox notes MUST have `review-action:` and `review-notes:` fields (only content ideas land here now).
 
 ## Rules
 
@@ -86,17 +91,18 @@ K2B-Vault/
 ### Capture
 - **`/daily`** -- Start or end the day with today's daily note
 - **`/meeting [title]`** -- Process a meeting transcript into a structured note
-- **`/tldr`** -- Save this conversation's key decisions, actions, and insights to Inbox
+- **`/tldr`** -- Save this conversation's key decisions, actions, and insights (auto-decomposed)
 - **`/youtube [subcommand]`** -- YouTube knowledge pipeline (playlists, single URLs, recommend, screen, morning, status)
 - **`/email`** -- Read and triage Gmail (never sends, only drafts)
 
 ### Think
-- **`/inbox`** -- Review pending items or process reviewed items (promote, archive, delete, revise)
+- **`/inbox`** -- Review pending content ideas (Inbox now only has k2b-generate content suggestions)
 - **`/insight [topic]`** -- Find patterns across vault notes on a topic
 - **`/content`** -- Surface content ideas from recent insights and daily notes
 - **`/research [topic-or-url]`** -- Deep dive into external topics or URLs
 - **`/observe`** -- Harvest implicit preferences and synthesize profile (harvest, profile, signals, reset)
 - **`/improve`** -- System health dashboard
+- **`/lint`** -- Vault health check: fix indexes, find orphans, detect stale content
 
 ### Create
 - **`/linkedin [subcommand]`** -- Draft, revise, publish LinkedIn posts and generate images
@@ -152,6 +158,32 @@ Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vaul
 ## Roadmap & Feature Notes
 
 `MOC_K2B-Roadmap` indexes all K2B improvement ideas. Small ideas get a one-liner there. Bigger ideas also get a feature note (`Notes/Features/`) with full spec. Shipped features: set `status: shipped`, move to `Shipped/`, update roadmap.
+
+## Codex Adversarial Review
+
+K2B uses OpenAI Codex (via `/codex:` plugin) as a second-model reviewer to catch blind spots Claude can't see in its own work. Two mandatory checkpoints:
+
+### Checkpoint 1: Plan Review
+Before implementing any new feature or skill, after the plan is written:
+- Run `/codex:adversarial-review challenge the plan` with the plan file path
+- Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
+- Adjust the plan based on findings before writing code
+
+### Checkpoint 2: Pre-Commit Review
+Before committing changes from a build session (new features, skills, or significant refactors):
+- Run `/codex:review` on uncommitted changes
+- Look for: bugs, logic errors, drift from the plan, edge cases
+- Fix issues before committing
+
+### When to Skip
+- Vault-only changes (daily notes, inbox processing, content drafts)
+- Config tweaks, typo fixes, one-line changes
+- Emergency hotfixes (review after)
+
+### Rules
+- Never skip both checkpoints. If you skip plan review (e.g. small feature), do pre-commit review.
+- Report Codex findings to Keith before proceeding with fixes.
+- Do not argue with Codex findings. Present them neutrally and let Keith decide.
 
 ## Session Discipline
 

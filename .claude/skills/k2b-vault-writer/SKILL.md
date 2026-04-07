@@ -73,27 +73,41 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | K2B Feature | `feature_short-slug.md` | `feature_content-feed-system.md` |
 | Work (SJM) | `work_lowercase-slug.md` | `work_the-eight-chef-search.md` |
 
-## File Locations
+## File Locations (Auto-Promote)
 
-| Note Type | Folder |
-|-----------|--------|
-| Project | `Notes/Projects/` |
-| Person | `Notes/People/` |
-| Content Idea (unadopted) | `Inbox/` |
-| Content Idea (adopted) | `Notes/Content-Ideas/` |
-| Insight | `Notes/Insights/` |
-| Reference (external) | `Notes/Reference/` |
-| Context | `Notes/Context/` |
-| Business overview | `Notes/Context/` |
-| K2B Feature | `Notes/Features/` |
-| Work (SJM) | `Notes/Work/` |
-| MOC | Vault root |
-| Daily | `Daily/` |
-| TLDR | `Inbox/` |
-| Generated images | `Assets/images/` |
-| Generated audio | `Assets/audio/` |
-| Generated video | `Assets/video/` |
-| Home | Vault root |
+Captures go directly to their destination folder. Only K2B-generated content ideas go to Inbox/.
+
+| Note Type | Folder | Needs Keith's Review? |
+|-----------|--------|----------------------|
+| Project | `Notes/Projects/` | No -- auto-promote |
+| Person | `Notes/People/` | No -- auto-promote |
+| Content Idea (k2b-generate) | `Inbox/` | **Yes** -- Keith decides if worth pursuing |
+| Content Idea (adopted by Keith) | `Notes/Content-Ideas/` | Already reviewed |
+| Insight | `Notes/Insights/` | No -- auto-promote |
+| Reference / YouTube capture | `Notes/Reference/` | No -- auto-promote |
+| Meeting note | `Notes/Work/` | No -- auto-promote |
+| Context | `Notes/Context/` | No -- auto-promote |
+| Business overview | `Notes/Context/` | No -- auto-promote |
+| K2B Feature | `Notes/Features/` | No -- auto-promote |
+| Work (SJM) | `Notes/Work/` | No -- auto-promote |
+| Research briefing | `Notes/Reference/` | No -- auto-promote |
+| MOC | Vault root | No |
+| Daily | `Daily/` | No |
+| TLDR | Decompose immediately | See below |
+| Generated images | `Assets/images/` | No |
+| Generated audio | `Assets/audio/` | No |
+| Generated video | `Assets/video/` | No |
+| Home | Vault root | No |
+
+### TLDR Handling
+TLDRs are disposable (Active Rule #3). On creation, decompose immediately:
+- Extract insights --> `Notes/Insights/`
+- Extract content seeds --> `Inbox/` (as k2b-generate content ideas)
+- Extract action items --> update relevant project/work notes
+- Archive the TLDR shell --> `Archive/`
+
+### What Still Goes to Inbox/
+ONLY `origin: k2b-generate` content suggestions. Nothing else. If Inbox/ has non-content items, something is misrouted.
 
 ## Frontmatter Conventions
 
@@ -226,23 +240,72 @@ Asset naming: `YYYY-MM-DD_type_slug.ext` where type is `image`, `speech`, `music
 
 Content ideas with generated assets should have a `## Generated Assets` section containing embed links.
 
-## Inbox Write Contract (MANDATORY)
+## Inbox Write Contract (Narrowed Scope)
 
-**Every note saved to `Inbox/` MUST have these frontmatter fields. No exceptions.**
+**Inbox/ is now ONLY for K2B-generated content suggestions that need Keith's review.** All other captures auto-promote to their destination folder (see File Locations table).
+
+The only skill that should write to Inbox/ is `k2b-insight-extractor` (for `/content` suggestions with `origin: k2b-generate`).
+
+**Every note saved to `Inbox/` MUST have these frontmatter fields:**
 
 ```yaml
 review-action:       # empty string -- Keith fills this in Obsidian
 review-notes: ""     # empty string -- Keith fills this in Obsidian
 ```
 
-This applies to ALL skills that write to Inbox: k2b-tldr, k2b-research, k2b-youtube-capture, k2b-insight-extractor (for /content), and any future skill. If a note lands in Inbox/ without these fields, Keith's review workflow breaks -- he can't triage it in Obsidian.
-
 **Before writing any Inbox note, verify:**
-1. `review-action:` is present in frontmatter (empty value is correct)
-2. `review-notes: ""` is present in frontmatter
-3. File path starts with `Inbox/`
+1. `origin: k2b-generate` is set (if origin is `keith` or `k2b-extract`, it should NOT be in Inbox/)
+2. `review-action:` is present in frontmatter (empty value is correct)
+3. `review-notes: ""` is present in frontmatter
+4. File path starts with `Inbox/`
 
 If you're updating an existing Inbox note, preserve any `review-action` or `review-notes` values Keith has already set.
+
+## Index Update Contract (MANDATORY)
+
+**Every note created or updated must also update the relevant `Notes/*/index.md`.** No exceptions.
+
+After writing or updating any vault note:
+1. **Read** the folder's `index.md` (e.g., `Notes/Projects/index.md`)
+2. **If new note**: Add a row to the index table with `[[filename]]`, one-line summary, and date
+3. **If updated note**: Update the summary and date in the existing row if the summary changed
+4. **If note moved/deleted**: Remove the old index entry, add to new location's index
+
+Index format (one line per page, keep it short):
+```markdown
+| [[page-name]] | One-line summary | YYYY-MM-DD |
+```
+
+### Folders with indexes:
+- `Notes/People/index.md`
+- `Notes/Projects/index.md`
+- `Notes/Work/index.md`
+- `Notes/Content-Ideas/index.md`
+- `Notes/Insights/index.md`
+- `Notes/Reference/index.md`
+- `Notes/Context/index.md`
+- `Notes/Features/index.md`
+
+## Post-Write Cross-Link Pass
+
+After creating any note, run a cross-link pass to connect it to existing vault content:
+
+1. **Scan the new note** for mentions of people, projects, work items, or concepts
+2. **For each mentioned entity**:
+   - Glob to check if a page exists (e.g., `Notes/People/person_*.md`)
+   - If exists: add a wikilink in the new note AND add a dated backlink in the entity page's `## Updates` or `## Key Interactions` section
+   - If not exists: create a stub from template, add to index
+3. **Update `System/log.md`**: Append an entry recording what was created and cross-linked
+
+Log entry format:
+```markdown
+## [YYYY-MM-DD HH:MM] <skill> | <note title>
+- Created: <path to new note>
+- Cross-linked: <list of entity pages updated>
+- Index updated: <which index.md files>
+```
+
+This pass runs AFTER the note is written and validated, not during writing.
 
 ## Pre-Write Validation (Safety Check)
 
