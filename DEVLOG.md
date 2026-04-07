@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-04-08 -- Vault redesign Plan A: remaining 5 skill alignment
+
+**What**: Updated the 5 remaining skills deferred from the previous session to align with the new vault architecture (auto-promote, index updates, cross-link pass, System/log.md).
+
+**Shipped**:
+- meeting-processor: output path fixed from Notes/ to Notes/Work/, added post-write contract (index + log), added up: frontmatter
+- daily-capture: TLDR source updated for decompose-immediately, auto-promote awareness section, vault-writer reference
+- inbox: narrowed scope description (content-ideas + LinkedIn drafts only), updated promote destinations with misroute flags, index update on promote
+- linkedin: vault redesign exception note for drafts staying in Inbox, index/log updates on publish
+- insight-extractor: insights marked as auto-promote, post-write contract for both /insight and /content outputs
+
+**Key decisions**:
+- LinkedIn drafts remain in Inbox/ as an explicit exception to the content-ideas-only rule (they need Keith's approval before publishing)
+- Non-content types in the inbox promote table are flagged as "misrouted" to catch routing bugs
+
+**Still needs**:
+- Weekly /lint schedule not yet configured
+- Plan B (compiled wiki) designed but deferred
+
+**Files changed**: k2b-meeting-processor/SKILL.md, k2b-daily-capture/SKILL.md, k2b-inbox/SKILL.md, k2b-linkedin/SKILL.md, k2b-insight-extractor/SKILL.md
+
+---
+
 ## 2026-04-07 -- Vault redesign Plan A: Karpathy architecture adoption
 
 **What**: Researched Karpathy's LLM Wiki architecture, designed two-track plan (Plan A incremental + Plan B compiled wiki), shipped Plan A, cleared inbox from 14 to 0, audited all 19 skills.
