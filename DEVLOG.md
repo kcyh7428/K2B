@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-04-07 -- Vault redesign Plan A: Karpathy architecture adoption
+
+**What**: Researched Karpathy's LLM Wiki architecture, designed two-track plan (Plan A incremental + Plan B compiled wiki), shipped Plan A, cleared inbox from 14 to 0, audited all 19 skills.
+
+**Key decisions**:
+- Karpathy's compilation model supersedes Cole's 5-layer framework as vault design reference
+- Plan A first (low risk), Plan B later if needed (compilation engine)
+- Compile step will be summary-first (Keith approves before ripple) when Plan B ships
+- MOCs will merge into wiki/index.md hierarchy in Plan B
+
+**Shipped**:
+- Per-folder index.md (8 files across Notes/ subfolders)
+- System/log.md (append-only vault activity record)
+- k2b-lint skill (new /lint command, subsumes feature_vault-housekeeping-agent)
+- Auto-promote routing in vault-writer (captures bypass Inbox by type)
+- Cross-link pass contract in vault-writer
+- Inbox narrowed to k2b-generate content ideas only
+- 4 capture skills updated (youtube-capture, research, tldr, CLAUDE.md)
+- Inbox cleared: 7 YouTube notes consolidated, 2 research briefings consolidated, stabilization audit updated, feature idea moved
+
+**Still needs**:
+- 5 skills need alignment updates: meeting-processor, daily-capture, inbox, linkedin, insight-extractor
+- Weekly /lint schedule not yet configured
+- Plan B (compiled wiki) designed but deferred 1-2 weeks
+
+**Files changed**: k2b-lint/SKILL.md (new), k2b-vault-writer/SKILL.md, k2b-youtube-capture/SKILL.md, k2b-research/SKILL.md, k2b-tldr/SKILL.md, CLAUDE.md
+
+---
+
 ## 2026-04-05 -- Memory sync architecture fix (symlink to vault)
 
 **What was built/changed:**
