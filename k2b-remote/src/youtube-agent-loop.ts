@@ -1,12 +1,34 @@
 import { readFileSync, readdirSync, existsSync, appendFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { InlineKeyboard } from 'grammy'
 import { K2B_VAULT_PATH, K2B_PROJECT_ROOT } from './config.js'
 import { readRecommendations, appendRecommendation, updateRecommendation, playlistAdd, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
 import { tasteModel } from './taste-model.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function fetchUploadDate(videoId: string): string {
+  try {
+    return execFileSync('yt-dlp', [
+      '--print', '%(upload_date)s',
+      `https://www.youtube.com/watch?v=${videoId}`
+    ], { encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function formatUploadDate(raw: string): string {
+  if (!raw || raw === 'NA') return 'unknown'
+  // Handle YYYYMMDD format from yt-dlp
+  if (/^\d{8}$/.test(raw)) return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+  return raw
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -105,14 +127,21 @@ export async function runYouTubeAgentLoop(
       // Send URL first for thumbnail preview
       await sendMessage(chatId, link)
 
+      // Fetch actual publish date if not stored
+      let publishDate = rec.upload_date ?? ''
+      if (!publishDate) {
+        publishDate = fetchUploadDate(rec.video_id)
+        if (publishDate) {
+          updateRecommendation(rec.video_id, { upload_date: publishDate })
+        }
+      }
+      const displayDate = formatUploadDate(publishDate)
+
       // Send info card with verdict context + buttons
-      const ageDays = rec.recommended_date
-        ? Math.floor((Date.now() - new Date(rec.recommended_date).getTime()) / (1000 * 60 * 60 * 24))
-        : 0
       const infoLines = [
         `<b>${rec.title}</b>`,
         `${rec.channel} -- ${rec.duration ?? '?'}`,
-        `Recommended: ${rec.recommended_date ?? 'unknown'}${ageDays > 7 ? ` (${ageDays}d ago)` : ''}`,
+        `Published: ${displayDate}`,
         rec.verdict ? `\n${rec.verdict}` : '',
         rec.verdict_value ? `Value: ${rec.verdict_value}` : '',
       ].filter(Boolean).join('\n')
@@ -249,13 +278,10 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
 
     // Send info card with verdict + buttons
     const verdict = v.reason ?? ''
-    const uploadFormatted = candidate.upload_date
-      ? `${candidate.upload_date.slice(0,4)}-${candidate.upload_date.slice(4,6)}-${candidate.upload_date.slice(6,8)}`
-      : 'unknown'
     const infoLines = [
       `<b>${candidate.title}</b>`,
       `${candidate.channel} -- ${candidate.duration_string}`,
-      `Published: ${uploadFormatted}`,
+      `Published: ${formatUploadDate(candidate.upload_date)}`,
       verdict ? `\n${verdict}` : '',
       `Verdict: ${v.verdict}`,
     ].filter(Boolean).join('\n')

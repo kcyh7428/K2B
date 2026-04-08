@@ -52,6 +52,7 @@ export interface YouTubeRecommendation {
   verdict_value?: 'HIGH' | 'MEDIUM' | 'LOW'    // estimated value from transcript screening
   pillars_matched?: string[]                     // matched content pillars
   comment_text?: string                          // Keith's comment (text or transcribed voice)
+  upload_date?: string                            // actual video publish date (YYYYMMDD or YYYY-MM-DD)
 }
 
 export interface FeedbackSignal {
