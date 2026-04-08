@@ -112,13 +112,14 @@ export async function runYouTubeAgentLoop(
       const infoLines = [
         `<b>${rec.title}</b>`,
         `${rec.channel} -- ${rec.duration ?? '?'}`,
-        `Published: ${rec.recommended_date ?? 'unknown'}${ageDays > 30 ? ` (${ageDays}d ago)` : ''}`,
+        `Recommended: ${rec.recommended_date ?? 'unknown'}${ageDays > 7 ? ` (${ageDays}d ago)` : ''}`,
         rec.verdict ? `\n${rec.verdict}` : '',
         rec.verdict_value ? `Value: ${rec.verdict_value}` : '',
       ].filter(Boolean).join('\n')
 
       const keyboard = new InlineKeyboard()
-        .text('Watch', `youtube:watch:${rec.video_id}`)
+        .url('Watch', `https://youtu.be/${rec.video_id}`)
+        .text('Watched', `youtube:watch:${rec.video_id}`)
         .text('Skip', `youtube:skip:${rec.video_id}`)
         .row()
         .text('Screen', `youtube:screen:${rec.video_id}`)

@@ -270,8 +270,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     appendFeedbackSignal(videoId, 'watch', 'watched')
     tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'watch')
 
-    const link = `https://youtu.be/${videoId}`
-    await ctx.api.sendMessage(ctx.chat!.id, `${link}`, { parse_mode: 'HTML' })
+    await ctx.api.sendMessage(ctx.chat!.id, `Marked as watched. Enjoy!`)
     clearVideoFromAgentState(videoId)
 
   } else if (action === 'comment') {
