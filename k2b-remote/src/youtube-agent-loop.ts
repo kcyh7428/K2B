@@ -98,17 +98,32 @@ export async function runYouTubeAgentLoop(
       await sendMessage(chatId, checkInMsg)
     }
 
-    // Send video cards with buttons for each pending video
+    // Send video cards with info + buttons for each pending video
     youtubeAgentState.pendingVideoIds = pending.map(r => r.video_id)
     for (const rec of pending) {
       const link = `https://youtu.be/${rec.video_id}`
+      // Send URL first for thumbnail preview
+      await sendMessage(chatId, link)
+
+      // Send info card with verdict context + buttons
+      const ageDays = rec.recommended_date
+        ? Math.floor((Date.now() - new Date(rec.recommended_date).getTime()) / (1000 * 60 * 60 * 24))
+        : 0
+      const infoLines = [
+        `<b>${rec.title}</b>`,
+        `${rec.channel} -- ${rec.duration ?? '?'}`,
+        `Published: ${rec.recommended_date ?? 'unknown'}${ageDays > 30 ? ` (${ageDays}d ago)` : ''}`,
+        rec.verdict ? `\n${rec.verdict}` : '',
+        rec.verdict_value ? `Value: ${rec.verdict_value}` : '',
+      ].filter(Boolean).join('\n')
+
       const keyboard = new InlineKeyboard()
         .text('Watch', `youtube:watch:${rec.video_id}`)
         .text('Skip', `youtube:skip:${rec.video_id}`)
         .row()
         .text('Screen', `youtube:screen:${rec.video_id}`)
 
-      await sendWithButtons(chatId, link, [], keyboard)
+      await sendWithButtons(chatId, infoLines, [], keyboard)
     }
 
     await sendMessage(chatId, 'Still interested, or should I swap these out?')
@@ -228,6 +243,22 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
     if (!candidate) continue
 
     const link = `https://youtu.be/${candidate.id}`
+    // Send URL first for thumbnail preview
+    await sendMessage(chatId, link)
+
+    // Send info card with verdict + buttons
+    const verdict = v.reason ?? ''
+    const uploadFormatted = candidate.upload_date
+      ? `${candidate.upload_date.slice(0,4)}-${candidate.upload_date.slice(4,6)}-${candidate.upload_date.slice(6,8)}`
+      : 'unknown'
+    const infoLines = [
+      `<b>${candidate.title}</b>`,
+      `${candidate.channel} -- ${candidate.duration_string}`,
+      `Published: ${uploadFormatted}`,
+      verdict ? `\n${verdict}` : '',
+      `Verdict: ${v.verdict}`,
+    ].filter(Boolean).join('\n')
+
     const keyboard = new InlineKeyboard()
       .text('Add to Watch', `youtube:agent-add:${candidate.id}`)
       .text('Skip', `youtube:agent-skip:${candidate.id}`)
@@ -237,7 +268,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
     // Store as pending recommendation (not yet in JSONL)
     youtubeAgentState.pendingVideoIds.push(candidate.id)
 
-    await sendWithButtons(chatId, link, [], keyboard)
+    await sendWithButtons(chatId, infoLines, [], keyboard)
   }
 
   await sendMessage(chatId, 'Want all of these, or pick the ones that catch your eye?')
