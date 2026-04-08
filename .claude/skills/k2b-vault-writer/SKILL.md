@@ -9,7 +9,7 @@ Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct s
 
 ## System Reference
 
-Before writing any note, review the lifecycle rules in [[context_k2b-note-lifecycle]] (`Notes/Context/context_k2b-note-lifecycle.md`). That note is the single source of truth for origin tagging, review properties, promote destinations, and the content pipeline.
+Before writing any note, review the lifecycle rules in [[context_k2b-note-lifecycle]] (`wiki/context/context_k2b-note-lifecycle.md`). That note is the single source of truth for origin tagging, review properties, promote destinations, and the content pipeline.
 
 ## Vault Query Tools
 
@@ -376,5 +376,5 @@ After writing, confirm:
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-vault-writer\t$(echo $RANDOM | md5sum | head -c 8)\twrote/updated vault note: FILENAME" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-vault-writer\t$(echo $RANDOM | md5sum | head -c 8)\twrote/updated vault note: FILENAME" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```

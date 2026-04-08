@@ -9,8 +9,8 @@ Track skill invocations and fire automated actions when usage thresholds are hit
 
 ## Files
 
-- **Usage log**: `~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv`
-- **Trigger rules**: `~/Projects/K2B-Vault/Notes/Context/usage-triggers.md`
+- **Usage log**: `~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv`
+- **Trigger rules**: `~/Projects/K2B-Vault/wiki/context/usage-triggers.md`
 
 ## Commands
 
@@ -34,7 +34,7 @@ date	skill	session	notes
 
 Append a line to the TSV:
 ```bash
-echo -e "$(date +%Y-%m-%d)\t<skill-name>\t$(echo $RANDOM | md5sum | head -c 8)\t<description>" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\t<skill-name>\t$(echo $RANDOM | md5sum | head -c 8)\t<description>" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Trigger Rules Format
@@ -97,7 +97,7 @@ Every k2b-* skill should log its usage. The logging instruction is a single bash
 
 ```
 After completing the main task, log usage:
-echo -e "$(date +%Y-%m-%d)\t<SKILL-NAME>\t$(echo $RANDOM | md5sum | head -c 8)\t<brief-description>" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\t<SKILL-NAME>\t$(echo $RANDOM | md5sum | head -c 8)\t<brief-description>" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes

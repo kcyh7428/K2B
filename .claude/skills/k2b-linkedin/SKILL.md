@@ -71,7 +71,7 @@ Show recent LinkedIn posts. Engagement metrics available after Community Managem
    - If slug matches `wiki/content-pipeline/content_*.md` -- content idea (richest source)
    - If slug matches `wiki/insights/insight_*.md` -- insight note
    - If slug matches `Notes/YYYY-MM-DD_*.md` or `Daily/YYYY-MM-DD.md` -- meeting/daily note
-   - If slug matches `Notes/Context/*.md` -- context note
+   - If slug matches `wiki/context/*.md` -- context note
    - If quoted string -- direct topic from Keith (no vault source)
 
 2. **Read the source note.** For content ideas, extract: Hook, Core Insight, Talking Points, Format Notes, Related links.
@@ -330,5 +330,5 @@ This is what gets extracted by linkedin-publish.sh and posted to LinkedIn.]
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-linkedin\t$(echo $RANDOM | md5sum | head -c 8)\taction: DESCRIPTION" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-linkedin\t$(echo $RANDOM | md5sum | head -c 8)\taction: DESCRIPTION" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```

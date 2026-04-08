@@ -73,7 +73,7 @@ When creating a meeting note, always add `[[wiki links]]`:
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-meeting-processor\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed meeting transcript: TITLE" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-meeting-processor\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed meeting transcript: TITLE" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes

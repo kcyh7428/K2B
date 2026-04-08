@@ -121,7 +121,7 @@ When Keith corrects K2B during normal conversation ("no, do it like this", "that
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-feedback\t$(echo $RANDOM | md5sum | head -c 8)\tcaptured TYPE: DESCRIPTION" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-feedback\t$(echo $RANDOM | md5sum | head -c 8)\tcaptured TYPE: DESCRIPTION" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes

@@ -209,5 +209,5 @@ When a raw source contains content-worthy material:
 
 After completing compilation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-compile\t$(echo $RANDOM | md5sum | head -c 8)\tcompiled: SOURCE_FILE -> N wiki pages" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-compile\t$(echo $RANDOM | md5sum | head -c 8)\tcompiled: SOURCE_FILE -> N wiki pages" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```

@@ -146,7 +146,7 @@ Tell Keith:
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-sync\t$(echo $RANDOM | md5sum | head -c 8)\tsynced CATEGORY to mac mini" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-sync\t$(echo $RANDOM | md5sum | head -c 8)\tsynced CATEGORY to mac mini" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes

@@ -146,7 +146,7 @@ ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js delete <i
 After creating, modifying, or listing tasks, append to the usage log:
 
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-scheduler\t$(echo $RANDOM | md5 | head -c 8)\tcreated/listed/paused/deleted task" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-scheduler\t$(echo $RANDOM | md5 | head -c 8)\tcreated/listed/paused/deleted task" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Examples

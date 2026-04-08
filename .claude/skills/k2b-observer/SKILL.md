@@ -10,11 +10,11 @@ Harvest implicit preference signals from Keith's vault behavior. Synthesize patt
 ## Vault & Skill Paths
 
 - Vault: `~/Projects/K2B-Vault`
-- Preference signals log: `~/Projects/K2B-Vault/Notes/Context/preference-signals.jsonl`
-- Preference profile: `~/Projects/K2B-Vault/Notes/Context/preference-profile.md`
-- YouTube preference profile: `~/Projects/K2B-Vault/Notes/Context/youtube-preference-profile.md`
-- YouTube recommendations: `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl`
-- YouTube feedback signals: `~/Projects/K2B-Vault/Notes/Context/youtube-feedback-signals.jsonl`
+- Preference signals log: `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl`
+- Preference profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
+- YouTube preference profile: `~/Projects/K2B-Vault/wiki/context/youtube-preference-profile.md`
+- YouTube recommendations: `~/Projects/K2B-Vault/wiki/context/youtube-recommended.jsonl`
+- YouTube feedback signals: `~/Projects/K2B-Vault/wiki/context/youtube-feedback-signals.jsonl`
 - Skills: `~/Projects/K2B/.claude/skills/`
 - Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
 
@@ -77,7 +77,7 @@ For content-specific tracking:
 
 ### 1e. YouTube Signal Harvesting
 
-Read `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl` and `~/Projects/K2B-Vault/Notes/Context/youtube-feedback-signals.jsonl`.
+Read `~/Projects/K2B-Vault/wiki/context/youtube-recommended.jsonl` and `~/Projects/K2B-Vault/wiki/context/youtube-feedback-signals.jsonl`.
 
 For each recommendation entry, extract:
 - **Action taken**: outcome field (watched, skipped, screened, expired, highlights)
@@ -136,7 +136,7 @@ Assign confidence based on:
 
 ## Phase 3: Synthesize Preference Profile
 
-Write to `~/Projects/K2B-Vault/Notes/Context/preference-profile.md`:
+Write to `~/Projects/K2B-Vault/wiki/context/preference-profile.md`:
 
 ```yaml
 ---
@@ -205,7 +205,7 @@ These patterns are strong enough to consider promoting to k2b-feedback:
 
 ## Phase 3b: Synthesize YouTube Preference Profile
 
-Write to `~/Projects/K2B-Vault/Notes/Context/youtube-preference-profile.md`. This is a SEPARATE file from preference-profile.md, specifically for the YouTube recommendation pipeline. The `/youtube recommend` workflow reads this directly for Pass 1 metadata filtering.
+Write to `~/Projects/K2B-Vault/wiki/context/youtube-preference-profile.md`. This is a SEPARATE file from preference-profile.md, specifically for the YouTube recommendation pipeline. The `/youtube recommend` workflow reads this directly for Pass 1 metadata filtering.
 
 ```yaml
 ---
@@ -304,7 +304,7 @@ Skills that produce output Keith reviews should read the preference profile befo
 3. **k2b-linkedin**: Read preference-profile.md for draft preferences. Apply revision patterns.
 4. **k2b-insight-extractor**: Read preference-profile.md for content idea adoption patterns.
 
-**Implementation**: Each skill adds one line to its workflow: "Read `Notes/Context/preference-profile.md` for skill-specific preferences. Apply any relevant preferences to output formatting."
+**Implementation**: Each skill adds one line to its workflow: "Read `wiki/context/preference-profile.md` for skill-specific preferences. Apply any relevant preferences to output formatting."
 
 This is NOT an automated modification -- it's a reference document. Skills read it the same way they read resource.md or brand voice docs. Keith decides when to update skill instructions based on strong preferences.
 
@@ -421,7 +421,7 @@ youtube-recommended.jsonl + youtube-feedback-signals.jsonl
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-observer\t$(echo $RANDOM | md5sum | head -c 8)\tobserved: SUMMARY" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-observer\t$(echo $RANDOM | md5sum | head -c 8)\tobserved: SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes

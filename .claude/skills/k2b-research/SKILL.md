@@ -19,14 +19,14 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.claude/skills/`
-- Research topics: `~/Projects/K2B-Vault/Notes/Context/research-topics.md`
+- Research topics: `~/Projects/K2B-Vault/wiki/context/research-topics.md`
 - Output: `~/Projects/K2B-Vault/raw/research/`
 
 ## External Scanning
 
 ### Default Mode (no topic/URL)
 
-1. Read `K2B-Vault/Notes/Context/research-topics.md` for the topic list
+1. Read `K2B-Vault/wiki/context/research-topics.md` for the topic list
 2. For each topic category, run 1-2 targeted web searches
 3. For each finding:
    - Brief summary (2-3 sentences max)
@@ -145,7 +145,7 @@ up: "[[MOC_K2B-System]]"
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-research\t$(echo $RANDOM | md5sum | head -c 8)\tran research: FOCUS" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-research\t$(echo $RANDOM | md5sum | head -c 8)\tran research: FOCUS" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes

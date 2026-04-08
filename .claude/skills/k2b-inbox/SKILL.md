@@ -13,7 +13,7 @@ LinkedIn drafts also live in review/ temporarily (origin: k2b-extract) since the
 
 ## System Reference
 
-All lifecycle rules (origin tagging, review properties, promote destinations, content pipeline) are defined in [[context_k2b-note-lifecycle]] (`Notes/Context/context_k2b-note-lifecycle.md`). This skill follows those rules exactly.
+All lifecycle rules (origin tagging, review properties, promote destinations, content pipeline) are defined in [[context_k2b-note-lifecycle]] (`wiki/context/context_k2b-note-lifecycle.md`). This skill follows those rules exactly.
 
 ## Vault Paths
 
@@ -100,7 +100,7 @@ After processing each actionable item, append a feedback signal to the preferenc
 # REVIEW_NOTES_TEXT = the actual review-notes content (if any)
 # FILENAME = the processed filename
 
-echo '{"date":"'$(date +%Y-%m-%d)'","file":"'"$FILENAME"'","source_skill":"'"$SKILL_ORIGIN"'","type":"'"$TYPE"'","action":"'"$ACTION"'","days_in_inbox":'"$DAYS_IN_INBOX"',"has_feedback":"'"$HAS_REVIEW_NOTES"'","feedback":"'"$REVIEW_NOTES_TEXT"'"}' >> ~/Projects/K2B-Vault/Notes/Context/preference-signals.jsonl
+echo '{"date":"'$(date +%Y-%m-%d)'","file":"'"$FILENAME"'","source_skill":"'"$SKILL_ORIGIN"'","type":"'"$TYPE"'","action":"'"$ACTION"'","days_in_inbox":'"$DAYS_IN_INBOX"',"has_feedback":"'"$HAS_REVIEW_NOTES"'","feedback":"'"$REVIEW_NOTES_TEXT"'"}' >> ~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl
 ```
 
 **How to determine source_skill from the note:**
@@ -142,5 +142,5 @@ Group by type if there are many items.
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-inbox\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed inbox: SUMMARY" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-inbox\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed inbox: SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```

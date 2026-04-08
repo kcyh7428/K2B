@@ -12,8 +12,8 @@ Single command for the full picture of how K2B is doing -- learnings, errors, re
 - Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
 - Errors: `~/.claude/projects/*/memory/self_improve_errors.md`
 - Requests: `~/.claude/projects/*/memory/self_improve_requests.md`
-- Preference Profile: `~/Projects/K2B-Vault/Notes/Context/preference-profile.md`
-- Preference Signals: `~/Projects/K2B-Vault/Notes/Context/preference-signals.jsonl`
+- Preference Profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
+- Preference Signals: `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl`
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.claude/skills/`
 
@@ -127,7 +127,7 @@ Present the full report as a structured summary Keith can scan in 30 seconds:
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-improve\t$(echo $RANDOM | md5sum | head -c 8)\treviewed system health" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-improve\t$(echo $RANDOM | md5sum | head -c 8)\treviewed system health" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
 ## Notes
