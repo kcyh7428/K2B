@@ -72,6 +72,7 @@ export async function runYouTubeAgentLoop(
 
   // Step 1: Check existing Watch list ----------------------------------------
 
+  try {
   youtubeAgentState.phase = 'checking-watch'
   youtubeAgentState.startedAt = new Date().toISOString()
 
@@ -119,6 +120,12 @@ export async function runYouTubeAgentLoop(
 
   // No pending videos -- go straight to finding new content
   await findNewContent(sendMessage, sendWithButtons, chatId)
+
+  } catch (err) {
+    logger.error({ err }, 'YouTube agent loop error')
+    youtubeAgentState.phase = 'idle'
+    youtubeAgentState.pendingVideoIds = []
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +133,7 @@ export async function runYouTubeAgentLoop(
 // ---------------------------------------------------------------------------
 
 async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButtonsFn, chatId: string): Promise<void> {
+  try {
   youtubeAgentState.phase = 'searching'
 
   // Read vault context
@@ -234,6 +242,12 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
 
   await sendMessage(chatId, 'Want all of these, or pick the ones that catch your eye?')
   // Wait for Keith's response via buttons or text
+
+  } catch (err) {
+    logger.error({ err }, 'findNewContent error')
+    youtubeAgentState.phase = 'idle'
+    youtubeAgentState.pendingVideoIds = []
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -320,14 +334,14 @@ export async function handleYouTubeAgentResponse(
       return true
     }
 
-    // Complex response -- let agent interpret
+    // Complex response -- let agent interpret, keep phase active so buttons still work
     const { text: interpretation } = await runAgent(
-      `Keith said: "${text}" in response to YouTube video recommendations. The pending videos are: ${youtubeAgentState.pendingVideoIds.join(', ')}. Interpret: does he want to add all, some specific ones, or skip? Reply naturally. Return ONLY the Telegram message text.`
+      `IMPORTANT: Do NOT use any tools. Just interpret and reply.\n\nKeith said: "${text}" in response to YouTube video recommendations. The pending videos are: ${youtubeAgentState.pendingVideoIds.join(', ')}. Interpret: does he want to add all, some specific ones, or skip? Reply naturally. Return ONLY the Telegram message text.`
     )
     if (interpretation) {
       await sendMessage(chatId, interpretation)
     }
-    youtubeAgentState.phase = 'idle'
+    // Don't reset phase -- Keith can still tap buttons on individual cards
     return true
   }
 

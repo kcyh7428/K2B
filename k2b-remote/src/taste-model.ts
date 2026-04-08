@@ -277,13 +277,17 @@ export class TasteModel {
     const raw = readFileSync(signalsPath, 'utf-8')
     const lines = raw.trim().split('\n').filter(l => l.length > 0)
     let count = 0
+    const processedVideos = new Set<string>()
 
     for (const line of lines) {
       try {
         const signal = JSON.parse(line)
         const videoId = signal.video_id || ''
         const channel = signal.channel || ''
-        if (!videoId || !channel) continue  // skip malformed entries
+        if (!videoId || !channel) continue
+        // Only count the first action per video to avoid double-counting
+        if (processedVideos.has(videoId)) continue
+        processedVideos.add(videoId)
         let action: 'watch' | 'skip' | 'screen' | 'comment'
         let skipReason: string | undefined
 

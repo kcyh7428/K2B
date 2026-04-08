@@ -15,7 +15,17 @@ import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
 import { updateRecommendation, getPendingNudges, readRecommendations, appendRecommendation, appendFeedbackSignal, playlistAdd, playlistRemove, WATCH_PLAYLIST_ID, SCREEN_PLAYLIST_ID } from './youtube.js'
 import { tasteModel } from './taste-model.js'
-import { handleYouTubeAgentResponse } from './youtube-agent-loop.js'
+import { handleYouTubeAgentResponse, youtubeAgentState } from './youtube-agent-loop.js'
+
+function clearVideoFromAgentState(videoId: string): void {
+  const idx = youtubeAgentState.pendingVideoIds.indexOf(videoId)
+  if (idx >= 0) {
+    youtubeAgentState.pendingVideoIds.splice(idx, 1)
+    if (youtubeAgentState.pendingVideoIds.length === 0) {
+      youtubeAgentState.phase = 'idle'
+    }
+  }
+}
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -262,6 +272,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 
     const link = `https://youtu.be/${videoId}`
     await ctx.api.sendMessage(ctx.chat!.id, `${link}`, { parse_mode: 'HTML' })
+    clearVideoFromAgentState(videoId)
 
   } else if (action === 'comment') {
     awaitingComment.set(chatId, videoId)
@@ -282,6 +293,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
     await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen.')
+    clearVideoFromAgentState(videoId)
 
   } else if (action === 'skip') {
     const rec = readRecommendations().find(r => r.video_id === videoId)
@@ -331,6 +343,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       `Skipped "${title}". ${deducedReason}`,
       { reply_markup: keyboard }
     )
+    clearVideoFromAgentState(videoId)
 
   } else if (action === 'skip-confirm') {
     // Keith confirmed the deduced reason -- record it
@@ -400,6 +413,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
     await ctx.api.sendMessage(ctx.chat!.id, 'Added to Watch list.')
+    clearVideoFromAgentState(videoId)
 
   } else if (action === 'agent-skip') {
     // Skip from agent recommendation -- don't add to Watch
@@ -407,6 +421,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip')
     appendFeedbackSignal(videoId, 'skip_reason', 'agent-skipped')
     await ctx.api.sendMessage(ctx.chat!.id, 'Skipped.')
+    clearVideoFromAgentState(videoId)
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -468,6 +483,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
     await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
+    clearVideoFromAgentState(videoId)
 
   } else if (action === 'screen-all') {
     // Poll the actual playlist
@@ -534,8 +550,11 @@ async function handleCommentOrSkipReason(
   if (pendingKey.startsWith('skip:')) {
     // Skip reason capture
     const videoId = pendingKey.slice(5)
+    const rec = readRecommendations().find(r => r.video_id === videoId)
     updateRecommendation(videoId, { skip_reason: text, feedback_text: text })
     appendFeedbackSignal(videoId, 'skip_reason', 'user-provided', text)
+    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip', text)
+    clearVideoFromAgentState(videoId)
     await ctx.api.sendMessage(ctx.chat!.id, 'Got it, skip reason noted.')
   } else {
     // Regular comment capture
@@ -623,15 +642,7 @@ async function handleDirectYouTubeUrl(
     'Return ONLY the message text for Telegram.',
   ].filter(Boolean).join('\n')
 
-  const { text: verdict } = await runAgent(screenPrompt)
-  const verdictText = verdict ?? `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Could not screen this video)`
-
-  // Determine buttons based on verdict
-  const verdictLower = (verdict ?? '').toLowerCase()
-  const isWorth = verdictLower.includes('worth watching') || verdictLower.includes('worth a watch')
-  const isHighlights = verdictLower.includes('highlights only') || verdictLower.includes('highlights')
-
-  // Always show all options -- Keith may disagree with the verdict
+  // Always show all options
   const keyboard = new InlineKeyboard()
     .text('Add to Watch', `youtube:agent-add:${videoId}`)
     .text('Process Now', `youtube:screen-process:${videoId}`)
@@ -639,11 +650,17 @@ async function handleDirectYouTubeUrl(
     .text('Screen', `youtube:screen:${videoId}`)
     .text('Skip', `youtube:skip:${videoId}`)
 
-  const formatted = formatForTelegram(verdictText)
-  await ctx.api.sendMessage(ctx.chat!.id, formatted, {
-    parse_mode: 'HTML',
-    reply_markup: keyboard,
-  })
+  try {
+    const { text: verdict } = await runAgent(screenPrompt)
+    const verdictText = verdict ?? `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Could not screen this video)`
+    const formatted = formatForTelegram(verdictText)
+    await ctx.api.sendMessage(ctx.chat!.id, formatted, { parse_mode: 'HTML', reply_markup: keyboard })
+  } catch (err) {
+    logger.error({ err, videoId }, 'URL screening failed')
+    const fallback = `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Screening failed)`
+    const formatted = formatForTelegram(fallback)
+    await ctx.api.sendMessage(ctx.chat!.id, formatted, { parse_mode: 'HTML', reply_markup: keyboard })
+  }
 }
 
 // --- Bot creation ---
