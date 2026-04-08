@@ -150,7 +150,7 @@ async function handleMessage(
   const obsMarker = markObservationStart()
 
   try {
-    const { text, newSessionId } = await runAgent(fullMessage, sessionId, sendTyping)
+    const { text, newSessionId, hadError } = await runAgent(fullMessage, sessionId, sendTyping)
 
     // Log observations (vault file changes from this agent run)
     logObservations(obsMarker, newSessionId ?? sessionId ?? 'telegram-interactive', rawText)
@@ -180,7 +180,10 @@ async function handleMessage(
     }
 
     // After YouTube-related messages, send appropriate buttons
-    if (rawText.toLowerCase().includes('youtube') || rawText.toLowerCase().includes('/youtube')) {
+    // Skip if agent returned an error or if the message is just a URL (not a command)
+    const lowerText = rawText.toLowerCase()
+    const isYouTubeRelated = lowerText.includes('youtube') && !rawText.match(/^https?:\/\//)
+    if (isYouTubeRelated && !hadError) {
       if (rawText.toLowerCase().includes('screen')) {
         const screenCount = await sendScreenOptions(chatId)
         if (screenCount > 0) {
@@ -214,8 +217,8 @@ async function handleYouTubeCallback(
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     const rec = readRecommendations().find(r => r.video_id === videoId)
     const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId}.
-Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh).
-Use the playlist prompt_focus if the video is tracked in youtube-recommended.jsonl. Produce:
+Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)).
+Use the playlist prompt_focus if the video is tracked in wiki/context/youtube-recommended.jsonl. Produce:
 
 1. Concise highlights summary with key points and timestamps for the best segments
 2. Your honest assessment: Is this worth Keith's time? He's deeply familiar with AI, builds Claude Code skills (18+), runs a full AI second brain (K2B). Be direct -- don't pad weak content.
@@ -301,7 +304,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
-    const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in Notes/Context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in Inbox/.`
+    const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in wiki/context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in review/.`
     const promoteMarker = markObservationStart()
     const { text } = await runAgent(prompt)
     logObservations(promoteMarker, `youtube-promote-${videoId}`, prompt)
@@ -321,7 +324,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     const title = rec?.title ?? videoId
 
     await ctx.api.sendMessage(ctx.chat!.id, `Processing: "${title}"\nGetting transcript and creating vault note -- this may take a few minutes.`)
-    const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh). Create a vault note in Inbox/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${videoId}. Log as processed in youtube-processed.md.`
+    const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)). Create a vault note in raw/youtube/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${videoId}. Log as processed in youtube-processed.md.`
     const screenMarker = markObservationStart()
     const { text } = await runAgent(prompt)
     logObservations(screenMarker, `youtube-screen-${videoId}`, prompt)
@@ -380,7 +383,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     for (let i = 0; i < videos.length; i++) {
       const v = videos[i]
       await ctx.api.sendMessage(ctx.chat!.id, `[${i + 1}/${videos.length}] Processing: "${v.title}"`)
-      const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${v.id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, use Whisper via scripts/yt-transcribe-whisper.sh). Create a vault note in Inbox/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${v.id}. Log as processed in youtube-processed.md.`
+      const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${v.id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)). Create a vault note in raw/youtube/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${v.id}. Log as processed in youtube-processed.md.`
       const screenMarker = markObservationStart()
       try {
         const { text } = await runAgent(prompt)

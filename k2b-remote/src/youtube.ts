@@ -1,8 +1,8 @@
 import { readFileSync, appendFileSync, writeFileSync, existsSync } from 'node:fs'
 
 const VAULT = process.env.K2B_VAULT ?? '/Users/fastshower/Projects/K2B-Vault'
-const RECOMMENDED_FILE = `${VAULT}/Notes/Context/youtube-recommended.jsonl`
-const FEEDBACK_SIGNALS_FILE = `${VAULT}/Notes/Context/youtube-feedback-signals.jsonl`
+const RECOMMENDED_FILE = `${VAULT}/wiki/context/youtube-recommended.jsonl`
+const FEEDBACK_SIGNALS_FILE = `${VAULT}/wiki/context/youtube-feedback-signals.jsonl`
 
 export interface YouTubeRecommendation {
   ts: string

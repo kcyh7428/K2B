@@ -5,7 +5,7 @@ import { K2B_VAULT_PATH } from './config.js'
 import { logger } from './logger.js'
 
 const MARKER_PATH = '/tmp/k2b-last-observe-remote'
-const OBS_FILE = resolve(K2B_VAULT_PATH, 'Notes/Context/observations.jsonl')
+const OBS_FILE = resolve(K2B_VAULT_PATH, 'wiki/context/observations.jsonl')
 
 // Skill detection from file path (mirrors stop-observe.sh logic)
 function detectSkillFromPath(relpath: string): string {
@@ -86,7 +86,7 @@ export function logObservations(
       const relpath = filepath.replace(K2B_VAULT_PATH + '/', '')
 
       // Skip non-vault paths and context files that change frequently
-      if (relpath.startsWith('.') || relpath === 'Notes/Context/observations.jsonl') continue
+      if (relpath.startsWith('.') || relpath === 'wiki/context/observations.jsonl') continue
 
       const skill = detectSkillFromPath(relpath) !== 'unknown'
         ? detectSkillFromPath(relpath)
