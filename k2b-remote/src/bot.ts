@@ -631,24 +631,13 @@ async function handleDirectYouTubeUrl(
   const isWorth = verdictLower.includes('worth watching') || verdictLower.includes('worth a watch')
   const isHighlights = verdictLower.includes('highlights only') || verdictLower.includes('highlights')
 
-  let keyboard: InlineKeyboard
-  if (isWorth) {
-    keyboard = new InlineKeyboard()
-      .text('Add to Watch', `youtube:agent-add:${videoId}`)
-      .text('Process Now', `youtube:screen-process:${videoId}`)
-      .row()
-      .text('Skip', `youtube:skip:${videoId}`)
-  } else if (isHighlights) {
-    keyboard = new InlineKeyboard()
-      .text('Process Now', `youtube:screen-process:${videoId}`)
-      .text('Screen', `youtube:screen:${videoId}`)
-      .row()
-      .text('Skip', `youtube:skip:${videoId}`)
-  } else {
-    keyboard = new InlineKeyboard()
-      .text('Skip', `youtube:skip:${videoId}`)
-      .text('Process Anyway', `youtube:screen-process:${videoId}`)
-  }
+  // Always show all options -- Keith may disagree with the verdict
+  const keyboard = new InlineKeyboard()
+    .text('Add to Watch', `youtube:agent-add:${videoId}`)
+    .text('Process Now', `youtube:screen-process:${videoId}`)
+    .row()
+    .text('Screen', `youtube:screen:${videoId}`)
+    .text('Skip', `youtube:skip:${videoId}`)
 
   const formatted = formatForTelegram(verdictText)
   await ctx.api.sendMessage(ctx.chat!.id, formatted, {
