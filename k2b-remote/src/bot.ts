@@ -13,7 +13,9 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
-import { updateRecommendation, getPendingNudges, readRecommendations, appendFeedbackSignal } from './youtube.js'
+import { updateRecommendation, getPendingNudges, readRecommendations, appendRecommendation, appendFeedbackSignal, playlistAdd, playlistRemove, WATCH_PLAYLIST_ID, SCREEN_PLAYLIST_ID } from './youtube.js'
+import { tasteModel } from './taste-model.js'
+import { handleYouTubeAgentResponse } from './youtube-agent-loop.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -256,6 +258,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       outcome: 'watched',
     })
     appendFeedbackSignal(videoId, 'watch', 'watched')
+    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'watch')
 
     const link = `https://youtu.be/${videoId}`
     await ctx.api.sendMessage(ctx.chat!.id, `${link}`, { parse_mode: 'HTML' })
@@ -265,34 +268,137 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendMessage(ctx.chat!.id, "What's your take?")
 
   } else if (action === 'screen') {
-    updateRecommendation(videoId, {
-      status: 'screen_pending',
-      outcome: 'screened',
-    })
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    updateRecommendation(videoId, { status: 'screen_pending', outcome: 'screened' })
     appendFeedbackSignal(videoId, 'screen', 'screened-for-processing')
+    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'screen')
 
-    // Add to K2B Screen playlist and remove from Watch in background
-    runAgent(`Add video ${videoId} to K2B Screen playlist using scripts/yt-playlist-add.sh. Remove from K2B Watch playlist using scripts/yt-playlist-remove.sh.`).catch(err =>
-      logger.error({ err, videoId }, 'Failed to screen video')
-    )
+    // Direct playlist operations -- no agent needed
+    try {
+      playlistAdd(SCREEN_PLAYLIST_ID, videoId)
+      playlistRemove(WATCH_PLAYLIST_ID, videoId)
+    } catch (err) {
+      logger.error({ err, videoId }, 'Failed to move to Screen playlist')
+    }
 
-    await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen for full processing.')
+    await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen.')
 
   } else if (action === 'skip') {
-    updateRecommendation(videoId, {
-      status: 'skipped',
-      outcome: 'skipped',
-    })
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    updateRecommendation(videoId, { status: 'skipped', outcome: 'skipped' })
     appendFeedbackSignal(videoId, 'skip_reason', 'skipped')
+    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip')
 
-    // Remove from Watch playlist in background
-    runAgent(`Remove video ${videoId} from K2B Watch playlist using scripts/yt-playlist-remove.sh`).catch(err =>
+    // Direct playlist removal -- no agent needed
+    try {
+      playlistRemove(WATCH_PLAYLIST_ID, videoId)
+    } catch (err) {
       logger.error({ err, videoId }, 'Failed to remove from Watch playlist')
+    }
+
+    // Deduce skip reason and ask for confirmation
+    const channel = rec?.channel ?? 'unknown'
+    const title = rec?.title ?? 'this video'
+    const uploadDate = rec?.recommended_date ?? ''
+    const topics = rec?.topics ?? []
+
+    // Simple deduction logic
+    let deducedReason = 'Not relevant right now?'
+    const channelRecs = readRecommendations().filter(r => r.channel === channel)
+    const channelSkips = channelRecs.filter(r => r.status === 'skipped').length
+    const channelTotal = channelRecs.length
+
+    if (channelTotal >= 3 && channelSkips / channelTotal > 0.6) {
+      deducedReason = `Not a fan of ${channel}?`
+    } else if (uploadDate) {
+      const ageMs = Date.now() - new Date(uploadDate).getTime()
+      const ageDays = ageMs / (1000 * 60 * 60 * 24)
+      const hasTechTopic = topics.some(t => ['claude-code', 'ai-tools', 'agent-frameworks'].includes(t))
+      if ((hasTechTopic && ageDays > 30) || ageDays > 90) {
+        deducedReason = 'Too old for this topic?'
+      }
+    } else if (channelTotal <= 1) {
+      deducedReason = 'New channel -- not what you expected?'
+    }
+
+    const keyboard = new InlineKeyboard()
+      .text('Yeah', `youtube:skip-confirm:${videoId}`)
+      .text('No, other reason', `youtube:skip-other:${videoId}`)
+
+    await ctx.api.sendMessage(
+      ctx.chat!.id,
+      `Skipped "${title}". ${deducedReason}`,
+      { reply_markup: keyboard }
     )
 
-    // Optional reason: log skip immediately, then ask why
-    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Watch playlist. Why?')
+  } else if (action === 'skip-confirm') {
+    // Keith confirmed the deduced reason -- record it
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    // The deduced reason was in the previous message, re-derive it
+    const channel = rec?.channel ?? 'unknown'
+    const topics = rec?.topics ?? []
+    const uploadDate = rec?.recommended_date ?? ''
+
+    let reason = 'not relevant'
+    const channelRecs = readRecommendations().filter(r => r.channel === channel)
+    const channelSkips = channelRecs.filter(r => r.status === 'skipped').length
+    const channelTotal = channelRecs.length
+    if (channelTotal >= 3 && channelSkips / channelTotal > 0.6) {
+      reason = `dislike channel: ${channel}`
+    } else if (uploadDate) {
+      const ageMs = Date.now() - new Date(uploadDate).getTime()
+      const ageDays = ageMs / (1000 * 60 * 60 * 24)
+      const hasTechTopic = topics.some(t => ['claude-code', 'ai-tools', 'agent-frameworks'].includes(t))
+      if ((hasTechTopic && ageDays > 30) || ageDays > 90) {
+        reason = 'too old'
+      }
+    } else if (channelTotal <= 1) {
+      reason = 'new channel, not interested'
+    }
+
+    updateRecommendation(videoId, { skip_reason: reason })
+    appendFeedbackSignal(videoId, 'skip_reason', 'confirmed', reason)
+    // Update taste model with the confirmed skip reason
+    tasteModel.recordAction(videoId, channel, 'skip', reason)
+    await ctx.api.sendMessage(ctx.chat!.id, 'Got it.')
+
+  } else if (action === 'skip-other') {
+    // Keith says the deduced reason is wrong -- ask for the real one
     awaitingComment.set(chatId, `skip:${videoId}`)
+    await ctx.api.sendMessage(ctx.chat!.id, "What's off about it?")
+
+  } else if (action === 'agent-add') {
+    // Quick add to Watch playlist from agent recommendation or direct URL
+    try {
+      playlistAdd(WATCH_PLAYLIST_ID, videoId)
+    } catch (err) {
+      logger.error({ err, videoId }, 'Failed to add to Watch playlist')
+    }
+
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    if (!rec) {
+      // Create a new JSONL entry for directly-added videos
+      const today = new Date().toISOString().slice(0, 10)
+      appendRecommendation({
+        ts: new Date().toISOString(),
+        video_id: videoId,
+        title: videoId,
+        channel: 'unknown',
+        playlist: 'K2B Watch',
+        recommended_date: today,
+        status: 'nudge_sent',
+        nudge_sent: true,
+        nudge_date: today,
+        outcome: null,
+        rating: null,
+        promoted_to: null,
+        vault_note: null,
+      })
+    } else {
+      updateRecommendation(videoId, { status: 'nudge_sent', outcome: 'added-to-watch' })
+    }
+
+    await ctx.api.sendMessage(ctx.chat!.id, 'Added to Watch list.')
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -346,10 +452,12 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     updateRecommendation(videoId, { status: 'skipped', outcome: 'screen-skipped' })
     appendFeedbackSignal(videoId, 'skip_reason', 'screen-skipped')
 
-    // Remove from Screen playlist in background
-    runAgent(`Remove video ${videoId} from K2B Screen playlist using scripts/yt-playlist-remove.sh`).catch(err =>
+    // Direct playlist removal -- no agent needed
+    try {
+      playlistRemove(SCREEN_PLAYLIST_ID, videoId)
+    } catch (err) {
       logger.error({ err, videoId }, 'Failed to remove from Screen playlist')
-    )
+    }
 
     await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
 
@@ -428,6 +536,82 @@ async function handleCommentOrSkipReason(
     appendFeedbackSignal(videoId, 'comment', 'user-comment', text)
     await ctx.api.sendMessage(ctx.chat!.id, 'Got it, comment saved.')
   }
+}
+
+// --- Direct YouTube URL handler ---
+
+async function handleDirectYouTubeUrl(
+  ctx: Context,
+  videoId: string,
+  originalUrl: string,
+  chatId: string
+): Promise<void> {
+  // Instant acknowledgment
+  await ctx.api.sendMessage(ctx.chat!.id, 'Checking this video...')
+  await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+
+  // Get metadata via yt-dlp (fast, no agent needed)
+  let title = videoId
+  let channel = 'unknown'
+  let duration = 'unknown'
+  let uploadDate = 'unknown'
+  let isShort = originalUrl.includes('/shorts/')
+
+  try {
+    const meta = execSync(
+      `yt-dlp --print "%(title)s\\t%(channel)s\\t%(duration_string)s\\t%(upload_date)s" "${originalUrl}" 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 15_000 }
+    ).trim()
+    const parts = meta.split('\t')
+    if (parts.length >= 4) {
+      title = parts[0]
+      channel = parts[1]
+      duration = parts[2]
+      uploadDate = parts[3]
+    }
+    // Detect shorts by duration (< 90 seconds)
+    if (duration !== 'unknown') {
+      const dParts = duration.split(':').map(Number)
+      const totalSec = dParts.length === 3 ? dParts[0]*3600+dParts[1]*60+dParts[2] : dParts.length === 2 ? dParts[0]*60+dParts[1] : dParts[0]
+      if (totalSec <= 90) isShort = true
+    }
+  } catch (err) {
+    logger.error({ err, videoId }, 'Failed to get video metadata')
+  }
+
+  // Check taste model
+  const affinity = tasteModel.getChannelAffinity(channel)
+  const flagged = tasteModel.isChannelFlagged(channel)
+  const stale = uploadDate !== 'unknown' ? tasteModel.isVideoStale(uploadDate, []) : false
+
+  // Build info line
+  let info = `**${title}**\n${channel}`
+  if (duration !== 'unknown') info += ` -- ${duration}`
+  if (isShort) info += ' (Short)'
+  if (affinity > 0.5) info += '\nChannel you like'
+  else if (flagged) info += '\nChannel you usually skip'
+  if (stale) info += '\nOlder video -- may be outdated'
+
+  // Detect if video is likely Chinese (check for CJK characters in title)
+  const hasChinese = /[\u4e00-\u9fff\u3400-\u4dbf]/.test(title)
+  if (hasChinese) info += '\nDetected: Chinese language'
+
+  // Send card with buttons
+  const keyboard = new InlineKeyboard()
+    .text('Process', `youtube:screen-process:${videoId}`)
+    .text('Screen', `youtube:screen:${videoId}`)
+    .row()
+    .text('Add to Watch', `youtube:agent-add:${videoId}`)
+
+  // Send the URL first (triggers thumbnail preview in Telegram)
+  await ctx.api.sendMessage(ctx.chat!.id, originalUrl)
+
+  // Then send info + buttons
+  const formatted = formatForTelegram(info)
+  await ctx.api.sendMessage(ctx.chat!.id, formatted, {
+    parse_mode: 'HTML',
+    reply_markup: keyboard,
+  })
 }
 
 // --- Bot creation ---
@@ -527,6 +711,29 @@ export function createBot(): Bot {
       await handleCommentOrSkipReason(ctx, pendingKey, text, chatId)
       return
     }
+
+    // Detect YouTube URLs (regular videos, shorts, youtu.be links)
+    const ytMatch = text.match(
+      /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
+    )
+    if (ytMatch) {
+      await handleDirectYouTubeUrl(ctx, ytMatch[1], text.trim(), chatId)
+      return
+    }
+
+    // Check if YouTube agent loop is waiting for a response
+    const handled = await handleYouTubeAgentResponse(
+      text,
+      async (cid, msg, opts) => {
+        try {
+          await ctx.api.sendMessage(Number(cid), msg, opts as Record<string, unknown>)
+        } catch {
+          await ctx.api.sendMessage(Number(cid), msg.replace(/<[^>]+>/g, ''))
+        }
+      },
+      chatId
+    )
+    if (handled) return
 
     if (text.startsWith('/')) return // skip unhandled commands
     await handleMessage(ctx, text)
@@ -658,8 +865,6 @@ export async function sendPendingNudges(chatId: string): Promise<number> {
 
   return sent
 }
-
-const SCREEN_PLAYLIST_ID = 'PLg0PUkz5itjzmQhB2s49SLfmkR-2zntQD'
 
 export async function sendScreenOptions(chatId: string): Promise<number> {
   // Poll the actual playlist -- not JSONL

@@ -1,8 +1,31 @@
 import { readFileSync, appendFileSync, writeFileSync, existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { resolve } from 'node:path'
+import { K2B_PROJECT_ROOT } from './config.js'
 
 const VAULT = process.env.K2B_VAULT ?? '/Users/fastshower/Projects/K2B-Vault'
 const RECOMMENDED_FILE = `${VAULT}/wiki/context/youtube-recommended.jsonl`
 const FEEDBACK_SIGNALS_FILE = `${VAULT}/wiki/context/youtube-feedback-signals.jsonl`
+
+// Playlist IDs (from youtube-playlists.md)
+export const WATCH_PLAYLIST_ID = 'PLg0PUkz5itjwIXWVuSlvxud0ZR2JBsacX'
+export const SCREEN_PLAYLIST_ID = 'PLg0PUkz5itjzmQhB2s49SLfmkR-2zntQD'
+
+const SCRIPTS_DIR = resolve(K2B_PROJECT_ROOT, 'scripts')
+
+export function playlistAdd(playlistId: string, videoId: string): string {
+  return execSync(
+    `"${SCRIPTS_DIR}/yt-playlist-add.sh" "${playlistId}" "${videoId}"`,
+    { encoding: 'utf-8', timeout: 30_000 }
+  ).trim()
+}
+
+export function playlistRemove(playlistId: string, videoId: string): string {
+  return execSync(
+    `"${SCRIPTS_DIR}/yt-playlist-remove.sh" "${playlistId}" "${videoId}"`,
+    { encoding: 'utf-8', timeout: 30_000 }
+  ).trim()
+}
 
 export interface YouTubeRecommendation {
   ts: string

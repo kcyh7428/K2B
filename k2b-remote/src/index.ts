@@ -8,6 +8,7 @@ import { cleanupOldUploads } from './media.js'
 import { createBot, sendTelegramMessage } from './bot.js'
 import { initScheduler, stopScheduler } from './scheduler.js'
 import { startHeartbeat, stopHeartbeat } from './health.js'
+import { runYouTubeAgentLoop } from './youtube-agent-loop.js'
 import { logger } from './logger.js'
 
 const PID_FILE = resolve(STORE_DIR, 'k2b-remote.pid')
@@ -76,6 +77,24 @@ async function main(): Promise<void> {
 
   // Initialize scheduler with send function
   initScheduler(sendTelegramMessage)
+
+  // YouTube agent loop -- runs every 6 hours, checks in with Keith conversationally
+  const YT_LOOP_INTERVAL = 6 * 60 * 60 * 1000
+  const YT_LOOP_CHAT_ID = ALLOWED_CHAT_ID
+  if (YT_LOOP_CHAT_ID) {
+    // Initial run 5 min after startup
+    setTimeout(() => {
+      runYouTubeAgentLoop(sendTelegramMessage, YT_LOOP_CHAT_ID).catch(
+        err => logger.error({ err }, 'YouTube agent loop initial run failed')
+      )
+    }, 5 * 60 * 1000)
+    // Then every 6 hours
+    setInterval(() => {
+      runYouTubeAgentLoop(sendTelegramMessage, YT_LOOP_CHAT_ID).catch(
+        err => logger.error({ err }, 'YouTube agent loop failed')
+      )
+    }, YT_LOOP_INTERVAL)
+  }
 
   // Start health heartbeat
   startHeartbeat()
