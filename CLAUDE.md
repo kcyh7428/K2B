@@ -54,7 +54,7 @@ K2B-Vault/
   Assets/         images/ audio/ video/
   System/         memory/
   Templates/
-  Home.md + MOC_*.md
+  Home.md                      # Vault landing page
 ```
 
 - **wiki/index.md** -- master catalog. LLM reads FIRST on every query.
@@ -63,8 +63,7 @@ K2B-Vault/
 - **Capture -> raw/ -> compile -> wiki/**: Capture skills save to raw/, then k2b-compile digests into wiki pages.
 - **review/** replaces Inbox/ for items needing Keith's judgment.
 - **Cross-link pass**: k2b-compile updates related person/project/concept pages across wiki/.
-- **MOCs** live at vault root as navigation fallback (merge into wiki indexes later).
-- All notes use `up:` in frontmatter to point to their parent MOC.
+- All notes use `up:` in frontmatter to point to their parent wiki index or Home.
 - Use **k2b-vault-writer** skill to create or update vault notes.
 - Use **k2b-compile** skill to digest raw sources into wiki knowledge.
 - review/ notes MUST have `review-action:` and `review-notes:` fields.
@@ -182,7 +181,7 @@ Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vaul
 
 ## Roadmap & Feature Notes
 
-`MOC_K2B-Roadmap` indexes all K2B improvement ideas. Small ideas get a one-liner there. Bigger ideas also get a feature note (`wiki/concepts/`) with full spec. Shipped features: set `status: shipped`, move to `wiki/concepts/Shipped/`, update roadmap.
+`wiki/concepts/index.md` tracks all K2B improvement ideas. Small ideas get a one-liner there. Bigger ideas also get a feature note (`wiki/concepts/`) with full spec. Shipped features: set `status: shipped`, move to `wiki/concepts/Shipped/`, update index.
 
 ## Codex Adversarial Review
 
