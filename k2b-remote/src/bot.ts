@@ -558,7 +558,11 @@ async function handleDirectYouTubeUrl(
   await ctx.api.sendMessage(ctx.chat!.id, 'Checking this video...')
   await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
 
-  // Get metadata via yt-dlp (fast, no agent needed)
+  // Send the URL first (triggers thumbnail preview in Telegram)
+  await ctx.api.sendMessage(ctx.chat!.id, originalUrl)
+  await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+
+  // Get metadata via yt-dlp using clean URL (raw URL may have ?si= tracking params)
   let title = videoId
   let channel = 'unknown'
   let duration = 'unknown'
@@ -566,9 +570,10 @@ async function handleDirectYouTubeUrl(
   let isShort = originalUrl.includes('/shorts/')
 
   try {
+    const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`
     const meta = execFileSync('yt-dlp', [
       '--print', '%(title)s\t%(channel)s\t%(duration_string)s\t%(upload_date)s',
-      originalUrl
+      cleanUrl
     ], { encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
     const parts = meta.split('\t')
     if (parts.length >= 4) {
@@ -577,45 +582,75 @@ async function handleDirectYouTubeUrl(
       duration = parts[2]
       uploadDate = parts[3]
     }
-    // Detect shorts by duration (< 90 seconds)
     if (duration !== 'unknown') {
       const dParts = duration.split(':').map(Number)
       const totalSec = dParts.length === 3 ? dParts[0]*3600+dParts[1]*60+dParts[2] : dParts.length === 2 ? dParts[0]*60+dParts[1] : dParts[0]
       if (totalSec <= 90) isShort = true
     }
   } catch (err) {
-    logger.error({ err, videoId }, 'Failed to get video metadata')
+    logger.error({ err, videoId }, 'Failed to get video metadata via yt-dlp')
   }
 
   // Check taste model
   const affinity = tasteModel.getChannelAffinity(channel)
   const flagged = tasteModel.isChannelFlagged(channel)
   const stale = uploadDate !== 'unknown' ? tasteModel.isVideoStale(uploadDate, []) : false
-
-  // Build info line
-  let info = `**${title}**\n${channel}`
-  if (duration !== 'unknown') info += ` -- ${duration}`
-  if (isShort) info += ' (Short)'
-  if (affinity > 0.5) info += '\nChannel you like'
-  else if (flagged) info += '\nChannel you usually skip'
-  if (stale) info += '\nOlder video -- may be outdated'
-
-  // Detect if video is likely Chinese (check for CJK characters in title)
   const hasChinese = /[\u4e00-\u9fff\u3400-\u4dbf]/.test(title)
-  if (hasChinese) info += '\nDetected: Chinese language'
 
-  // Send card with buttons
-  const keyboard = new InlineKeyboard()
-    .text('Process', `youtube:screen-process:${videoId}`)
-    .text('Screen', `youtube:screen:${videoId}`)
-    .row()
-    .text('Add to Watch', `youtube:agent-add:${videoId}`)
+  // Screen via constrained agent -- gives Keith a verdict, not raw metadata
+  await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+  const screenPrompt = [
+    'IMPORTANT: Do NOT use any tools. Do NOT read files. Do NOT run commands. Just analyze and return the message text.',
+    '',
+    "You are K2B's YouTube curator. Keith just sent you this video:",
+    '',
+    `Title: ${title}`,
+    `Channel: ${channel}`,
+    `Duration: ${duration}`,
+    `Published: ${uploadDate}${stale ? ' (OLD for this topic category)' : ''}`,
+    affinity > 0.3 ? 'Channel affinity: high (Keith likes this channel)' : flagged ? 'Channel affinity: low (Keith usually skips this channel)' : '',
+    hasChinese ? 'Language: likely Chinese/Mandarin' : '',
+    isShort ? 'Format: YouTube Short' : '',
+    '',
+    'Keith builds K2B, a Claude Code AI second brain with 18+ skills, vault compilation, and taste-model-driven YouTube curation. He is AVP Talent Acquisition at SJM Resorts (Macau).',
+    '',
+    'Compose a SHORT Telegram message (3-5 lines):',
+    '1. What this video likely covers (infer from title, channel, duration)',
+    '2. Why it IS or ISN\'T relevant to Keith right now',
+    '3. Verdict: Worth watching / Highlights only / Skip',
+    '',
+    'Be direct and honest. If basic or stale, say so.',
+    'Return ONLY the message text for Telegram.',
+  ].filter(Boolean).join('\n')
 
-  // Send the URL first (triggers thumbnail preview in Telegram)
-  await ctx.api.sendMessage(ctx.chat!.id, originalUrl)
+  const { text: verdict } = await runAgent(screenPrompt)
+  const verdictText = verdict ?? `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Could not screen this video)`
 
-  // Then send info + buttons
-  const formatted = formatForTelegram(info)
+  // Determine buttons based on verdict
+  const verdictLower = (verdict ?? '').toLowerCase()
+  const isWorth = verdictLower.includes('worth watching') || verdictLower.includes('worth a watch')
+  const isHighlights = verdictLower.includes('highlights only') || verdictLower.includes('highlights')
+
+  let keyboard: InlineKeyboard
+  if (isWorth) {
+    keyboard = new InlineKeyboard()
+      .text('Add to Watch', `youtube:agent-add:${videoId}`)
+      .text('Process Now', `youtube:screen-process:${videoId}`)
+      .row()
+      .text('Skip', `youtube:skip:${videoId}`)
+  } else if (isHighlights) {
+    keyboard = new InlineKeyboard()
+      .text('Process Now', `youtube:screen-process:${videoId}`)
+      .text('Screen', `youtube:screen:${videoId}`)
+      .row()
+      .text('Skip', `youtube:skip:${videoId}`)
+  } else {
+    keyboard = new InlineKeyboard()
+      .text('Skip', `youtube:skip:${videoId}`)
+      .text('Process Anyway', `youtube:screen-process:${videoId}`)
+  }
+
+  const formatted = formatForTelegram(verdictText)
   await ctx.api.sendMessage(ctx.chat!.id, formatted, {
     parse_mode: 'HTML',
     reply_markup: keyboard,
@@ -732,9 +767,18 @@ export function createBot(): Bot {
     // Check if YouTube agent loop is waiting for a response
     const handled = await handleYouTubeAgentResponse(
       text,
-      async (cid, msg, opts) => {
+      async (cid, msg) => {
         try {
-          await ctx.api.sendMessage(Number(cid), msg, opts as Record<string, unknown>)
+          await ctx.api.sendMessage(Number(cid), formatForTelegram(msg), { parse_mode: 'HTML' })
+        } catch {
+          await ctx.api.sendMessage(Number(cid), msg.replace(/<[^>]+>/g, ''))
+        }
+      },
+      async (cid, msg, _buttons, prebuiltKeyboard) => {
+        const opts: Record<string, unknown> = { parse_mode: 'HTML' }
+        if (prebuiltKeyboard) opts.reply_markup = prebuiltKeyboard
+        try {
+          await ctx.api.sendMessage(Number(cid), formatForTelegram(msg), opts)
         } catch {
           await ctx.api.sendMessage(Number(cid), msg.replace(/<[^>]+>/g, ''))
         }

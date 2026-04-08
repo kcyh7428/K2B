@@ -35,7 +35,8 @@ export const youtubeAgentState: YouTubeAgentState = {
 // Types
 // ---------------------------------------------------------------------------
 
-type SendFn = (chatId: string, text: string, options?: Record<string, unknown>) => Promise<void>
+type SendFn = (chatId: string, text: string) => Promise<void>
+type SendWithButtonsFn = (chatId: string, text: string, buttons: Array<{label: string; callbackData: string}>, prebuiltKeyboard?: InlineKeyboard) => Promise<void>
 
 // ---------------------------------------------------------------------------
 // Main loop entry point
@@ -43,6 +44,7 @@ type SendFn = (chatId: string, text: string, options?: Record<string, unknown>) 
 
 export async function runYouTubeAgentLoop(
   sendMessage: SendFn,
+  sendWithButtons: SendWithButtonsFn,
   chatId: string
 ): Promise<void> {
   // Step 0: Guards -----------------------------------------------------------
@@ -105,7 +107,7 @@ export async function runYouTubeAgentLoop(
         .row()
         .text('Screen', `youtube:screen:${rec.video_id}`)
 
-      await sendMessage(chatId, link, { reply_markup: keyboard })
+      await sendWithButtons(chatId, link, [], keyboard)
     }
 
     await sendMessage(chatId, 'Still interested, or should I swap these out?')
@@ -116,14 +118,14 @@ export async function runYouTubeAgentLoop(
   }
 
   // No pending videos -- go straight to finding new content
-  await findNewContent(sendMessage, chatId)
+  await findNewContent(sendMessage, sendWithButtons, chatId)
 }
 
 // ---------------------------------------------------------------------------
 // Find new content (called from main loop and from handleYouTubeAgentResponse)
 // ---------------------------------------------------------------------------
 
-async function findNewContent(sendMessage: SendFn, chatId: string): Promise<void> {
+async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButtonsFn, chatId: string): Promise<void> {
   youtubeAgentState.phase = 'searching'
 
   // Read vault context
@@ -227,7 +229,7 @@ async function findNewContent(sendMessage: SendFn, chatId: string): Promise<void
     // Store as pending recommendation (not yet in JSONL)
     youtubeAgentState.pendingVideoIds.push(candidate.id)
 
-    await sendMessage(chatId, link, { reply_markup: keyboard })
+    await sendWithButtons(chatId, link, [], keyboard)
   }
 
   await sendMessage(chatId, 'Want all of these, or pick the ones that catch your eye?')
@@ -241,6 +243,7 @@ async function findNewContent(sendMessage: SendFn, chatId: string): Promise<void
 export async function handleYouTubeAgentResponse(
   text: string,
   sendMessage: SendFn,
+  sendWithButtons: SendWithButtonsFn,
   chatId: string
 ): Promise<boolean> {
   // Returns true if the message was handled, false if not a YouTube agent context
@@ -263,7 +266,7 @@ export async function handleYouTubeAgentResponse(
       }
       youtubeAgentState.pendingVideoIds = []
       await sendMessage(chatId, 'Cleared. Finding fresh content...')
-      await findNewContent(sendMessage, chatId)
+      await findNewContent(sendMessage, sendWithButtons, chatId)
       return true
     }
 
