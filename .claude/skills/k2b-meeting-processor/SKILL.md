@@ -21,14 +21,14 @@ When a transcript is provided:
    - **Action Items**: Tasks with owners and deadlines where mentioned
    - **Insights**: Patterns, observations, or strategic points worth remembering
    - **Content Potential**: Anything that could become content (a teaching moment, a unique approach, a lesson learned)
-3. Create the note at `~/Projects/K2B-Vault/Notes/Work/YYYY-MM-DD_Meeting-Topic.md` (auto-promote -- bypasses Inbox)
+3. Create the note at `~/Projects/K2B-Vault/raw/meetings/YYYY-MM-DD_Meeting-Topic.md`
 4. **Run the vault-writer post-write pass** (see Post-Write Contract below)
 5. Update today's daily note to add `[[YYYY-MM-DD_Meeting-Topic]]` in the Meetings section
 6. **Update related project notes**: If the meeting is tied to a project, use the vault-writer update workflow to:
    - Append a dated entry to the project note's `## Updates` section summarizing what the meeting covered
    - Check off any milestones that were completed or confirmed
    - Add `[[YYYY-MM-DD_Meeting-Topic]]` to the project's `## Related Notes`
-7. If significant insights found, offer to create a standalone insight note in `Notes/Insights/`
+7. If significant insights found, offer to create a standalone insight note in `wiki/insights/`
 
 ## Processing Guidelines
 - Be concise. Keith wants signal, not noise.
@@ -47,27 +47,22 @@ Flag as content potential if the meeting contains:
 
 ## File Convention
 
-Meeting notes go to: `~/Projects/K2B-Vault/Notes/Work/YYYY-MM-DD_Meeting-Topic.md` (auto-promote, bypasses Inbox)
+Meeting notes go to: `~/Projects/K2B-Vault/raw/meetings/YYYY-MM-DD_Meeting-Topic.md`
 
 ## Post-Write Contract
 
-After saving the meeting note, run the vault-writer cross-link pass:
-1. **Cross-link**: Update person/project pages with backlinks (see Cross-Linking below)
-2. **Index update**: Add/update a row in `Notes/Work/index.md` with `[[filename]]`, one-line summary, date
-3. **System log**: Append entry to `System/log.md`:
-   ```markdown
-   ## [YYYY-MM-DD HH:MM] k2b-meeting-processor | Meeting Title
-   - Created: Notes/Work/YYYY-MM-DD_Meeting-Topic.md
-   - Cross-linked: [list of entity pages updated]
-   - Index updated: Notes/Work/index.md
-   ```
+After saving the meeting note to raw/meetings/, trigger k2b-compile:
+1. k2b-compile reads the raw meeting note + wiki/index.md
+2. Shows Keith a summary of wiki pages to update (people, projects, work items)
+3. On approval: updates wiki pages, indexes, wiki/log.md
+4. Marks raw source as compiled
 
 ## Cross-Linking
 
 When creating a meeting note, always add `[[wiki links]]`:
 
-1. **Participants**: In the Participants line, list each person as `[[person_Firstname-Lastname]]`. Glob `Notes/People/person_*.md` to check existing person notes.
-2. **Person stubs**: If a participant doesn't have a person note yet, create a stub from the person-note template at `Notes/People/person_Firstname-Lastname.md` with their organization and role pre-filled from the transcript.
+1. **Participants**: In the Participants line, list each person as `[[person_Firstname-Lastname]]`. Glob `wiki/people/person_*.md` to check existing person notes.
+2. **Person stubs**: If a participant doesn't have a person note yet, create a stub from the person-note template at `wiki/people/person_Firstname-Lastname.md` with their organization and role pre-filled from the transcript.
 3. **Projects**: Link referenced projects as `[[project_name]]` in the body and in the Project frontmatter field.
 4. **Decisions**: If a decision is logged separately, link as `[[YYYY-MM-DD_decision-topic]]`.
 5. **Daily note**: Add `[[YYYY-MM-DD_Meeting-Topic]]` to today's daily note Meetings section.

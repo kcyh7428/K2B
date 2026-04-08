@@ -1,15 +1,15 @@
 ---
 name: k2b-inbox
-description: Review and process pending content ideas and LinkedIn drafts -- triage Inbox notes (now content-ideas-only queue) by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /inbox, "check inbox", "process inbox", "what's in inbox", or wants to review/triage Inbox items.
+description: Review and process pending content ideas and LinkedIn drafts -- triage review queue items by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /inbox, "check inbox", "process inbox", "what's in inbox", or wants to review/triage Inbox items.
 ---
 
 # K2B Inbox Manager
 
 ## Narrowed Scope (Vault Redesign)
 
-**Inbox/ now ONLY contains `origin: k2b-generate` content suggestions** that need Keith's review. All other captures auto-promote to their destination folder (meeting notes to Notes/Work/, insights to Notes/Insights/, references to Notes/Reference/, etc.). If non-content items appear in Inbox, they are misrouted -- flag and relocate them.
+**review/ holds items requiring Keith's judgment:** `origin: k2b-generate` content suggestions, LinkedIn drafts, and anything needing human review before promotion. All other captures auto-promote to their destination folder. If non-review items appear in review/, they are misrouted -- flag and relocate them.
 
-LinkedIn drafts also live in Inbox temporarily (origin: k2b-extract) since they need Keith's approval before publishing.
+LinkedIn drafts also live in review/ temporarily (origin: k2b-extract) since they need Keith's approval before publishing.
 
 ## System Reference
 
@@ -17,8 +17,8 @@ All lifecycle rules (origin tagging, review properties, promote destinations, co
 
 ## Vault Paths
 
-- Inbox: `~/Projects/K2B-Vault/Inbox/`
-- Ready queue: `~/Projects/K2B-Vault/Inbox/Ready/`
+- Inbox: `~/Projects/K2B-Vault/review/`
+- Ready queue: `~/Projects/K2B-Vault/review/Ready/`
 - Archive: `~/Projects/K2B-Vault/Archive/`
 
 ## Vault Query Tools
@@ -36,10 +36,10 @@ Prefer DQL queries over Glob+Read+Filter when querying frontmatter across multip
 
 Check two locations for items Keith has reviewed:
 
-1. **`Inbox/Ready/`** -- notes Keith dragged here in Obsidian (any note here is ready to process). Use `mcp__obsidian__list_files_in_dir` or Glob to check.
-2. **`Inbox/`** -- notes where `review-action:` is set. Query with:
+1. **`review/Ready/`** -- notes Keith dragged here in Obsidian (any note here is ready to process). Use `mcp__obsidian__list_files_in_dir` or Glob to check.
+2. **`review/`** -- notes where `review-action:` is set. Query with:
    ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE review-action AS "action", review-notes AS "notes", type, origin, date FROM "Inbox" WHERE review-action != null AND review-action != ""'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE review-action AS "action", review-notes AS "notes", type, origin, date FROM "review" WHERE review-action != null AND review-action != ""'
    ```
    This returns all actionable items with their frontmatter in one call -- no need to glob and read each file individually.
 
@@ -52,13 +52,13 @@ Auto-detect destination from the `type:` frontmatter field:
 
 | `type:` value | Destination folder | Notes |
 |---------------|-------------------|-------|
-| `content-idea` | `Notes/Content-Ideas/` | Set `origin: keith` (Keith adopted it) |
-| `linkedin-draft` | `Notes/Content-Ideas/` | Keith approved the draft |
-| `project` | `Notes/Projects/` | Misrouted -- should not be in Inbox |
-| `insight` | `Notes/Insights/` | Misrouted -- should not be in Inbox |
-| `reference` | `Notes/Reference/` | Misrouted -- should not be in Inbox |
-| `meeting-note` | `Notes/Work/` | Misrouted -- should not be in Inbox |
-| Other | `Notes/` (flat) | Flag as misrouted |
+| `content-idea` | `wiki/content-pipeline/` | Set `origin: keith` (Keith adopted it) |
+| `linkedin-draft` | `wiki/content-pipeline/` | Keith approved the draft |
+| `project` | `wiki/projects/` | Misrouted -- should not be in review |
+| `insight` | `wiki/insights/` | Misrouted -- should not be in review |
+| `reference` | `wiki/reference/` | Misrouted -- should not be in review |
+| `meeting-note` | `wiki/work/` | Misrouted -- should not be in review |
+| Other | `wiki/` (flat) | Flag as misrouted |
 
 On promote:
 - Move file to destination folder
@@ -66,8 +66,8 @@ On promote:
 - If content-idea: change `origin:` to `keith`
 - If `review-notes:` has feedback, incorporate it into the note content before promoting
 - Update the relevant MOC with a wikilink to the promoted note
-- **Update the destination folder's `index.md`** (mandatory per vault-writer contract)
-- **Append to `System/log.md`** recording the promote action
+- **Update the destination folder's `wiki/*/index.md`** (mandatory per vault-writer contract)
+- **Append to `wiki/log.md`** recording the promote action
 
 #### archive
 - Move file to `Archive/`
@@ -84,7 +84,7 @@ On promote:
 - Rework the note content based on his feedback
 - Clear `review-action:` (set back to empty)
 - Keep `review-notes:` so Keith can see what was addressed
-- Leave the note in Inbox for re-review
+- Leave the note in review/ for re-review
 
 ### Step 2.5: Log Feedback Signal
 
@@ -117,12 +117,12 @@ If the file `preference-signals.jsonl` doesn't exist, create it (first run).
 
 After processing actionable items, query remaining Inbox items with:
 ```bash
-~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, date, review-action AS "status" FROM "Inbox" SORT date DESC'
+~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, date, review-action AS "status" FROM "review" SORT date DESC'
 ```
 
 Present as:
 ```
-## Inbox (X items)
+## Review Queue (X items)
 
 | # | File | Type | Origin | Date | Review Status |
 |---|------|------|--------|------|---------------|
@@ -133,7 +133,7 @@ Group by type if there are many items.
 
 ## Notes
 
-- If a note in `Inbox/Ready/` has no `review-action:` set, treat it as `promote` (Keith dragged it to Ready, most likely wants it processed)
+- If a note in `review/Ready/` has no `review-action:` set, treat it as `promote` (Keith dragged it to Ready, most likely wants it processed)
 - Always use the k2b-vault-writer conventions when moving notes
 - After processing, report a summary: "Processed X items: Y promoted, Z archived, W revised"
 - Cross-link promoted notes to relevant MOCs

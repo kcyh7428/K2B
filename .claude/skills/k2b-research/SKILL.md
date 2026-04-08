@@ -20,7 +20,7 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.claude/skills/`
 - Research topics: `~/Projects/K2B-Vault/Notes/Context/research-topics.md`
-- Output: `~/Projects/K2B-Vault/Notes/Reference/` (auto-promote, bypasses Inbox)
+- Output: `~/Projects/K2B-Vault/raw/research/`
 
 ## External Scanning
 
@@ -71,9 +71,9 @@ Detect URL type and handle accordingly:
 
 ## Output Format
 
-Save to `Notes/Reference/YYYY-MM-DD_research-briefing.md` (or `Notes/Reference/YYYY-MM-DD_research-[topic-slug].md` for focused research). Auto-promote -- bypasses Inbox.
+Save to `raw/research/YYYY-MM-DD_research-briefing.md` (or `raw/research/YYYY-MM-DD_research-[topic-slug].md` for focused research).
 
-After saving, run the vault-writer cross-link pass: update person/project pages, update `Notes/Reference/index.md`, append to `System/log.md`.
+After saving to raw/research/, trigger k2b-compile to digest the raw source into wiki pages. k2b-compile reads the raw research note, shows Keith a summary of wiki pages to update, and on approval updates wiki pages, indexes, and wiki/log.md.
 
 ```markdown
 ---

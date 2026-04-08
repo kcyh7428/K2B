@@ -23,7 +23,7 @@ Process YouTube videos saved to playlists with playlist-specific analysis. Also 
 - Scripts: `~/Projects/K2B/scripts/`
 - Playlist config: `~/Projects/K2B-Vault/Notes/Context/youtube-playlists.md`
 - Processed log: `~/Projects/K2B-Vault/Notes/Context/youtube-processed.md`
-- Output notes: `~/Projects/K2B-Vault/Notes/Reference/` (auto-promote, bypasses Inbox)
+- Output notes: `~/Projects/K2B-Vault/raw/youtube/`
 - YouTube token: `~/.config/k2b/youtube-token.json`
 - OAuth client: `~/.config/gws/client_secret.json`
 - Recommendation tracking: `~/Projects/K2B-Vault/Notes/Context/youtube-recommended.jsonl`
@@ -155,7 +155,7 @@ Produce the following in English (even if the video is in another language):
 
 #### 3d. Create Vault Note
 
-Save to `Notes/Reference/YYYY-MM-DD_youtube_<video-slug>.md` (auto-promote, bypasses Inbox).
+Save to `raw/youtube/YYYY-MM-DD_youtube_<video-slug>.md`.
 
 Frontmatter:
 ```yaml
@@ -172,13 +172,13 @@ up: "{playlist up link}"
 ---
 ```
 
-#### 3e. Post-Write Cross-Link Pass
+#### 3e. Trigger k2b-compile
 
-After saving the note, run the vault-writer cross-link pass:
-1. Scan note for mentioned people --> update person pages (or create stubs)
-2. Scan for mentioned projects --> update project pages
-3. Update `Notes/Reference/index.md` with a new row
-4. Append to `System/log.md`
+After saving the note to raw/youtube/, trigger k2b-compile to digest the raw source into wiki pages:
+1. k2b-compile reads the raw YouTube note + wiki/index.md
+2. Shows Keith a summary of wiki pages to update (people, projects, reference entries)
+3. On approval: updates wiki pages, indexes, wiki/log.md
+4. Marks raw source as compiled
 
 Body sections:
 ```markdown
@@ -207,7 +207,7 @@ Body sections:
 {wikilinks to related vault notes -- search vault for relevant connections}
 ```
 
-For **K2B Content** playlist: also create `Notes/Content-Ideas/idea_<slug>.md` for each content seed found.
+For **K2B Content** playlist: also create `wiki/content-pipeline/idea_<slug>.md` for each content seed found.
 
 For **K2B Learn** playlist: append to or create `Notes/Context/learning-paths.md` linking this video in sequence.
 
@@ -247,7 +247,7 @@ Two-pass pipeline: metadata filter then transcript screening. Finds relevant You
 1. Read playlist config to get K2B Watch playlist ID (extract from URL)
 2. Read recent vault context:
    - Last 5 daily notes
-   - Active projects (glob Notes/Projects/)
+   - Active projects (glob wiki/projects/)
    - Recent content ideas
 3. Read `Notes/Context/youtube-preference-profile.md` (if it exists). Extract:
    - Channel affinity: channels with >70% skip rate (to skip), channels with >70% watch/screen rate (to boost)
@@ -351,7 +351,7 @@ Output as JSON: {"verdict": "...", "verdict_value": "HIGH|MEDIUM|LOW", "pillars_
     - `verdict` (the 3-5 sentence screening verdict)
     - `verdict_value` ("HIGH" or "MEDIUM")
     - `pillars_matched` (array of matched pillar keys)
-7. Create `Inbox/YYYY-MM-DD_youtube-recommendations.md` with verdicts per video:
+7. Create `review/YYYY-MM-DD_youtube-recommendations.md` with verdicts per video:
 
 ```markdown
 ### {Title}

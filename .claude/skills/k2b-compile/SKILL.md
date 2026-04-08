@@ -1,0 +1,232 @@
+---
+name: k2b-compile
+description: Compile raw sources into wiki knowledge pages -- reads raw captures, identifies affected wiki pages, shows Keith a summary, updates wiki on approval. The knowledge compilation engine that turns filing into digestion.
+triggers:
+  - /compile
+  - compile this
+  - digest this
+  - process raw
+scope: project
+---
+
+# k2b-compile -- Knowledge Compilation Engine
+
+Reads raw source captures and compiles them into wiki knowledge pages. Based on Karpathy's LLM Wiki architecture: the LLM owns the wiki layer, Keith curates sources and approves updates.
+
+## Trigger
+
+- `/compile` -- compile unprocessed raw sources
+- `/compile <path>` -- compile a specific raw source
+- `/compile batch` -- batch-compile multiple sources with one approval
+- `/compile deep` -- deep analysis seeking cross-vault connections
+- Automatically triggered by capture skills after writing to raw/
+
+## Core Concept
+
+**Filing vs compiling:** Filing creates one note and stops. Compiling reads a source, extracts entities/concepts/insights, and ripples updates across 5-15 wiki pages. A single YouTube video might update 3 person pages, 2 project pages, create 1 concept page, and add entries to 2 indexes.
+
+## Paths
+
+- Raw sources: `~/Projects/K2B-Vault/raw/` (youtube/, meetings/, research/, tldrs/, daily/)
+- Wiki output: `~/Projects/K2B-Vault/wiki/` (people/, projects/, work/, concepts/, insights/, reference/, content-pipeline/, context/)
+- Master index: `~/Projects/K2B-Vault/wiki/index.md`
+- Activity log: `~/Projects/K2B-Vault/wiki/log.md`
+- Review queue: `~/Projects/K2B-Vault/review/`
+
+## Compile Flow
+
+### 1. Read Source + Index
+
+```
+1. Read the raw source file
+2. Read wiki/index.md (master catalog)
+3. Read relevant subfolder index.md files based on source content
+```
+
+### 2. Identify Affected Pages
+
+Analyze the raw source and determine:
+
+**People mentioned:**
+- Check wiki/people/index.md for existing person pages
+- If person exists: plan to append new interaction/context
+- If person doesn't exist: plan to create stub
+
+**Projects/work referenced:**
+- Check wiki/projects/index.md and wiki/work/index.md
+- If exists: plan to append update
+- If new project mentioned: plan to create page
+
+**Concepts and topics:**
+- Identify key concepts, frameworks, techniques, tools
+- Check wiki/concepts/index.md for existing concept pages
+- If concept has an existing page: plan to update/enrich it
+- If concept is new and substantive: plan to create page
+- Skip trivial or one-off mentions
+
+**Content potential:**
+- If source contains content-worthy insights: plan to create content-pipeline entry
+- Origin will be k2b-extract (derived from Keith's source material)
+
+**Insights:**
+- Non-obvious patterns, connections, or learnings
+- Check wiki/insights/index.md for related insights
+- Create new or enrich existing insight pages
+
+### 3. Show Compile Summary
+
+Present Keith with a concise summary he can approve in ~2 seconds:
+
+```
+## Compile: [Source Title]
+
+**Will update:**
+- wiki/people/person_John-Smith.md -- add meeting context from 2026-04-08
+- wiki/projects/project_talent-signals.md -- append API integration update
+
+**Will create:**
+- wiki/concepts/concept_agent-memory-systems.md -- new concept page
+- wiki/content-pipeline/content_ai-memory-for-executives.md -- content seed
+
+**Total: 2 updates, 2 creates across 4 wiki pages**
+
+Proceed? [approve/skip/edit]
+```
+
+If Keith says approve (or yes/ok/go/y): proceed with all updates.
+If Keith says skip: mark source as `compiled: skipped` and move on.
+If Keith gives specific feedback: adjust plan and re-present.
+
+### 4. Execute Updates
+
+For each planned change:
+
+**Creating new wiki pages:**
+1. Use the appropriate template structure (person, project, concept, insight, content-idea)
+2. Add full frontmatter including `compiled-from: "[[raw-source-filename]]"`
+3. Add wikilinks to related pages
+4. Write to wiki/{subfolder}/
+
+**Updating existing wiki pages:**
+1. Read current page
+2. Append new information under `## Updates` or appropriate section
+3. Add dated entry: `### YYYY-MM-DD -- [Source Title]`
+4. Add wikilinks to the raw source and other affected pages
+5. Use Edit tool (not Write) to preserve existing content
+
+**Rules for updates:**
+- NEVER overwrite existing content
+- ALWAYS append under dated headers
+- Preserve existing wikilinks and sections
+- If new info contradicts existing info: flag in the update with `> [!warning] Potential conflict` and add to review/ queue
+- Minimum 2 wikilinks per new page (soft target, not hard enforcement)
+
+### 5. Update Indexes + Log
+
+After all wiki changes:
+
+1. **Update subfolder indexes:** Add/update rows in each affected wiki/*/index.md
+2. **Update master index:** Update wiki/index.md entry counts
+3. **Update raw index:** Update raw/*/index.md to reflect compilation
+4. **Mark source compiled:** Add `compiled: true` and `compiled-date: YYYY-MM-DD` to raw source frontmatter
+5. **Append to wiki/log.md:**
+
+```markdown
+## [YYYY-MM-DD HH:MM] compile | [Source Title]
+- Source: raw/[type]/[filename]
+- Updated: [list of wiki pages updated]
+- Created: [list of wiki pages created]
+- Indexes: [list of index.md files updated]
+```
+
+## Compile Modes
+
+### summary (default)
+Shows plan, waits for Keith's approval. Best for interactive sessions.
+
+### batch
+Groups multiple uncompiled sources:
+1. Read all raw files where `compiled:` is missing or false
+2. Show combined summary: "5 sources, 12 wiki updates, 4 new pages"
+3. One approval for all
+4. Process sequentially
+
+### deep
+Manual trigger for deeper analysis:
+1. Read the source AND all related wiki pages
+2. Look for non-obvious connections across domains
+3. Suggest new concept pages that bridge topics
+4. Takes longer but finds richer cross-links
+
+## Entity Handling
+
+### People
+- **Match by name:** Search wiki/people/index.md for existing entries
+- **Disambiguation:** If multiple people share a name, check organization/role context
+- **Stub creation:** New person -> create stub with name, organization, role if known, and `> Stub -- to be populated`
+
+### Projects
+- **Match by slug:** Search wiki/projects/index.md
+- **Domain tagging:** Tag with domain (sjm, talentsignals, agency-at-scale, signhub, personal, k2b)
+- **Stub creation:** New project -> create stub with name, domain, status: simmering
+
+### Concepts
+- **Match by topic:** Search wiki/concepts/index.md
+- **Threshold:** Only create concept pages for topics mentioned in 2+ sources or with substantial depth in 1 source
+- **Merge not duplicate:** If a concept page exists, enrich it -- don't create a second one
+
+## Idempotency
+
+Running compile on the same source twice must not create duplicates:
+1. Check raw source frontmatter for `compiled: true`
+2. If already compiled: report "Already compiled on YYYY-MM-DD" and skip
+3. If Keith wants to re-compile: use `/compile deep <path>` which re-reads and enriches
+
+## Error Handling
+
+- If wiki/index.md is missing or corrupted: rebuild from folder contents before proceeding
+- If a wiki page to update doesn't exist: create it (treat as new page)
+- If raw source has no meaningful content: mark `compiled: empty` and skip
+- If Keith rejects the compile plan: mark `compiled: skipped` in frontmatter
+
+## Integration with Capture Skills
+
+Capture skills trigger compile after writing to raw/:
+- k2b-youtube-capture -> writes to raw/youtube/ -> triggers compile
+- k2b-meeting-processor -> writes to raw/meetings/ -> triggers compile
+- k2b-research -> writes to raw/research/ -> triggers compile
+- k2b-tldr -> writes to raw/tldrs/ -> triggers compile
+- k2b-daily-capture -> writes to raw/daily/ -> triggers compile
+
+The trigger pattern: after the capture skill logs its raw source, it calls compile in summary mode. Keith approves the compilation plan inline.
+
+## Frontmatter for Raw Sources (Post-Compile)
+
+```yaml
+compiled: true | false | skipped | empty
+compiled-date: YYYY-MM-DD
+compiled-pages: ["wiki/people/person_X.md", "wiki/concepts/concept_Y.md"]
+```
+
+## Frontmatter for Wiki Pages (Compiled)
+
+```yaml
+compiled-from: ["[[raw-source-1]]", "[[raw-source-2]]"]
+```
+
+This tracks provenance -- which raw sources contributed to this wiki page.
+
+## Content Pipeline Integration
+
+When a raw source contains content-worthy material:
+1. Create a content idea in wiki/content-pipeline/ (not review/)
+2. Set `origin: k2b-extract` (derived from Keith's source material)
+3. If the content idea needs Keith's judgment (novel angle, risky take): also add to review/
+4. Standard content ideas auto-promote to wiki/content-pipeline/
+
+## Usage Logging
+
+After completing compilation:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-compile\t$(echo $RANDOM | md5sum | head -c 8)\tcompiled: SOURCE_FILE -> N wiki pages" >> ~/Projects/K2B-Vault/Notes/Context/skill-usage-log.tsv
+```

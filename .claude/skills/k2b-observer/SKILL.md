@@ -319,7 +319,7 @@ On first `/observe`, if preference-signals.jsonl is empty or doesn't exist:
    Archived items are implicit "not valuable enough to keep" signals.
 2. Query adopted content ideas:
    ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, status FROM "Notes/Content-Ideas"'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, status FROM "wiki/content-pipeline"'
    ```
    These are implicit "this was valuable" signals.
 3. Query stale inbox items:

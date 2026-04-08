@@ -23,7 +23,7 @@ Run all checks in order. Report findings grouped by severity.
 
 ### 1. Index Drift
 
-For each `Notes/*/index.md`:
+For each `Notes/*/index.md`, `wiki/*/index.md`, and `raw/*/index.md`:
 - Glob the folder for all .md files (excluding index.md itself)
 - Compare against index.md entries
 - **Missing from index**: page exists but no index entry --> auto-fix (add entry)
@@ -63,16 +63,55 @@ Flag pages not updated in 90+ days that have `status: on` or `status: active`:
 
 ### 6. Unprocessed Inbox
 
-Count items in `Inbox/` older than 7 days:
+Count items in `review/` older than 7 days:
 - Report count and age of oldest item
 - After Plan A ships: Inbox should only have content ideas. Flag anything else as misrouted.
+- Check `review/` for stale review items (contradictions, suggestions) older than 7 days
 
 ### 7. log.md Health
 
-Check `System/log.md`:
-- Verify it exists and is parseable
+Check `wiki/log.md`:
+- Verify they exist and are parseable
 - Report last 5 entries for Keith's awareness
 - Flag if no entries in last 7 days (suggests captures aren't logging)
+
+### 8. Orphan Sources (Cole's check #3)
+
+Check raw/ folders for files where `compiled:` is missing or false, and the file is older than 24 hours:
+- Glob `raw/**/*.md` (excluding index.md files)
+- Read frontmatter of each file
+- If `compiled:` is missing, false, or empty AND file date is >24h ago: flag as uncompiled
+- Report: "N raw sources pending compilation"
+- Suggest: run `/compile batch` to process them
+
+### 9. Sparse Articles (Cole's check #6)
+
+Check wiki/ pages for content under 200 words:
+- Glob `wiki/**/*.md` (excluding index.md files)
+- Count words in each file (exclude frontmatter)
+- If <200 words: flag as sparse
+- **Exemptions**: index.md files, files with `> Stub` callout, files in wiki/context/ (operational notes are often short)
+- Report: "N wiki pages are sparse (<200 words)"
+- Suggest: enrich from related raw sources or mark as intentionally brief
+
+### 10. Backlink Warnings (Cole's check #5, soft)
+
+Check wiki/ pages for inbound link count:
+- For each wiki page, count how many other wiki pages link to it via `[[filename]]`
+- If a page has <2 inbound links: flag as weakly connected
+- **Exemptions**: index.md files, newly created pages (<7 days old)
+- Report: "N wiki pages have fewer than 2 inbound links"
+- This is a SOFT warning, not enforcement. Don't auto-fix.
+
+### 11. Contradiction Detection (Cole's check #7, semantic)
+
+LLM-powered semantic check -- only runs when explicitly requested (`/lint deep`):
+- Read wiki pages within the same domain (use frontmatter `domain:` field)
+- Look for factual claims that contradict each other across pages
+- Flag contradictions with: page A claims X, page B claims Y
+- Add contradictions to review/ queue for Keith's judgment
+- Note: this is expensive (reads many pages). Only run on-demand, not weekly.
+- Scope to same-domain pages to reduce noise.
 
 ## Output Format
 
@@ -80,7 +119,7 @@ Check `System/log.md`:
 # Vault Lint Report -- YYYY-MM-DD
 
 ## Summary
-- Checks run: 7
+- Checks run: 11
 - Auto-fixed: N issues
 - Needs review: N items
 - Clean: N checks passed
@@ -103,22 +142,25 @@ Check `System/log.md`:
 ## Scheduled Execution
 
 When run via weekly schedule:
-1. Run all checks
+1. Run all checks (1-10; check 11 is skipped in weekly runs)
 2. Auto-fix what's safe
-3. Append lint summary to `System/log.md`
+3. Append lint summary to `wiki/log.md`
 4. If any "needs review" items: leave report in vault for Keith
+
+Checks 8-10 (orphan sources, sparse articles, backlink warnings) run as part of the weekly schedule.
+Check 11 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
 
 When run manually (`/lint`):
 1. Run all checks
 2. Show report inline
 3. Ask Keith which auto-fixes to apply
 4. Apply approved fixes
-5. Append to `System/log.md`
+5. Append to `wiki/log.md`
 
 ## Rules
 
 - Never delete notes. Only flag for Keith's decision.
 - Auto-fix is limited to: adding missing index entries, removing ghost index entries, creating stubs from templates.
 - All other fixes require Keith's approval.
-- Always update `System/log.md` after a lint pass.
+- Always update `wiki/log.md` after a lint pass.
 - If lint finds 0 issues, still log it (proves the check ran).

@@ -17,13 +17,13 @@ description: Capture a conversation summary -- extracts decisions, action items,
    - **Decisions**: Any choices made
    - **Action Items**: Next steps with context
    - **Insights**: Technical/operational things learned during the session (e.g., "auth codes expire in 30 seconds"). These inform K2B's behavior and future sessions.
-   - **Content Seeds**: Raw angles from the session that could become public content (e.g., "built a full publishing stack in 3 hours"). These are loose sparks. During decomposition, promising seeds become content idea notes in `Inbox/` (origin: k2b-generate) for Keith's review.
-3. TLDRs are disposable (Active Rule #3). Save temporarily then decompose immediately:
-   - Extract insights --> create/update `Notes/Insights/` pages
-   - Extract content seeds --> create content idea notes in `Inbox/` (origin: k2b-generate, for Keith's review)
-   - Extract action items --> update relevant project/work notes
-   - Archive the TLDR shell --> `Archive/`
-   - Update relevant index.md files and append to `System/log.md`
+   - **Content Seeds**: Raw angles from the session that could become public content (e.g., "built a full publishing stack in 3 hours"). These are loose sparks kept in the raw TLDR for k2b-compile to digest later.
+3. Save the TLDR to `raw/tldrs/YYYY-MM-DD_tldr-topic.md`, then trigger k2b-compile:
+   - k2b-compile reads the raw TLDR + wiki/index.md
+   - Shows Keith a summary of wiki pages to update (insights to wiki/insights/, content seeds to wiki/content-pipeline/, action items to project/work pages)
+   - On approval: updates wiki pages, indexes, wiki/log.md
+   - Marks raw source as compiled
+   - The raw TLDR stays in raw/tldrs/ (raw/ is the archive)
 4. Save with proper frontmatter and linking
 5. **Update related project notes**: If the conversation involved progress on a project, use the vault-writer update workflow to:
    - Append a dated entry to the project note's `## Updates` section
@@ -34,7 +34,7 @@ description: Capture a conversation summary -- extracts decisions, action items,
 
 ## Frontmatter Format
 
-TLDRs are disposable (Active Rule #3). Save temporarily for decomposition, then archive the shell.
+Save to `raw/tldrs/`, then trigger k2b-compile to digest into wiki pages.
 
 ```yaml
 ---
@@ -47,7 +47,7 @@ up: "[[MOC_K2B-System]]"
 ---
 ```
 
-After saving, immediately decompose: extract insights to Notes/Insights/, content seeds to Inbox/ (as k2b-generate ideas), action items to project/work notes. Then move the TLDR shell to Archive/. Update relevant index.md files and append to System/log.md.
+After saving to raw/tldrs/, trigger k2b-compile to digest insights, content seeds, and action items into wiki pages. The raw TLDR stays in raw/tldrs/ (raw/ is the archive).
 
 ## Cross-Linking
 
@@ -79,7 +79,7 @@ A single session event can produce both: the insight is the technical learning, 
 - Content seeds live ONLY inside the TLDR note. Never auto-create separate content idea notes.
 - Keep them as one-liners with just enough context to spark memory later.
 - Not every session has content seeds. Don't force them.
-- When Keith reviews inbox and says "promote this", the content seed gets extracted into a proper `content_*.md` note in `Notes/Content-Ideas/`.
+- When Keith reviews the review queue and says "promote this", the content seed gets promoted to `wiki/content-pipeline/`.
 - Some seeds won't resonate with Keith and that's fine -- they still help ideation by being visible during review.
 
 ## Notes

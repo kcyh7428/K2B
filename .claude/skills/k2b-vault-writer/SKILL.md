@@ -39,7 +39,7 @@ When progress is made on a project, person interaction occurs, or a decision evo
 - When new relationships or links are discovered between existing notes
 
 ### Update Workflow
-1. **Glob** to find the target note (e.g., `Notes/Projects/project_*.md`)
+1. **Glob** to find the target note (e.g., `wiki/projects/project_*.md`)
 2. **Read** the current content
 3. **Determine which sections need updates:**
    - `## Current Status` -- rewrite the blockquote to reflect current state
@@ -73,41 +73,64 @@ When progress is made on a project, person interaction occurs, or a decision evo
 | K2B Feature | `feature_short-slug.md` | `feature_content-feed-system.md` |
 | Work (SJM) | `work_lowercase-slug.md` | `work_the-eight-chef-search.md` |
 
-## File Locations (Auto-Promote)
+## File Locations (Raw/Wiki Architecture)
 
-Captures go directly to their destination folder. Only K2B-generated content ideas go to Inbox/.
+K2B uses a 3-layer vault architecture (Karpathy model):
+- **raw/** -- Immutable source captures. LLM reads only, never modifies after creation.
+- **wiki/** -- LLM-compiled knowledge pages. K2B owns and maintains this layer.
+- **review/** -- Items requiring Keith's judgment (content ideas, contradictions).
 
-| Note Type | Folder | Needs Keith's Review? |
-|-----------|--------|----------------------|
-| Project | `Notes/Projects/` | No -- auto-promote |
-| Person | `Notes/People/` | No -- auto-promote |
-| Content Idea (k2b-generate) | `Inbox/` | **Yes** -- Keith decides if worth pursuing |
-| Content Idea (adopted by Keith) | `Notes/Content-Ideas/` | Already reviewed |
-| Insight | `Notes/Insights/` | No -- auto-promote |
-| Reference / YouTube capture | `Notes/Reference/` | No -- auto-promote |
-| Meeting note | `Notes/Work/` | No -- auto-promote |
-| Context | `Notes/Context/` | No -- auto-promote |
-| Business overview | `Notes/Context/` | No -- auto-promote |
-| K2B Feature | `Notes/Features/` | No -- auto-promote |
-| Work (SJM) | `Notes/Work/` | No -- auto-promote |
-| Research briefing | `Notes/Reference/` | No -- auto-promote |
-| MOC | Vault root | No |
-| Daily | `Daily/` | No |
-| TLDR | Decompose immediately | See below |
-| Generated images | `Assets/images/` | No |
-| Generated audio | `Assets/audio/` | No |
-| Generated video | `Assets/video/` | No |
-| Home | Vault root | No |
+### Capture Skills -> raw/
+
+| Capture Type | Raw Destination | Then |
+|--------------|----------------|------|
+| YouTube video | `raw/youtube/` | Trigger k2b-compile |
+| Meeting transcript | `raw/meetings/` | Trigger k2b-compile |
+| Research briefing | `raw/research/` | Trigger k2b-compile |
+| TLDR | `raw/tldrs/` | Trigger k2b-compile |
+| Daily extracts | `raw/daily/` | Trigger k2b-compile |
+
+### Wiki Pages (compiled output)
+
+| Note Type | Wiki Destination | Created By |
+|-----------|-----------------|------------|
+| Project | `wiki/projects/` | k2b-compile or direct |
+| Person | `wiki/people/` | k2b-compile or direct |
+| Concept | `wiki/concepts/` | k2b-compile |
+| Insight | `wiki/insights/` | k2b-compile or /insight |
+| Reference | `wiki/reference/` | k2b-compile |
+| Work (SJM) | `wiki/work/` | k2b-compile or direct |
+| Content idea (adopted) | `wiki/content-pipeline/` | /inbox promote |
+| Context | `wiki/context/` | Direct write |
+
+### Review Queue
+
+| Type | Destination | Needs Keith's Review? |
+|------|------------|----------------------|
+| Content Idea (k2b-generate) | `review/` | **Yes** -- Keith decides |
+| Compile conflicts | `review/` | **Yes** -- contradictions |
+| Lint findings | `review/` | **Yes** -- semantic issues |
+
+### Other Locations (unchanged)
+
+| Note Type | Folder |
+|-----------|--------|
+| Daily note | `Daily/` |
+| MOC | Vault root |
+| Generated images | `Assets/images/` |
+| Generated audio | `Assets/audio/` |
+| Generated video | `Assets/video/` |
+| Home | Vault root |
 
 ### TLDR Handling
-TLDRs are disposable (Active Rule #3). On creation, decompose immediately:
-- Extract insights --> `Notes/Insights/`
-- Extract content seeds --> `Inbox/` (as k2b-generate content ideas)
+TLDRs save to raw/tldrs/ as immutable captures. k2b-compile then digests them:
+- Insights compiled into `wiki/insights/`
+- Content seeds compiled into `wiki/content-pipeline/` or `review/` (if k2b-generate)
 - Extract action items --> update relevant project/work notes
 - Archive the TLDR shell --> `Archive/`
 
-### What Still Goes to Inbox/
-ONLY `origin: k2b-generate` content suggestions. Nothing else. If Inbox/ has non-content items, something is misrouted.
+### What Goes to review/
+ONLY items requiring Keith's judgment: `origin: k2b-generate` content suggestions, compile conflicts, lint contradictions. If review/ has anything else, something is misrouted.
 
 ## Frontmatter Conventions
 
@@ -128,15 +151,15 @@ up: "[[relevant MOC or Home]]"
 - `k2b-generate` -- K2B generated independently (connections, patterns, suggestions, recommendations)
 - When a note mixes both, use the primary origin and distinguish sections with callouts: `> [!quote] Keith's input` and `> [!robot] K2B analysis`
 
-### Inbox review properties
-All notes saved to Inbox/ must include these properties for Keith's Obsidian review:
+### Review properties
+All notes saved to review/ must include these properties for Keith's Obsidian review:
 - `review-action:` -- empty until Keith decides (promote, archive, delete, revise)
 - `review-notes: ""` -- Keith's feedback/comments
 
 ### Content Pipeline
-- `/content` suggestions land in `Inbox/` with `origin: k2b-generate`
-- Only when Keith says "promote this" does it move to `Notes/Content-Ideas/` with `origin: keith`
-- `Notes/Content-Ideas/` is Keith's curated list of adopted content ideas
+- `/content` suggestions land in `review/` with `origin: k2b-generate`
+- Only when Keith says "promote this" does it move to `wiki/content-pipeline/` with `origin: keith`
+- `wiki/content-pipeline/` is Keith's curated list of adopted content ideas
 
 ### Type-specific fields:
 
@@ -240,51 +263,64 @@ Asset naming: `YYYY-MM-DD_type_slug.ext` where type is `image`, `speech`, `music
 
 Content ideas with generated assets should have a `## Generated Assets` section containing embed links.
 
-## Inbox Write Contract (Narrowed Scope)
+## Review Queue Write Contract
 
-**Inbox/ is now ONLY for K2B-generated content suggestions that need Keith's review.** All other captures auto-promote to their destination folder (see File Locations table).
+**review/ holds ONLY items requiring Keith's judgment.** Content ideas (k2b-generate), compile conflicts, lint contradictions.
 
-The only skill that should write to Inbox/ is `k2b-insight-extractor` (for `/content` suggestions with `origin: k2b-generate`).
+Skills that write to review/: `k2b-insight-extractor` (content suggestions), `k2b-compile` (conflicts), `k2b-lint` (contradictions).
 
-**Every note saved to `Inbox/` MUST have these frontmatter fields:**
+**Every note saved to `review/` MUST have these frontmatter fields:**
 
 ```yaml
 review-action:       # empty string -- Keith fills this in Obsidian
 review-notes: ""     # empty string -- Keith fills this in Obsidian
 ```
 
-**Before writing any Inbox note, verify:**
-1. `origin: k2b-generate` is set (if origin is `keith` or `k2b-extract`, it should NOT be in Inbox/)
+**Before writing any review note, verify:**
+1. The item genuinely requires Keith's judgment (not auto-promotable)
 2. `review-action:` is present in frontmatter (empty value is correct)
 3. `review-notes: ""` is present in frontmatter
-4. File path starts with `Inbox/`
+4. File path starts with `review/`
 
-If you're updating an existing Inbox note, preserve any `review-action` or `review-notes` values Keith has already set.
+If you're updating an existing review note, preserve any `review-action` or `review-notes` values Keith has already set.
 
 ## Index Update Contract (MANDATORY)
 
-**Every note created or updated must also update the relevant `Notes/*/index.md`.** No exceptions.
+**Every note created or updated must also update the relevant index.md.** No exceptions.
 
 After writing or updating any vault note:
-1. **Read** the folder's `index.md` (e.g., `Notes/Projects/index.md`)
+1. **Read** the folder's `index.md` (e.g., `wiki/projects/index.md` or `raw/youtube/index.md`)
 2. **If new note**: Add a row to the index table with `[[filename]]`, one-line summary, and date
 3. **If updated note**: Update the summary and date in the existing row if the summary changed
 4. **If note moved/deleted**: Remove the old index entry, add to new location's index
+5. **Update wiki/index.md** master catalog entry counts if wiki/ subfolder changed
 
 Index format (one line per page, keep it short):
 ```markdown
 | [[page-name]] | One-line summary | YYYY-MM-DD |
 ```
 
-### Folders with indexes:
-- `Notes/People/index.md`
-- `Notes/Projects/index.md`
-- `Notes/Work/index.md`
-- `Notes/Content-Ideas/index.md`
-- `Notes/Insights/index.md`
-- `Notes/Reference/index.md`
-- `Notes/Context/index.md`
-- `Notes/Features/index.md`
+### Wiki indexes (primary):
+- `wiki/index.md` (master catalog)
+- `wiki/people/index.md`
+- `wiki/projects/index.md`
+- `wiki/work/index.md`
+- `wiki/concepts/index.md`
+- `wiki/insights/index.md`
+- `wiki/reference/index.md`
+- `wiki/content-pipeline/index.md`
+- `wiki/context/index.md`
+
+### Raw indexes:
+- `raw/index.md` (master catalog)
+- `raw/youtube/index.md`
+- `raw/meetings/index.md`
+- `raw/research/index.md`
+- `raw/tldrs/index.md`
+- `raw/daily/index.md`
+
+### Legacy indexes (Notes/ -- kept as fallback):
+- `Notes/People/index.md` through `Notes/Features/index.md`
 
 ## Post-Write Cross-Link Pass
 
@@ -292,10 +328,10 @@ After creating any note, run a cross-link pass to connect it to existing vault c
 
 1. **Scan the new note** for mentions of people, projects, work items, or concepts
 2. **For each mentioned entity**:
-   - Glob to check if a page exists (e.g., `Notes/People/person_*.md`)
+   - Glob to check if a page exists (e.g., `wiki/people/person_*.md`)
    - If exists: add a wikilink in the new note AND add a dated backlink in the entity page's `## Updates` or `## Key Interactions` section
-   - If not exists: create a stub from template, add to index
-3. **Update `System/log.md`**: Append an entry recording what was created and cross-linked
+   - If not exists: create a stub from template in wiki/{subfolder}/, add to index
+3. **Update `wiki/log.md`**: Append an entry recording what was created and cross-linked
 
 Log entry format:
 ```markdown
@@ -307,12 +343,14 @@ Log entry format:
 
 This pass runs AFTER the note is written and validated, not during writing.
 
+**For raw/ captures:** Cross-linking is minimal (just add `compiled: false` frontmatter). The full cross-link pass happens during k2b-compile, which updates wiki pages.
+
 ## Pre-Write Validation (Safety Check)
 
 Before writing or editing ANY vault note, run this checklist. Stop and fix issues before saving.
 
 1. **Frontmatter completeness**: All required fields for the note type are present (tags, date, type, origin, up)
-2. **Inbox contract**: If destination is `Inbox/`, review-action and review-notes are present
+2. **Inbox contract**: If destination is `review/`, review-action and review-notes are present
 3. **Folder placement**: File path matches the convention for its type (see File Locations table above)
 4. **Wikilink integrity**: Use `mcp__obsidian__search` or Glob to verify each `[[target]]` exists. Create stubs for missing targets.
 5. **MOC link**: `up:` points to a valid MOC that exists at vault root

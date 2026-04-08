@@ -17,34 +17,42 @@ if echo "$trigger_result" | grep -q "USAGE TRIGGERS READY"; then
   output+="$trigger_result"$'\n\n'
 fi
 
-# --- 2. Scan Inbox for reviewed items ---
-inbox_ready_count=0
-inbox_reviewed_count=0
+# --- 2. Scan review/ queue for items needing action ---
+review_ready_count=0
+review_reviewed_count=0
 
-# Check Inbox/Ready/ for items Keith dragged there
-if [ -d "$VAULT/Inbox/Ready" ]; then
-  inbox_ready_count=$(find "$VAULT/Inbox/Ready" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+# Check review/Ready/ for items Keith dragged there
+if [ -d "$VAULT/review/Ready" ]; then
+  review_ready_count=$(find "$VAULT/review/Ready" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
 fi
 
-# Check Inbox/ for items with review-action set in frontmatter
-if [ -d "$VAULT/Inbox" ]; then
-  for f in "$VAULT/Inbox"/*.md; do
+# Check review/ for items with review-action set in frontmatter
+if [ -d "$VAULT/review" ]; then
+  for f in "$VAULT/review"/*.md; do
     [ -f "$f" ] || continue
+    [[ "$(basename "$f")" == "index.md" ]] && continue
     if head -30 "$f" | grep -q "^review-action:" 2>/dev/null; then
       action=$(head -30 "$f" | grep "^review-action:" | head -1 | sed 's/review-action: *//')
       if [ -n "$action" ] && [ "$action" != '""' ] && [ "$action" != "''" ]; then
-        inbox_reviewed_count=$((inbox_reviewed_count + 1))
+        review_reviewed_count=$((review_reviewed_count + 1))
       fi
     fi
   done
 fi
 
-total_inbox=$((inbox_ready_count + inbox_reviewed_count))
-if [ "$total_inbox" -gt 0 ]; then
-  output+="INBOX: $total_inbox items ready to process"
-  [ "$inbox_ready_count" -gt 0 ] && output+=" ($inbox_ready_count in Ready/)"
-  [ "$inbox_reviewed_count" -gt 0 ] && output+=" ($inbox_reviewed_count with review-action set)"
+total_review=$((review_ready_count + review_reviewed_count))
+if [ "$total_review" -gt 0 ]; then
+  output+="REVIEW QUEUE: $total_review items ready to process"
+  [ "$review_ready_count" -gt 0 ] && output+=" ($review_ready_count in Ready/)"
+  [ "$review_reviewed_count" -gt 0 ] && output+=" ($review_reviewed_count with review-action set)"
   output+=". Run /inbox to process them."$'\n\n'
+fi
+
+# --- 2.5 Inject wiki index summary ---
+wiki_index="$VAULT/wiki/index.md"
+if [ -f "$wiki_index" ]; then
+  output+="WIKI INDEX (vault knowledge catalog):"$'\n'
+  output+="$(cat "$wiki_index")"$'\n\n'
 fi
 
 # --- 3. Check observer candidates ---

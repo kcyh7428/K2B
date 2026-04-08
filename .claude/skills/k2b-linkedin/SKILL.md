@@ -13,15 +13,15 @@ Draft LinkedIn posts from Keith's content pipeline, generate post images, and pu
 
 ## Vault Redesign Note
 
-LinkedIn drafts remain in `Inbox/` as an exception to the content-ideas-only rule -- they need Keith's approval before publishing. This is tracked in k2b-inbox as an expected Inbox item type alongside k2b-generate content ideas.
+LinkedIn drafts remain in `review/` as an exception to the content-ideas-only rule -- they need Keith's approval before publishing. This is tracked in k2b-inbox as an expected review item type alongside k2b-generate content ideas.
 
-On publish, update `Notes/Content-Ideas/index.md` and append to `System/log.md`.
+On publish, update `wiki/content-pipeline/index.md` and append to `wiki/log.md`.
 
 ## Key Paths
 
-- Content Ideas: `Notes/Content-Ideas/content_*.md`
-- Insights: `Notes/Insights/insight_*.md`
-- Drafts: `Inbox/linkedin_YYYY-MM-DD_slug.md` (stays in Inbox until published -- exception to content-ideas-only rule)
+- Content Ideas: `wiki/content-pipeline/content_*.md`
+- Insights: `wiki/insights/insight_*.md`
+- Drafts: `review/linkedin_YYYY-MM-DD_slug.md` (stays in review/ until published -- exception to content-ideas-only rule)
 - Brand Voice: `~/Projects/K2B/.claude/skills/k2b-linkedin/resource.md`
 - Publish Script: `~/Projects/K2B/scripts/linkedin-publish.sh`
 - Status Script: `~/Projects/K2B/scripts/linkedin-status.sh`
@@ -68,8 +68,8 @@ Show recent LinkedIn posts. Engagement metrics available after Community Managem
 ### Phase 1 -- Identify Source and Gather Material
 
 1. **Determine source type:**
-   - If slug matches `Notes/Content-Ideas/content_*.md` -- content idea (richest source)
-   - If slug matches `Notes/Insights/insight_*.md` -- insight note
+   - If slug matches `wiki/content-pipeline/content_*.md` -- content idea (richest source)
+   - If slug matches `wiki/insights/insight_*.md` -- insight note
    - If slug matches `Notes/YYYY-MM-DD_*.md` or `Daily/YYYY-MM-DD.md` -- meeting/daily note
    - If slug matches `Notes/Context/*.md` -- context note
    - If quoted string -- direct topic from Keith (no vault source)
@@ -80,11 +80,11 @@ Show recent LinkedIn posts. Engagement metrics available after Community Managem
 
 4. **Search the vault for related material:**
    - Follow `[[wiki links]]` from the source note -- read linked notes
-   - Use `mcp__obsidian__search` to find notes mentioning key terms from the source (replaces grep across Notes/, Daily/, Inbox/)
+   - Use `mcp__obsidian__search` to find notes mentioning key terms from the source (replaces grep across Notes/, Daily/, review/)
    - Look for meetings, insights, daily notes, context that mention the same topics
    - Collect Keith's actual words, specific details, numbers, anecdotes
 
-5. **Check for existing drafts** of this source (glob `Inbox/linkedin_*_slug.md`). If found, ask Keith: revise existing draft or start fresh?
+5. **Check for existing drafts** of this source (glob `review/linkedin_*_slug.md`). If found, ask Keith: revise existing draft or start fresh?
 
 ### Phase 2 -- Extract Viewpoints
 
@@ -139,7 +139,7 @@ Using Keith's responses, the source material, and resource.md:
 3. Ask: approve, revise, or scrap?
 
 **If approved:**
-4. Save to `Inbox/linkedin_YYYY-MM-DD_slug.md` with frontmatter (see Draft File Format below)
+4. Save to `review/linkedin_YYYY-MM-DD_slug.md` with frontmatter (see Draft File Format below)
 5. Include the full draft under `## Draft`
 6. Include source material summary under `## Source Material`
 7. Proceed to Phase 6 (image generation)
@@ -164,11 +164,11 @@ After text is approved:
 
 1. Query content ideas with LinkedIn platform:
    ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE platform, status, source FROM "Notes/Content-Ideas" WHERE contains(platform, "linkedin")'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE platform, status, source FROM "wiki/content-pipeline" WHERE contains(platform, "linkedin")'
    ```
 2. Query insights with content potential:
    ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE domain, content-potential FROM "Notes/Insights" WHERE content-potential = true'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE domain, content-potential FROM "wiki/insights" WHERE content-potential = true'
    ```
 3. Show a numbered list:
 
@@ -189,7 +189,7 @@ Insights with content potential:
 
 ## Workflow: /linkedin publish
 
-1. Find the most recent draft: glob `Inbox/linkedin_*.md`, sort by date, take latest with `status: draft`
+1. Find the most recent draft: glob `review/linkedin_*.md`, sort by date, take latest with `status: draft`
    - Or if Keith specifies a draft, use that one
 2. Read the draft. Show Keith:
    - Full post text
@@ -204,8 +204,8 @@ Insights with content potential:
       - Update draft frontmatter: `status: published`, `post-urn: <urn>`
       - Update source content idea: add `## Published Posts` section with link to draft
       - Log to resource.md Post Performance table (date, slug, chars, image y/n)
-      - **Update `Notes/Content-Ideas/index.md`** if source content idea was updated
-      - **Append to `System/log.md`**: record publish action with post-urn
+      - **Update `wiki/content-pipeline/index.md`** if source content idea was updated
+      - **Append to `wiki/log.md`**: record publish action with post-urn
    d. On failure:
       - If 401: "Token expired. Run: `cd ~/Projects/signhub-io/scripts && ./linkedin-auth.sh`"
       - If rate limit: "LinkedIn rate limit hit. Try again later."
@@ -215,7 +215,7 @@ Insights with content potential:
 
 ## Workflow: /linkedin revise \<draft\>
 
-1. Read the existing draft from `Inbox/linkedin_*.md`
+1. Read the existing draft from `review/linkedin_*.md`
 2. Read Keith's feedback (from conversation or `review-notes` frontmatter)
 3. Read resource.md
 4. **Skip Phases 2-3** (Socratic challenge already done)

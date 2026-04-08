@@ -163,7 +163,7 @@ echo -e "$(date +%Y-%m-%d)\tk2b-scheduler\t$(echo $RANDOM | md5 | head -c 8)\tcr
 
 ### Daily check
 ```
-/schedule daily 5pm "Check Inbox/ for items older than 3 days and list them"
+/schedule daily 5pm "Check review/ for items older than 3 days and list them"
 ```
 
 ## Notes

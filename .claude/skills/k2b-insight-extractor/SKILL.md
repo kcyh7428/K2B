@@ -51,7 +51,7 @@ Prefer `mcp__obsidian__search` over Grep for vault-wide content search. Prefer D
    - Hook / angle
    - Source notes (linked)
    - Suggested platform (LinkedIn short post, LinkedIn long-form, YouTube)
-6. Offer to create content idea notes for any Keith wants to pursue (saved to `Inbox/` with `origin: k2b-generate` -- the only skill output that goes to Inbox)
+6. Offer to create content idea notes for any Keith wants to pursue (saved to `review/` with `origin: k2b-generate` -- the only skill output that goes to review queue)
 
 ## Insight Categories
 When classifying insights, use these lenses:
@@ -64,27 +64,27 @@ When classifying insights, use these lenses:
 
 ## Origin Rules & Auto-Promote
 
-- `/insight` notes get `origin: k2b-extract` -- saved directly to `Notes/Insights/` (auto-promote, bypasses Inbox)
-- `/content` idea notes get `origin: k2b-generate` -- saved to `Inbox/` (the ONLY type of content that goes to Inbox)
-- Only when Keith explicitly adopts an idea (says "promote this", "I like this one", "let's do this") should it be moved to `Notes/Content-Ideas/` with `origin: keith`
+- `/insight` notes get `origin: k2b-extract` -- saved directly to `wiki/insights/` (auto-promote, bypasses review queue)
+- `/content` idea notes get `origin: k2b-generate` -- saved to `review/` (the ONLY type of content that goes to review queue)
+- Only when Keith explicitly adopts an idea (says "promote this", "I like this one", "let's do this") should it be moved to `wiki/content-pipeline/` with `origin: keith`
 
 ## Post-Write Contract
 
 After saving any note, run the vault-writer post-write pass:
 
-**For /insight notes (Notes/Insights/):**
-1. Update `Notes/Insights/index.md` with new row
+**For /insight notes (wiki/insights/):**
+1. Update `wiki/insights/index.md` with new row
 2. Cross-link: update person/project pages mentioned in the insight
-3. Append to `System/log.md`
+3. Append to `wiki/log.md`
 
-**For /content idea notes (Inbox/):**
-1. No index update needed (Inbox has no index)
-2. Verify `review-action:` and `review-notes: ""` are present (Inbox write contract)
-3. Append to `System/log.md`
+**For /content idea notes (review/):**
+1. No index update needed (review/ has no index)
+2. Verify `review-action:` and `review-notes: ""` are present (review queue write contract)
+3. Append to `wiki/log.md`
 
 ## Frontmatter Templates
 
-### /insight notes (saved to Notes/Insights/)
+### /insight notes (saved to wiki/insights/)
 ```yaml
 ---
 tags: [insight, {domain-tags}]
@@ -97,7 +97,7 @@ up: "[[relevant MOC]]"
 ---
 ```
 
-### /content idea notes (saved to Inbox/) -- MANDATORY Inbox Write Contract
+### /content idea notes (saved to review/) -- MANDATORY review queue write contract
 ```yaml
 ---
 tags: [content-idea, {topic-tags}]
@@ -113,13 +113,13 @@ review-notes: ""
 ---
 ```
 
-Before saving any note to Inbox/, verify: review-action and review-notes are present. All Inbox notes require these for Keith's Obsidian review workflow.
+Before saving any note to review/, verify: review-action and review-notes are present. All review queue notes require these for Keith's Obsidian review workflow.
 
 ## File Conventions
 
-- Insight notes: `~/Projects/K2B-Vault/Notes/Insights/insight_topic.md`
-- Content ideas from /content: `~/Projects/K2B-Vault/Inbox/content_short-slug.md` (with `origin: k2b-generate`)
-- Promoted content ideas: `~/Projects/K2B-Vault/Notes/Content-Ideas/content_short-slug.md` (with `origin: keith`)
+- Insight notes: `~/Projects/K2B-Vault/wiki/insights/insight_topic.md`
+- Content ideas from /content: `~/Projects/K2B-Vault/review/content_short-slug.md` (with `origin: k2b-generate`)
+- Promoted content ideas: `~/Projects/K2B-Vault/wiki/content-pipeline/content_short-slug.md` (with `origin: keith`)
 
 ## Cross-Linking
 
@@ -144,3 +144,5 @@ echo -e "$(date +%Y-%m-%d)\tk2b-insight-extractor\t$(echo $RANDOM | md5sum | hea
 - Synthesize, don't just list search results
 - Always flag content potential
 - Use k2b-vault-writer conventions for all note creation and cross-linking
+- After creating an insight note, consider whether the insight connects to raw sources that should trigger a compile pass for deeper integration.
+- When /insight or ad-hoc analysis produces a substantial answer (3+ paragraphs with cross-references), offer to file it as a wiki page in wiki/insights/ or wiki/concepts/. This prevents good analysis from vanishing into chat history.

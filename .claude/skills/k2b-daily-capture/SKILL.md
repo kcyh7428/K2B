@@ -44,11 +44,10 @@ find ~/Projects/K2B-Vault/{Inbox,Notes,Daily} -name "*.md" -newer ~/Projects/K2B
 ```
 Or glob for today's date prefix in filenames.
 
-**c) TLDR decomposed outputs from today:**
-TLDRs are now decomposed immediately (Active Rule #3). Check for today's outputs in:
-- `Notes/Insights/` for extracted insights
-- `Notes/Content-Ideas/` or `Inbox/` for content seeds
-- `Archive/` for TLDR shells (read for context of what was discussed)
+**c) TLDR raw sources from today:**
+Check for today's raw TLDRs in:
+- `raw/tldrs/` for raw TLDR captures
+- `raw/daily/` for any extracted insights or content seeds saved earlier today
 
 **d) Yesterday's daily note:**
 Read `~/Projects/K2B-Vault/Daily/$(date -v-1d +%Y-%m-%d).md` for open loops to carry forward.
@@ -96,7 +95,7 @@ Based on Keith's responses:
 - Save to `~/Projects/K2B-Vault/Daily/YYYY-MM-DD.md` (auto-promote -- Daily/ notes never go through Inbox)
 - If the file already exists (morning + evening use), **merge** new content into existing note rather than overwriting
 - Use the k2b-vault-writer skill for the actual write
-- After saving, append to `System/log.md` with cross-linked entities
+- After saving, append to `wiki/log.md` with cross-linked entities
 
 **Channel-aware preview:**
 - On Claude Code terminal: show the full note before saving
@@ -153,10 +152,11 @@ echo -e "$(date +%Y-%m-%d)\tk2b-daily-capture\t$(echo $RANDOM | md5sum | head -c
 
 ## Vault Redesign Awareness
 
-- All captures auto-promote to destination folders (not Inbox). Inbox is only for k2b-generate content ideas.
-- Meeting notes go to `Notes/Work/`, insights to `Notes/Insights/`, references to `Notes/Reference/`.
-- TLDRs are decomposed immediately (Active Rule #3) -- insights, content seeds, and action items are distributed to their destination folders.
-- When the daily note references items that were created today by other skills, link to them where they live (not in Inbox).
+- All captures go to raw/ subfolders first, then k2b-compile digests them into wiki/ pages.
+- Meeting notes go to `raw/meetings/`, research to `raw/research/`, YouTube to `raw/youtube/`.
+- TLDRs go to `raw/tldrs/` -- k2b-compile digests insights, content seeds, and action items into wiki pages.
+- After the daily note is saved, any extracted insights or content seeds are saved to raw/daily/ and k2b-compile is triggered to digest them into wiki pages.
+- When the daily note references items created today by other skills, link to wiki/ pages (the compiled output).
 
 ## Rules
 
