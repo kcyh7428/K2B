@@ -185,20 +185,22 @@ export class TasteModel {
     }
 
     // Freshness score (0-30)
-    let freshnessScore: number
     const ageDays = this.getAgeDays(uploadDate)
-    const freshness = this.data.topicFreshness
-    let minWindow = freshness['default'] ?? DEFAULT_TOPIC_FRESHNESS['default']
-    for (const topic of topics) {
-      const window = freshness[topic] ?? DEFAULT_TOPIC_FRESHNESS[topic] ?? minWindow
-      if (window < minWindow) minWindow = window
-    }
-    if (ageDays <= minWindow) {
-      freshnessScore = 30
-    } else if (ageDays <= minWindow * 2) {
-      freshnessScore = 15
-    } else {
-      freshnessScore = 0
+    let freshnessScore = 15  // default middle score for unknown/invalid dates
+    if (ageDays >= 0) {
+      const freshness = this.data.topicFreshness
+      let minWindow = freshness['default'] ?? DEFAULT_TOPIC_FRESHNESS['default']
+      for (const topic of topics) {
+        const window = freshness[topic] ?? DEFAULT_TOPIC_FRESHNESS[topic] ?? minWindow
+        if (window < minWindow) minWindow = window
+      }
+      if (ageDays <= minWindow) {
+        freshnessScore = 30
+      } else if (ageDays <= minWindow * 2) {
+        freshnessScore = 15
+      } else {
+        freshnessScore = 0
+      }
     }
 
     // Duration score (0-15)
@@ -279,8 +281,9 @@ export class TasteModel {
     for (const line of lines) {
       try {
         const signal = JSON.parse(line)
-        const videoId = signal.video_id ?? ''
-        const channel = signal.channel ?? ''
+        const videoId = signal.video_id || ''
+        const channel = signal.channel || ''
+        if (!videoId || !channel) continue  // skip malformed entries
         let action: 'watch' | 'skip' | 'screen' | 'comment'
         let skipReason: string | undefined
 

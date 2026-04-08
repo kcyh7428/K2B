@@ -1,5 +1,5 @@
 import { request as httpsRequest } from 'node:https'
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { Bot, Context, InlineKeyboard } from 'grammy'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import {
@@ -287,7 +287,8 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     const rec = readRecommendations().find(r => r.video_id === videoId)
     updateRecommendation(videoId, { status: 'skipped', outcome: 'skipped' })
     appendFeedbackSignal(videoId, 'skip_reason', 'skipped')
-    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip')
+    // NOTE: tasteModel.recordAction is called in skip-confirm/skip-other, not here,
+    // to avoid double-counting before the reason is known.
 
     // Direct playlist removal -- no agent needed
     try {
@@ -399,6 +400,13 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
     await ctx.api.sendMessage(ctx.chat!.id, 'Added to Watch list.')
+
+  } else if (action === 'agent-skip') {
+    // Skip from agent recommendation -- don't add to Watch
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip')
+    appendFeedbackSignal(videoId, 'skip_reason', 'agent-skipped')
+    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped.')
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -558,10 +566,10 @@ async function handleDirectYouTubeUrl(
   let isShort = originalUrl.includes('/shorts/')
 
   try {
-    const meta = execSync(
-      `yt-dlp --print "%(title)s\\t%(channel)s\\t%(duration_string)s\\t%(upload_date)s" "${originalUrl}" 2>/dev/null`,
-      { encoding: 'utf-8', timeout: 15_000 }
-    ).trim()
+    const meta = execFileSync('yt-dlp', [
+      '--print', '%(title)s\t%(channel)s\t%(duration_string)s\t%(upload_date)s',
+      originalUrl
+    ], { encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
     const parts = meta.split('\t')
     if (parts.length >= 4) {
       title = parts[0]

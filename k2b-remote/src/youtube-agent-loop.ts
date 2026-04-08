@@ -88,7 +88,7 @@ export async function runYouTubeAgentLoop(
 
     // Ask agent to compose conversational check-in message
     const { text: checkInMsg } = await runAgent(
-      `You are K2B's YouTube curator. Keith has ${pending.length} unwatched videos in his Watch list:\n\n${videoSummaries}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCompose a SHORT Telegram message (max 5 lines) that:\n1. Mentions the unwatched videos naturally\n2. Flags any that are stale\n3. Asks Keith: busy? not interested? want replacements?\n\nKeep it conversational, like a friend. Return ONLY the message text.`
+      `IMPORTANT: You are composing a SHORT message for Telegram. Do NOT use any tools. Do NOT read files. Do NOT run commands. Just write the message text based on the data provided below and return it. Nothing else.\n\nYou are K2B's YouTube curator. Keith has ${pending.length} unwatched videos in his Watch list:\n\n${videoSummaries}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCompose a SHORT Telegram message (max 5 lines) that:\n1. Mentions the unwatched videos naturally\n2. Flags any that are stale\n3. Asks Keith: busy? not interested? want replacements?\n\nKeep it conversational, like a friend. Return ONLY the message text.`
     )
 
     if (checkInMsg) {
@@ -178,7 +178,7 @@ async function findNewContent(sendMessage: SendFn, chatId: string): Promise<void
   ).join('\n')
 
   const { text: screeningResult } = await runAgent(
-    `You are K2B's YouTube curator screening videos for Keith.\n\nKeith's context:\n${vaultContext}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCandidates:\n${candidateList}\n\nFor each candidate, give a verdict: RECOMMEND / MAYBE / SKIP with a one-sentence reason.\nThen compose a SHORT Telegram message presenting your top 2-3 picks conversationally:\n- Why each is worth Keith's time\n- How it connects to what he's working on\n- Any caveats\n\nEnd with: "Want me to add these to your Watch list?"\n\nReturn JSON: { "verdicts": [{"index": 0, "verdict": "RECOMMEND", "reason": "..."}], "message": "..." }`
+    `IMPORTANT: You are screening videos and composing a Telegram message. Do NOT use any tools. Do NOT read files. Do NOT run commands. Analyze the data provided below, give verdicts, compose the message, and return JSON. Nothing else.\n\nYou are K2B's YouTube curator screening videos for Keith.\n\nKeith's context:\n${vaultContext}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCandidates:\n${candidateList}\n\nFor each candidate, give a verdict: RECOMMEND / MAYBE / SKIP with a one-sentence reason.\nThen compose a SHORT Telegram message presenting your top 2-3 picks conversationally:\n- Why each is worth Keith's time\n- How it connects to what he's working on\n- Any caveats\n\nEnd with: "Want me to add these to your Watch list?"\n\nReturn JSON: { "verdicts": [{"index": 0, "verdict": "RECOMMEND", "reason": "..."}], "message": "..." }`
   )
 
   if (!screeningResult) {
