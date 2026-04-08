@@ -105,13 +105,19 @@ Check wiki/ pages for inbound link count:
 
 ### 11. Contradiction Detection (Cole's check #7, semantic)
 
-LLM-powered semantic check -- only runs when explicitly requested (`/lint deep`):
-- Read wiki pages within the same domain (use frontmatter `domain:` field)
-- Look for factual claims that contradict each other across pages
-- Flag contradictions with: page A claims X, page B claims Y
-- Add contradictions to review/ queue for Keith's judgment
-- Note: this is expensive (reads many pages). Only run on-demand, not weekly.
-- Scope to same-domain pages to reduce noise.
+MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/lint deep`):
+
+```bash
+~/Projects/K2B/scripts/minimax-lint-deep.sh [domain]
+```
+
+- Runs on MiniMax M2.7 (not Opus) -- cheap (~$0.02-0.05 per run)
+- Script reads wiki pages, sends to MiniMax, returns JSON with contradiction pairs
+- Opus parses JSON and presents findings to Keith
+- Add confirmed contradictions to review/ queue for Keith's judgment
+- If domain is specified, only scans pages with matching `domain:` frontmatter
+- If omitted, scans all wiki pages (excluding context/)
+- Note: only run on-demand, not weekly.
 
 ## Output Format
 

@@ -38,7 +38,7 @@ ACTIVE_HOURS_START=7         # 7am HKT
 ACTIVE_HOURS_END=23          # 11pm HKT
 SLEEP_INTERVAL=300           # Check every 5 minutes
 TAIL_COUNT=200               # Last N observations to analyze
-MODEL="MiniMax-M2.5"        # MiniMax model to use
+MODEL="MiniMax-M2.7"        # MiniMax model (upgraded from M2.5 2026-04-08)
 
 # --- Helpers ---
 

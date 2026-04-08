@@ -33,49 +33,30 @@ Reads raw source captures and compiles them into wiki knowledge pages. Based on 
 - Activity log: `~/Projects/K2B-Vault/wiki/log.md`
 - Review queue: `~/Projects/K2B-Vault/review/`
 
+## Commander/Worker Architecture
+
+**MiniMax M2.7** does the heavy cognitive work (reading, analyzing, generating structured output).
+**Opus** orchestrates (calls the script, presents summary, applies file changes, updates indexes).
+
+This is the same pattern used by the observer loop. ~30-50x cheaper than running everything on Opus.
+
 ## Compile Flow
 
-### 1. Read Source + Index
+### 1. Call MiniMax Compile Worker
 
-```
-1. Read the raw source file
-2. Read wiki/index.md (master catalog)
-3. Read relevant subfolder index.md files based on source content
+```bash
+~/Projects/K2B/scripts/minimax-compile.sh "<raw-source-path>"
 ```
 
-### 2. Identify Affected Pages
+The script:
+1. Reads the raw source file
+2. Reads wiki/index.md + relevant subfolder indexes (people, projects, work, concepts, insights, reference)
+3. Sends everything to MiniMax M2.7 with a structured extraction prompt
+4. Returns JSON with: pages_to_update, pages_to_create, content_seeds, summary
 
-Analyze the raw source and determine:
+### 2. Parse and Present Summary
 
-**People mentioned:**
-- Check wiki/people/index.md for existing person pages
-- If person exists: plan to append new interaction/context
-- If person doesn't exist: plan to create stub
-
-**Projects/work referenced:**
-- Check wiki/projects/index.md and wiki/work/index.md
-- If exists: plan to append update
-- If new project mentioned: plan to create page
-
-**Concepts and topics:**
-- Identify key concepts, frameworks, techniques, tools
-- Check wiki/concepts/index.md for existing concept pages
-- If concept has an existing page: plan to update/enrich it
-- If concept is new and substantive: plan to create page
-- Skip trivial or one-off mentions
-
-**Content potential:**
-- If source contains content-worthy insights: plan to create content-pipeline entry
-- Origin will be k2b-extract (derived from Keith's source material)
-
-**Insights:**
-- Non-obvious patterns, connections, or learnings
-- Check wiki/insights/index.md for related insights
-- Create new or enrich existing insight pages
-
-### 3. Show Compile Summary
-
-Present Keith with a concise summary he can approve in ~2 seconds:
+Opus parses the JSON and presents Keith with a concise summary he can approve in ~2 seconds:
 
 ```
 ## Compile: [Source Title]
@@ -101,18 +82,18 @@ If Keith gives specific feedback: adjust plan and re-present.
 
 For each planned change:
 
-**Creating new wiki pages:**
-1. Use the appropriate template structure (person, project, concept, insight, content-idea)
-2. Add full frontmatter including `compiled-from: "[[raw-source-filename]]"`
-3. Add wikilinks to related pages
-4. Write to wiki/{subfolder}/
+Opus applies changes from the MiniMax JSON output:
 
-**Updating existing wiki pages:**
-1. Read current page
-2. Append new information under `## Updates` or appropriate section
-3. Add dated entry: `### YYYY-MM-DD -- [Source Title]`
-4. Add wikilinks to the raw source and other affected pages
-5. Use Edit tool (not Write) to preserve existing content
+**For each entry in `pages_to_create`:**
+1. Write the file using frontmatter + content from JSON
+2. Verify wikilinks point to existing pages (glob check)
+3. Create stubs for missing link targets
+
+**For each entry in `pages_to_update`:**
+1. Read the current wiki page
+2. Find the section specified in the JSON
+3. Append the content under that section using Edit tool
+4. If section doesn't exist, create it before the last section
 
 **Rules for updates:**
 - NEVER overwrite existing content

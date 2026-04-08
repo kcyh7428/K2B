@@ -24,6 +24,13 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - **MiniMax API** (minimaxi.com) -- image generation, TTS, audio transcription, video, music, and text completion (MiniMax-M2.5, used by background observer). API key in `MINIMAX_API_KEY` env var. Scripts in `scripts/minimax-*.sh`.
 - Bash, file system, web search, all standard Claude Code tools
 
+## Commander/Worker Architecture
+
+- **Opus (Claude Code)** = commander: daily dialogue with Keith, orchestration, tool use, file changes
+- **MiniMax M2.7** = worker: background analysis, compilation, contradiction detection (~30-50x cheaper)
+- Pattern: Opus calls bash scripts that invoke MiniMax API, receives structured JSON, applies changes
+- Used by: k2b-compile (wiki compilation), k2b-lint deep (contradictions), k2b-observer (preference analysis)
+
 ## Mac Mini (K2B Always-On Server)
 
 - **SSH**: `ssh macmini` (Tailscale) or `ssh macmini-local` (LAN fallback)
