@@ -6,9 +6,10 @@ export async function runAgent(
   message: string,
   sessionId?: string,
   onTyping?: () => void
-): Promise<{ text: string | null; newSessionId?: string }> {
+): Promise<{ text: string | null; newSessionId?: string; hadError?: boolean }> {
   let responseText: string | null = null
   let newSessionId: string | undefined
+  let hadError = false
 
   // Typing refresh interval
   let typingInterval: ReturnType<typeof setInterval> | undefined
@@ -48,16 +49,22 @@ export async function runAgent(
       if (event.type === 'result') {
         const resultEvent = event as Record<string, unknown>
         responseText = (resultEvent.result as string) ?? null
+        if (resultEvent.is_error) {
+          hadError = true
+        }
       }
     }
 
     logger.info({ hasResponse: !!responseText, responseLength: responseText?.length }, 'Agent finished')
   } catch (err) {
     logger.error({ err }, 'Agent error')
-    responseText = 'Something went wrong processing that request. Try again or /newchat to start fresh.'
+    hadError = true
+    if (!responseText) {
+      responseText = 'Something went wrong processing that request. Try again or /newchat to start fresh.'
+    }
   } finally {
     if (typingInterval) clearInterval(typingInterval)
   }
 
-  return { text: responseText, newSessionId }
+  return { text: responseText, newSessionId, hadError }
 }

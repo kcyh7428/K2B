@@ -21,6 +21,10 @@ if [[ "${1:-}" == "--extract-audio" ]]; then
     VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE 'youtu\.be/([^?&]+)' | head -1 | cut -d/ -f2)
   fi
   if [[ -z "$VIDEO_ID" ]]; then
+    # Fallback: try youtube.com/shorts/ format
+    VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE 'youtube\.com/shorts/([^?&]+)' | head -1 | sed 's|youtube\.com/shorts/||')
+  fi
+  if [[ -z "$VIDEO_ID" ]]; then
     echo "ERROR: Could not extract video ID from URL: ${VIDEO_URL}" >&2
     exit 1
   fi

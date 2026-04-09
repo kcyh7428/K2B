@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { InlineKeyboard } from 'grammy'
 import { K2B_VAULT_PATH, K2B_PROJECT_ROOT } from './config.js'
-import { readRecommendations, appendRecommendation, updateRecommendation, playlistAdd, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
+import { readRecommendations, appendRecommendation, updateRecommendation, playlistAdd, getPlaylistVideoIds, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
 import { tasteModel } from './taste-model.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
@@ -98,9 +98,31 @@ export async function runYouTubeAgentLoop(
   youtubeAgentState.phase = 'checking-watch'
   youtubeAgentState.startedAt = new Date().toISOString()
 
-  const pending = readRecommendations().filter(r => r.status === 'nudge_sent')
+  let pending = readRecommendations().filter(r => r.status === 'nudge_sent')
 
   if (pending.length > 0) {
+    // Verify against actual Watch playlist -- expire phantom entries
+    const playlistIds = getPlaylistVideoIds(WATCH_PLAYLIST_ID)
+    if (playlistIds !== null) {
+      const verified: YouTubeRecommendation[] = []
+      for (const rec of pending) {
+        if (playlistIds.includes(rec.video_id)) {
+          verified.push(rec)
+        } else {
+          updateRecommendation(rec.video_id, { status: 'expired', outcome: 'not-in-playlist' })
+          logger.info({ videoId: rec.video_id, title: rec.title }, 'Auto-expired nudge_sent video not found in Watch playlist')
+        }
+      }
+      pending = verified
+      if (pending.length === 0) {
+        // All phantom -- find fresh content instead
+        await findNewContent(sendMessage, sendWithButtons, chatId)
+        return
+      }
+    } else {
+      logger.warn('Could not verify Watch playlist -- skipping verification')
+    }
+
     // Build context for each pending video
     const videoSummaries = pending.map(r => {
       const ageDays = r.recommended_date

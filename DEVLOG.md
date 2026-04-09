@@ -503,6 +503,33 @@ Built a full web dashboard for K2B -- single-page dark theme mission control tha
 
 ---
 
+## 2026-04-09 -- YouTube agent phantom nudge fix + minor hardening
+
+**What was built/changed:**
+- Fixed YouTube agent loop sending reminders for videos not actually in the Watch playlist (JSONL-playlist desync)
+- Added `getPlaylistVideoIds()` to verify nudge_sent entries against real playlist before presenting
+- Phantom entries auto-expire with `outcome: not-in-playlist`; if all are phantom, skips to findNewContent
+- Returns null on API error so we don't accidentally expire everything
+- Agent error handling: `runAgent()` now returns `hadError` flag, preserves partial response on catch
+- yt-playlist-poll.sh: added YouTube Shorts URL format support for audio extraction
+
+**Files affected:**
+- k2b-remote/src/youtube.ts (getPlaylistVideoIds)
+- k2b-remote/src/youtube-agent-loop.ts (verification step)
+- k2b-remote/src/agent.ts (hadError flag)
+- scripts/yt-playlist-poll.sh (shorts URL fallback)
+
+**Key decisions:**
+- Distinguish API error (null) from empty playlist ([]) to avoid mass-expiring on transient failures
+- Verification runs every cycle before presenting nudges, adding ~5s latency from yt-dlp call
+
+**Status:**
+- What works: Build passes, ready to deploy
+- What's incomplete: Nothing
+- What's next: Deploy to Mac Mini, monitor next YouTube agent cycle
+
+---
+
 ## YYYY-MM-DD -- Session Title
 
 **What was built/changed:**

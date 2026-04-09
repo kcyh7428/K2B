@@ -112,6 +112,20 @@ export function appendFeedbackSignal(
   appendFileSync(FEEDBACK_SIGNALS_FILE, JSON.stringify(entry) + '\n')
 }
 
+/** Returns null on API error (skip verification), or string[] of video IDs on success (even if empty). */
+export function getPlaylistVideoIds(playlistId: string): string[] | null {
+  try {
+    const output = execSync(
+      `yt-dlp --flat-playlist --print "%(id)s" "https://www.youtube.com/playlist?list=${playlistId}" 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 30_000 }
+    ).trim()
+    if (!output) return []
+    return output.split('\n').filter(Boolean)
+  } catch {
+    return null  // API error -- caller should skip verification
+  }
+}
+
 export function getRecommendationsByStatus(status: string): YouTubeRecommendation[] {
   return readRecommendations().filter(r => r.status === status)
 }
