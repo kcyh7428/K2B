@@ -69,6 +69,49 @@ Detect URL type and handle accordingly:
 - K2B applicability analysis
 - Specific recommendations with implementation ideas
 
+## MiniMax extraction offload (added 2026-04-10)
+
+**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to MiniMax M2.7 and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
+
+**Contract**:
+- MiniMax produces a compressed, citation-backed digest: `{tldr, source_type, key_claims[], entities[], methodology_notes[], open_questions[]}`.
+- Every `key_claim` carries a verbatim `source_span`, a `confidence` rating, and an `ambiguity` note.
+- Opus reads the digest (not the raw source) and adds the K2B applicability section before writing the `raw/research/` note.
+- Fail-open: if MiniMax is unavailable or returns invalid JSON, fall back to Opus-direct extraction on the raw source with a visible warning. Research notes are not durable commitment memory, so fail-open is safe.
+
+**When to use (size gate)**:
+- URL deep-dive mode (`/research <url>`) when the fetched source exceeds **~10,000 chars**.
+- Long YouTube transcripts, full papers, READMEs for large repos, long-form articles.
+- SKIP for short topic-scan findings, landing pages, or anything under 10K chars. On short sources, MiniMax's structured digest is typically LARGER than the original, so there are no token savings (this was measured empirically on 2026-04-10 against 3-9KB K2B research notes where the digest ran 1.0x-2.8x the input size). In that range, Opus-direct is cheaper AND faster.
+- Rule of thumb: if you would only read the source once to extract, Opus-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, MiniMax-extract wins.
+
+**Workflow**:
+1. Fetch the source content as usual (WebFetch, YouTube transcript MCP, Read for GitHub README, etc.).
+2. If fetched content is under 10K chars, skip the offload entirely and extract on Opus. See size gate above.
+3. Otherwise, write the fetched content to a temp file, e.g. `/tmp/k2b-research-input-$(date +%s).txt`, remembering the exact filename for the next step.
+4. Call the extractor with the SAME filename from step 3:
+   ```bash
+   ~/Projects/K2B/scripts/minimax-research-extract.sh \
+     "$TEMP_FILE" \
+     "<source-url>" \
+     "<source-title>"
+   ```
+5. Parse the returned JSON.
+6. Spot-check 3 random `source_span` values against the fetched content. A simple substring match after collapsing whitespace is sufficient (`python3 -c 'import json,re,sys; ...'` or just visual). If any spot-check fails, fall back to Opus-direct extraction on the full source and append a manual-override entry to `wiki/context/minimax-jobs.jsonl`.
+7. Write the K2B applicability section (this is Opus's job, NOT MiniMax's) using the digest as input plus Keith's framing (SJM/Signhub/TalentSignals positioning, content angle, his role).
+8. Compose the final `raw/research/` note: frontmatter, Source, Key Takeaways (from digest), K2B Applicability (from Opus), Implementation Ideas.
+9. Delete the temp file.
+10. Trigger k2b-compile on the new note as usual.
+
+**Fallback behavior**: if the extractor script exits non-zero (network error, invalid JSON, empty content), do NOT retry the script. Instead read the raw source content directly and extract in Opus, mentioning "MiniMax extractor unavailable, using Opus-direct path" in the session. The `minimax-jobs.jsonl` log already captured the failure via the script's own logging, so no additional action is needed.
+
+**Observability**: every invocation appends a line to `wiki/context/minimax-jobs.jsonl` via the `log_job_invocation` helper in `scripts/minimax-common.sh`. Parse failure rate, cost, and duration are surfaced by `/improve`.
+
+**Revert criteria** (per project_minimax-offload.md):
+- If parse failure rate exceeds 5% over two weeks, revert to the Opus-direct path.
+- If a sample audit of 10 outputs shows semantic drift (dropped claims, invented content, flattened voice) in 2+ cases, revert.
+- If Keith manually overrides the extractor output more than twice in the first two weeks, revert.
+
 ## Output Format
 
 Save to `raw/research/YYYY-MM-DD_research-briefing.md` (or `raw/research/YYYY-MM-DD_research-[topic-slug].md` for focused research).

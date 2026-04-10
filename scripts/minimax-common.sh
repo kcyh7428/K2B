@@ -98,3 +98,37 @@ ensure_dir() {
 obsidian_embed() {
   echo "![[${1}]]"
 }
+
+# Append one line per MiniMax job invocation to wiki/context/minimax-jobs.jsonl.
+# This is the observability contract from the Opus->MiniMax offload plan
+# (see wiki/projects/project_minimax-offload.md). Every new minimax-*.sh script
+# should call this on both success and failure paths so drift is detectable.
+#
+# Usage: log_job_invocation <job_name> <prompt_version> <model> <input_bytes> <output_bytes> <parse_status> <duration_ms>
+# parse_status values: ok | fence | invalid | empty_response | api_error
+log_job_invocation() {
+  local job="$1"
+  local prompt_version="$2"
+  local model="$3"
+  local input_bytes="$4"
+  local output_bytes="$5"
+  local parse_status="$6"
+  local duration_ms="$7"
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  local log_file="${K2B_VAULT}/wiki/context/minimax-jobs.jsonl"
+  mkdir -p "$(dirname "$log_file")"
+
+  jq -cn \
+    --arg ts "$ts" \
+    --arg job "$job" \
+    --arg pv "$prompt_version" \
+    --arg model "$model" \
+    --argjson ib "$input_bytes" \
+    --argjson ob "$output_bytes" \
+    --arg ps "$parse_status" \
+    --argjson dm "$duration_ms" \
+    '{ts: $ts, job: $job, prompt_version: $pv, model: $model, input_bytes: $ib, output_bytes: $ob, parse_status: $ps, duration_ms: $dm, manual_override: false}' \
+    >> "$log_file" 2>/dev/null || true
+}
