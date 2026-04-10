@@ -9,6 +9,7 @@ import { createBot, sendTelegramMessage, sendTelegramMessageWithButtons } from '
 import { initScheduler, stopScheduler } from './scheduler.js'
 import { startHeartbeat, stopHeartbeat } from './health.js'
 import { runYouTubeAgentLoop } from './youtube-agent-loop.js'
+import { startIntakeServer } from './http-server.js'
 import { logger } from './logger.js'
 
 const PID_FILE = resolve(STORE_DIR, 'k2b-remote.pid')
@@ -98,6 +99,9 @@ async function main(): Promise<void> {
 
   // Start health heartbeat
   startHeartbeat()
+
+  // Start HTTP intake server (for k2b-dashboard browser intake)
+  startIntakeServer()
 
   // Graceful shutdown
   const shutdown = async () => {

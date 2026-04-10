@@ -1,62 +1,42 @@
-import { Header } from './components/Header.js'
-import { HealthStrip } from './components/HealthStrip.js'
-import { SuggestedAction } from './components/SuggestedAction.js'
-import { QuickActions } from './components/QuickActions.js'
-import { SystemStatus } from './components/SystemStatus.js'
-import { VaultStats } from './components/VaultStats.js'
-import { VaultGrowth } from './components/VaultGrowth.js'
-import { Roadmap } from './components/Roadmap.js'
-import { YouTubeDigest } from './components/YouTubeDigest.js'
-import { Intelligence } from './components/Intelligence.js'
-import { SkillActivity } from './components/SkillActivity.js'
-import { Inbox } from './components/Inbox.js'
-import { ActivityFeed } from './components/ActivityFeed.js'
-import { ScheduledTasks } from './components/ScheduledTasks.js'
-import { ContentPipeline } from './components/ContentPipeline.js'
-import { LinkedInPanel } from './components/LinkedInPanel.js'
+import { useState } from 'react'
+import NowCard from './components/NowCard'
+import IntakeBar from './components/IntakeBar'
+import ReviewQueue from './components/ReviewQueue'
+import TodayCaptures from './components/TodayCaptures'
+import LearningPanel from './components/LearningPanel'
+import LearningInspector from './components/LearningInspector'
+import FooterRow from './components/FooterRow'
 
-export function App() {
+export default function App() {
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+
   return (
-    <div className="app">
-      <Header />
-      <HealthStrip />
-      <SuggestedAction />
-      <QuickActions />
-      <div className="dashboard">
-        {/* Row 1: System | Vault | ★ Roadmap */}
-        <div className="dashboard-row dashboard-row-3col">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <SystemStatus />
-            <VaultGrowth />
-          </div>
-          <VaultStats />
-          <Roadmap />
-        </div>
+    <div className="min-h-screen flex flex-col gap-3 p-4 max-w-[1600px] mx-auto">
+      <header className="flex items-baseline justify-between mb-1">
+        <h1 className="text-lg font-mono text-ink-secondary">
+          k2b · mission control <span className="text-ink-muted">v3</span>
+        </h1>
+        <span className="text-xs text-ink-muted font-mono">
+          {new Date().toLocaleString('en-HK', { timeZone: 'Asia/Hong_Kong', hour12: false })}
+        </span>
+      </header>
 
-        {/* Row 2: ★ YouTube Digest */}
-        <div className="dashboard-row dashboard-row-full">
-          <YouTubeDigest />
-        </div>
+      <NowCard />
+      <IntakeBar />
 
-        {/* Row 3: Inbox | Tasks + Content Pipeline + LinkedIn */}
-        <div className="dashboard-row dashboard-row-2col">
-          <Inbox />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <ScheduledTasks />
-            <ContentPipeline />
-            <LinkedInPanel />
-          </div>
+      <div className="grid grid-cols-12 gap-3 flex-1 min-h-0">
+        <div className="col-span-12 lg:col-span-7 flex flex-col gap-3 min-h-0">
+          <ReviewQueue />
+          <TodayCaptures />
         </div>
-
-        {/* Row 4: (Intelligence + Activity Feed) | Skill Activity */}
-        <div className="dashboard-row dashboard-row-2col">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Intelligence />
-            <ActivityFeed />
-          </div>
-          <SkillActivity />
+        <div className="col-span-12 lg:col-span-5 min-h-0">
+          <LearningPanel onOpenInspector={() => setInspectorOpen(true)} />
         </div>
       </div>
+
+      <FooterRow />
+
+      {inspectorOpen && <LearningInspector onClose={() => setInspectorOpen(false)} />}
     </div>
   )
 }

@@ -21,12 +21,15 @@ else
   DEFAULT_VAULT="$HOME/Projects/K2B-Vault"
 fi
 VAULT="${K2B_VAULT:-$DEFAULT_VAULT}"
-CONTEXT_DIR="$VAULT/Notes/Context"
+# 2026-04-10: migrated from Notes/Context to wiki/context (Karpathy 3-layer vault)
+CONTEXT_DIR="$VAULT/wiki/context"
+mkdir -p "$CONTEXT_DIR"
 OBS_FILE="$CONTEXT_DIR/observations.jsonl"
 OBS_ARCHIVE="$CONTEXT_DIR/observations.archive"
 PROFILE_FILE="$CONTEXT_DIR/preference-profile.md"
 CANDIDATES_FILE="$CONTEXT_DIR/observer-candidates.md"
 SIGNALS_FILE="$CONTEXT_DIR/preference-signals.jsonl"
+RUNS_FILE="$CONTEXT_DIR/observer-runs.jsonl"
 PROMPT_FILE="$SCRIPT_DIR/observer-prompt.md"
 LOCKFILE="/tmp/k2b-observer.lock"
 LAST_RUN_FILE="/tmp/k2b-observer-last-run"
@@ -182,6 +185,22 @@ Analyze these observations and return your findings as JSON."
   fi
 
   log "Got analysis response ($(echo "$content" | wc -c | tr -d ' ') bytes)"
+
+  # Append run to observer-runs.jsonl for the dashboard Learning Inspector audit.
+  # Captures the prompt + raw response so Keith can read what MiniMax actually saw.
+  # Truncate via bash substring expansion to avoid SIGPIPE under set -e pipefail.
+  local prompt_truncated response_truncated runs_line
+  prompt_truncated="${system_prompt:0:8000}"
+  response_truncated="${content:0:8000}"
+  runs_line=$(jq -nc \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg prompt "$prompt_truncated" \
+    --arg response "$response_truncated" \
+    --arg model "$MODEL" \
+    '{ts: $ts, model: $model, prompt: $prompt, response: $response}' 2>/dev/null) || runs_line=""
+  if [ -n "$runs_line" ]; then
+    echo "$runs_line" >> "$RUNS_FILE"
+  fi
 
   # Try to parse as JSON (strip markdown code fences if present)
   local json_content

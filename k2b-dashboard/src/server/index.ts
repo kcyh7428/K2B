@@ -1,53 +1,54 @@
 import express from 'express'
 import cors from 'cors'
-import { resolve, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { config, paths } from './lib/vault-paths.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-import { config } from './lib/config.js'
-import { systemRouter } from './routes/system.js'
-import { roadmapRouter } from './routes/roadmap.js'
-import { youtubeRouter } from './routes/youtube.js'
-import { intelligenceRouter } from './routes/intelligence.js'
-import { skillsRouter } from './routes/skills.js'
-import { inboxRouter } from './routes/inbox.js'
-import { activityRouter } from './routes/activity.js'
-import { tasksRouter } from './routes/tasks.js'
-import { contentPipelineRouter } from './routes/content-pipeline.js'
-import { healthRouter } from './routes/health.js'
-import { vaultGrowthRouter } from './routes/vault-growth.js'
-import { suggestedActionRouter } from './routes/suggested-action.js'
-import { commandRouter } from './routes/command.js'
-import { inboxActionRouter } from './routes/inbox-action.js'
+import nowRoute from './routes/now.js'
+import reviewRoute from './routes/review.js'
+import capturesRoute from './routes/captures.js'
+import learningRoute from './routes/learning.js'
+import vaultRoute from './routes/vault.js'
+import scheduledRoute from './routes/scheduled.js'
+import activityRoute from './routes/activity.js'
+import intakeRoute from './routes/intake.js'
 
 const app = express()
 
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '2mb' }))
 
-// API routes
-app.use('/api/system', systemRouter)
-app.use('/api/roadmap', roadmapRouter)
-app.use('/api/youtube', youtubeRouter)
-app.use('/api/intelligence', intelligenceRouter)
-app.use('/api/skills', skillsRouter)
-app.use('/api/inbox', inboxRouter)
-app.use('/api/activity', activityRouter)
-app.use('/api/tasks', tasksRouter)
-app.use('/api/content-pipeline', contentPipelineRouter)
-app.use('/api/health', healthRouter)
-app.use('/api/vault/growth', vaultGrowthRouter)
-app.use('/api/suggested-action', suggestedActionRouter)
-app.use('/api/command', commandRouter)
-app.use('/api/inbox', inboxActionRouter)
-
-// Serve static client in production
-const clientDir = resolve(__dirname, '../client')
-app.use(express.static(clientDir))
-app.get('*', (_req, res) => {
-  res.sendFile(resolve(clientDir, 'index.html'))
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    vault: paths.vault,
+    intakeUrl: paths.remoteIntakeUrl,
+    ts: new Date().toISOString(),
+  })
 })
 
+app.use('/api/now', nowRoute)
+app.use('/api/review', reviewRoute)
+app.use('/api/captures', capturesRoute)
+app.use('/api/learning', learningRoute)
+app.use('/api/vault', vaultRoute)
+app.use('/api/scheduled', scheduledRoute)
+app.use('/api/activity', activityRoute)
+app.use('/api/intake', intakeRoute)
+
+// In production, also serve the built client
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const clientDist = resolve(__dirname, '../client')
+if (existsSync(clientDist)) {
+  app.use(express.static(clientDist))
+  app.get('*', (_req, res) => {
+    res.sendFile(resolve(clientDist, 'index.html'))
+  })
+}
+
 app.listen(config.port, () => {
-  console.log(`K2B Dashboard running on http://localhost:${config.port}`)
+  console.log(`k2b-dashboard v3 listening on http://localhost:${config.port}`)
+  console.log(`vault: ${paths.vault}`)
+  console.log(`intake forwards to: ${paths.remoteIntakeUrl}`)
 })
