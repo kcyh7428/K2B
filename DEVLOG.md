@@ -2,6 +2,67 @@
 
 ---
 
+## 2026-04-10 -- Mission Control v3 Ship 1 (dashboard rebuild + browser intake + learning audit)
+
+**What**: Fresh rebuild of `k2b-dashboard` against the post-Karpathy vault (raw/wiki/review), adding two substantial new capabilities that go beyond a path-patch: browser intake (URL / audio / text / Fireflies) forwarded through a new HTTP endpoint inside k2b-remote, and a read-only Learning Inspector that surfaces K2B's four-layer learning stack (signals → observer candidates → active rules/profile → feedback form) with live drill-down into the actual MiniMax prompts and responses from each observer run.
+
+**Why**: v1/v2 dashboard was built March 31 against `Notes/`, `Inbox/`, `MOC_K2B-Roadmap.md`. Between Apr 4-8 the vault was restructured into the 3-layer Karpathy model (`raw/` → `wiki/` → `review/`) and the dashboard's hardcoded paths were never updated, leaving ~50% of panels broken. K2B itself also changed substantively (20 skills, conversational YouTube agent, MiniMax background observer loop, k2b-compile pipeline, memory-sync via symlink). A path patch would fix the bleeding but miss two real gaps: (1) capture still required Telegram or Claude Code -- the dashboard should be an input surface, and (2) learning was happening in jsonl files nobody opened, with no visible chain from "signal observed" → "candidate proposed" → "rule promoted", which is exactly how a learning system drifts into believing wrong things.
+
+**Process (both Checkpoints per CLAUDE.md)**:
+- **Plan mode** → brainstorming skill → 6 clarifying questions → 3 approaches proposed → Approach A selected (two-column with Learning Inspector drawer)
+- **Checkpoint 1 (plan review)** → Codex adversarial review of the single-ship plan → found 5 load-bearing assumptions wrong: (1) k2b-remote has no HTTP server today (pure grammy polling), (2) Telegram voice is NOT handled by the agent loop directly -- transcribe-then-text via Groq Whisper in voice.ts before runAgent, (3) observer-loop.sh still writes to Notes/Context/ not wiki/context/, (4) active_rules.md has no structured provenance metadata, (5) observer-candidates.md has no stable candidate IDs. Verdict: decompose from 1 ship into 3.
+- **Three-ship roadmap** adopted. Ship 1 (this devlog entry) delivers dashboard + intake + read-only audit. Ship 2 adds stable IDs + provenance metadata (pure data layer, no UI). Ship 3 adds reject buttons + provenance click-trace (blocked on Ship 2).
+- **Canonical spec** written to `K2B-Vault/wiki/concepts/feature_mission-control-v3.md` + indexed + cross-linked from `project_k2b.md` + `wiki/log.md` entry. The vault note is the durable home; Ships 2 and 3 reference it directly.
+- **Checkpoint 2 (pre-commit review)** → Codex found 4 real issues + 1 nit. All fixed before commit.
+
+**Shipped**:
+- **k2b-dashboard** fresh rebuild in place. `git mv src/ legacy-v2/` preserved for one week. New: Express + React 18 + Vite + TypeScript + Tailwind + TanStack Query + react-dropzone + lucide-react + multer 2.x
+- 8 new API routes under `src/server/routes/`: now, review, captures, learning (4 endpoints), vault, scheduled, activity, intake. Centralised `lib/vault-paths.ts` as single source of truth -- zero hardcoded paths in route handlers (root cause of the v1/v2 breakage).
+- 7 new React components: `NowCard` (opinionated state-adaptive), `IntakeBar` (4 modes), `ReviewQueue`, `TodayCaptures`, `LearningPanel`, `LearningInspector` (4-column drawer), `FooterRow`. TanStack Query at 15s polling throughout.
+- **k2b-remote** gained `src/http-server.ts` (node:http, bound to 127.0.0.1:3300 only, two routes: GET /health + POST /intake) and `src/intake.ts` (type dispatcher). Audio intake mirrors `bot.ts:836-858` exactly -- call `transcribeAudio(filePath)` from voice.ts first, then runAgent on the transcript. Zero divergence in skill behavior between Telegram and dashboard inputs.
+- **scripts/observer-loop.sh** migrated from `Notes/Context/` to `wiki/context/` (side-effect bug fix the observer had been carrying). Added per-run append to `wiki/context/observer-runs.jsonl` with `{ts, model, prompt, response}` so the Learning Inspector can show the actual MiniMax prompt and response from each run -- the key audit surface for "is K2B learning the right thing". Truncation uses bash substring `${var:0:8000}` to avoid SIGPIPE under `set -e pipefail` (Codex catch).
+- `.claude/launch.json` updated to launch v3 via the built dist/server (port 3200).
+
+**Key decisions**:
+- **Command center first, ops second**: the old dashboard's pm2/proxy/git status panels were cut. Silent breakage isn't what this dashboard is for -- if k2b-remote is down, Telegram capture breaks and Keith notices within minutes. The dashboard's job is to show what needs action and what K2B is learning, not to duplicate `pm2 list`.
+- **Single "Now" card** at the top, opinionated, state-adaptive. Resolves top-down: review items pending > observer high-confidence candidate > scheduled task firing in <1h > "all clear, drop something in the intake". One card, one message, no decision paralysis.
+- **Intake reuses the Telegram path via runAgent**, not a parallel capture pipeline. Dashboard POSTs to the new k2b-remote HTTP endpoint, which calls the SAME `runAgent(message)` the Telegram bot uses. One code path, skills don't know (or care) which client sent the message. Fewer bugs, one set of tests.
+- **Inspector is read-only in Ship 1**, with reject buttons deferred to Ship 3. Codex correctly caught that rejection needs stable IDs that don't exist yet -- the observer-candidates.md format is unstructured markdown bullets. Building the reject UI now would require a data migration that belongs in Ship 2.
+- **Observer run streaming is where the "learning wrong data" audit lives**. Not the headline numbers on the panel -- the panel is the entry point. The value is in the drawer's accordion that shows each MiniMax run's prompt + raw response so Keith can read exactly what was sent and exactly what came back. If the observer hallucinated or latched onto a noisy signal, it's visible in the raw text.
+- **Vault path auto-detection** at `src/server/lib/vault-paths.ts`. The same compiled code runs on both `keithmbpm2` (MacBook) and `fastshower` (Mac Mini) without any env vars or rsync-sync for .env. Codex's fix for the original relative-path fallback -- verified live on Mac Mini after deploy.
+- **Fresh rebuild in place** (not alongside v2). Wiping src/ was the right call -- path abstraction was broken in 14 route files across v2 and patching would've left the architectural bug ("hardcoded paths strewn across handlers") intact. legacy-v2/ preserved as reference for one week.
+
+**Verification** (both local and live on Mac Mini):
+- `typecheck` + `build` clean for k2b-dashboard and k2b-remote
+- `bash -n scripts/observer-loop.sh` clean
+- All 11 dashboard API routes return real JSON from the live vault
+- `grep -rn 'Notes/Context\|/Users/keithmbpm2\|/Users/fastshower' k2b-dashboard/src/` returns empty
+- Learning Inspector opens with all 4 columns rendering real signals, candidates, rules, feedback form (verified via preview DOM snapshot)
+- **Live deploy smoke test**: POSTed `{type: "text", payload: "Dashboard v3 smoke test..."}` to `http://localhost:3200/api/intake` on Mac Mini → dashboard forwarded to k2b-remote at 127.0.0.1:3300 → k2b-remote spawned a fresh Anthropic Agent SDK session → agent acknowledged → response flowed back as `{status: "ok", text: "Got it...", hadError: false}`. Full intake chain verified end-to-end.
+- Vault auto-detection verified live: Mac Mini resolved `/Users/fastshower/Projects/K2B-Vault` with zero config.
+- pm2 list after deploy: `k2b-dashboard 3.0.0 online`, `k2b-remote online (HTTP server listening on 127.0.0.1:3300)`, `k2b-observer-loop online`. All three restarted cleanly.
+
+**Out of scope for Ship 1** (deferred or cut):
+- Reject / mute buttons on candidates and rules → Ship 3 (needs IDs from Ship 2)
+- Provenance click-trace (rule → candidate → signals) → Ship 3
+- Stable IDs in observer-candidates.md and provenance fields in active_rules.md → Ship 2
+- SSE streaming of intake progress (simple JSON response + polling is sufficient)
+- pm2 / proxy / git status panel (silent breakage isn't what this dashboard is for)
+- Mobile intake (Telegram covers it; phone dashboard is read-only simplified)
+- Auth (Tailscale-trusted, same as v1/v2)
+- Historical vault-growth chart
+
+**Known follow-ups** (not urgent):
+- Add `dashboard` category to `scripts/deploy-to-mini.sh` -- this first deploy was manual rsync + ssh. Ship 2/3 should use `./deploy-to-mini.sh dashboard` for repeatability.
+- Wait ~1 hour for observer loop to run and populate `observer-runs.jsonl` -- then re-open the Inspector to see the audit stream with real content.
+- Ship 2 (stable IDs + provenance data layer) spec to be expanded in `feature_mission-control-v3.md` after Ship 1 soak.
+
+**Files changed**: 81 files, +3134 / -234. New: k2b-dashboard/src/** (fresh rebuild), k2b-remote/src/{http-server,intake}.ts, k2b-dashboard/{tailwind.config,postcss.config}.js. Modified: k2b-remote/src/index.ts, scripts/observer-loop.sh, k2b-dashboard/package.json, .claude/launch.json. Moved: k2b-dashboard/src/** → k2b-dashboard/legacy-v2/**.
+
+**Commit**: `ff5705b feat: Mission Control v3 Ship 1 -- dashboard rebuild + browser intake + learning audit`
+
+---
+
 ## 2026-04-10 -- k2b-remote session bleed + YouTube Shorts fallback
 
 **What**: Fixed a Telegram bot bug where a single conversation was spawning multiple fresh Claude Code sessions, causing the bot to reply with contradictory context across messages. Keith hit it on 2026-04-09 ("memory palace repo" thread got three different interpretations) and with a YouTube Shorts URL that returned "can't get the video details".
