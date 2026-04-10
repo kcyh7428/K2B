@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-04-10 -- k2b-remote session bleed + YouTube Shorts fallback
+
+**What**: Fixed a Telegram bot bug where a single conversation was spawning multiple fresh Claude Code sessions, causing the bot to reply with contradictory context across messages. Keith hit it on 2026-04-09 ("memory palace repo" thread got three different interpretations) and with a YouTube Shorts URL that returned "can't get the video details".
+
+**Root cause**: Normal chat (`bot.ts handleMessage`) was correctly loading `getSession(chatId)` and persisting `newSessionId`, but every `runAgent()` call inside the YouTube agent loop (`youtube-agent-loop.ts` — 4 call sites) AND inside the YouTube callback handlers (`handleYouTubeCallback` — 4 more call sites) AND inside `handleDirectYouTubeUrl` passed no session ID. Every one of those calls spawned a brand-new Claude Code session that re-read the vault from scratch and guessed at context, which is why the replies contradicted each other.
+
+**Shipped**:
+- `runAgentWithSession(chatId, prompt)` helper in youtube-agent-loop.ts that wraps runAgent with the existing `getSession` / `setSession` SQLite helpers. All 4 YouTube-loop call sites now thread the chat session.
+- All 4 YouTube callback `runAgent` calls in bot.ts (highlights, promote, screen-process, screen-all) now thread the chat session too.
+- `handleDirectYouTubeUrl` now threads the chat session into its screening agent call.
+- `fetchYouTubeOEmbed(videoId)` fallback in bot.ts: when yt-dlp fails (common on YouTube Shorts), curl-fetches the oEmbed endpoint to recover title + channel so the screening agent still has something to reason about instead of returning "can't get video details".
+
+**Key decisions**:
+- Per-chat session is canonical: every agent call for a given chatId resumes the same Claude Code session, full stop. Rejected the alternative of a YouTube-specific session store because session fragmentation was the whole bug.
+- Bundled both fixes (session + Shorts oEmbed) in one change. Same architectural weakness (agent has no durable context when something fails), adjacent files, one verification pass.
+- oEmbed fallback uses `curl` via execFileSync for consistency with the existing yt-dlp pattern and to inherit system proxy env vars automatically (no new dependency).
+
+**Verification** (live on Mac Mini, pid 37850):
+- 7 agent runs across multiple Telegram interactions → **1 unique session ID**. Pre-fix the same chat would have spawned 3-5 distinct session IDs.
+- Memory test: "remember 42" → "what number" → "42." Then bot meta-detected the test while staying aware of the parallel YouTube thread.
+- YouTube Shorts URL screened cleanly with a substantive verdict — no "can't get video details" error.
+- Zero `hadError: true`, zero `level:50` errors post-restart.
+
+**Process**: Plan mode → codex adversarial review (Keith's Checkpoint 2) — zero findings on bot.ts/youtube-agent-loop.ts. One unrelated P2 on `scripts/generate-org-chart.py` (untracked, not in scope) — flagged for separate follow-up.
+
+**Files changed**: k2b-remote/src/bot.ts, k2b-remote/src/youtube-agent-loop.ts
+
+---
+
 ## 2026-04-08 -- Vault redesign Plan A: remaining 5 skill alignment
 
 **What**: Updated the 5 remaining skills deferred from the previous session to align with the new vault architecture (auto-promote, index updates, cross-link pass, System/log.md).

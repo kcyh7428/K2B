@@ -242,7 +242,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 - If Keith wants to save something (content idea, feature, insight), create the vault note via k2b-vault-writer
 - If Keith wants to move the video to a category playlist (K2B Claude, K2B Recruit, etc.), use scripts/yt-playlist-add.sh`
     const highlightsMarker = markObservationStart()
-    const { text } = await runAgent(prompt)
+    const priorSessionId = getSession(chatId)
+    const { text, newSessionId } = await runAgent(prompt, priorSessionId)
+    if (newSessionId) setSession(chatId, newSessionId)
     logObservations(highlightsMarker, `youtube-highlights-${videoId}`, prompt)
     const result = text ?? '(could not generate highlights)'
 
@@ -434,7 +436,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in wiki/context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in review/.`
     const promoteMarker = markObservationStart()
-    const { text } = await runAgent(prompt)
+    const priorSessionId = getSession(chatId)
+    const { text, newSessionId } = await runAgent(prompt, priorSessionId)
+    if (newSessionId) setSession(chatId, newSessionId)
     logObservations(promoteMarker, `youtube-promote-${videoId}`, prompt)
     const result = text ?? '(created)'
 
@@ -454,7 +458,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendMessage(ctx.chat!.id, `Processing: "${title}"\nGetting transcript and creating vault note -- this may take a few minutes.`)
     const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)). Create a vault note in raw/youtube/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${videoId}. Log as processed in youtube-processed.md.`
     const screenMarker = markObservationStart()
-    const { text } = await runAgent(prompt)
+    const priorSessionId = getSession(chatId)
+    const { text, newSessionId } = await runAgent(prompt, priorSessionId)
+    if (newSessionId) setSession(chatId, newSessionId)
     logObservations(screenMarker, `youtube-screen-${videoId}`, prompt)
 
     updateRecommendation(videoId, { status: 'processed', outcome: 'screen-processed' })
@@ -517,7 +523,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${v.id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)). Create a vault note in raw/youtube/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${v.id}. Log as processed in youtube-processed.md.`
       const screenMarker = markObservationStart()
       try {
-        const { text } = await runAgent(prompt)
+        const priorSessionId = getSession(chatId)
+        const { text, newSessionId } = await runAgent(prompt, priorSessionId)
+        if (newSessionId) setSession(chatId, newSessionId)
         logObservations(screenMarker, `youtube-screen-${v.id}`, prompt)
         updateRecommendation(v.id, { status: 'processed', outcome: 'screen-processed' })
 
@@ -566,6 +574,27 @@ async function handleCommentOrSkipReason(
 
 // --- Direct YouTube URL handler ---
 
+// oEmbed fallback for when yt-dlp fails (common on Shorts). Returns title +
+// channel so the screening agent still has something to reason about instead
+// of replying "can't get the video details".
+function fetchYouTubeOEmbed(videoId: string): { title: string; channel: string } | null {
+  try {
+    const target = `https://www.youtube.com/watch?v=${videoId}`
+    const url = `https://www.youtube.com/oembed?url=${encodeURIComponent(target)}&format=json`
+    const json = execFileSync('curl', ['-sSL', '--max-time', '10', url], {
+      encoding: 'utf-8',
+      timeout: 12_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim()
+    if (!json) return null
+    const parsed = JSON.parse(json) as { title?: string; author_name?: string }
+    if (!parsed.title) return null
+    return { title: parsed.title, channel: parsed.author_name ?? 'unknown' }
+  } catch {
+    return null
+  }
+}
+
 async function handleDirectYouTubeUrl(
   ctx: Context,
   videoId: string,
@@ -606,7 +635,13 @@ async function handleDirectYouTubeUrl(
       if (totalSec <= 90) isShort = true
     }
   } catch (err) {
-    logger.error({ err, videoId }, 'Failed to get video metadata via yt-dlp')
+    logger.error({ err, videoId }, 'Failed to get video metadata via yt-dlp, trying oEmbed fallback')
+    const oembed = fetchYouTubeOEmbed(videoId)
+    if (oembed) {
+      title = oembed.title
+      channel = oembed.channel
+      logger.info({ videoId, title, channel }, 'Recovered metadata via oEmbed fallback')
+    }
   }
 
   // Check taste model
@@ -650,7 +685,9 @@ async function handleDirectYouTubeUrl(
     .text('Skip', `youtube:skip:${videoId}`)
 
   try {
-    const { text: verdict } = await runAgent(screenPrompt)
+    const priorSessionId = getSession(chatId)
+    const { text: verdict, newSessionId } = await runAgent(screenPrompt, priorSessionId)
+    if (newSessionId) setSession(chatId, newSessionId)
     const verdictText = verdict ?? `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Could not screen this video)`
     const formatted = formatForTelegram(verdictText)
     await ctx.api.sendMessage(ctx.chat!.id, formatted, { parse_mode: 'HTML', reply_markup: keyboard })

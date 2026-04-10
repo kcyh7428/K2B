@@ -6,7 +6,26 @@ import { K2B_VAULT_PATH, K2B_PROJECT_ROOT } from './config.js'
 import { readRecommendations, appendRecommendation, updateRecommendation, playlistAdd, getPlaylistVideoIds, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
 import { tasteModel } from './taste-model.js'
 import { runAgent } from './agent.js'
+import { getSession, setSession } from './db.js'
 import { logger } from './logger.js'
+
+// ---------------------------------------------------------------------------
+// Session-aware agent wrapper
+// ---------------------------------------------------------------------------
+// Every agent call for a given chat must resume the same Claude Code session
+// so that proactive YouTube messages and Keith's subsequent replies share one
+// continuous conversation. Previously each runAgent() call here spawned a
+// fresh session, which caused contradicting replies when Keith switched topic.
+
+async function runAgentWithSession(
+  chatId: string,
+  prompt: string,
+): Promise<{ text: string | null; newSessionId?: string; hadError?: boolean }> {
+  const sessionId = getSession(chatId)
+  const result = await runAgent(prompt, sessionId)
+  if (result.newSessionId) setSession(chatId, result.newSessionId)
+  return result
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -134,8 +153,9 @@ export async function runYouTubeAgentLoop(
     }).join('\n')
 
     // Ask agent to compose conversational check-in message
-    const { text: checkInMsg } = await runAgent(
-      `IMPORTANT: You are composing a SHORT message for Telegram. Do NOT use any tools. Do NOT read files. Do NOT run commands. Just write the message text based on the data provided below and return it. Nothing else.\n\nYou are K2B's YouTube curator. Keith has ${pending.length} unwatched videos in his Watch list:\n\n${videoSummaries}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCompose a SHORT Telegram message (max 5 lines) that:\n1. Mentions the unwatched videos naturally\n2. Flags any that are stale\n3. Asks Keith: busy? not interested? want replacements?\n\nKeep it conversational, like a friend. Return ONLY the message text.`
+    const { text: checkInMsg } = await runAgentWithSession(
+      chatId,
+      `IMPORTANT: You are composing a SHORT message for Telegram. Do NOT use any tools. Do NOT read files. Do NOT run commands. Just write the message text based on the data provided below and return it. Nothing else.\n\nYou are K2B's YouTube curator. Keith has ${pending.length} unwatched videos in his Watch list:\n\n${videoSummaries}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCompose a SHORT Telegram message (max 5 lines) that:\n1. Mentions the unwatched videos naturally\n2. Flags any that are stale\n3. Asks Keith: busy? not interested? want replacements?\n\nKeep it conversational, like a friend. Return ONLY the message text.`,
     )
 
     if (checkInMsg) {
@@ -254,8 +274,9 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
     `- "${c.title}" by ${c.channel} (${c.duration_string}, uploaded ${c.upload_date})`
   ).join('\n')
 
-  const { text: screeningResult } = await runAgent(
-    `IMPORTANT: You are screening videos and composing a Telegram message. Do NOT use any tools. Do NOT read files. Do NOT run commands. Analyze the data provided below, give verdicts, compose the message, and return JSON. Nothing else.\n\nYou are K2B's YouTube curator screening videos for Keith.\n\nKeith's context:\n${vaultContext}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCandidates:\n${candidateList}\n\nFor each candidate, give a verdict: RECOMMEND / MAYBE / SKIP with a one-sentence reason.\nThen compose a SHORT Telegram message presenting your top 2-3 picks conversationally:\n- Why each is worth Keith's time\n- How it connects to what he's working on\n- Any caveats\n\nEnd with: "Want me to add these to your Watch list?"\n\nReturn JSON: { "verdicts": [{"index": 0, "verdict": "RECOMMEND", "reason": "..."}], "message": "..." }`
+  const { text: screeningResult } = await runAgentWithSession(
+    chatId,
+    `IMPORTANT: You are screening videos and composing a Telegram message. Do NOT use any tools. Do NOT read files. Do NOT run commands. Analyze the data provided below, give verdicts, compose the message, and return JSON. Nothing else.\n\nYou are K2B's YouTube curator screening videos for Keith.\n\nKeith's context:\n${vaultContext}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCandidates:\n${candidateList}\n\nFor each candidate, give a verdict: RECOMMEND / MAYBE / SKIP with a one-sentence reason.\nThen compose a SHORT Telegram message presenting your top 2-3 picks conversationally:\n- Why each is worth Keith's time\n- How it connects to what he's working on\n- Any caveats\n\nEnd with: "Want me to add these to your Watch list?"\n\nReturn JSON: { "verdicts": [{"index": 0, "verdict": "RECOMMEND", "reason": "..."}], "message": "..." }`,
   )
 
   if (!screeningResult) {
@@ -365,8 +386,9 @@ export async function handleYouTubeAgentResponse(
     }
 
     // If Keith says something else, use agent to interpret
-    const { text: interpretation } = await runAgent(
-      `Keith said: "${text}" in response to a YouTube Watch list check-in. He had ${youtubeAgentState.pendingVideoIds.length} unwatched videos. Interpret his response. Does he want to: keep all, skip all, keep some, or is he busy? Reply naturally and take appropriate action. If unclear, ask a clarifying question. Return ONLY the message text for Telegram.`
+    const { text: interpretation } = await runAgentWithSession(
+      chatId,
+      `Keith said: "${text}" in response to a YouTube Watch list check-in. He had ${youtubeAgentState.pendingVideoIds.length} unwatched videos. Interpret his response. Does he want to: keep all, skip all, keep some, or is he busy? Reply naturally and take appropriate action. If unclear, ask a clarifying question. Return ONLY the message text for Telegram.`,
     )
     if (interpretation) {
       await sendMessage(chatId, interpretation)
@@ -415,8 +437,9 @@ export async function handleYouTubeAgentResponse(
     }
 
     // Complex response -- let agent interpret, keep phase active so buttons still work
-    const { text: interpretation } = await runAgent(
-      `IMPORTANT: Do NOT use any tools. Just interpret and reply.\n\nKeith said: "${text}" in response to YouTube video recommendations. The pending videos are: ${youtubeAgentState.pendingVideoIds.join(', ')}. Interpret: does he want to add all, some specific ones, or skip? Reply naturally. Return ONLY the Telegram message text.`
+    const { text: interpretation } = await runAgentWithSession(
+      chatId,
+      `IMPORTANT: Do NOT use any tools. Just interpret and reply.\n\nKeith said: "${text}" in response to YouTube video recommendations. The pending videos are: ${youtubeAgentState.pendingVideoIds.join(', ')}. Interpret: does he want to add all, some specific ones, or skip? Reply naturally. Return ONLY the Telegram message text.`,
     )
     if (interpretation) {
       await sendMessage(chatId, interpretation)
