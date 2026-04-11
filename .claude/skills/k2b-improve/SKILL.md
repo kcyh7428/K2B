@@ -12,6 +12,7 @@ Single command for the full picture of how K2B is doing -- learnings, errors, re
 - Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
 - Errors: `~/.claude/projects/*/memory/self_improve_errors.md`
 - Requests: `~/.claude/projects/*/memory/self_improve_requests.md`
+- Active Rules: `~/Projects/K2B-Vault/System/memory/active_rules.md`
 - Preference Profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
 - Preference Signals: `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl`
 - Vault: `~/Projects/K2B-Vault`
@@ -32,6 +33,7 @@ Generate the full system health report. Sections can be run individually for spe
 
 - `/improve` -- Full report (all sections)
 - `/improve learnings` -- Self-improvement logs only
+- `/improve rules` -- Active rules audit only
 - `/improve vault` -- Vault health only
 - `/improve evals` -- Skill eval dashboard only
 - `/improve preferences` -- Preference profile review only
@@ -47,6 +49,19 @@ Generate the full system health report. Sections can be run individually for spe
 3. Suggest any learnings with `Reinforced` >= 3 for promotion to standalone memory files or CLAUDE.md.
 4. Flag any recurring error patterns.
 5. If any learnings are older than 90 days and reinforced only once, suggest pruning (confirm before deleting).
+
+## Section 1b: Active Rules Audit
+
+The `active_rules.md` file is loaded every session and shapes K2B's behavior. It must stay in sync with vault architecture and promoted learnings.
+
+1. Read `~/Projects/K2B-Vault/System/memory/active_rules.md`.
+2. Report:
+   - `Last promoted:` date and days since (flag if >30 days)
+   - Total rule count
+   - **Path validation**: for each vault path referenced in rule bodies (backtick-wrapped or bare folder references), check if it exists. Flag any dead paths or legacy folders (`Notes/`, `Inbox/`, `Content-Ideas/`, `Insights/` at vault root).
+   - **Promotion candidates**: read `self_improve_learnings.md` for entries newer than `Last promoted:` date with `Reinforced >= 2`. List them as "candidates for promotion to active rules."
+3. Ask Keith: "N rules may need updating (stale paths or drift). M new learnings are candidates for promotion. Want to review?"
+4. Never auto-edit `active_rules.md` -- rules are Keith's voice; he decides what to rewrite, retire, or promote.
 
 ## Section 2: Preference Profile
 
@@ -106,6 +121,11 @@ Present the full report as a structured summary Keith can scan in 30 seconds:
 - X learnings (Y reinforcements), Z errors, W open requests
 - Top reinforced: [top 3]
 - Action needed: [any patterns or promotions]
+
+### Active Rules
+- N rules | Last promoted: YYYY-MM-DD (X days ago)
+- Path issues: N (dead paths or legacy folders)
+- Promotion candidates: N learnings since last promotion
 
 ### Preferences (from Observer)
 - Last observed: YYYY-MM-DD | N signals

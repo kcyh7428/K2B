@@ -103,7 +103,30 @@ Check wiki/ pages for inbound link count:
 - Report: "N wiki pages have fewer than 2 inbound links"
 - This is a SOFT warning, not enforcement. Don't auto-fix.
 
-### 11. Contradiction Detection (Cole's check #7, semantic)
+### 11. Active Rules Staleness
+
+Catches the failure mode where `active_rules.md` drifts out of sync with the vault after refactors (e.g. the 2026-04-11 audit found rules 2, 3, 6, 7 referencing dead paths from the pre-wiki migration).
+
+Steps:
+1. Read `K2B-Vault/System/memory/active_rules.md`.
+2. Parse the `Last promoted:` date from the header.
+3. Extract all vault-relative path references from rule bodies:
+   - Backtick-wrapped paths (`` `wiki/insights/` ``, `` `raw/tldrs/` ``)
+   - Bare folder references in prose (e.g. `Notes/Projects/`, `wiki/content-pipeline/`)
+4. For each extracted path, check if it resolves in `K2B-Vault/`.
+5. Flag:
+   - **Dead path**: rule references a folder that does not exist (hard error)
+   - **Legacy folder**: rule references `Notes/`, `Inbox/`, `Content-Ideas/`, or `Insights/` at vault root (these were retired in the raw/wiki/review migration)
+   - **Stale promotion**: `Last promoted:` date is older than 30 days (soft warning)
+6. Report format:
+   ```
+   [rules] Rule N references dead path `wiki/foo/` -- does not exist
+   [rules] Rule N references legacy folder `Notes/Projects/` -- use `wiki/projects/`
+   [rules] Last promoted 45 days ago -- review learnings for promotion candidates
+   ```
+7. Never auto-fix. Active rules are Keith's voice; he decides what to rewrite or retire.
+
+### 12. Contradiction Detection (Cole's check #7, semantic)
 
 MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/lint deep`):
 
@@ -125,7 +148,7 @@ MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/li
 # Vault Lint Report -- YYYY-MM-DD
 
 ## Summary
-- Checks run: 11
+- Checks run: 12
 - Auto-fixed: N issues
 - Needs review: N items
 - Clean: N checks passed
@@ -148,13 +171,13 @@ MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/li
 ## Scheduled Execution
 
 When run via weekly schedule:
-1. Run all checks (1-10; check 11 is skipped in weekly runs)
+1. Run all checks (1-11; check 12 is skipped in weekly runs)
 2. Auto-fix what's safe
 3. Append lint summary to `wiki/log.md`
 4. If any "needs review" items: leave report in vault for Keith
 
-Checks 8-10 (orphan sources, sparse articles, backlink warnings) run as part of the weekly schedule.
-Check 11 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
+Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules staleness) run as part of the weekly schedule.
+Check 12 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
 
 When run manually (`/lint`):
 1. Run all checks
