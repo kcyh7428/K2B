@@ -5,6 +5,7 @@
 #   deploy-to-mini.sh              # auto-detect what changed, sync it
 #   deploy-to-mini.sh skills       # sync skills + CLAUDE.md + architecture
 #   deploy-to-mini.sh code         # sync k2b-remote + rebuild + restart
+#   deploy-to-mini.sh dashboard    # sync k2b-dashboard + rebuild + restart
 #   deploy-to-mini.sh scripts      # sync scripts/
 #   deploy-to-mini.sh all          # sync everything
 #   deploy-to-mini.sh --dry-run    # show what would sync without doing it
@@ -51,7 +52,7 @@ detect_changes() {
 
     # Also check untracked files in key directories
     local untracked
-    untracked=$(git ls-files --others --exclude-standard .claude/skills/ scripts/ k2b-remote/ 2>/dev/null || true)
+    untracked=$(git ls-files --others --exclude-standard .claude/skills/ scripts/ k2b-remote/ k2b-dashboard/ 2>/dev/null || true)
     changes="$changes"$'\n'"$untracked"
 
     echo "$changes"
@@ -59,6 +60,7 @@ detect_changes() {
 
 needs_skills=false
 needs_code=false
+needs_dashboard=false
 needs_scripts=false
 
 categorize() {
@@ -68,6 +70,9 @@ categorize() {
     fi
     if echo "$changes" | grep -qE '^k2b-remote/'; then
         needs_code=true
+    fi
+    if echo "$changes" | grep -qE '^k2b-dashboard/'; then
+        needs_dashboard=true
     fi
     if echo "$changes" | grep -qE '^scripts/'; then
         needs_scripts=true
@@ -139,6 +144,42 @@ for p in procs:
     fi
 }
 
+sync_dashboard() {
+    log "Syncing k2b-dashboard..."
+    local rsync_flag=""
+    $DRY_RUN && rsync_flag="--dry-run"
+
+    rsync -av $rsync_flag \
+        --exclude node_modules \
+        --exclude dist \
+        --exclude legacy-v2 \
+        --exclude '.env*' \
+        "$LOCAL_BASE/k2b-dashboard/" "$MINI:$REMOTE_BASE/k2b-dashboard/"
+
+    if ! $DRY_RUN; then
+        log "Building and restarting k2b-dashboard on Mini..."
+        ssh "$MINI" "cd $REMOTE_BASE/k2b-dashboard && npm run build && pm2 restart k2b-dashboard"
+
+        log "Verifying k2b-dashboard health..."
+        sleep 2
+        local status
+        status=$(ssh "$MINI" "pm2 jlist" 2>/dev/null | python3 -c "
+import sys, json
+procs = json.load(sys.stdin)
+for p in procs:
+    if p['name'] == 'k2b-dashboard':
+        print(p['pm2_env']['status'])
+        break
+" 2>/dev/null || echo "unknown")
+
+        if [[ "$status" == "online" ]]; then
+            log "k2b-dashboard is online"
+        else
+            err "k2b-dashboard status: $status -- check with: ssh macmini 'pm2 logs k2b-dashboard --lines 20 --nostream'"
+        fi
+    fi
+}
+
 sync_scripts() {
     log "Syncing scripts/..."
     local rsync_flag=""
@@ -155,12 +196,16 @@ case "$MODE" in
     code)
         needs_code=true
         ;;
+    dashboard)
+        needs_dashboard=true
+        ;;
     scripts)
         needs_scripts=true
         ;;
     all)
         needs_skills=true
         needs_code=true
+        needs_dashboard=true
         needs_scripts=true
         ;;
     auto)
@@ -170,7 +215,7 @@ case "$MODE" in
             exit 0
         fi
         categorize "$changes"
-        if ! $needs_skills && ! $needs_code && ! $needs_scripts; then
+        if ! $needs_skills && ! $needs_code && ! $needs_dashboard && ! $needs_scripts; then
             warn "Changes detected but none in syncable categories."
             echo "$changes"
             exit 0
@@ -178,7 +223,7 @@ case "$MODE" in
         ;;
     *)
         err "Unknown mode: $MODE"
-        echo "Usage: deploy-to-mini.sh [auto|skills|code|scripts|all] [--dry-run]"
+        echo "Usage: deploy-to-mini.sh [auto|skills|code|dashboard|scripts|all] [--dry-run]"
         exit 1
         ;;
 esac
@@ -196,12 +241,14 @@ echo ""
 log "Sync plan:"
 $needs_skills && log "  - Skills + CLAUDE.md + K2B_ARCHITECTURE.md"
 $needs_code && log "  - k2b-remote code (+ build + restart)"
+$needs_dashboard && log "  - k2b-dashboard code (+ build + restart)"
 $needs_scripts && log "  - scripts/"
 echo ""
 
 # Execute
 $needs_skills && sync_skills
 $needs_code && sync_code
+$needs_dashboard && sync_dashboard
 $needs_scripts && sync_scripts
 
 echo ""
