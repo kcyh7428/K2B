@@ -2,6 +2,66 @@
 
 ---
 
+## 2026-04-11 -- YouTube Agent stability refactor + skill split (Iteration 3)
+
+**What**: Consolidated every YouTube state mutation into a small set of canonical functions to end the whack-a-mole regression loop, then reduced the k2b-youtube-capture skill to a pure batch playlist processor now that the conversational agent handles all curation/discovery.
+
+**Why**: Iterations 1 and 2 of the YouTube agent had shipped the conversational curator but left ~20 bugs spread across 4 files. Every fix kept introducing new regressions during the next usage cycle — JSONL entries with `title: videoId`, "unknown" channel pollution in the taste model, agent promising "Done" without executing, duplicate JSONL keys from runAgent manually rewriting files via bash. Codex's structural audit found the root cause: state mutations were scattered across many duplicate code paths (4 distinct "add to Watch", 3 "skip from Watch", 2 "move to Screen") with inconsistent semantics, and runAgent prompts still had authority to mutate files.
+
+**Process**:
+- Two-round Codex review: first round flagged 15 bugs across iterations 1-2 (all fixed earlier), second round produced a full state-mutation audit with a table mapping every location that writes to JSONL/playlists/taste-model with its triggers, duplication risk, and safety issues.
+- Plan mode used for the structural refactor (Iteration 3) and again for the skill cleanup. Both plans focused on "no new abstractions beyond what's needed to kill duplication".
+- Iteration 3 refactor shipped as `66b2927`, follow-up bug fixes for publish date and new-pick skip confirmation as `25fcdb0`, and the skill cleanup as `e891a9a`.
+
+**Shipped**:
+- **k2b-remote/src/youtube.ts** gained 6 canonical state functions (`addVideoToWatch`, `skipVideoFromWatch`, `markVideoWatched`, `moveVideoToScreen`, `skipVideoFromScreen`, `expireVideoFromWatch`) plus `clearFromAgentState`. Every state change — JSONL write + feedback signal + taste model update + playlist op — happens together in one function call. No more split-phase writes.
+- **Shared state moved to youtube.ts**: `youtubeAgentState` (phase machine + pendingVideoIds) and `pendingCandidates` (new-pick metadata cache) used to live in youtube-agent-loop.ts with inconsistent cleanup. Centralized so both files reference the same objects. `clearFromAgentState` now clears BOTH maps (was a stale-cache bug).
+- **bot.ts callbacks rewritten**: watch, screen, skip (deduce + confirm split), skip-confirm, agent-add (rejects placeholder metadata), agent-skip, screen-skip, screen-process, screen-all all use canonical functions. `handleDirectYouTubeUrl` populates `pendingCandidates` with real yt-dlp metadata so `agent-add` has something to read.
+- **youtube-agent-loop.ts**: text-reply handlers (`parseAndExecuteActions`, "swap/replace", "add all") use canonical functions instead of rolling their own JSONL writes. The "swap/replace" path now correctly calls `skipVideoFromWatch` (was silently marking `expired` with no playlist removal, no feedback, no taste model training). verify-playlist branch calls `expireVideoFromWatch`.
+- **screen-process / screen-all prompts stripped of mutation authority**: runAgent is now told explicitly "Do NOT modify the K2B Screen playlist. Do NOT edit youtube-recommended.jsonl." The agent just creates the vault note; code handles state mutation via `skipVideoFromScreen` after the agent returns.
+- **taste-model.ts** gained `deduceSkipReason(rec)` + `deduceSkipReasonKey(rec)` helpers so bot.ts doesn't hand-roll deduction inline. Both accept either a rec-like object or positional args via overloads.
+- **Iteration 2 follow-ups also landed**: new recommendation cards enrich `upload_date` via `fetchVideoMetadata` after the flat-playlist search (fixes "Published: Unknown" on cards). Skip on a new-pick card now routes through the same deduction + confirmation flow as Watch-list skips — skip/skip-confirm/skip-reason handlers fall back to `pendingCandidates` when the video isn't in JSONL yet.
+- **k2b-youtube-capture skill reduced**: 545 → 260 lines. Retired sub-commands: `morning`, `recommend`, `cleanup`, `<url>`, `status`, `screen`. Kept + refactored: `/youtube` (polls all inbound category playlists) and new `/youtube <playlist-name>` (case-insensitive match for one playlist like `/youtube invest` or `/youtube screen`). Both commands share the same per-playlist processing pipeline.
+- **Mac Mini scheduled tasks deleted**: `a0ec773c` (Run /youtube recommend) and `c52fb28f` (Run /youtube morning). The agent loop's in-process setInterval replaces both.
+- **Wiki feature doc rewritten** (`wiki/concepts/2026-04-08_feature_youtube-agent.md`) as the full workflow guide: ASCII diagram of the agent cycle, playbook for common user scenarios, trigger reference, state file map, canonical function table, relationship to other K2B skills, troubleshooting section.
+
+**Key decisions**:
+- **Validate at the boundary**: `addVideoToWatch` throws `MetadataValidationError` if title is missing or equals videoId, or channel is empty or 'unknown'. No more placeholder data ever lands in JSONL. The `agent-add` button callback rejects with a user-visible "Couldn't add -- metadata isn't available, paste URL again" rather than saving garbage.
+- **`pendingCandidates` as the single source of truth for new-pick metadata**. `findNewContent` writes the cache before sending cards. `agent-add`, `skip-confirm`, text-reply handlers all read from the same cache. `clearFromAgentState` cleans it. No more split ownership between bot.ts and youtube-agent-loop.ts.
+- **runAgent is parse-only**. The invariant is now: the agent produces text or JSON; the code does all mutations. Any file-mutation prompt gets an explicit "Do NOT use any tools" guardrail. This kills the "agent says Done but didn't" class of bug.
+- **Unify skip flow across Watch-list and new-pick cards**. Both paths use `youtube:skip:<id>` callback and fall back to `pendingCandidates` when the video isn't in JSONL. Same deduction + confirmation UX regardless of card type. `agent-skip` remains as a legacy no-op for stale cards in Keith's Telegram history.
+- **Agent-driven Screen processing stays, but runAgent no longer touches playlist/JSONL**. The screen-process prompt tells the agent to create a vault note; then `skipVideoFromScreen` runs in code to handle the state mutation and playlist removal. Same 2-minute cost for transcript analysis but the mutation surface is bounded.
+- **Skill becomes a pure batch processor**. Curation/discovery (Watch list, recommendations, direct URLs, morning nudges) belongs in the agent loop. Batch processing videos Keith saved to a category playlist with `prompt_focus` domain analysis belongs in the skill. Clean split, zero overlap. `/youtube invest` now does the one thing you'd expect.
+- **No new files**. Everything lived in existing files. Refactor was 560 additions vs 250 deletions in 4 files; skill cleanup was 63 additions vs 348 deletions in 1 file.
+
+**Verification**:
+- `npx tsc --noEmit` clean after each iteration (three times across the session)
+- `deploy-to-mini.sh code` and `deploy-to-mini.sh skills` both shipped clean; pm2 restarts verified online
+- Taste model on Mac Mini post-migration: 10 channels, 0 "unknown" bucket (one-time migration on load deleted the polluted entry)
+- JSONL repair: 3 polluted entries (`Ob5Vu-gD3mo` had videoId as title; `-l0jXCQMuwc` and `eScvCTwVtFI` had duplicated keys from prior runAgent bash rewrites) repaired via in-place JSON parse/stringify with metadata re-fetch
+- Live test via Telegram: Keith recommended 2 videos, interacted, found publish date still showed "Unknown" on new cards (flat-playlist upload_date gap) and no feedback prompt on new-pick Skip button -- both fixed in `25fcdb0`. Still pending Keith's fresh round of live testing to confirm full stability.
+- Retired scheduled tasks verified deleted from Mac Mini scheduler (`node dist/schedule-cli.js list` no longer shows `a0ec773c` or `c52fb28f`)
+- The full workflow guide lives at `K2B-Vault/wiki/concepts/2026-04-08_feature_youtube-agent.md` (~450 lines) -- durable single source of truth for how the YouTube pipeline works
+
+**Out of scope** (deferred or cut):
+- Auto-polling K2B Watch / K2B Screen for manual additions via YouTube mobile app → agent loop only runs every 6h; Keith uses the skill or sends URLs for immediate capture
+- Transcript-based URL screening → currently metadata-only (faster, ~15s). Full transcripts only fire on "Process Now"
+- Topic freshness learning from watch/skip patterns → windows still hardcoded (claude-code: 30d, etc.)
+- Concurrent-write locking on youtube-recommended.jsonl → Codex flagged but fine for single-process bot
+- `screen-process` deep refactor → minimum fix only (prompt guardrail + code-side skipVideoFromScreen call). Full redesign is its own job.
+
+**Files changed (session summary)**:
+- `k2b-remote/src/youtube.ts` -- canonical state functions + shared state
+- `k2b-remote/src/bot.ts` -- callback rewrites + URL handler pendingCandidates population
+- `k2b-remote/src/youtube-agent-loop.ts` -- text-reply handlers + findNewContent metadata enrichment
+- `k2b-remote/src/taste-model.ts` -- deduceSkipReason overloads
+- `.claude/skills/k2b-youtube-capture/SKILL.md` -- 545 → 260 lines, 2-command surface
+- `K2B-Vault/wiki/concepts/2026-04-08_feature_youtube-agent.md` -- full workflow guide (vault-only, synced via Syncthing)
+
+**Commits**: `66b2927`, `25fcdb0`, `e891a9a`
+
+---
+
 ## 2026-04-10 -- Mission Control v3 Ship 1 (dashboard rebuild + browser intake + learning audit)
 
 **What**: Fresh rebuild of `k2b-dashboard` against the post-Karpathy vault (raw/wiki/review), adding two substantial new capabilities that go beyond a path-patch: browser intake (URL / audio / text / Fireflies) forwarded through a new HTTP endpoint inside k2b-remote, and a read-only Learning Inspector that surfaces K2B's four-layer learning stack (signals → observer candidates → active rules/profile → feedback form) with live drill-down into the actual MiniMax prompts and responses from each observer run.
