@@ -118,13 +118,15 @@ Steps:
    - **Dead path**: rule references a folder that does not exist (hard error)
    - **Legacy folder**: rule references `Notes/`, `Inbox/`, `Content-Ideas/`, or `Insights/` at vault root (these were retired in the raw/wiki/review migration)
    - **Stale promotion**: `Last promoted:` date is older than 30 days (soft warning)
-6. Report format:
+6. **Promotion candidates**: Read `~/.claude/projects/*/memory/self_improve_learnings.md`. Surface any learnings with a date newer than `Last promoted:` AND `Reinforced >= 2`. These are candidates for promotion to active rules.
+7. Report format:
    ```
    [rules] Rule N references dead path `wiki/foo/` -- does not exist
    [rules] Rule N references legacy folder `Notes/Projects/` -- use `wiki/projects/`
    [rules] Last promoted 45 days ago -- review learnings for promotion candidates
+   [rules] 3 promotion candidates: L-2026-04-02-001, L-2026-04-04-001, L-2026-04-07-003
    ```
-7. Never auto-fix. Active rules are Keith's voice; he decides what to rewrite or retire.
+8. Never auto-fix. Active rules are Keith's voice; he decides what to rewrite or retire.
 
 ### 12. Contradiction Detection (Cole's check #7, semantic)
 
@@ -143,6 +145,12 @@ MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/li
 - Note: only run on-demand, not weekly.
 
 ## Output Format
+
+Every lint run produces two artifacts:
+1. **Inline report** shown to Keith (for manual runs)
+2. **Structured artifact** at `~/Projects/K2B-Vault/wiki/context/lint-report.md` -- overwritten each run, consumed by `/improve` and other skills
+
+### Inline Report Format
 
 ```
 # Vault Lint Report -- YYYY-MM-DD
@@ -168,13 +176,63 @@ MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/li
 - Inbox: 1 content idea (normal)
 ```
 
+### Artifact Format (`wiki/context/lint-report.md`)
+
+Frontmatter carries the summary counts and per-check roll-up. Body groups findings by check so downstream skills can extract specific sections:
+
+```yaml
+---
+type: lint-report
+date: 2026-04-11
+run-mode: manual  # or weekly, deep
+checks-run: 12
+auto-fixed: 3
+needs-review: 5
+clean: 4
+hard-errors: 0
+rules-dead-paths: 0
+rules-legacy-folders: 0
+rules-last-promoted: 2026-04-11
+rules-promotion-candidates: 0
+vault-orphans: 2
+vault-broken-links: 1
+review-stale-items: 4
+uncompiled-raw: 7
+sparse-wiki-pages: 3
+up: "[[index]]"
+---
+
+# Vault Lint Report -- 2026-04-11
+
+## Needs Review
+
+Aggregator across all checks, ordered by severity: hard errors first (dead paths, broken wikilinks targeting nonexistent files), then flagged items (orphans, stale review items, uncompiled raw, sparse wiki, weak backlinks), then soft warnings (stale promotion, legacy folder references). Each line prefixed with the check tag (e.g. `[rules]`, `[orphan]`, `[broken]`, `[stale]`, `[uncompiled]`).
+
+This section is the canonical entry point for downstream consumers like `/improve` Section 3 -- they read this list rather than walking the per-check sections below.
+
+## Active Rules (Check #11)
+... findings ...
+
+## Vault Structure (Checks #1-5)
+... findings ...
+
+## Content Pipeline (Checks #6-9)
+... findings ...
+
+## Link Graph (Checks #3, #10)
+... findings ...
+```
+
+This structured file is the source of truth for `/improve` Sections 1b and 3 -- they read this file rather than re-running the queries. Section 3 reads `## Needs Review`; Section 1b reads `## Active Rules`.
+
 ## Scheduled Execution
 
 When run via weekly schedule:
 1. Run all checks (1-11; check 12 is skipped in weekly runs)
 2. Auto-fix what's safe
-3. Append lint summary to `wiki/log.md`
-4. If any "needs review" items: leave report in vault for Keith
+3. Write structured report to `wiki/context/lint-report.md` (overwrite)
+4. Append lint summary to `wiki/log.md`
+5. If any "needs review" items: leave report in vault for Keith
 
 Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules staleness) run as part of the weekly schedule.
 Check 12 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
@@ -184,7 +242,8 @@ When run manually (`/lint`):
 2. Show report inline
 3. Ask Keith which auto-fixes to apply
 4. Apply approved fixes
-5. Append to `wiki/log.md`
+5. Write structured report to `wiki/context/lint-report.md` (overwrite)
+6. Append to `wiki/log.md`
 
 ## Rules
 

@@ -15,6 +15,7 @@ Single command for the full picture of how K2B is doing -- learnings, errors, re
 - Active Rules: `~/Projects/K2B-Vault/System/memory/active_rules.md`
 - Preference Profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
 - Preference Signals: `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl`
+- Lint Report: `~/Projects/K2B-Vault/wiki/context/lint-report.md`
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.claude/skills/`
 
@@ -50,18 +51,20 @@ Generate the full system health report. Sections can be run individually for spe
 4. Flag any recurring error patterns.
 5. If any learnings are older than 90 days and reinforced only once, suggest pruning (confirm before deleting).
 
-## Section 1b: Active Rules Audit
+## Section 1b: Active Rules Audit (from /lint)
 
-The `active_rules.md` file is loaded every session and shapes K2B's behavior. It must stay in sync with vault architecture and promoted learnings.
+Active rules staleness and path validation is done by `/lint` Check #11. This section reads the latest lint report rather than re-running the check.
 
-1. Read `~/Projects/K2B-Vault/System/memory/active_rules.md`.
-2. Report:
-   - `Last promoted:` date and days since (flag if >30 days)
-   - Total rule count
-   - **Path validation**: for each vault path referenced in rule bodies (backtick-wrapped or bare folder references), check if it exists. Flag any dead paths or legacy folders (`Notes/`, `Inbox/`, `Content-Ideas/`, `Insights/` at vault root).
-   - **Promotion candidates**: read `self_improve_learnings.md` for entries newer than `Last promoted:` date with `Reinforced >= 2`. List them as "candidates for promotion to active rules."
-3. Ask Keith: "N rules may need updating (stale paths or drift). M new learnings are candidates for promotion. Want to review?"
-4. Never auto-edit `active_rules.md` -- rules are Keith's voice; he decides what to rewrite, retire, or promote.
+1. Read `~/Projects/K2B-Vault/wiki/context/lint-report.md`.
+2. If the file doesn't exist or its frontmatter `date:` is older than 7 days, say: "No recent lint report. Run /lint to refresh active rules audit." Skip to next section.
+3. Otherwise, extract from the lint report frontmatter and the Active Rules section:
+   - Total rule count (count rules in `active_rules.md` directly)
+   - `rules-last-promoted` and days since (flag if >30 days)
+   - `rules-dead-paths` count and the specific rule/path pairs from the Active Rules section body
+   - `rules-legacy-folders` count
+   - `rules-promotion-candidates` count and learning IDs
+4. If any dead paths, legacy folders, or >=1 promotion candidates exist, ask Keith: "N path issues and M promotion candidates in the latest lint. Want to review?"
+5. Never auto-edit `active_rules.md` -- rules are Keith's voice; he decides what to rewrite, retire, or promote.
 
 ## Section 2: Preference Profile
 
@@ -75,20 +78,20 @@ The `active_rules.md` file is loaded every session and shapes K2B's behavior. It
 3. If it doesn't exist, note: "No preference profile yet. Run /observe to generate one."
 4. If candidate learnings exist, ask Keith: "The observer found N candidate learnings. Want to review and promote any?"
 
-## Section 3: Vault Health
+## Section 3: Vault Health (from /lint)
 
-1. **Orphaned notes**: Query notes missing `up:` field:
-   ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE up FROM "Notes" WHERE up = null'
-   ```
-   List any without an `up:` link.
-2. **Stale Inbox items**: Query inbox items older than 7 days:
-   ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE date, review-action AS "action" FROM "Inbox" WHERE date <= date(today) - dur(7 days)'
-   ```
-3. **MOC freshness**: Read each MOC file. Compare links in MOCs against actual files in vault. Flag notes that exist but aren't linked from any MOC.
-4. **Broken wikilinks**: Sample 10-15 notes and check that `[[wikilinks]]` point to existing files (use `mcp__obsidian__search` or Glob to verify targets).
-5. **Vault metrics**: Count notes by folder, count total wikilinks, check daily note streak (consecutive days with a daily note).
+Vault structural health (orphans, broken wikilinks, stale review items, uncompiled raw, sparse wiki pages, index drift) is checked by `/lint`. This section reads the latest lint report rather than re-running queries. Vault metrics (counts + daily streak) are computed inline since they're cheap and not structural checks.
+
+1. Read `~/Projects/K2B-Vault/wiki/context/lint-report.md`.
+2. If the file doesn't exist or its frontmatter `date:` is older than 7 days, say: "No recent lint report. Run /lint to refresh vault health." Skip structural findings and jump to step 4 (metrics).
+3. Otherwise, extract and report from the lint frontmatter and body:
+   - **Summary line**: `checks-run`, `auto-fixed`, `needs-review`, `clean`, `hard-errors`
+   - **Top findings**: up to 5 items from the "Needs Review" section of the lint report body, prioritized by hard-errors first, then broken links, then orphans, then stale content
+   - **Counts**: `vault-orphans`, `vault-broken-links`, `review-stale-items`, `uncompiled-raw`, `sparse-wiki-pages`
+4. **Vault metrics** (inline, always runs regardless of lint freshness):
+   - Note counts by top-level folder (`raw/`, `wiki/`, `review/`, `Daily/`) via Glob
+   - Daily note streak: consecutive days ending today with a file at `Daily/YYYY-MM-DD.md`
+5. If the lint report is >3 days old, append a nudge: "Lint last ran N days ago. Consider /lint."
 
 ## Section 4: Skill Eval Dashboard
 
@@ -132,10 +135,10 @@ Present the full report as a structured summary Keith can scan in 30 seconds:
 - Strongest signal: [skill with clearest pattern]
 - Candidate learnings: N (review with /observe)
 
-### Vault Health
-- X notes | Y wikilinks | Z orphans | W stale inbox items
-- Daily streak: N days
-- Issues: [any broken links or missing MOC links]
+### Vault Health (lint YYYY-MM-DD)
+- X notes across raw/wiki/review | Daily streak: N days
+- Lint: N auto-fixed, N needs review, N hard errors
+- Top issues: [up to 5 from lint "Needs Review"]
 
 ### Skill Evals
 [table above]
