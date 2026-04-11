@@ -37,8 +37,15 @@ function buildMessage(body: IntakePayload, transcribed?: string): string {
     }
     case 'audio': {
       // Mirror bot.ts:858 -- "[Voice transcribed]: ..." prefix is what the
-      // skills already recognise from Telegram voice notes.
-      return `${tag} [Voice transcribed]: ${transcribed ?? ''}`
+      // skills already recognise from Telegram voice notes. If the intake
+      // manifest carried a user-provided note (e.g. "voice memo with Rachel
+      // about 8 chef hiring"), prepend it as context so the agent knows what
+      // the clip is about instead of guessing from transcript alone.
+      const note = (body.payload ?? '').trim()
+      const voice = `[Voice transcribed]: ${transcribed ?? ''}`
+      return note
+        ? `${tag} [Context from user]: ${note}\n\n${voice}`
+        : `${tag} ${voice}`
     }
     case 'fireflies': {
       // Hand off to the meeting processor with the URL or ID payload.
