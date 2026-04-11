@@ -3,7 +3,23 @@ import { resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { InlineKeyboard } from 'grammy'
 import { K2B_VAULT_PATH, K2B_PROJECT_ROOT } from './config.js'
-import { readRecommendations, appendRecommendation, updateRecommendation, appendFeedbackSignal, playlistAdd, playlistRemove, getPlaylistVideoIds, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
+import {
+  readRecommendations,
+  updateRecommendation,
+  getPlaylistVideoIds,
+  WATCH_PLAYLIST_ID,
+  type YouTubeRecommendation,
+  // Canonical state machinery (all moved from this file into youtube.ts)
+  youtubeAgentState,
+  pendingCandidates,
+  clearFromAgentState,
+  addVideoToWatch,
+  skipVideoFromWatch,
+  expireVideoFromWatch,
+  type VideoMetadata,
+  type PendingCandidate,
+  type YouTubeAgentState,
+} from './youtube.js'
 import { tasteModel } from './taste-model.js'
 import { runAgent } from './agent.js'
 import { getSession, setSession } from './db.js'
@@ -71,41 +87,8 @@ function ageDaysFromYmd(raw: string): number | null {
   return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24))
 }
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-export interface YouTubeAgentState {
-  phase: 'idle' | 'checking-watch' | 'presenting-picks' | 'searching'
-  pendingVideoIds: string[]
-  sessionId?: string
-  startedAt: string
-  lastCycleAt: string | null
-  cyclesToday: number
-  lastCycleDate: string | null  // YYYY-MM-DD, reset counter when date changes
-}
-
-export const youtubeAgentState: YouTubeAgentState = {
-  phase: 'idle',
-  pendingVideoIds: [],
-  startedAt: '',
-  lastCycleAt: null,
-  cyclesToday: 0,
-  lastCycleDate: null,
-}
-
-// Metadata for recommended videos that haven't been written to JSONL yet.
-// Keyed by videoId, populated by findNewContent, consumed by action handlers.
-export interface PendingCandidate {
-  videoId: string
-  title: string
-  channel: string
-  duration: string
-  uploadDate: string
-  verdict: string
-  reason: string
-}
-export const pendingCandidates = new Map<string, PendingCandidate>()
+// Re-export for backward compatibility with existing importers (bot.ts, index.ts)
+export { youtubeAgentState, pendingCandidates, type YouTubeAgentState, type PendingCandidate }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -163,7 +146,7 @@ export async function runYouTubeAgentLoop(
         if (playlistIds.includes(rec.video_id)) {
           verified.push(rec)
         } else {
-          updateRecommendation(rec.video_id, { status: 'expired', outcome: 'not-in-playlist' })
+          expireVideoFromWatch(rec.video_id, 'not-in-playlist')
           logger.info({ videoId: rec.video_id, title: rec.title }, 'Auto-expired nudge_sent video not found in Watch playlist')
         }
       }
@@ -448,11 +431,17 @@ export async function handleYouTubeAgentResponse(
     }
 
     if (lower.includes('skip') || lower.includes('not interested') || lower.includes('swap') || lower.includes('replace')) {
-      // Expire all pending
-      for (const vid of youtubeAgentState.pendingVideoIds) {
-        updateRecommendation(vid, { status: 'expired', outcome: 'agent-cleared' })
+      // Canonical skip-from-Watch for each pending video.
+      // Previously this marked 'expired' with no playlist removal, no feedback,
+      // and no taste model update. Now it's a real skip decision from Keith.
+      const toSkip = [...youtubeAgentState.pendingVideoIds] // copy -- skipVideoFromWatch mutates this
+      for (const vid of toSkip) {
+        try {
+          skipVideoFromWatch(vid, 'user-requested-swap', 'text-reply:swap', text)
+        } catch (err) {
+          logger.error({ err, vid }, 'skipVideoFromWatch failed during swap-all')
+        }
       }
-      youtubeAgentState.pendingVideoIds = []
       await sendMessage(chatId, 'Cleared. Finding fresh content...')
       await findNewContent(sendMessage, sendWithButtons, chatId)
       return true
@@ -471,25 +460,44 @@ export async function handleYouTubeAgentResponse(
 
   if (youtubeAgentState.phase === 'presenting-picks') {
     if (lower.includes('add') && (lower.includes('all') || lower.includes('them'))) {
-      // Add all pending to Watch. Recs already exist in JSONL from findNewContent --
-      // just flip status and call playlistAdd.
-      for (const vid of youtubeAgentState.pendingVideoIds) {
-        try {
-          playlistAdd(WATCH_PLAYLIST_ID, vid)
-        } catch (err) {
-          logger.error({ err, vid }, 'Failed to add to Watch')
+      // Canonical add-to-Watch for every pending candidate. Metadata comes from
+      // pendingCandidates cache (findNewContent populated it). If a candidate
+      // is missing from the cache, skip it and log -- don't write placeholder.
+      const toAdd = [...youtubeAgentState.pendingVideoIds]
+      let addedCount = 0
+      for (const vid of toAdd) {
+        const cand = pendingCandidates.get(vid)
+        if (!cand || !cand.title || cand.title === vid || !cand.channel || cand.channel === 'unknown') {
+          logger.warn({ vid, hasCached: !!cand }, 'add-all rejected: no real metadata')
+          continue
         }
-        updateRecommendation(vid, { status: 'nudge_sent', outcome: 'text-reply-added-all' })
+        const meta: VideoMetadata = {
+          videoId: vid,
+          title: cand.title,
+          channel: cand.channel,
+          duration: cand.duration || undefined,
+          uploadDate: cand.uploadDate || undefined,
+          verdict: cand.reason || undefined,
+          verdictValue: (cand.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined) || undefined,
+        }
+        try {
+          addVideoToWatch(meta, 'text-reply:add-all')
+          addedCount++
+        } catch (err) {
+          logger.error({ err, vid }, 'addVideoToWatch failed during add-all')
+        }
       }
       youtubeAgentState.phase = 'idle'
       youtubeAgentState.pendingVideoIds = []
-      await sendMessage(chatId, 'Added to your Watch list.')
+      pendingCandidates.clear()
+      await sendMessage(chatId, `Added ${addedCount} to your Watch list.`)
       return true
     }
 
     if (lower.includes('no') || lower.includes('skip') || lower.includes('pass')) {
       youtubeAgentState.phase = 'idle'
       youtubeAgentState.pendingVideoIds = []
+      pendingCandidates.clear()
       await sendMessage(chatId, 'No problem. Will find different content next time.')
       return true
     }
@@ -607,59 +615,40 @@ async function parseAndExecuteActions(
 
     try {
       if (a.action === 'skip') {
-        try {
-          playlistRemove(WATCH_PLAYLIST_ID, a.videoId)
-        } catch (err) {
-          logger.error({ err, videoId: a.videoId }, 'playlistRemove failed during text-reply execution')
-        }
+        // Canonical skip. For new-picks phase the video isn't in JSONL yet,
+        // so skipVideoFromWatch becomes a no-op on JSONL + a taste-model learn.
         if (phase === 'watch-list') {
-          updateRecommendation(a.videoId, { status: 'skipped', outcome: `text-reply-${phase}` })
+          skipVideoFromWatch(a.videoId, 'text-reply-skip', `text-reply:${phase}`, userText)
+        } else {
+          // new-picks: just train the taste model and clear state; no playlist op needed
+          // (the video was never added).
+          if (pending.channel && pending.channel !== 'unknown') {
+            tasteModel.recordAction(a.videoId, pending.channel, 'skip', userText)
+          }
+          clearFromAgentState(a.videoId)
         }
-        appendFeedbackSignal(a.videoId, 'skip_reason', 'text-reply', userText)
-        if (pending.channel && pending.channel !== 'unknown') {
-          tasteModel.recordAction(a.videoId, pending.channel, 'skip', userText)
-        }
-        const idx = youtubeAgentState.pendingVideoIds.indexOf(a.videoId)
-        if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
-        pendingCandidates.delete(a.videoId)
         actedCount++
       } else if (a.action === 'add' && phase === 'new-picks') {
-        try {
-          playlistAdd(WATCH_PLAYLIST_ID, a.videoId)
-        } catch (err) {
-          logger.error({ err, videoId: a.videoId }, 'playlistAdd failed during text-reply execution')
-        }
-        // Create JSONL entry with REAL metadata from pendingCandidates cache
-        const today = new Date().toISOString().slice(0, 10)
+        // Canonical add-to-Watch. Requires real metadata from pendingCandidates.
         const cand = pendingCandidates.get(a.videoId)
-        appendRecommendation({
-          ts: new Date().toISOString(),
-          video_id: a.videoId,
-          title: cand?.title ?? pending.title,
-          channel: cand?.channel ?? pending.channel,
-          playlist: 'K2B Watch',
-          recommended_date: today,
-          status: 'nudge_sent',
-          nudge_sent: true,
-          nudge_date: today,
-          outcome: 'text-reply-added',
-          rating: null,
-          promoted_to: null,
-          vault_note: null,
-          duration: cand?.duration,
-          upload_date: cand?.uploadDate,
-          verdict: cand?.reason,
-          verdict_value: cand?.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined,
-        })
-        const idx = youtubeAgentState.pendingVideoIds.indexOf(a.videoId)
-        if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
-        pendingCandidates.delete(a.videoId)
+        if (!cand || !cand.title || cand.title === a.videoId || !cand.channel || cand.channel === 'unknown') {
+          logger.warn({ videoId: a.videoId, hasCached: !!cand }, 'text-reply add rejected: no real metadata')
+          continue
+        }
+        const meta: VideoMetadata = {
+          videoId: a.videoId,
+          title: cand.title,
+          channel: cand.channel,
+          duration: cand.duration || undefined,
+          uploadDate: cand.uploadDate || undefined,
+          verdict: cand.reason || undefined,
+          verdictValue: (cand.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined) || undefined,
+        }
+        addVideoToWatch(meta, `text-reply:${phase}`)
         actedCount++
       } else if (a.action === 'keep') {
         // Leave as-is, just clear from pending state
-        const idx = youtubeAgentState.pendingVideoIds.indexOf(a.videoId)
-        if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
-        pendingCandidates.delete(a.videoId)
+        clearFromAgentState(a.videoId)
         actedCount++
       }
     } catch (err) {

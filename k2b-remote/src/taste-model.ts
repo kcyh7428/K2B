@@ -156,8 +156,29 @@ export class TasteModel {
     return ageDays > minWindow
   }
 
-  deduceSkipReason(channel: string, uploadDate: string, topics: string[]): string {
-    // Channel has >60% skip rate with 3+ total
+  /** Human-friendly guess at WHY Keith is skipping this video.
+   *  Shown in the confirmation message ("About to skip X. Not a fan of Cole Medin?")
+   *  Accepts either a YouTubeRecommendation-like object or positional args. */
+  deduceSkipReason(rec: { channel?: string; upload_date?: string; topics?: string[] } | undefined | null): string
+  deduceSkipReason(channel: string, uploadDate: string, topics: string[]): string
+  deduceSkipReason(
+    recOrChannel: string | { channel?: string; upload_date?: string; topics?: string[] } | undefined | null,
+    uploadDate?: string,
+    topics?: string[],
+  ): string {
+    let channel: string
+    let upload: string
+    let tops: string[]
+    if (typeof recOrChannel === 'string') {
+      channel = recOrChannel
+      upload = uploadDate ?? ''
+      tops = topics ?? []
+    } else {
+      channel = recOrChannel?.channel ?? ''
+      upload = recOrChannel?.upload_date ?? ''
+      tops = recOrChannel?.topics ?? []
+    }
+
     const stats = this.data.channels[channel]
     if (stats) {
       const total = stats.watched + stats.skipped + stats.screened
@@ -166,17 +187,41 @@ export class TasteModel {
       }
     }
 
-    // Video is stale
-    if (this.isVideoStale(uploadDate, topics)) {
+    if (upload && this.isVideoStale(upload, tops)) {
       return 'Too old for this topic?'
     }
 
-    // Channel is new
-    if (!stats) {
+    if (!stats && channel && channel !== 'unknown') {
       return 'New channel -- not what you expected?'
     }
 
     return 'Not relevant right now?'
+  }
+
+  /** Machine-readable reason key for persistence (JSONL skip_reason field + feedback signal).
+   *  Parallel to deduceSkipReason but returns a short tag instead of a question. */
+  deduceSkipReasonKey(rec: { channel?: string; upload_date?: string; topics?: string[] } | undefined | null): string {
+    const channel = rec?.channel ?? ''
+    const upload = rec?.upload_date ?? ''
+    const tops = rec?.topics ?? []
+
+    const stats = this.data.channels[channel]
+    if (stats) {
+      const total = stats.watched + stats.skipped + stats.screened
+      if (total >= 3 && stats.skipped / total > 0.6) {
+        return `dislike-channel:${channel}`
+      }
+    }
+
+    if (upload && this.isVideoStale(upload, tops)) {
+      return 'too-old'
+    }
+
+    if (!stats && channel && channel !== 'unknown') {
+      return 'new-channel-not-interested'
+    }
+
+    return 'not-relevant'
   }
 
   scoreCandidate(

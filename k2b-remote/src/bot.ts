@@ -13,19 +13,28 @@ import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getM
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
-import { updateRecommendation, getPendingNudges, readRecommendations, appendRecommendation, appendFeedbackSignal, playlistAdd, playlistRemove, WATCH_PLAYLIST_ID, SCREEN_PLAYLIST_ID } from './youtube.js'
+import {
+  updateRecommendation,
+  getPendingNudges,
+  readRecommendations,
+  appendFeedbackSignal,
+  playlistAdd,
+  playlistRemove,
+  WATCH_PLAYLIST_ID,
+  SCREEN_PLAYLIST_ID,
+  // Canonical state functions -- every YouTube state change goes through these
+  addVideoToWatch,
+  skipVideoFromWatch,
+  markVideoWatched,
+  moveVideoToScreen,
+  skipVideoFromScreen,
+  clearFromAgentState,
+  youtubeAgentState,
+  pendingCandidates,
+  type VideoMetadata,
+} from './youtube.js'
 import { tasteModel } from './taste-model.js'
-import { handleYouTubeAgentResponse, youtubeAgentState } from './youtube-agent-loop.js'
-
-function clearVideoFromAgentState(videoId: string): void {
-  const idx = youtubeAgentState.pendingVideoIds.indexOf(videoId)
-  if (idx >= 0) {
-    youtubeAgentState.pendingVideoIds.splice(idx, 1)
-    if (youtubeAgentState.pendingVideoIds.length === 0) {
-      youtubeAgentState.phase = 'idle'
-    }
-  }
-}
+import { handleYouTubeAgentResponse } from './youtube-agent-loop.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -264,76 +273,36 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
   } else if (action === 'watch') {
-    const rec = readRecommendations().find(r => r.video_id === videoId)
-    updateRecommendation(videoId, {
-      status: 'watched',
-      outcome: 'watched',
-    })
-    appendFeedbackSignal(videoId, 'watch', 'watched')
-    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'watch')
-
-    await ctx.api.sendMessage(ctx.chat!.id, `Marked as watched. Enjoy!`)
-    clearVideoFromAgentState(videoId)
+    // Canonical mark-watched path
+    try {
+      markVideoWatched(videoId, 'button:watch')
+      await ctx.api.sendMessage(ctx.chat!.id, `Marked as watched. Enjoy!`)
+    } catch (err) {
+      logger.error({ err, videoId }, 'markVideoWatched failed')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Marked as watched (with tracking errors, see logs).')
+    }
 
   } else if (action === 'comment') {
     awaitingComment.set(chatId, videoId)
     await ctx.api.sendMessage(ctx.chat!.id, "What's your take?")
 
   } else if (action === 'screen') {
-    const rec = readRecommendations().find(r => r.video_id === videoId)
-    updateRecommendation(videoId, { status: 'screen_pending', outcome: 'screened' })
-    appendFeedbackSignal(videoId, 'screen', 'screened-for-processing')
-    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'screen')
-
-    // Direct playlist operations -- no agent needed
+    // Canonical move-to-Screen path
     try {
-      playlistAdd(SCREEN_PLAYLIST_ID, videoId)
-      playlistRemove(WATCH_PLAYLIST_ID, videoId)
+      moveVideoToScreen(videoId, 'button:screen')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen.')
     } catch (err) {
-      logger.error({ err, videoId }, 'Failed to move to Screen playlist')
+      logger.error({ err, videoId }, 'moveVideoToScreen failed')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Tried to move to Screen, but tracking failed. See logs.')
     }
-
-    await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen.')
-    clearVideoFromAgentState(videoId)
 
   } else if (action === 'skip') {
+    // Step 1 of the skip flow: deduce a likely reason and ask Keith to confirm.
+    // The actual skip is NOT executed here -- it's deferred to skip-confirm /
+    // skip-other / skip-reason-typed to avoid split-phase writes.
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    updateRecommendation(videoId, { status: 'skipped', outcome: 'skipped' })
-    appendFeedbackSignal(videoId, 'skip_reason', 'skipped')
-    // NOTE: tasteModel.recordAction is called in skip-confirm/skip-other, not here,
-    // to avoid double-counting before the reason is known.
-
-    // Direct playlist removal -- no agent needed
-    try {
-      playlistRemove(WATCH_PLAYLIST_ID, videoId)
-    } catch (err) {
-      logger.error({ err, videoId }, 'Failed to remove from Watch playlist')
-    }
-
-    // Deduce skip reason and ask for confirmation
-    const channel = rec?.channel ?? 'unknown'
     const title = rec?.title ?? 'this video'
-    const uploadDate = rec?.recommended_date ?? ''
-    const topics = rec?.topics ?? []
-
-    // Simple deduction logic
-    let deducedReason = 'Not relevant right now?'
-    const channelRecs = readRecommendations().filter(r => r.channel === channel)
-    const channelSkips = channelRecs.filter(r => r.status === 'skipped').length
-    const channelTotal = channelRecs.length
-
-    if (channelTotal >= 3 && channelSkips / channelTotal > 0.6) {
-      deducedReason = `Not a fan of ${channel}?`
-    } else if (uploadDate) {
-      const ageMs = Date.now() - new Date(uploadDate).getTime()
-      const ageDays = ageMs / (1000 * 60 * 60 * 24)
-      const hasTechTopic = topics.some(t => ['claude-code', 'ai-tools', 'agent-frameworks'].includes(t))
-      if ((hasTechTopic && ageDays > 30) || ageDays > 90) {
-        deducedReason = 'Too old for this topic?'
-      }
-    } else if (channelTotal <= 1) {
-      deducedReason = 'New channel -- not what you expected?'
-    }
+    const deducedReason = tasteModel.deduceSkipReason(rec)
 
     const keyboard = new InlineKeyboard()
       .text('Yeah', `youtube:skip-confirm:${videoId}`)
@@ -341,41 +310,21 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 
     await ctx.api.sendMessage(
       ctx.chat!.id,
-      `Skipped "${title}". ${deducedReason}`,
+      `About to skip "${title}". ${deducedReason}`,
       { reply_markup: keyboard }
     )
-    clearVideoFromAgentState(videoId)
 
   } else if (action === 'skip-confirm') {
-    // Keith confirmed the deduced reason -- record it
+    // Keith confirmed the deduced reason -- execute the skip now.
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    // The deduced reason was in the previous message, re-derive it
-    const channel = rec?.channel ?? 'unknown'
-    const topics = rec?.topics ?? []
-    const uploadDate = rec?.recommended_date ?? ''
-
-    let reason = 'not relevant'
-    const channelRecs = readRecommendations().filter(r => r.channel === channel)
-    const channelSkips = channelRecs.filter(r => r.status === 'skipped').length
-    const channelTotal = channelRecs.length
-    if (channelTotal >= 3 && channelSkips / channelTotal > 0.6) {
-      reason = `dislike channel: ${channel}`
-    } else if (uploadDate) {
-      const ageMs = Date.now() - new Date(uploadDate).getTime()
-      const ageDays = ageMs / (1000 * 60 * 60 * 24)
-      const hasTechTopic = topics.some(t => ['claude-code', 'ai-tools', 'agent-frameworks'].includes(t))
-      if ((hasTechTopic && ageDays > 30) || ageDays > 90) {
-        reason = 'too old'
-      }
-    } else if (channelTotal <= 1) {
-      reason = 'new channel, not interested'
+    const reason = tasteModel.deduceSkipReasonKey(rec)
+    try {
+      skipVideoFromWatch(videoId, reason, 'button:skip-confirm')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Skipped. Got it.')
+    } catch (err) {
+      logger.error({ err, videoId }, 'skipVideoFromWatch failed')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Skip failed, see logs.')
     }
-
-    updateRecommendation(videoId, { skip_reason: reason })
-    appendFeedbackSignal(videoId, 'skip_reason', 'confirmed', reason)
-    // Update taste model with the confirmed skip reason
-    tasteModel.recordAction(videoId, channel, 'skip', reason)
-    await ctx.api.sendMessage(ctx.chat!.id, 'Got it.')
 
   } else if (action === 'skip-other') {
     // Keith says the deduced reason is wrong -- ask for the real one
@@ -383,46 +332,46 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendMessage(ctx.chat!.id, "What's off about it?")
 
   } else if (action === 'agent-add') {
-    // Quick add to Watch playlist from agent recommendation or direct URL
+    // Canonical add-to-Watch path. REQUIRES real metadata from pendingCandidates
+    // (populated by handleDirectYouTubeUrl or agent loop's findNewContent).
+    // Refuses to save placeholder data.
+    const cached = pendingCandidates.get(videoId)
+    if (!cached || !cached.title || cached.title === videoId || !cached.channel || cached.channel === 'unknown') {
+      logger.warn({ videoId, hasCached: !!cached }, 'agent-add rejected: no real metadata in cache')
+      await ctx.api.sendMessage(
+        ctx.chat!.id,
+        "Couldn't add -- metadata for this video isn't available. Please paste the URL again so I can refetch."
+      )
+      return
+    }
+    const meta: VideoMetadata = {
+      videoId,
+      title: cached.title,
+      channel: cached.channel,
+      duration: cached.duration,
+      uploadDate: cached.uploadDate,
+      verdict: cached.reason,
+      verdictValue: cached.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined,
+    }
     try {
-      playlistAdd(WATCH_PLAYLIST_ID, videoId)
+      addVideoToWatch(meta, 'button:agent-add')
+      await ctx.api.sendMessage(ctx.chat!.id, `Added "${cached.title}" to Watch list.`)
     } catch (err) {
-      logger.error({ err, videoId }, 'Failed to add to Watch playlist')
+      logger.error({ err, videoId }, 'addVideoToWatch failed')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Add failed, see logs.')
     }
-
-    const rec = readRecommendations().find(r => r.video_id === videoId)
-    if (!rec) {
-      // Create a new JSONL entry for directly-added videos
-      const today = new Date().toISOString().slice(0, 10)
-      appendRecommendation({
-        ts: new Date().toISOString(),
-        video_id: videoId,
-        title: videoId,
-        channel: 'unknown',
-        playlist: 'K2B Watch',
-        recommended_date: today,
-        status: 'nudge_sent',
-        nudge_sent: true,
-        nudge_date: today,
-        outcome: null,
-        rating: null,
-        promoted_to: null,
-        vault_note: null,
-      })
-    } else {
-      updateRecommendation(videoId, { status: 'nudge_sent', outcome: 'added-to-watch' })
-    }
-
-    await ctx.api.sendMessage(ctx.chat!.id, 'Added to Watch list.')
-    clearVideoFromAgentState(videoId)
 
   } else if (action === 'agent-skip') {
-    // Skip from agent recommendation -- don't add to Watch
-    const rec = readRecommendations().find(r => r.video_id === videoId)
-    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip')
+    // Skip from agent recommendation -- the video was never persisted to JSONL,
+    // so there's no JSONL state to update. Just log the feedback signal, train
+    // the taste model (if we know the channel from pendingCandidates), and clear state.
+    const cached = pendingCandidates.get(videoId)
     appendFeedbackSignal(videoId, 'skip_reason', 'agent-skipped')
+    if (cached?.channel && cached.channel !== 'unknown') {
+      tasteModel.recordAction(videoId, cached.channel, 'skip', 'agent-skipped')
+    }
+    clearFromAgentState(videoId)
     await ctx.api.sendMessage(ctx.chat!.id, 'Skipped.')
-    clearVideoFromAgentState(videoId)
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -456,14 +405,30 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     const title = rec?.title ?? videoId
 
     await ctx.api.sendMessage(ctx.chat!.id, `Processing: "${title}"\nGetting transcript and creating vault note -- this may take a few minutes.`)
-    const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${videoId} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)). Create a vault note in raw/youtube/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${videoId}. Log as processed in youtube-processed.md.`
+    // Constrained prompt: do the analysis, but DO NOT mutate playlists or JSONL.
+    // Code handles state mutations via skipVideoFromScreen after the agent returns.
+    const prompt = `You are K2B. Analyze YouTube video https://www.youtube.com/watch?v=${videoId} from the K2B Screen playlist.
+
+IMPORTANT: Do NOT modify the K2B Screen playlist. Do NOT edit youtube-recommended.jsonl. Do NOT edit youtube-processed.md. The calling code handles state mutations after you return.
+
+Your job:
+1. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper using GROQ_API_KEY from k2b-remote/.env).
+2. Create a vault note in raw/youtube/ via k2b-vault-writer.
+3. Return a short summary of the note you created.`
     const screenMarker = markObservationStart()
     const priorSessionId = getSession(chatId)
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
     if (newSessionId) setSession(chatId, newSessionId)
     logObservations(screenMarker, `youtube-screen-${videoId}`, prompt)
 
-    updateRecommendation(videoId, { status: 'processed', outcome: 'screen-processed' })
+    // Canonical state mutation: mark processed + remove from Screen playlist
+    try {
+      skipVideoFromScreen(videoId, 'screen-processed', 'button:screen-process')
+      // Override status from 'skipped' to 'processed' (skipVideoFromScreen uses 'skipped')
+      updateRecommendation(videoId, { status: 'processed', outcome: 'screen-processed' })
+    } catch (err) {
+      logger.error({ err, videoId }, 'screen-process post-agent state mutation failed')
+    }
 
     const result = text ?? '(processed)'
     const formatted = formatForTelegram(result)
@@ -477,18 +442,14 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
   } else if (action === 'screen-skip') {
-    updateRecommendation(videoId, { status: 'skipped', outcome: 'screen-skipped' })
-    appendFeedbackSignal(videoId, 'skip_reason', 'screen-skipped')
-
-    // Direct playlist removal -- no agent needed
+    // Canonical skip-from-Screen path
     try {
-      playlistRemove(SCREEN_PLAYLIST_ID, videoId)
+      skipVideoFromScreen(videoId, 'screen-skipped', 'button:screen-skip')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
     } catch (err) {
-      logger.error({ err, videoId }, 'Failed to remove from Screen playlist')
+      logger.error({ err, videoId }, 'skipVideoFromScreen failed')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Skip failed, see logs.')
     }
-
-    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
-    clearVideoFromAgentState(videoId)
 
   } else if (action === 'screen-all') {
     // Poll the actual playlist
@@ -520,14 +481,28 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     for (let i = 0; i < videos.length; i++) {
       const v = videos[i]
       await ctx.api.sendMessage(ctx.chat!.id, `[${i + 1}/${videos.length}] Processing: "${v.title}"`)
-      const prompt = `You are K2B. Process YouTube video https://www.youtube.com/watch?v=${v.id} from the K2B Screen playlist. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper (GROQ_API_KEY from k2b-remote/.env)). Create a vault note in raw/youtube/ via k2b-vault-writer. After processing, remove the video from K2B Screen playlist using scripts/yt-playlist-remove.sh. Update youtube-recommended.jsonl: set status to "processed" for video ${v.id}. Log as processed in youtube-processed.md.`
+      // Same constrained prompt pattern as single screen-process
+      const prompt = `You are K2B. Analyze YouTube video https://www.youtube.com/watch?v=${v.id} from the K2B Screen playlist.
+
+IMPORTANT: Do NOT modify the K2B Screen playlist. Do NOT edit youtube-recommended.jsonl. Do NOT edit youtube-processed.md. The calling code handles state mutations after you return.
+
+Your job:
+1. Get the transcript (if Chinese/Mandarin, extract audio with 'scripts/yt-playlist-poll.sh --extract-audio <url> /tmp/k2b-yt-audio/', then transcribe chunks via Groq Whisper using GROQ_API_KEY from k2b-remote/.env).
+2. Create a vault note in raw/youtube/ via k2b-vault-writer.
+3. Return a short summary of the note you created.`
       const screenMarker = markObservationStart()
       try {
         const priorSessionId = getSession(chatId)
         const { text, newSessionId } = await runAgent(prompt, priorSessionId)
         if (newSessionId) setSession(chatId, newSessionId)
         logObservations(screenMarker, `youtube-screen-${v.id}`, prompt)
-        updateRecommendation(v.id, { status: 'processed', outcome: 'screen-processed' })
+        // Canonical state mutation after agent returns
+        try {
+          skipVideoFromScreen(v.id, 'screen-processed', 'button:screen-all')
+          updateRecommendation(v.id, { status: 'processed', outcome: 'screen-processed' })
+        } catch (mutErr) {
+          logger.error({ err: mutErr, videoId: v.id }, 'screen-all post-agent state mutation failed')
+        }
 
         const result = text ?? '(processed)'
         await ctx.api.sendMessage(
@@ -555,14 +530,15 @@ async function handleCommentOrSkipReason(
   _chatId: string
 ): Promise<void> {
   if (pendingKey.startsWith('skip:')) {
-    // Skip reason capture
+    // Skip reason capture -- execute the canonical skip now that we have the reason
     const videoId = pendingKey.slice(5)
-    const rec = readRecommendations().find(r => r.video_id === videoId)
-    updateRecommendation(videoId, { skip_reason: text, feedback_text: text })
-    appendFeedbackSignal(videoId, 'skip_reason', 'user-provided', text)
-    tasteModel.recordAction(videoId, rec?.channel ?? 'unknown', 'skip', text)
-    clearVideoFromAgentState(videoId)
-    await ctx.api.sendMessage(ctx.chat!.id, 'Got it, skip reason noted.')
+    try {
+      skipVideoFromWatch(videoId, text, 'text-reply:skip-reason', text)
+      await ctx.api.sendMessage(ctx.chat!.id, 'Got it, skip reason noted.')
+    } catch (err) {
+      logger.error({ err, videoId }, 'skipVideoFromWatch failed from handleCommentOrSkipReason')
+      await ctx.api.sendMessage(ctx.chat!.id, 'Noted, but skip failed. See logs.')
+    }
   } else {
     // Regular comment capture
     const videoId = pendingKey
@@ -642,6 +618,21 @@ async function handleDirectYouTubeUrl(
       channel = oembed.channel
       logger.info({ videoId, title, channel }, 'Recovered metadata via oEmbed fallback')
     }
+  }
+
+  // Cache metadata so agent-add can write a real JSONL entry later without
+  // a second yt-dlp round trip. This is the ONLY place direct-URL metadata
+  // gets into pendingCandidates; if it's absent, agent-add will reject the save.
+  if (title && title !== videoId && channel && channel !== 'unknown') {
+    pendingCandidates.set(videoId, {
+      videoId,
+      title,
+      channel,
+      duration: duration === 'unknown' ? '' : duration,
+      uploadDate: uploadDate === 'unknown' ? '' : uploadDate,
+      verdict: '',
+      reason: 'direct-url',
+    })
   }
 
   // Check taste model
