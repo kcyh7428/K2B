@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-04-11 -- k2b-ship shipped + /improve ↔ /lint deduplication
+
+**What**: Shipped `k2b-ship` (end-of-session shipping workflow) as a standalone skill out of `feature_dev-skills-pack`, and refactored `/improve` Sections 1b and 3 to delegate their vault+rules checks to `/lint` via a structured `wiki/context/lint-report.md` artifact instead of re-running the same queries.
+
+**Why**:
+- **k2b-ship**: Manual "stage + commit + push + DEVLOG + roadmap + /sync reminder" at the end of every session is friction that compounds. Per the 2026-04-10 ship order update in `feature_dev-skills-pack`, k2b-ship was the highest-ROI piece of that pack and got pulled out to ship standalone first. `k2b-retro` and `k2b-session-tracker` stay in the pack until `/ship` proves itself.
+- **/improve ↔ /lint dedupe**: `/lint` Check #11 (Active Rules Staleness) was added earlier today in commit `d1f5227`. That left `/improve` Section 1b running a near-duplicate active-rules audit, and Section 3 still running DQL orphan/broken-link/stale-review queries that `/lint` already covered. Sections 2 (preferences) and 4 (eval dashboard) already used the "reader, not worker" pattern — only Sections 1b and 3 were the stragglers.
+
+**Shipped**:
+- **`.claude/skills/k2b-ship/SKILL.md`** (new, commit `88bad34`): 13-step workflow covering scope detection, feature identification against `wiki/concepts/index.md` lanes, mandatory Codex pre-commit review, code commit/push, feature note updates (single-ship vs multi-ship patterns), index.md lane transitions, DEVLOG.md follow-up commit (two-commit pattern because DEVLOG references the code SHA), wiki/log.md append, multi-ship gate handling, Backlog→Next Up promotion suggestion, and /sync reminder. Error handling covers Codex-missing, pre-commit hook failures, push conflicts, feature-note-not-found, and degraded bookkeeping.
+- **`CLAUDE.md`** (commit `88bad34`): added `/ship` to System slash command list; rewrote Roadmap & Feature Notes section around In Progress / Next Up / Backlog / Shipped / Parked lanes with feature-note frontmatter schema; replaced manual Session Discipline checklist with a /ship-first workflow keeping a manual fallback for vault-only sessions.
+- **`.claude/skills/k2b-lint/SKILL.md`** (commit `59136f5`): Check #11 gained a step 6 that surfaces learnings promotion candidates (learnings newer than `Last promoted:` with `Reinforced >= 2`) — moved here from `/improve` Section 1b. Output Format section now documents two artifacts: inline human report + structured `wiki/context/lint-report.md` with frontmatter summary counts + per-check roll-up + a top-level `## Needs Review` aggregator that downstream skills consume. Both manual and scheduled workflows write the artifact.
+- **`.claude/skills/k2b-improve/SKILL.md`** (commit `59136f5`): Memory & Data Paths gains `lint-report.md`. Section 1b becomes a reader of `## Active Rules` from the lint artifact (no more re-running path validation or learnings scan). Section 3 becomes a reader of `## Needs Review` from the lint artifact (no more DQL queries). Vault metrics (folder counts + daily streak) stay inline as the only unique work. Both sections fall through with a "run /lint to refresh" nudge when the report is missing or >7 days stale. Report Format vault health line updated to show lint date and hard-error count.
+
+**Codex review**: 2 rounds.
+- **Round 1** (before commit): Found (P1) `/ship` committing code before writing DEVLOG.md (which is in git at project root, so step 5's commit leaves step 8's DEVLOG append as dirty state the next run sees), and (P2) `/improve` Section 3 telling the agent to read a "Needs Review" section that the new `/lint` artifact format did not define. Both real, both fixed before any commit: rewrote `/ship` step 8 as a two-commit flow (code first, devlog second matching the repo's existing `dc2ba69 docs: devlog for ...` pattern); added `## Needs Review` as a top-level aggregator section in the `/lint` artifact spec.
+- **Round 2** (after fixes): Both original findings gone. Two new findings: (a) a documentation clarity issue in `/ship` step 5 where Codex read the category table as gating staging rather than /sync routing — fixed with a 2-sentence clarification that staging comes from `git status` of this-session-touched paths regardless of category; (b) a real `allhands/index.html` bug where CV upload hardcodes `cv.jpg` but the accompanying spec allows `.jpg/.png/.pdf` — **out of scope**, `allhands/` is not part of this session and was already untracked in the working tree at session start.
+
+**Feature status changes**:
+- `feature_k2b-ship` (implicit `designed` since the 2026-04-10 pullout from dev-skills-pack) → `shipped`. Note created directly in `wiki/concepts/Shipped/feature_k2b-ship.md` with full Updates entry. Added to `wiki/concepts/index.md` Shipped lane. `feature_dev-skills-pack` updated to record that Skill 1 (k2b-ship) is done; k2b-retro + k2b-session-tracker remain in backlog.
+- `/improve ↔ /lint` dedupe shipped under `--no-feature` — it's maintenance on `concept_self-improving-loop` components, not a tracked feature.
+
+**Key decisions**:
+- **Two commits, not one bundled.** k2b-ship is a feature ship (`feat(ship)`) with attribution to `feature_k2b-ship`; the dedupe is a `refactor(skills)` with `--no-feature`. Mixing would have muddied attribution and made future revert harder. Three options were presented (A: two commits, B: one bundled, C: ship only dedupe); Keith picked A.
+- **k2b-ship gets its own feature note**, not a row inside `feature_dev-skills-pack`. The 2026-04-10 pullout in the pack note explicitly said "tracked in `wiki/concepts/index.md` under In Progress once work starts" — honoring that meant creating `feature_k2b-ship.md` as the single source of truth for this ship, with `feature_dev-skills-pack.md` adding a pointer.
+- **Two-commit DEVLOG pattern is now explicit in the /ship spec.** Previously the repo's working pattern (`dc2ba69 docs: devlog for active rules staleness detection` followed the matching feat commit) existed in history but wasn't documented. /ship now documents it so the next run doesn't trip on the Codex-caught bug.
+- **Staging is driven by `git status`, not the category table.** The category table exists only to decide whether /sync routing is needed. A small but real clarification added to step 5 so the next reader (or reviewer) doesn't mistake it for a gate on what gets staged.
+- **`/lint` is the worker, `/improve` is the aggregator.** Same pattern `/improve` Sections 2 and 4 already used. No more duplicated vault queries across skills. Fresh-data discipline: `/improve` nudges the user to `/lint` if the artifact is stale rather than silently reporting outdated findings.
+
+**Status**:
+- What works: Both commits landed (`88bad34`, `59136f5`), pushed to `origin/main`. `feature_k2b-ship.md` exists in Shipped/. `wiki/concepts/index.md` Shipped lane updated. `feature_dev-skills-pack.md` pointer added. `wiki/log.md` has both entries.
+- What's incomplete: `wiki/context/lint-report.md` doesn't exist yet — first `/lint` run after these changes will generate it. Until then `/improve` Sections 1b and 3 will print the "no recent lint report" fallback instead of actual findings.
+- What's next: Run `/sync` to push both skill-folder changes + CLAUDE.md to the Mac Mini. First test of the new `/lint` artifact next time `/lint` is invoked. Follow-up for Keith: decide whether to fix the `allhands/index.html` cv-format bug in a separate session.
+
+---
+
 ## 2026-04-11 -- Active rules staleness detection + rules audit
 
 **What**: Audited `active_rules.md` and found rules 2, 3, 6, 7 referencing pre-migration vault paths (`Notes/`, `Inbox/`, `Content-Ideas/`, `Insights/`). Rewrote rules 2/3/6, retired rule 7 (now automated by `/ship`), and bumped Last promoted to 2026-04-11. Then built automation so the next drift surfaces itself: added `k2b-lint` Check 11 (Active Rules Staleness) and `k2b-improve` Section 1b (Active Rules Audit) + `/improve rules` subcommand.
