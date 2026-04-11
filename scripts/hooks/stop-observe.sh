@@ -6,7 +6,8 @@
 set -euo pipefail
 
 VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
-OBS_FILE="$VAULT/Notes/Context/observations.jsonl"
+OBS_FILE="$VAULT/wiki/context/observations.jsonl"
+mkdir -p "$(dirname "$OBS_FILE")" 2>/dev/null || true
 
 # Prevent infinite loops
 input=$(cat)
@@ -55,27 +56,41 @@ if [ -n "$recent_vault_changes" ]; then
     [ -z "$filepath" ] && continue
     # Get relative path from vault root
     relpath="${filepath#$VAULT/}"
-    # Prefer tracked skill from PostToolUse hook; fall back to path-based guess
+    # Prefer tracked skill from PostToolUse hook; fall back to path-based guess.
+    # Paths updated 2026-04-11 after the 2026-04-08 Karpathy vault migration
+    # (Notes/ -> wiki/ + raw/ + review/). Daily/ stays because it's a human journal.
     skill="${tracked_skill:-unknown}"
     if [ "$skill" = "unknown" ]; then
       case "$relpath" in
-        Inbox/content_*) skill="k2b-insight-extractor" ;;
-        Inbox/*tldr*) skill="k2b-tldr" ;;
-        Inbox/*youtube*|Inbox/*video*) skill="k2b-youtube-capture" ;;
+        review/content_*) skill="k2b-insight-extractor" ;;
+        review/*tldr*) skill="k2b-tldr" ;;
+        review/*youtube*|review/*video*) skill="k2b-youtube-capture" ;;
+        raw/youtube/*) skill="k2b-youtube-capture" ;;
+        raw/meetings/*) skill="k2b-meeting-processor" ;;
+        raw/research/*) skill="k2b-research" ;;
+        raw/tldrs/*) skill="k2b-tldr" ;;
+        raw/daily/*) skill="k2b-daily-capture" ;;
         Daily/*) skill="k2b-daily-capture" ;;
-        Notes/People/*) skill="k2b-vault-writer" ;;
-        Notes/Projects/*) skill="k2b-vault-writer" ;;
-        Notes/Content-Ideas/*) skill="k2b-inbox" ;;
+        wiki/people/*) skill="k2b-vault-writer" ;;
+        wiki/projects/*) skill="k2b-vault-writer" ;;
+        wiki/work/*) skill="k2b-vault-writer" ;;
+        wiki/concepts/*) skill="k2b-vault-writer" ;;
+        wiki/insights/*) skill="k2b-insight-extractor" ;;
+        wiki/content-pipeline/*) skill="k2b-inbox" ;;
+        wiki/reference/*) skill="k2b-compile" ;;
+        wiki/context/preference-*) skill="k2b-observer" ;;
         Archive/*) skill="k2b-inbox" ;;
-        Notes/Context/preference-*) skill="k2b-observer" ;;
       esac
     fi
 
-    # Detect action from file location
+    # Detect action from file location.
+    # promote = review/ -> wiki/content-pipeline/ (user adopted a content idea)
+    # archive = anything landing in Archive/
+    # modify  = everything else
     action="modify"
     if echo "$relpath" | grep -q "^Archive/"; then
       action="archive"
-    elif echo "$relpath" | grep -q "^Notes/Content-Ideas/"; then
+    elif echo "$relpath" | grep -q "^wiki/content-pipeline/"; then
       action="promote"
     fi
 

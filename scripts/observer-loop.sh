@@ -135,6 +135,21 @@ run_analysis() {
   local system_prompt
   system_prompt=$(cat "$PROMPT_FILE" 2>/dev/null || echo "Analyze the observations and return JSON with patterns, candidate_learnings, confidence_updates, and summary.")
 
+  # Load youtube recommendation + feedback data for inline provision to MiniMax.
+  # The observer-prompt.md tells MiniMax to analyze YOUTUBE_RECOMMENDED and
+  # YOUTUBE_FEEDBACK sections. MiniMax has no file tools, so we must inline these.
+  # Cap at 200 lines each to keep the user message bounded.
+  local YOUTUBE_RECOMMENDED_FILE="$CONTEXT_DIR/youtube-recommended.jsonl"
+  local YOUTUBE_FEEDBACK_FILE="$CONTEXT_DIR/youtube-feedback-signals.jsonl"
+  local youtube_recommended=""
+  local youtube_feedback=""
+  if [ -f "$YOUTUBE_RECOMMENDED_FILE" ]; then
+    youtube_recommended=$(tail -n 200 "$YOUTUBE_RECOMMENDED_FILE" 2>/dev/null || true)
+  fi
+  if [ -f "$YOUTUBE_FEEDBACK_FILE" ]; then
+    youtube_feedback=$(tail -n 200 "$YOUTUBE_FEEDBACK_FILE" 2>/dev/null || true)
+  fi
+
   # Build user message
   local user_msg="## Recent Observations (JSONL)
 
@@ -147,6 +162,14 @@ ${profile:-No preference profile exists yet.}
 ## Current Learnings
 
 ${learnings:-No learnings captured yet.}
+
+## YOUTUBE_RECOMMENDED (JSONL)
+
+${youtube_recommended:-(no youtube recommendation data available)}
+
+## YOUTUBE_FEEDBACK (JSONL)
+
+${youtube_feedback:-(no youtube feedback signals available)}
 
 Analyze these observations and return your findings as JSON."
 
