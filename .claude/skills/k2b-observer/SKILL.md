@@ -360,7 +360,7 @@ See Phase 3 above for full format. This is a vault note with frontmatter, readab
 K2B runs a background observer on Mac Mini (`scripts/observer-loop.sh`, managed by pm2 as `k2b-observer`). This loop:
 
 1. Captures observations via a Stop hook (`scripts/hooks/stop-observe.sh`) after every Claude response
-2. When 20+ observations accumulate, calls MiniMax-M2.5 API to analyze patterns
+2. When 20+ observations accumulate, calls MiniMax-M2.7 API to analyze patterns
 3. Writes findings to `observer-candidates.md` (surfaced by session-start hook)
 4. Appends detected patterns to `preference-signals.jsonl`
 5. Archives processed observations
@@ -379,7 +379,7 @@ Stop hook captures observations
     |
     +--> appends to observations.jsonl
     |
-Background observer loop (MiniMax-M2.5, pm2)
+Background observer loop (MiniMax-M2.7, pm2)
     |
     +--> reads observations.jsonl periodically
     +--> calls MiniMax API for pattern detection

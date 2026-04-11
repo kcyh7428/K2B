@@ -12,7 +12,7 @@ A personal AI operating system built on Claude Code + Obsidian. Captures work, s
 
 **Learn** -- K2B improves itself continuously through three mechanisms:
 - **Session hooks** automatically check inbox, usage triggers, and observer findings on every startup
-- **Background observer** (MiniMax M2.5, running 24/7 on Mac Mini) analyzes usage patterns: what gets promoted vs. archived, revision patterns, content adoption rates
+- **Background observer** (MiniMax M2.7, running 24/7 on Mac Mini) analyzes usage patterns: what gets promoted vs. archived, revision patterns, content adoption rates
 - **Confidence-scored learnings** accumulate from corrections and observations, auto-applying at high confidence
 
 **Remote access** -- Always-on Mac Mini runs a Telegram bot (Anthropic Agent SDK) for K2B access from anywhere.
@@ -28,7 +28,7 @@ Mac Mini (always-on)          Claude Code + Hooks
     |   (Anthropic Agent SDK)      +-- Stop hook (observation capture)
     |                              |
     +-- k2b-observer-loop          +-- 20+ Skills
-    |   (MiniMax M2.5)             |     Capture: /daily, /meeting, /tldr, /youtube, /email
+    |   (MiniMax M2.7)             |     Capture: /daily, /meeting, /tldr, /youtube, /email
     |   Analyzes usage patterns    |     Think:   /inbox, /insight, /content, /research, /observe
     |   Writes observer-candidates |     Create:  /linkedin, /media
     |   Updates preference signals |     Teach:   /learn, /error, /request
@@ -47,7 +47,7 @@ Keith uses K2B normally (capture, triage, create)
     |
 Stop hook logs observations to observations.jsonl
     |
-Background observer (MiniMax M2.5) detects patterns
+Background observer (MiniMax M2.7) detects patterns
     |
     +-- Writes observer-candidates.md (surfaced at next session start)
     +-- Appends to preference-signals.jsonl
@@ -97,7 +97,7 @@ K2B/
 | Component | Role |
 |-----------|------|
 | Claude Code (Opus) | Primary AI engine, interactive sessions |
-| MiniMax M2.5 | Background observer (cheap, 200K context, minimaxi.com) |
+| MiniMax M2.7 | Worker model: background observer, compile, lint deep, research extraction (cheap, 204K context, minimaxi.com) |
 | Obsidian | Vault UI, graph view, cross-linking |
 | Anthropic Agent SDK | Telegram bot (k2b-remote) |
 | Google Workspace CLI | Gmail, Calendar, Drive integration |

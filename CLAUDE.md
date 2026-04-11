@@ -21,15 +21,16 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - All global Claude Code skills in ~/.claude/skills/
 - **Google Workspace CLI** (`gws`) -- Gmail, Calendar, Drive, Sheets, and more via `gws` commands. JSON output, works from bash.
 - MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image, speech, video, music generation)
-- **MiniMax API** (minimaxi.com) -- image generation, TTS, audio transcription, video, music, and text completion (MiniMax-M2.5, used by background observer). API key in `MINIMAX_API_KEY` env var. Scripts in `scripts/minimax-*.sh`.
+- **MiniMax API** (minimaxi.com) -- image generation, TTS, audio transcription, video, music, and text completion (MiniMax-M2.7, used by background observer, compile, lint deep, research extraction). API key in `MINIMAX_API_KEY` env var. Scripts in `scripts/minimax-*.sh`.
 - Bash, file system, web search, all standard Claude Code tools
 
 ## Commander/Worker Architecture
 
 - **Opus (Claude Code)** = commander: daily dialogue with Keith, orchestration, tool use, file changes
-- **MiniMax M2.7** = worker: background analysis, compilation, contradiction detection (~30-50x cheaper)
+- **MiniMax M2.7** = worker: background analysis, compilation, contradiction detection, bulk extraction (~30-50x cheaper)
 - Pattern: Opus calls bash scripts that invoke MiniMax API, receives structured JSON, applies changes
-- Used by: k2b-compile (wiki compilation), k2b-lint deep (contradictions), k2b-observer (preference analysis)
+- Used by: k2b-compile (wiki compilation), k2b-lint deep (contradictions), k2b-observer (background preference analysis), k2b-research (extraction on long sources, per wiki/projects/project_minimax-offload.md)
+- Migration history: observer and all background scripts upgraded M2.5 -> M2.7 on 2026-04-08. There are no M2.5 callers remaining in scripts/.
 
 ## Mac Mini (K2B Always-On Server)
 
