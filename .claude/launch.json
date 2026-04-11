@@ -23,7 +23,7 @@
       "name": "k2b-dashboard-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "/Users/keithmbpm2/Projects/K2B/k2b-dashboard"],
-      "port": 5173
+      "port": 5174
     }
   ]
 }
