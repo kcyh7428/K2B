@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-04-11 -- Active rules staleness detection + rules audit
+
+**What**: Audited `active_rules.md` and found rules 2, 3, 6, 7 referencing pre-migration vault paths (`Notes/`, `Inbox/`, `Content-Ideas/`, `Insights/`). Rewrote rules 2/3/6, retired rule 7 (now automated by `/ship`), and bumped Last promoted to 2026-04-11. Then built automation so the next drift surfaces itself: added `k2b-lint` Check 11 (Active Rules Staleness) and `k2b-improve` Section 1b (Active Rules Audit) + `/improve rules` subcommand.
+
+**Why**: The vault migration to raw/wiki/review landed 2026-04-08 but the rules file wasn't updated, so K2B was loading guidance referencing folders that no longer existed. Keith asked "how do I make sure these stay current?" — the honest answer was "they weren't," and the failure mode (path references going stale after refactors) is mechanically detectable. Scheduled reviews don't work unless something actively checks; the cheapest reliable trigger is to fold the check into existing weekly lint + existing health dashboard.
+
+**Shipped**:
+- **active_rules.md**: rules 2, 3, 6 rewritten against current vault paths. Rule 7 (After shipping, sweep vault) retired — `/ship` handles the sweep automatically, keeping the rule would just shadow the workflow and create drift risk. 13 rules → 12. Last promoted 2026-04-11.
+- **k2b-lint Check 11 (Active Rules Staleness)**: reads active_rules.md, extracts backtick-wrapped and bare folder references, checks each path exists in vault. Flags dead paths, legacy folders (`Notes/`, `Inbox/`, `Content-Ideas/`, `Insights/`), and stale promotion dates (>30 days). Never auto-fixes — rules are Keith's voice. Runs in weekly schedule alongside checks 8-10. Contradiction detection renumbered to Check 12.
+- **k2b-improve Section 1b (Active Rules Audit)** + `/improve rules`: reports last promotion date, rule count, path validation issues, and promotion candidates (reinforced learnings newer than last promotion). Dashboard report format now includes an Active Rules block.
+
+**Key decisions**:
+- **#1 (lint validator) + #3 (improve audit), skipped #2 (scheduled cron nudge)**. Detection of staleness is automated; promotion decisions stay manual. Scheduled cron nudges become noise unless they're load-bearing, and the validator catches the critical failure mode (dead path references) without needing a schedule.
+- **Rule 7 retired not rewritten**. Option B (fallback rule when /ship is skipped) would have kept a shadow version of the workflow as a rule — which is exactly how drift starts. If /ship gets skipped, the manual fallback is already documented in CLAUDE.md.
+- **Never auto-fix active rules**. The validator reports, Keith decides. Active rules are his voice and his judgment calls, not something to paper over mechanically.
+
+**Test for this setup**: next time the vault architecture shifts, the first `/lint` run afterward should automatically surface any rule pointing at a dead path. Today's audit becomes a one-time event, not a recurring manual discovery.
+
+---
+
 ## 2026-04-11 -- YouTube Agent stability refactor + skill split (Iteration 3)
 
 **What**: Consolidated every YouTube state mutation into a small set of canonical functions to end the whack-a-mole regression loop, then reduced the k2b-youtube-capture skill to a pure batch playlist processor now that the conversational agent handles all curation/discovery.
