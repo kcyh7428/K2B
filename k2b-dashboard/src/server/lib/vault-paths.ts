@@ -60,6 +60,7 @@ export const paths = {
   daily: join(VAULT, 'Daily'),
   assets: join(VAULT, 'Assets'),
   intakeAssets: join(VAULT, 'Assets', 'intake'),
+  intakeProcessed: join(VAULT, 'Assets', 'intake', 'processed'),
 
   // Wiki subfolders
   wikiContext: join(VAULT, 'wiki', 'context'),
@@ -87,9 +88,8 @@ export const paths = {
   preferenceProfile: join(VAULT, 'wiki', 'context', 'preference-profile.md'),
   skillUsageLog: join(VAULT, 'wiki', 'context', 'skill-usage-log.tsv'),
 
-  // k2b-remote (running on the same host)
+  // k2b-remote store (read-only from dashboard side)
   remoteDb: process.env.K2B_REMOTE_DB_PATH ?? join(PROJECT, 'k2b-remote', 'store', 'k2b-remote.db'),
-  remoteIntakeUrl: process.env.K2B_REMOTE_INTAKE_URL ?? 'http://localhost:3300',
 } as const
 
 export const config = {

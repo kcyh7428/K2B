@@ -145,18 +145,43 @@ export function useIntakeMutation() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      return r.json()
+      return r.json() as Promise<{
+        status: 'staged' | 'ok' | 'error'
+        uuid?: string
+        manifestPath?: string
+        error?: string
+      }>
     },
   })
 }
 
 export function useAudioIntakeMutation() {
   return useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (args: { file: File; note?: string }) => {
       const fd = new FormData()
-      fd.append('file', file)
+      fd.append('file', args.file)
+      if (args.note && args.note.trim()) {
+        fd.append('note', args.note.trim())
+      }
       const r = await fetch('/api/intake/audio', { method: 'POST', body: fd })
-      return r.json()
+      return r.json() as Promise<{
+        status: 'staged' | 'error'
+        uuid?: string
+        manifestPath?: string
+        error?: string
+      }>
     },
   })
+}
+
+export type IntakeStatus =
+  | { status: 'done'; details?: unknown }
+  | { status: 'error'; error: string; details?: unknown }
+  | { status: 'processing' }
+  | { status: 'pending-sync' }
+
+export async function fetchIntakeStatus(uuid: string): Promise<IntakeStatus> {
+  const r = await fetch(`/api/intake/status/${uuid}`)
+  if (!r.ok) throw new Error(`status ${r.status}`)
+  return r.json() as Promise<IntakeStatus>
 }

@@ -20,7 +20,7 @@ app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     vault: paths.vault,
-    intakeUrl: paths.remoteIntakeUrl,
+    intakeDir: paths.intakeAssets,
     ts: new Date().toISOString(),
   })
 })
@@ -50,5 +50,5 @@ if (existsSync(clientDist)) {
 app.listen(config.port, () => {
   console.log(`k2b-dashboard v3 listening on http://localhost:${config.port}`)
   console.log(`vault: ${paths.vault}`)
-  console.log(`intake forwards to: ${paths.remoteIntakeUrl}`)
+  console.log(`intake staging: ${paths.intakeAssets}`)
 })
