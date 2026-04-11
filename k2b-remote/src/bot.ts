@@ -298,11 +298,15 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 
   } else if (action === 'skip') {
     // Step 1 of the skip flow: deduce a likely reason and ask Keith to confirm.
-    // The actual skip is NOT executed here -- it's deferred to skip-confirm /
-    // skip-other / skip-reason-typed to avoid split-phase writes.
+    // Works for BOTH Watch-list videos (rec in JSONL) and new-pick candidates
+    // (only in pendingCandidates). The actual mutation is deferred to skip-confirm
+    // / skip-other / skip-reason-typed to avoid split-phase writes.
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    const title = rec?.title ?? 'this video'
-    const deducedReason = tasteModel.deduceSkipReason(rec)
+    const cand = pendingCandidates.get(videoId)
+    const title = rec?.title ?? cand?.title ?? 'this video'
+    // Normalize into a shape deduceSkipReason understands
+    const deductionSource = rec ?? (cand ? { channel: cand.channel, upload_date: cand.uploadDate, topics: [] as string[] } : undefined)
+    const deducedReason = tasteModel.deduceSkipReason(deductionSource)
 
     const keyboard = new InlineKeyboard()
       .text('Yeah', `youtube:skip-confirm:${videoId}`)
@@ -316,13 +320,32 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 
   } else if (action === 'skip-confirm') {
     // Keith confirmed the deduced reason -- execute the skip now.
+    // Watch-list path: rec exists in JSONL -> canonical skipVideoFromWatch.
+    // New-pick path: no rec, only pendingCandidate -> lightweight skip (no
+    // playlist op since never added, no JSONL update since never written,
+    // but still train taste model and log the feedback signal).
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    const reason = tasteModel.deduceSkipReasonKey(rec)
+    const cand = pendingCandidates.get(videoId)
+    const deductionSource = rec ?? (cand ? { channel: cand.channel, upload_date: cand.uploadDate, topics: [] as string[] } : undefined)
+    const reason = tasteModel.deduceSkipReasonKey(deductionSource)
+
     try {
-      skipVideoFromWatch(videoId, reason, 'button:skip-confirm')
+      if (rec) {
+        skipVideoFromWatch(videoId, reason, 'button:skip-confirm')
+      } else if (cand) {
+        // New-pick skip: train taste model, log signal, clear state
+        appendFeedbackSignal(videoId, 'skip_reason', reason)
+        if (cand.channel && cand.channel !== 'unknown') {
+          tasteModel.recordAction(videoId, cand.channel, 'skip', reason)
+        }
+        clearFromAgentState(videoId)
+      } else {
+        logger.warn({ videoId }, 'skip-confirm: no rec or pendingCandidate, clearing state only')
+        clearFromAgentState(videoId)
+      }
       await ctx.api.sendMessage(ctx.chat!.id, 'Skipped. Got it.')
     } catch (err) {
-      logger.error({ err, videoId }, 'skipVideoFromWatch failed')
+      logger.error({ err, videoId }, 'skip-confirm failed')
       await ctx.api.sendMessage(ctx.chat!.id, 'Skip failed, see logs.')
     }
 
@@ -362,16 +385,24 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
   } else if (action === 'agent-skip') {
-    // Skip from agent recommendation -- the video was never persisted to JSONL,
-    // so there's no JSONL state to update. Just log the feedback signal, train
-    // the taste model (if we know the channel from pendingCandidates), and clear state.
-    const cached = pendingCandidates.get(videoId)
-    appendFeedbackSignal(videoId, 'skip_reason', 'agent-skipped')
-    if (cached?.channel && cached.channel !== 'unknown') {
-      tasteModel.recordAction(videoId, cached.channel, 'skip', 'agent-skipped')
-    }
-    clearFromAgentState(videoId)
-    await ctx.api.sendMessage(ctx.chat!.id, 'Skipped.')
+    // LEGACY: new recommendation cards now use 'skip' for the deduction+
+    // confirmation flow. This handler remains as a safety net for any stale
+    // cards still in Keith's Telegram history pointing at the old callback.
+    // Behaviour: redirect to the same deduction flow as `skip`.
+    const cand = pendingCandidates.get(videoId)
+    const title = cand?.title ?? 'this video'
+    const deductionSource = cand ? { channel: cand.channel, upload_date: cand.uploadDate, topics: [] as string[] } : undefined
+    const deducedReason = tasteModel.deduceSkipReason(deductionSource)
+
+    const keyboard = new InlineKeyboard()
+      .text('Yeah', `youtube:skip-confirm:${videoId}`)
+      .text('No, other reason', `youtube:skip-other:${videoId}`)
+
+    await ctx.api.sendMessage(
+      ctx.chat!.id,
+      `About to skip "${title}". ${deducedReason}`,
+      { reply_markup: keyboard }
+    )
 
   } else if (action === 'promote') {
     const promoteType = parts[2] // content-idea | feature | insight | nothing
@@ -530,13 +561,28 @@ async function handleCommentOrSkipReason(
   _chatId: string
 ): Promise<void> {
   if (pendingKey.startsWith('skip:')) {
-    // Skip reason capture -- execute the canonical skip now that we have the reason
+    // Skip reason capture -- execute the canonical skip now that we have the reason.
+    // Handles BOTH Watch-list skips (rec in JSONL) and new-pick skips (pendingCandidates only).
     const videoId = pendingKey.slice(5)
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    const cand = pendingCandidates.get(videoId)
     try {
-      skipVideoFromWatch(videoId, text, 'text-reply:skip-reason', text)
+      if (rec) {
+        skipVideoFromWatch(videoId, text, 'text-reply:skip-reason', text)
+      } else if (cand) {
+        // New-pick skip: train taste model, log signal, clear state
+        appendFeedbackSignal(videoId, 'skip_reason', 'user-provided', text)
+        if (cand.channel && cand.channel !== 'unknown') {
+          tasteModel.recordAction(videoId, cand.channel, 'skip', text)
+        }
+        clearFromAgentState(videoId)
+      } else {
+        logger.warn({ videoId }, 'skip-reason capture: no rec or pendingCandidate')
+        clearFromAgentState(videoId)
+      }
       await ctx.api.sendMessage(ctx.chat!.id, 'Got it, skip reason noted.')
     } catch (err) {
-      logger.error({ err, videoId }, 'skipVideoFromWatch failed from handleCommentOrSkipReason')
+      logger.error({ err, videoId }, 'skip-reason capture failed')
       await ctx.api.sendMessage(ctx.chat!.id, 'Noted, but skip failed. See logs.')
     }
   } else {

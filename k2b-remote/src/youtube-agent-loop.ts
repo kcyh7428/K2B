@@ -315,6 +315,20 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
   // Take top 5-7 candidates for screening
   const candidates = allResults.slice(0, 7)
 
+  // Enrich candidates with real metadata where the flat-playlist search left gaps.
+  // yt-search.sh runs `yt-dlp --flat-playlist -j` which frequently returns empty
+  // upload_date (and sometimes empty channel/duration). Fetch per-video metadata
+  // so cards can show a real publish date instead of "unknown".
+  for (const c of candidates) {
+    if (!c.upload_date || !c.channel || !c.duration_string) {
+      const meta = fetchVideoMetadata(c.id)
+      if (meta.uploadDate && !c.upload_date) c.upload_date = meta.uploadDate
+      if (meta.channel && !c.channel) c.channel = meta.channel
+      if (meta.duration && !c.duration_string) c.duration_string = meta.duration
+      if (meta.title && (!c.title || c.title === c.id)) c.title = meta.title
+    }
+  }
+
   // Screen via agent
   const candidateList = candidates.map(c =>
     `- "${c.title}" by ${c.channel} (${c.duration_string}, uploaded ${c.upload_date})`
@@ -376,9 +390,12 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
       `Verdict: ${v.verdict}`,
     ].filter(Boolean).join('\n')
 
+    // Use the unified `skip` callback so new-pick cards go through the same
+    // deduction+confirmation flow as Watch-list cards. The skip handler falls
+    // back to pendingCandidates when the video isn't in JSONL.
     const keyboard = new InlineKeyboard()
       .text('Add to Watch', `youtube:agent-add:${candidate.id}`)
-      .text('Skip', `youtube:agent-skip:${candidate.id}`)
+      .text('Skip', `youtube:skip:${candidate.id}`)
       .row()
       .text('Screen', `youtube:screen:${candidate.id}`)
 
