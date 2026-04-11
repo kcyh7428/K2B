@@ -75,12 +75,18 @@ categorize() {
 }
 
 sync_skills() {
-    log "Syncing skills, CLAUDE.md, K2B_ARCHITECTURE.md..."
+    log "Syncing skills + top-level docs..."
     local rsync_flag=""
     $DRY_RUN && rsync_flag="--dry-run"
 
-    rsync -av $rsync_flag "$LOCAL_BASE/CLAUDE.md" "$MINI:$REMOTE_BASE/CLAUDE.md"
-    rsync -av $rsync_flag "$LOCAL_BASE/K2B_ARCHITECTURE.md" "$MINI:$REMOTE_BASE/K2B_ARCHITECTURE.md"
+    # Top-level docs: sync any that exist. K2B_ARCHITECTURE.md was removed 2026-04
+    # but README.md is user-facing documentation worth keeping in sync.
+    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md; do
+        if [[ -f "$LOCAL_BASE/$doc" ]]; then
+            rsync -av $rsync_flag "$LOCAL_BASE/$doc" "$MINI:$REMOTE_BASE/$doc"
+        fi
+    done
+
     rsync -av $rsync_flag --delete "$LOCAL_BASE/.claude/skills/" "$MINI:$REMOTE_BASE/.claude/skills/"
 
     if ! $DRY_RUN; then
