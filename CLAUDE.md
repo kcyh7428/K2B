@@ -129,6 +129,7 @@ K2B-Vault/
 - **`/request`** -- Log a capability K2B doesn't have yet
 
 ### System
+- **`/ship`** -- End-of-session shipping workflow: Codex review, commit, push, update feature note + `wiki/concepts/index.md`, append DEVLOG + wiki/log, remind to /sync
 - **`/schedule`** -- Create, list, or manage persistent scheduled tasks
 - **`/usage`** -- Show skill usage stats and manage triggers
 - **`/autoresearch [skill]`** -- Run self-improvement loop on a skill
@@ -182,7 +183,31 @@ Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vaul
 
 ## Roadmap & Feature Notes
 
-`wiki/concepts/index.md` tracks all K2B improvement ideas. Small ideas get a one-liner there. Bigger ideas also get a feature note (`wiki/concepts/`) with full spec. Shipped features: set `status: shipped`, move to `wiki/concepts/Shipped/`, update index.
+`wiki/concepts/index.md` is THE single source of truth for K2B feature tracking. Lanes:
+
+- **In Progress** (max 1) -- the feature currently being built
+- **Next Up** (1-3) -- promoted from Backlog, ready to pick up next
+- **Backlog** -- ideating / designed, sorted by priority then effort
+- **Shipped** (recent 10 in-line, older moved to `wiki/concepts/Shipped/`)
+- **Parked** -- ideas we've consciously decided to revisit later
+
+Every feature spec lives at `wiki/concepts/feature_*.md` with frontmatter:
+
+```yaml
+status: ideating | designed | next | in-progress | shipped | parked
+priority: high | medium | low
+effort: S | M | L | XL
+impact: high | medium | low
+shipped-date: YYYY-MM-DD  # only when shipped
+depends-on: [slug1, slug2]  # optional
+up: "[[index]]"
+```
+
+For multi-ship features (e.g. `feature_mission-control-v3`), include a Shipping Status table and adopt the phase gate pattern from [[project_minimax-offload]]: `/observe` runs as the primary gate between ships, Codex adversarial review drafts the next spec, Keith makes the go/no-go decision.
+
+**Never edit feature status manually mid-flight. Use `/ship` for all state transitions.** `/ship` updates the feature note frontmatter, moves files between lanes in `wiki/concepts/index.md`, runs Codex pre-commit review, stages + commits + pushes, appends `DEVLOG.md` and `wiki/log.md`, suggests the next Backlog promotion to Next Up, and reminds you to `/sync` to the Mac Mini when project files changed.
+
+The legacy `MOC_K2B-Roadmap.md` at vault root is now a redirect pointer kept only for backlink compatibility.
 
 ## Codex Adversarial Review
 
@@ -212,7 +237,9 @@ Before committing changes from a build session (new features, skills, or signifi
 
 ## Session Discipline
 
-At the END of every Claude Code session, before closing:
+At the END of every Claude Code session, before closing, run **`/ship`**. It handles: Codex pre-commit review, commit + push to origin main, DEVLOG.md + wiki/log.md entries, feature note status transitions, `wiki/concepts/index.md` lane updates, and the /sync reminder if project files changed.
+
+If `/ship` is skipped (vault-only session or /ship is unavailable), the manual fallback is:
 - Stage and commit all changes with a descriptive commit message
 - Push to GitHub (`git push origin main`) so the Claude project on claude.ai sees the latest code
 - Append a devlog entry to DEVLOG.md covering what was done
