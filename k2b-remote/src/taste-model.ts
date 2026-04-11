@@ -51,6 +51,12 @@ export class TasteModel {
     if (existsSync(this.filePath)) {
       const raw = readFileSync(this.filePath, 'utf-8')
       this.data = JSON.parse(raw) as TasteModelData
+      // Migration: remove "unknown" channel bucket if it exists -- it pollutes affinity
+      if (this.data.channels['unknown']) {
+        logger.info('TasteModel migration: removing "unknown" channel bucket')
+        delete this.data.channels['unknown']
+        this.save()
+      }
       const channelCount = Object.keys(this.data.channels).length
       logger.info(`TasteModel loaded: ${channelCount} channels, ${this.data.recentActions.length} recent actions`)
     } else {
@@ -77,16 +83,22 @@ export class TasteModel {
     action: 'watch' | 'skip' | 'screen' | 'comment',
     skipReason?: string,
   ): void {
-    // Update channel stats
-    if (!this.data.channels[channel]) {
-      this.data.channels[channel] = { watched: 0, skipped: 0, screened: 0, lastAction: '' }
+    // Skip unknown/empty channels -- they pollute aggregate affinity because
+    // the "unknown" bucket is shared across every video without real metadata.
+    const isKnownChannel = !!channel && channel !== 'unknown'
+
+    // Update channel stats only for known channels
+    if (isKnownChannel) {
+      if (!this.data.channels[channel]) {
+        this.data.channels[channel] = { watched: 0, skipped: 0, screened: 0, lastAction: '' }
+      }
+      const stats = this.data.channels[channel]
+      if (action === 'watch') stats.watched++
+      else if (action === 'skip') stats.skipped++
+      else if (action === 'screen') stats.screened++
+      // comment doesn't increment any counter
+      stats.lastAction = new Date().toISOString()
     }
-    const stats = this.data.channels[channel]
-    if (action === 'watch') stats.watched++
-    else if (action === 'skip') stats.skipped++
-    else if (action === 'screen') stats.screened++
-    // comment doesn't increment any counter
-    stats.lastAction = new Date().toISOString()
 
     // Append to recent actions ring buffer
     const entry: ActionEntry = {

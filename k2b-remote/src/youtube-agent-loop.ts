@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { InlineKeyboard } from 'grammy'
 import { K2B_VAULT_PATH, K2B_PROJECT_ROOT } from './config.js'
-import { readRecommendations, appendRecommendation, updateRecommendation, playlistAdd, getPlaylistVideoIds, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
+import { readRecommendations, appendRecommendation, updateRecommendation, appendFeedbackSignal, playlistAdd, playlistRemove, getPlaylistVideoIds, WATCH_PLAYLIST_ID, type YouTubeRecommendation } from './youtube.js'
 import { tasteModel } from './taste-model.js'
 import { runAgent } from './agent.js'
 import { getSession, setSession } from './db.js'
@@ -42,11 +42,33 @@ function fetchUploadDate(videoId: string): string {
   }
 }
 
+function fetchVideoMetadata(videoId: string): { title: string; channel: string; duration: string; uploadDate: string } {
+  try {
+    const out = execFileSync('yt-dlp', [
+      '--print', '%(title)s\t%(channel)s\t%(duration_string)s\t%(upload_date)s',
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ], { encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+    const [title, channel, duration, uploadDate] = out.split('\t')
+    return { title: title || '', channel: channel || '', duration: duration || '', uploadDate: uploadDate || '' }
+  } catch {
+    return { title: '', channel: '', duration: '', uploadDate: '' }
+  }
+}
+
 function formatUploadDate(raw: string): string {
   if (!raw || raw === 'NA') return 'unknown'
   // Handle YYYYMMDD format from yt-dlp
   if (/^\d{8}$/.test(raw)) return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
   return raw
+}
+
+function ageDaysFromYmd(raw: string): number | null {
+  if (!raw) return null
+  let iso = raw
+  if (/^\d{8}$/.test(raw)) iso = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return null
+  return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24))
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +93,19 @@ export const youtubeAgentState: YouTubeAgentState = {
   cyclesToday: 0,
   lastCycleDate: null,
 }
+
+// Metadata for recommended videos that haven't been written to JSONL yet.
+// Keyed by videoId, populated by findNewContent, consumed by action handlers.
+export interface PendingCandidate {
+  videoId: string
+  title: string
+  channel: string
+  duration: string
+  uploadDate: string
+  verdict: string
+  reason: string
+}
+export const pendingCandidates = new Map<string, PendingCandidate>()
 
 // ---------------------------------------------------------------------------
 // Types
@@ -142,21 +177,49 @@ export async function runYouTubeAgentLoop(
       logger.warn('Could not verify Watch playlist -- skipping verification')
     }
 
-    // Build context for each pending video
+    // Build context for each pending video. Prefer upload_date (actual publish)
+    // over recommended_date (when K2B added it). If missing, fetch via yt-dlp.
     const videoSummaries = pending.map(r => {
-      const ageDays = r.recommended_date
-        ? Math.floor((Date.now() - new Date(r.recommended_date).getTime()) / (1000 * 60 * 60 * 24))
-        : 0
+      let uploadDate = r.upload_date ?? ''
+      let title = r.title ?? r.video_id
+      if (!uploadDate || title === r.video_id) {
+        const meta = fetchVideoMetadata(r.video_id)
+        if (meta.uploadDate) uploadDate = meta.uploadDate
+        if (meta.title && title === r.video_id) title = meta.title
+        // Persist so we don't re-fetch every cycle
+        const updates: Partial<YouTubeRecommendation> = {}
+        if (meta.uploadDate && !r.upload_date) updates.upload_date = meta.uploadDate
+        if (meta.title && r.title === r.video_id) updates.title = meta.title
+        if (meta.channel && (!r.channel || r.channel === 'unknown')) updates.channel = meta.channel
+        if (Object.keys(updates).length > 0) updateRecommendation(r.video_id, updates)
+      }
+      const ageDays = uploadDate ? ageDaysFromYmd(uploadDate) : null
+      const ageStr = ageDays !== null ? `${ageDays}d since publish` : 'age unknown'
+      const published = formatUploadDate(uploadDate)
       const affinity = tasteModel.getChannelAffinity(r.channel)
-      const stale = r.topics ? tasteModel.isVideoStale(r.recommended_date, r.topics) : false
-      return `- "${r.title}" by ${r.channel} (${r.duration ?? '?'}, ${ageDays}d old, affinity: ${affinity.toFixed(1)}${stale ? ', STALE' : ''})`
+      const affinityStr = (!r.channel || r.channel === 'unknown') ? 'unknown channel' : `affinity ${affinity.toFixed(1)}`
+      return `- [id=${r.video_id}] "${title}" by ${r.channel || 'unknown'} (${r.duration ?? '?'}, published ${published}, ${ageStr}, ${affinityStr})`
     }).join('\n')
 
     // Ask agent to compose conversational check-in message
-    const { text: checkInMsg } = await runAgentWithSession(
-      chatId,
-      `IMPORTANT: You are composing a SHORT message for Telegram. Do NOT use any tools. Do NOT read files. Do NOT run commands. Just write the message text based on the data provided below and return it. Nothing else.\n\nYou are K2B's YouTube curator. Keith has ${pending.length} unwatched videos in his Watch list:\n\n${videoSummaries}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCompose a SHORT Telegram message (max 5 lines) that:\n1. Mentions the unwatched videos naturally\n2. Flags any that are stale\n3. Asks Keith: busy? not interested? want replacements?\n\nKeep it conversational, like a friend. Return ONLY the message text.`,
-    )
+    const checkInPrompt = [
+      'IMPORTANT: Do NOT use any tools. Do NOT read files. Do NOT run commands. Just write the message text based on the data provided and return it. Nothing else.',
+      '',
+      `You are K2B's YouTube curator. Keith has ${pending.length} unwatched videos in his Watch list:`,
+      '',
+      videoSummaries,
+      '',
+      'Taste model:',
+      tasteModel.toSummary(),
+      '',
+      'Compose a SHORT Telegram message (max 5 lines) that:',
+      '1. Names each unwatched video by its actual title (the text between quotes above)',
+      '2. Flags any published more than 60 days ago as potentially outdated (use the "since publish" age, not the recommendation age)',
+      '3. Asks Keith: busy? not interested? want replacements?',
+      '',
+      'Keep it conversational, like a friend. Return ONLY the message text.',
+    ].join('\n')
+    const { text: checkInMsg } = await runAgentWithSession(chatId, checkInPrompt)
 
     if (checkInMsg) {
       await sendMessage(chatId, checkInMsg)
@@ -310,6 +373,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
 
   youtubeAgentState.pendingVideoIds = []
   youtubeAgentState.phase = 'presenting-picks'
+  pendingCandidates.clear()
 
   for (const v of recommended) {
     const candidate = candidates[v.index]
@@ -335,8 +399,17 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
       .row()
       .text('Screen', `youtube:screen:${candidate.id}`)
 
-    // Store as pending recommendation (not yet in JSONL)
+    // Store as pending recommendation (not yet in JSONL) + cache metadata
     youtubeAgentState.pendingVideoIds.push(candidate.id)
+    pendingCandidates.set(candidate.id, {
+      videoId: candidate.id,
+      title: candidate.title,
+      channel: candidate.channel,
+      duration: candidate.duration_string,
+      uploadDate: candidate.upload_date,
+      verdict: v.verdict,
+      reason: v.reason,
+    })
 
     await sendWithButtons(chatId, infoLines, [], keyboard)
   }
@@ -385,43 +458,28 @@ export async function handleYouTubeAgentResponse(
       return true
     }
 
-    // If Keith says something else, use agent to interpret
-    const { text: interpretation } = await runAgentWithSession(
-      chatId,
-      `Keith said: "${text}" in response to a YouTube Watch list check-in. He had ${youtubeAgentState.pendingVideoIds.length} unwatched videos. Interpret his response. Does he want to: keep all, skip all, keep some, or is he busy? Reply naturally and take appropriate action. If unclear, ask a clarifying question. Return ONLY the message text for Telegram.`,
-    )
-    if (interpretation) {
-      await sendMessage(chatId, interpretation)
+    // Complex response -- parse into structured actions and execute directly.
+    // NEVER let the agent execute playlist operations; we do it here with helpers.
+    const pendingRecs = readRecommendations().filter(r => youtubeAgentState.pendingVideoIds.includes(r.video_id))
+    const executed = await parseAndExecuteActions(text, pendingRecs, 'watch-list', sendMessage, chatId)
+    if (executed.actedCount > 0 && executed.remainingCount === 0) {
+      youtubeAgentState.phase = 'idle'
+      youtubeAgentState.pendingVideoIds = []
     }
     return true
   }
 
   if (youtubeAgentState.phase === 'presenting-picks') {
     if (lower.includes('add') && (lower.includes('all') || lower.includes('them'))) {
-      // Add all pending to Watch
+      // Add all pending to Watch. Recs already exist in JSONL from findNewContent --
+      // just flip status and call playlistAdd.
       for (const vid of youtubeAgentState.pendingVideoIds) {
         try {
           playlistAdd(WATCH_PLAYLIST_ID, vid)
-          // Create JSONL entry
-          const today = new Date().toISOString().slice(0, 10)
-          appendRecommendation({
-            ts: new Date().toISOString(),
-            video_id: vid,
-            title: vid, // will be enriched later
-            channel: 'unknown',
-            playlist: 'K2B Watch',
-            recommended_date: today,
-            status: 'nudge_sent',
-            nudge_sent: true,
-            nudge_date: today,
-            outcome: null,
-            rating: null,
-            promoted_to: null,
-            vault_note: null,
-          })
         } catch (err) {
           logger.error({ err, vid }, 'Failed to add to Watch')
         }
+        updateRecommendation(vid, { status: 'nudge_sent', outcome: 'text-reply-added-all' })
       }
       youtubeAgentState.phase = 'idle'
       youtubeAgentState.pendingVideoIds = []
@@ -436,15 +494,13 @@ export async function handleYouTubeAgentResponse(
       return true
     }
 
-    // Complex response -- let agent interpret, keep phase active so buttons still work
-    const { text: interpretation } = await runAgentWithSession(
-      chatId,
-      `IMPORTANT: Do NOT use any tools. Just interpret and reply.\n\nKeith said: "${text}" in response to YouTube video recommendations. The pending videos are: ${youtubeAgentState.pendingVideoIds.join(', ')}. Interpret: does he want to add all, some specific ones, or skip? Reply naturally. Return ONLY the Telegram message text.`,
-    )
-    if (interpretation) {
-      await sendMessage(chatId, interpretation)
+    // Complex response -- parse into structured actions and execute directly.
+    const pendingRecs = readRecommendations().filter(r => youtubeAgentState.pendingVideoIds.includes(r.video_id))
+    const executed = await parseAndExecuteActions(text, pendingRecs, 'new-picks', sendMessage, chatId)
+    if (executed.actedCount > 0 && executed.remainingCount === 0) {
+      youtubeAgentState.phase = 'idle'
+      youtubeAgentState.pendingVideoIds = []
     }
-    // Don't reset phase -- Keith can still tap buttons on individual cards
     return true
   }
 
@@ -454,6 +510,169 @@ export async function handleYouTubeAgentResponse(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+interface ParsedActionPlan {
+  actions: Array<{ videoId: string; action: 'keep' | 'skip' | 'add' }>
+  message: string
+}
+
+interface ActionablePending {
+  videoId: string
+  title: string
+  channel: string
+  uploadDate: string
+}
+
+async function parseAndExecuteActions(
+  userText: string,
+  pendingRecs: YouTubeRecommendation[],
+  phase: 'watch-list' | 'new-picks',
+  sendMessage: SendFn,
+  chatId: string,
+): Promise<{ actedCount: number; remainingCount: number }> {
+  // Build the actionable list from either pendingRecs (watch-list phase)
+  // or pendingCandidates cache (new-picks phase, not yet in JSONL)
+  const actionable: ActionablePending[] = phase === 'watch-list'
+    ? pendingRecs.map(r => ({ videoId: r.video_id, title: r.title ?? r.video_id, channel: r.channel || 'unknown', uploadDate: r.upload_date ?? '' }))
+    : youtubeAgentState.pendingVideoIds
+        .map(vid => pendingCandidates.get(vid))
+        .filter((c): c is PendingCandidate => !!c)
+        .map(c => ({ videoId: c.videoId, title: c.title, channel: c.channel, uploadDate: c.uploadDate }))
+
+  if (actionable.length === 0) {
+    await sendMessage(chatId, 'No pending videos to act on.')
+    return { actedCount: 0, remainingCount: 0 }
+  }
+
+  const videoList = actionable.map(r => {
+    const publishDate = formatUploadDate(r.uploadDate)
+    const ageDays = r.uploadDate ? ageDaysFromYmd(r.uploadDate) : null
+    const ageStr = ageDays !== null ? `, ${ageDays}d since publish` : ''
+    return `  ${r.videoId}: "${r.title}" by ${r.channel} (published ${publishDate}${ageStr})`
+  }).join('\n')
+
+  const allowedActions = phase === 'watch-list'
+    ? '"keep" (leave in Watch list) or "skip" (remove from Watch list)'
+    : '"add" (add to Watch list) or "skip" (discard this recommendation)'
+
+  const prompt = [
+    'IMPORTANT: Return ONLY a valid JSON object. Do NOT use tools. Do NOT read files. Do NOT run commands.',
+    '',
+    `Keith said: "${userText}"`,
+    '',
+    `He is reviewing these pending videos:`,
+    videoList,
+    '',
+    `Interpret his intent and return JSON with this exact shape:`,
+    '{',
+    '  "actions": [',
+    `    { "videoId": "<id from list above>", "action": ${allowedActions.replace(/\(.+?\)/g, '').trim()} }`,
+    '  ],',
+    '  "message": "Short confirmation text (1-2 sentences) for Telegram"',
+    '}',
+    '',
+    'Rules:',
+    `- Include one action entry for EACH pending video. Use exactly the videoIds from the list.`,
+    `- If Keith mentions "outdated", "old", "2024", "2025": those match videos with the older publish dates.`,
+    `- If he says "keep the Claude one": match the video whose title contains "Claude".`,
+    `- action must be one of: ${allowedActions}`,
+    `- If intent is unclear, return message asking for clarification and empty actions array.`,
+    '',
+    'Return ONLY the JSON, no markdown fences, no prose.',
+  ].join('\n')
+
+  let parsed: ParsedActionPlan
+  try {
+    const { text: raw } = await runAgentWithSession(chatId, prompt)
+    if (!raw) throw new Error('empty response')
+    const jsonStr = raw.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
+    parsed = JSON.parse(jsonStr) as ParsedActionPlan
+  } catch (err) {
+    logger.error({ err, userText }, 'Failed to parse action plan')
+    await sendMessage(chatId, "Sorry, I couldn't parse that. Please tap the buttons on each card to add or skip individually.")
+    return { actedCount: 0, remainingCount: pendingRecs.length }
+  }
+
+  if (!parsed.actions || parsed.actions.length === 0) {
+    if (parsed.message) await sendMessage(chatId, parsed.message)
+    return { actedCount: 0, remainingCount: pendingRecs.length }
+  }
+
+  const actionableMap = new Map(actionable.map(a => [a.videoId, a]))
+  let actedCount = 0
+
+  for (const a of parsed.actions) {
+    const pending = actionableMap.get(a.videoId)
+    if (!pending) continue
+
+    try {
+      if (a.action === 'skip') {
+        try {
+          playlistRemove(WATCH_PLAYLIST_ID, a.videoId)
+        } catch (err) {
+          logger.error({ err, videoId: a.videoId }, 'playlistRemove failed during text-reply execution')
+        }
+        if (phase === 'watch-list') {
+          updateRecommendation(a.videoId, { status: 'skipped', outcome: `text-reply-${phase}` })
+        }
+        appendFeedbackSignal(a.videoId, 'skip_reason', 'text-reply', userText)
+        if (pending.channel && pending.channel !== 'unknown') {
+          tasteModel.recordAction(a.videoId, pending.channel, 'skip', userText)
+        }
+        const idx = youtubeAgentState.pendingVideoIds.indexOf(a.videoId)
+        if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
+        pendingCandidates.delete(a.videoId)
+        actedCount++
+      } else if (a.action === 'add' && phase === 'new-picks') {
+        try {
+          playlistAdd(WATCH_PLAYLIST_ID, a.videoId)
+        } catch (err) {
+          logger.error({ err, videoId: a.videoId }, 'playlistAdd failed during text-reply execution')
+        }
+        // Create JSONL entry with REAL metadata from pendingCandidates cache
+        const today = new Date().toISOString().slice(0, 10)
+        const cand = pendingCandidates.get(a.videoId)
+        appendRecommendation({
+          ts: new Date().toISOString(),
+          video_id: a.videoId,
+          title: cand?.title ?? pending.title,
+          channel: cand?.channel ?? pending.channel,
+          playlist: 'K2B Watch',
+          recommended_date: today,
+          status: 'nudge_sent',
+          nudge_sent: true,
+          nudge_date: today,
+          outcome: 'text-reply-added',
+          rating: null,
+          promoted_to: null,
+          vault_note: null,
+          duration: cand?.duration,
+          upload_date: cand?.uploadDate,
+          verdict: cand?.reason,
+          verdict_value: cand?.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined,
+        })
+        const idx = youtubeAgentState.pendingVideoIds.indexOf(a.videoId)
+        if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
+        pendingCandidates.delete(a.videoId)
+        actedCount++
+      } else if (a.action === 'keep') {
+        // Leave as-is, just clear from pending state
+        const idx = youtubeAgentState.pendingVideoIds.indexOf(a.videoId)
+        if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
+        pendingCandidates.delete(a.videoId)
+        actedCount++
+      }
+    } catch (err) {
+      logger.error({ err, videoId: a.videoId, action: a.action }, 'Action execution failed')
+    }
+  }
+
+  if (parsed.message) {
+    await sendMessage(chatId, parsed.message)
+  }
+
+  return { actedCount, remainingCount: youtubeAgentState.pendingVideoIds.length }
+}
 
 function readVaultContext(): string {
   const lines: string[] = []
