@@ -44,13 +44,15 @@ Categorize touched files into:
 
 | Category | Matching paths | Needs /sync? |
 |----------|---------------|--------------|
-| skills   | `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md` | yes |
-| code     | `k2b-remote/`, `k2b-dashboard/` | yes |
-| scripts  | `scripts/` | yes |
-| hooks    | `scripts/hooks/` | yes |
-| vault    | `K2B-Vault/` | no (Syncthing) |
-| plans    | `.claude/plans/` | no |
-| devlog   | `DEVLOG.md` | no |
+| skills    | `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md` | yes |
+| code      | `k2b-remote/` | yes (build + pm2 restart k2b-remote) |
+| dashboard | `k2b-dashboard/` | yes (build + pm2 restart k2b-dashboard) |
+| scripts   | `scripts/` including `scripts/hooks/` | yes |
+| vault     | `K2B-Vault/` | no (Syncthing) |
+| plans     | `.claude/plans/` | no |
+| devlog    | `DEVLOG.md` | no |
+
+**Category names must match `/sync`'s category table exactly.** `/sync` currently defines: `skills`, `code`, `dashboard`, `scripts`. Any category label that `/ship --defer` writes into a mailbox entry must be one of those four -- otherwise `/sync` would consume the entry without a deploy target, silently dropping the change. In particular, `scripts/hooks/**` rolls up into `scripts` (not a separate `hooks` category): the deploy script's `scripts` mode already rsyncs `scripts/` recursively, which covers hooks.
 
 If there are NO changes at all, report "No changes to ship" and stop.
 
@@ -205,13 +207,69 @@ If the just-shipped feature was removed from In Progress (leaving In Progress em
 - On Y: move the row from Backlog to Next Up in `wiki/concepts/index.md`, ask Keith for a "Why now" reason for the Next Up table.
 - **Never auto-promote.** Always require explicit confirmation.
 
-### 12. Project file change detection -> /sync reminder
+### 12. Deployment handoff -- explicit sync-now or defer
 
-If any files in categories `skills`, `code`, `scripts`, `hooks` were in the diff:
+If any files in categories `skills`, `code`, `dashboard`, or `scripts` were in the commits, the Mac Mini is now out of date with the pushed code. (`scripts/hooks/**` rolls up into `scripts` -- do not write a separate `hooks` category into mailbox entries, `/sync` has no deploy target for it and would silently drop the change.) A soft reminder is not enough because it can be missed and leaves no recovery signal. Ask Keith an explicit question:
 
-> These changes are on your MacBook only. Run `/sync` to push to Mac Mini.
+> Project files changed (list the categories + files). Run `/sync` now, or defer to a later session?
+> - **now** -- invoke `/sync` in-line, confirm it completed, done
+> - **defer** -- drop a new entry in the `.pending-sync/` mailbox so the next session (or the next `/sync`) catches up
 
-Do NOT auto-sync. Per Active Rule L-2026-03-29-002, never manual rsync.
+**If Keith picks `now`:**
+1. Invoke the `k2b-sync` skill via the Skill tool (or run `~/Projects/K2B/scripts/deploy-to-mini.sh auto` if skill invocation is unavailable in the current harness).
+2. Report what was synced.
+3. **Do NOT touch the `.pending-sync/` mailbox.** `/sync` is the sole owner of the mailbox lifecycle. It consumes and deletes its own entries on success. Any cleanup `/ship` did after-the-fact would race with a concurrent `/ship --defer` in another session and could silently destroy a newer deferred entry. Leave the mailbox alone.
+
+**If Keith picks `defer`:**
+
+1. Write a **new unique entry** in the `~/Projects/K2B/.pending-sync/` mailbox directory. Each defer creates its own file -- we never rewrite an existing file -- so concurrent defers from other sessions cannot race. Write via temp-file + `os.replace()` so a crash mid-write cannot leave partial JSON that downstream readers would flag as UNREADABLE:
+
+   ```bash
+   python3 <<PYEOF
+   import json, os, datetime, tempfile, uuid
+   dir_ = os.path.expanduser("~/Projects/K2B/.pending-sync")
+   os.makedirs(dir_, exist_ok=True)
+
+   now = datetime.datetime.now(datetime.timezone.utc)
+   entry_id = f"{now.strftime('%Y%m%dT%H%M%S')}_<short-sha from step 5>_{uuid.uuid4().hex[:8]}"
+   final_path = os.path.join(dir_, f"{entry_id}.json")
+
+   payload = {
+     "pending": True,
+     "set_at": now.isoformat(),
+     "set_by_commit": "<short-sha from step 5>",
+     "categories": ["<list from above>"],
+     "files": ["<list from step 1>"],
+     "entry_id": entry_id,
+   }
+
+   # Atomic write: temp file in the SAME directory, then os.replace into final name.
+   # Temp names start with '.tmp_' so mailbox readers know to ignore in-progress writes.
+   fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=dir_)
+   try:
+       with os.fdopen(fd, "w") as f:
+           json.dump(payload, f, indent=2)
+           f.flush()
+           os.fsync(f.fileno())
+       os.replace(tmp, final_path)
+   except Exception:
+       try: os.unlink(tmp)
+       except FileNotFoundError: pass
+       raise
+   PYEOF
+   ```
+
+   Required schema fields: `pending` (bool, must be `true` for an active entry), `set_at` (ISO-8601 UTC timestamp), `set_by_commit` (short SHA from step 5), `categories` (list of strings matching the category table), `files` (list of file paths relative to `~/Projects/K2B/`), and `entry_id` (matches the filename stem for traceability). `k2b-sync`'s Step 0 validates these fields and fails loud if any are missing.
+
+2. Tell Keith: "Deferred. Entry `<entry_id>` added to `.pending-sync/` mailbox. Next session's startup hook will surface pending mailbox entries, and any later `/sync` invocation will consume them before checking conversation context."
+
+3. The mailbox directory is gitignored (`/.pending-sync/` in `.gitignore`), never propagates to the Mini, and survives session boundaries on the MacBook only. **Consuming and deleting mailbox entries is `/sync`'s exclusive responsibility**, and it only deletes the specific entries it actually processed -- a `/ship --defer` running concurrently writes to a different filename, so nothing can be clobbered.
+
+**Race-safety invariant:** The mailbox is a multi-producer / single-consumer queue where each producer writes a unique filename. Producers (`/ship --defer`) never read or delete. The consumer (`/sync`) deletes only filenames it has observed and processed. No state is ever rewritten in place. This makes the lifecycle race-free on POSIX without locks.
+
+**If no syncable files changed:** Skip the question entirely. Do not write a marker. Report "Nothing to sync -- all changes were vault/plan/devlog only."
+
+Do NOT auto-sync without asking. Per Active Rule L-2026-03-29-002, never run manual rsync -- always go through the deploy script via `/sync` or `k2b-sync`.
 
 ### 13. Usage logging
 

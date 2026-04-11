@@ -69,6 +69,142 @@ if [ -f "$active_rules" 2>/dev/null ]; then
   output+="$(cat "$active_rules")"$'\n\n'
 fi
 
+# --- 5. Surface pending-sync mailbox entries ---
+# Written by /ship --defer. Each entry is a separate JSON file in the mailbox
+# directory, so concurrent defers never race. Durable across session
+# boundaries. The python below ALWAYS exits 0 and encodes state in stdout --
+# `set -e` at the top of this script would otherwise abort the whole hook on
+# a python non-zero exit, silently hiding the condition we want to surface.
+pending_mailbox="$K2B/.pending-sync"
+if [ -d "$pending_mailbox" ]; then
+  pending_status=$(python3 <<PYEOF
+import json, os, sys
+MAILBOX = "$pending_mailbox"
+entries = []
+unreadable = []
+try:
+    names = sorted(os.listdir(MAILBOX))
+except OSError as e:
+    print(f"DIR_UNREADABLE|{e}")
+    sys.exit(0)
+
+import time
+STALE_TMP_THRESHOLD = 60  # seconds; real writes take milliseconds
+now = time.time()
+for name in names:
+    if name.startswith(".tmp_"):
+        # In-progress atomic write by /ship (producer is between fdopen+fsync
+        # and os.replace). Usually we skip these. BUT: if a producer crashed
+        # between fsync and replace, the only durable artifact is the .tmp_
+        # file and we would lose the defer signal forever. Surface any .tmp_
+        # older than STALE_TMP_THRESHOLD as UNREADABLE so Keith can recover.
+        try:
+            age = now - os.stat(os.path.join(MAILBOX, name)).st_mtime
+        except OSError:
+            continue
+        if age > STALE_TMP_THRESHOLD:
+            unreadable.append((name, f"stale-temp:{int(age)}s old, likely crashed producer -- inspect and rename to .json if JSON is complete, else delete"))
+        continue
+    if not name.endswith(".json"):
+        continue
+    path = os.path.join(MAILBOX, name)
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except json.JSONDecodeError as e:
+        unreadable.append((name, f"json:{e.msg}"))
+        continue
+    except OSError as e:
+        unreadable.append((name, f"io:{e}"))
+        continue
+    if not isinstance(d, dict):
+        unreadable.append((name, "schema:top-level not object"))
+        continue
+    if not d.get("pending", False):
+        continue  # already-processed straggler, skip silently
+    required = ("set_at", "set_by_commit", "categories", "files", "entry_id")
+    missing = [k for k in required if k not in d]
+    if missing:
+        unreadable.append((name, f"schema:missing {','.join(missing)}"))
+        continue
+    # Category allowlist: only values /sync has a deploy target for.
+    # Legacy "hooks" entries from pre-fix defers land here and must NOT be
+    # silently consumed -- /sync has no deploy path for them.
+    VALID_CATEGORIES = {"skills", "code", "dashboard", "scripts"}
+    cats = d.get("categories", [])
+    if not isinstance(cats, list) or not cats:
+        unreadable.append((name, "schema:categories must be non-empty list"))
+        continue
+    bad_cats = [c for c in cats if c not in VALID_CATEGORIES]
+    if bad_cats:
+        unreadable.append((name, f"category:unknown {','.join(bad_cats)} (expected subset of {sorted(VALID_CATEGORIES)})"))
+        continue
+    entries.append(d)
+
+if not entries and not unreadable:
+    print("EMPTY")
+    sys.exit(0)
+
+# Summary format: one VALID line (may be empty count) + one UNREADABLE line
+# per bad file. Both go through stdout so the bash side can branch.
+print(f"VALID|{len(entries)}")
+for d in entries:
+    cats = ",".join(d.get("categories", [])) or "unknown"
+    sha = str(d.get("set_by_commit", "unknown"))[:7]
+    when = d.get("set_at", "unknown")
+    nfiles = len(d.get("files", []))
+    eid = d.get("entry_id", "unknown")
+    print(f"ENTRY|{when}|{sha}|{cats}|{nfiles}|{eid}")
+for name, reason in unreadable:
+    print(f"UNREADABLE|{name}|{reason}")
+PYEOF
+)
+  if [ -n "$pending_status" ]; then
+    # Parse valid entries and unreadable entries
+    valid_count=0
+    unreadable_count=0
+    entry_lines=""
+    unreadable_lines=""
+    while IFS= read -r line; do
+      case "$line" in
+        EMPTY) : ;;  # nothing
+        VALID\|*) valid_count="${line#VALID|}" ;;
+        ENTRY\|*)
+          entry_lines+="  - ${line#ENTRY|}"$'\n'
+          ;;
+        UNREADABLE\|*)
+          unreadable_count=$((unreadable_count + 1))
+          unreadable_lines+="  - ${line#UNREADABLE|}"$'\n'
+          ;;
+        DIR_UNREADABLE\|*)
+          unreadable_lines+="  - (mailbox directory unreadable) ${line#DIR_UNREADABLE|}"$'\n'
+          unreadable_count=$((unreadable_count + 1))
+          ;;
+      esac
+    done <<< "$pending_status"
+
+    if [ "$valid_count" != "0" ] && [ -n "$valid_count" ]; then
+      if [ "$valid_count" = "1" ]; then
+        output+="PENDING SYNC: 1 mailbox entry"$'\n'
+      else
+        output+="PENDING SYNC: $valid_count mailbox entries"$'\n'
+      fi
+      output+="$entry_lines"
+      output+="Format: when | commit | categories | file-count | entry-id"$'\n'
+      output+="The Mac Mini is stale. Run /sync to consume the mailbox and catch it up."$'\n\n'
+    fi
+    if [ "$unreadable_count" -gt 0 ]; then
+      if [ "$unreadable_count" = "1" ]; then
+        output+="PENDING SYNC MAILBOX has 1 UNREADABLE entry"$'\n'
+      else
+        output+="PENDING SYNC MAILBOX has $unreadable_count UNREADABLE entries"$'\n'
+      fi
+      output+="$unreadable_lines"
+      output+="The durable deferred-sync signal is broken for these entries. Inspect, fix, or delete them in $pending_mailbox and re-run /sync."$'\n\n'
+    fi
+  fi
+fi
+
 # --- Output ---
 if [ -n "$output" ]; then
   echo "$output"

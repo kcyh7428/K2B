@@ -13,6 +13,12 @@ store/
 *.log
 *.pid
 
+# Deferred-sync mailbox (local to each machine, never committed)
+# One file per /ship --defer, consumed and deleted by /sync.
+/.pending-sync/
+# Legacy single-file marker, kept ignored for backward compatibility
+/.pending-sync.json
+
 # Temp media
 workspace/uploads/
 

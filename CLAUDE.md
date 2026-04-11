@@ -81,7 +81,7 @@ K2B-Vault/
 - When extracting insights, always flag potential content ideas.
 - When Keith corrects you or teaches you something ("no, do it like X", "remember that", "next time..."), offer to capture it with /learn.
 - Apply relevant learnings from `self_improve_learnings.md` to your behavior each session.
-- After modifying project files (skills, CLAUDE.md, K2B_ARCHITECTURE.md, k2b-remote/, scripts/), remind Keith: "These changes are on your MacBook only. Run /sync to push to Mac Mini."
+- After modifying project files (skills, CLAUDE.md, K2B_ARCHITECTURE.md, k2b-remote/, k2b-dashboard/, scripts/), the canonical end-of-session path is `/ship`, which asks an explicit "now or defer?" question about `/sync` and on defer drops a new entry in the `.pending-sync/` mailbox directory. If `/ship` is unavailable, manually tell Keith: "These changes are on your MacBook only. Run /sync to push to Mac Mini." -- but this manual path has no durable recovery signal, so prefer `/ship`.
 
 ## AI vs Human Ideas
 
@@ -129,7 +129,7 @@ K2B-Vault/
 - **`/request`** -- Log a capability K2B doesn't have yet
 
 ### System
-- **`/ship`** -- End-of-session shipping workflow: Codex review, commit, push, update feature note + `wiki/concepts/index.md`, append DEVLOG + wiki/log, remind to /sync
+- **`/ship`** -- End-of-session shipping workflow: Codex review, commit, push, update feature note + `wiki/concepts/index.md`, append DEVLOG + wiki/log, then explicitly ask "run /sync now or defer?" -- on defer, drops a unique entry in the `.pending-sync/` mailbox directory that the next session's startup hook and the next `/sync` run both honor (each defer is its own file, so concurrent defers never race)
 - **`/schedule`** -- Create, list, or manage persistent scheduled tasks
 - **`/usage`** -- Show skill usage stats and manage triggers
 - **`/autoresearch [skill]`** -- Run self-improvement loop on a skill
@@ -205,7 +205,7 @@ up: "[[index]]"
 
 For multi-ship features (e.g. `feature_mission-control-v3`), include a Shipping Status table and adopt the phase gate pattern from [[project_minimax-offload]]: `/observe` runs as the primary gate between ships, Codex adversarial review drafts the next spec, Keith makes the go/no-go decision.
 
-**Never edit feature status manually mid-flight. Use `/ship` for all state transitions.** `/ship` updates the feature note frontmatter, moves files between lanes in `wiki/concepts/index.md`, runs Codex pre-commit review, stages + commits + pushes, appends `DEVLOG.md` and `wiki/log.md`, suggests the next Backlog promotion to Next Up, and reminds you to `/sync` to the Mac Mini when project files changed.
+**Never edit feature status manually mid-flight. Use `/ship` for all state transitions.** `/ship` updates the feature note frontmatter, moves files between lanes in `wiki/concepts/index.md`, runs Codex pre-commit review, stages + commits + pushes, appends `DEVLOG.md` and `wiki/log.md`, suggests the next Backlog promotion to Next Up, and ends with an explicit "run /sync now or defer?" question when project files changed -- on defer it writes a unique entry to the `.pending-sync/` mailbox directory so the stale-Mini state survives session boundaries and surfaces at next session start. `/sync` is the sole consumer of that mailbox and only deletes the specific entries it processed, so concurrent `/ship --defer` runs can never race.
 
 The legacy `MOC_K2B-Roadmap.md` at vault root is now a redirect pointer kept only for backlink compatibility.
 
@@ -237,10 +237,11 @@ Before committing changes from a build session (new features, skills, or signifi
 
 ## Session Discipline
 
-At the END of every Claude Code session, before closing, run **`/ship`**. It handles: Codex pre-commit review, commit + push to origin main, DEVLOG.md + wiki/log.md entries, feature note status transitions, `wiki/concepts/index.md` lane updates, and the /sync reminder if project files changed.
+At the END of every Claude Code session, before closing, run **`/ship`**. It handles: Codex pre-commit review, commit + push to origin main, DEVLOG.md + wiki/log.md entries, feature note status transitions, `wiki/concepts/index.md` lane updates, and -- when project files changed -- an explicit "run /sync now or defer?" question followed by either an in-line sync or a new entry in the durable `.pending-sync/` mailbox directory on defer. `/ship` is never allowed to end with a bare reminder; the sync obligation must resolve to either "done now" or "entry recorded in the mailbox for later".
 
 If `/ship` is skipped (vault-only session or /ship is unavailable), the manual fallback is:
 - Stage and commit all changes with a descriptive commit message
 - Push to GitHub (`git push origin main`) so the Claude project on claude.ai sees the latest code
 - Append a devlog entry to DEVLOG.md covering what was done
 - If any architecture decisions were made that differ from the specs in the K2B claude.ai project, note them clearly in the devlog entry under "Key decisions"
+- **If project files in `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md`, `k2b-remote/`, `k2b-dashboard/`, or `scripts/` were modified, also run `/sync` (or `~/Projects/K2B/scripts/deploy-to-mini.sh auto`) after the commit to push to the Mac Mini.** If the sync is deliberately deferred to a later session, `/ship` records that as a new entry in the `~/Projects/K2B/.pending-sync/` mailbox directory (gitignored, local-only) so the next session's startup hook and the next `/sync` invocation can catch up automatically. The manual fallback does not write an entry, so deferred syncs outside `/ship` rely on Keith remembering.
