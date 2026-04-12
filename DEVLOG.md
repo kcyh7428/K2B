@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-04-12 -- NotebookLM deep research capability
+
+**Commit:** `4f23749` feat(research): add NotebookLM deep research mode and YouTube Data API search
+
+**What shipped:** Added multi-source deep research capability to K2B via Google NotebookLM (teng-lin/notebooklm-py, 10K+ stars). New `/research deep <topic>` mode in k2b-research skill orchestrates: source gathering (YouTube Data API + Perplexity), NotebookLM notebook creation + source loading, structured research queries (Gemini does analysis at zero token cost), Opus synthesis into vault, and compile into wiki pages. Also added `scripts/yt-search.py` using YouTube Data API v3 with K2B's existing OAuth credentials (replaces yt-dlp which required Chrome cookies and Keychain access). Test run on "AI trading bot using Claude Code" loaded 19 sources, ran 6 research queries, and compiled findings into `concept_investment-second-brain.md` (7 architecture patterns, risk management deep dive, failure case studies, expanded API stack).
+
+**Codex review:** reviewed, 4 warnings fixed (--count >50 silent truncation, swallowed HTTPError in video details, defensive credential parsing, day-based ISO 8601 duration crash). 2 nits fixed (unused import, unnecessary $(cat) in skill).
+
+**Feature status change:** feature_notebooklm-research-integration backlog -> in-progress
+
+**Follow-ups:**
+- Run the production investment second brain architecture research as the first real use
+- Consider shipping the feature once the first production research is validated
+
+**Key decisions:**
+- Chose teng-lin/notebooklm-py (skill-based) over jacob-bd/notebooklm-mcp-cli (MCP-based, 35 tools consuming context)
+- YouTube Data API v3 over yt-dlp (works on both machines, no cookie issues, 100 searches/day)
+- Perplexity for GitHub/Reddit/article discovery alongside YouTube API
+- NotebookLM NOT installed on Mac Mini -- vault is the durable layer, NotebookLM is throwaway analysis on MacBook
+
+---
+
 ## 2026-04-12 -- skill remediation: vault architecture alignment
 
 **Commit:** `b0e6224` chore(skills): align 15 skill/eval files with current vault architecture
