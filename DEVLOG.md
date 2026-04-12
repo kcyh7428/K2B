@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-04-12 -- k2b-weave v0: background cross-link weaver
+
+**Commit:** `accf9bb` feat(weave): k2b-weave v0 -- background cross-link weaver via MiniMax M2.7
+
+**What shipped:** New skill `k2b-weave` that runs 3x/week on Mac Mini (Mon/Wed/Fri 04:00 HKT), reads the whole in-scope wiki (~57 pages, ~81K tokens), calls MiniMax M2.7 to find missing cross-links, proposes top-10 candidates ranked by utility (orphan reduction, cross-category, confidence), and drops a digest note in `review/` for Keith's approval via `/inbox`. Approved pairs land as `related:` frontmatter entries on the FROM page. Single-sided writes, no auto-apply in v0.
+
+Components: `scripts/k2b-weave.sh` (orchestrator, 700+ lines), `scripts/minimax-weave.sh` (MiniMax caller with strict JSON schema, prompt injection guard, mock hook for testing), `scripts/k2b-weave-add-related.py` (YAML frontmatter editor with atomic writes + optimistic concurrency), `tests/test-k2b-weave.sh` (33-case integration suite), 10-page fixture vault. Extended `k2b-inbox` to delegate `type: crosslink-digest` notes to `/weave apply`.
+
+**Codex review:** 3 rounds total (2 adversarial design reviews, 1 pre-commit). Round 1 found 6 blockers: HIGH-tier auto-apply unsafe, scope contradictions, single mega-prompt fragile, Syncthing write-path blast radius, fragile ledger identity, bidirectional churn. All addressed -- HIGH disabled for v0, scope fixed, single-sided frontmatter writes, atomic writes + lock file, path+slug dual-keyed ledger with TTL. Round 2 confirmed all blockers resolved; found 1 new blocker (shared lock domain mismatch) which we accepted as v2 work via Path B (optimistic concurrency). Round 3 (pre-commit) found 1 blocker (fsync durability in atomic writes) -- fixed before commit. 9 concerns documented as post-ship work.
+
+**Feature status change:** feature_k2b-weave: in-progress -> shipped
+
+**Follow-ups:**
+- Register cron on Mac Mini after `/sync`: `ssh macmini 'cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create "run /weave" "0 20 * * 0,2,4" 8394008217'`
+- Monitor first 3 real runs for acceptance rate; adjust top-10 scoring weights if needed
+- Audit grep/jq pipefail spots per Codex concern
+- Add trailing-pipe parsing leniency test per Codex concern
+- The 04-11 Kai on AI youtube raw that triggered this feature needs `/compile` to connect to the vault properly
+
+**Key decisions:**
+- v0 is MEDIUM-only (no auto-apply) per Codex round 1 blocker on homonym safety
+- Single-sided `related:` frontmatter field instead of bidirectional `## Related` section per Codex round 1
+- Path B chosen over Codex's full fix: atomic writes + optimistic re-read + lock file instead of shared vault-mutation lock across compile/vault-writer (deferred to v2)
+- Top-10 per run cap to prevent inbox overwhelm (Codex round 1 suggestion)
+- Temperature lowered from 0.2 to 0.1 after observing MiniMax non-determinism on real vault
+
+---
+
 ## 2026-04-12 -- Durable deferred-sync mailbox (k2b-ship post-ship hardening)
 
 **Commit:** `bfa6f19` fix(ship): durable deferred-sync mailbox for /ship -- /sync handoff
