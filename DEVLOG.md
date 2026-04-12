@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-04-12 -- Durable deferred-sync mailbox (k2b-ship post-ship hardening)
+
+**Commit:** `bfa6f19` fix(ship): durable deferred-sync mailbox for /ship -- /sync handoff
+
+**What shipped:** Replaced the soft "run /sync" reminder at the end of `/ship` with an explicit sync-now-or-defer question backed by a durable `~/Projects/K2B/.pending-sync/` mailbox directory. Each `/ship --defer` writes a uniquely-named JSON entry via temp-file + `os.replace()` atomic rename. `/sync` is the sole consumer: it scans the directory, validates each entry (JSON + schema + category allowlist), folds valid entries into the sync scope, runs the deploy, and deletes only the specific filenames it observed at scan-start. The session-start hook surfaces pending mailbox entries (and any broken ones) on every new session. Codex approved in round 5 of adversarial review after finding and fixing 9 successive durability holes across 4 prior rounds. Also caught `k2b-sync` docs up to `scripts/deploy-to-mini.sh` dashboard support (commit `5dd0e88`) that landed earlier but never updated the skill doc.
+
+**Why:** Keith asked whether `k2b-sync`'s end-of-session proactive prompt could be retired now that `/ship` had one -- "is it just a double prompt?" I ran `/codex:adversarial-review` on the `/ship ↔ /sync` responsibility split to get a second opinion, and Codex immediately found a structural gap: `/ship` ended with a soft reminder that left no durable recovery signal. If Keith ignored the reminder, shipped-to-GitHub state sat ahead of the Mac Mini with no way for a future session to know the Mini was stale. Codex explicitly warned against retiring the proactive prompt until a durable mechanism existed. So the plan became: build the durable mechanism first, revisit the prompt question later.
+
+**Files affected:**
+- `.claude/skills/k2b-ship/SKILL.md` -- step 12 rewritten as now/defer branch. The `now` branch invokes `/sync` in-line and does NOT touch the mailbox (avoids a cleanup race Codex R2 caught). The `defer` branch writes a unique JSON entry via atomic rename. Category table rolls `scripts/hooks/**` into `scripts` -- no separate `hooks` category exists because `/sync`'s allowlist is `{skills, code, dashboard, scripts}`.
+- `.claude/skills/k2b-sync/SKILL.md` -- Step 0 documents the mailbox consumption contract: scan directory, skip fresh `.tmp_*` (in-progress writes), surface stale `.tmp_*` older than 60s as UNREADABLE, validate schema + category allowlist, report UNREADABLE loudly, fold VALID entries into sync scope, delete only filenames observed at scan-start. Also added `/sync dashboard` command, dashboard category row, dry-run example, `pm2 status k2b-dashboard` verification, and pm2 error-handling case.
+- `scripts/hooks/session-start.sh` -- new section 5 surfaces mailbox entries at session start using the same validation contract. Python always exits 0 and encodes state in stdout (`EMPTY` / `VALID|n` / `ENTRY|...` / `UNREADABLE|name|reason`) so the hook's `set -euo pipefail` can't hide the check's output. Pluralization handled correctly.
+- `CLAUDE.md` -- every top-level `/ship` reference updated from "reminder" wording to the `now/defer` contract. Session Discipline manual fallback now mentions `/sync` and the mailbox.
+- `.gitignore` -- `/.pending-sync/` (mailbox directory) + legacy `/.pending-sync.json` single-file path kept ignored.
+
+**Codex adversarial review:** 5 rounds. Each found a more subtle failure mode that forced another redesign:
+
+- **R1** (original split check): dashboard docs missing from `k2b-sync`; `/ship` reminder-only handoff.
+- **R2** (after reminder fix): CLAUDE.md still said "reminder" in 4 places; malformed marker silently downgraded to "no pending sync"; session-start swallowed stderr; marker clear was TOCTOU-racy.
+- **R3** (after switching to mailbox + atomic write + filename-based delete): crash between `fsync` and `os.replace()` left only a `.tmp_*.json` file that readers ignored forever; `/ship` emitted a `hooks` category `/sync` had no deploy target for.
+- **R4** (after stale-temp detection + `hooks→scripts` normalization): `/sync` still trusted mailbox categories blindly; legacy pre-fix entries could bypass the producer-side fix.
+- **R5** (after consumer-side allowlist): **verdict `approve`**. No material findings. Only advisory next steps (integration tests when the flow moves from docs to executable code).
+
+**Smoke tests:** 12 session-start hook paths via bash + handcrafted mailbox states. All pass: well-formed plural, well-formed singular, malformed JSON, schema-missing fields, empty categories list, legacy `hooks` category, mixed valid+broken, valid `scripts` entry, fresh `.tmp_` silent, stale `.tmp_` surfaced with age, `pending:false` silent, gitignore excludes the directory.
+
+**Key decisions:**
+- **Mailbox directory, not single file.** The single-file design with compare-and-swap clearing is elegant on paper but fragile in practice (R2 TOCTOU, R3 crash-during-write). The mailbox-as-directory pattern is the standard fix: producers write unique filenames via atomic rename, consumers delete by filename, no state is ever rewritten in place. Race-free on POSIX by construction.
+- **Consumer-side category allowlist, hardcoded set.** `{skills, code, dashboard, scripts}` literal duplicated in 3 places (`k2b-ship` category table, `k2b-sync` Step 0, `session-start.sh` section 5). A pluggable registration system would be more elegant but adds surface area. The drift risk is documented in `feature_k2b-ship`'s Updates follow-ups.
+- **Stale `.tmp_*` files surface as UNREADABLE, never auto-recovered.** Auto-renaming crashed temp files would add write-from-reader responsibility and a second race surface. Surfacing them and requiring Keith to decide keeps consumers mostly read-only.
+- **`k2b-sync` proactive prompt NOT retired.** Keith's original question today. Codex R2 explicitly warned no: it's the last-resort recovery path if `/ship` is skipped entirely. The plan file records this as deferred until the mailbox has real-world usage.
+- **Nothing in the mailbox is executable yet.** The SKILL.md files are specs telling future Claude invocations what to do; the actual write/read/delete logic runs when the skills are invoked. Codex's advisory to add integration tests when this moves to standalone executable code is noted but out of scope.
+
+**Status:**
+- What works: `bfa6f19` landed + pushed. Session-start hook smoke-tests all passing. Feature note Updates section has the history. `wiki/concepts/index.md` Shipped row annotated. `wiki/log.md` entry appended.
+- What's incomplete: Nothing in this commit, but the full defer → session boundary → session-start surface → /sync consume loop is untested in the wild. First real-world defer will be the canary.
+- What's next: `/sync` the 5 files to the Mac Mini so the updated `session-start.sh` hook runs on the Mini. Then the first real defer is the canary run.
+
+**Feature status change:** feature_k2b-ship stays `shipped` -- no lane transition. This is post-ship hardening, not a new ship row.
+
+---
+
 ## 2026-04-11 (late) -- Mission Control v3 Ship 1 patches: vault-drop intake, sync script, audio UX, context fix
 
 **Commits:** `84994a3` feat(intake) + `5dd0e88` chore(sync) + `02f9031` fix(intake) + `324758a` chore(launch)
