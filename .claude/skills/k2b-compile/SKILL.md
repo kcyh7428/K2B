@@ -102,15 +102,15 @@ Opus applies changes from the MiniMax JSON output:
 - If new info contradicts existing info: flag in the update with `> [!warning] Potential conflict` and add to review/ queue
 - Minimum 2 wikilinks per new page (soft target, not hard enforcement)
 
-### 5. Update Indexes + Log
+### 5. Update Indexes + Log (mandatory checklist -- do in this exact order)
 
-After all wiki changes:
+After all wiki changes, execute this checklist top to bottom. Do NOT report "done" until all 5 items are checked off. The raw index is FIRST because it is the most-skipped step (2 failures in 4 days, see L-2026-04-12-002).
 
-1. **Update subfolder indexes:** Add/update rows in each affected wiki/*/index.md
-2. **Update master index:** Update wiki/index.md entry counts
-3. **Update raw index:** Update raw/*/index.md to reflect compilation
-4. **Mark source compiled:** Add `compiled: true` and `compiled-date: YYYY-MM-DD` to raw source frontmatter
-5. **Append to wiki/log.md:**
+- [ ] **5a. Raw subfolder index FIRST:** Update `raw/<type>/index.md` -- mark the source row as compiled with today's date. This is the step that gets forgotten. Do it before anything else.
+- [ ] **5b. Mark source compiled:** Add `compiled: true` and `compiled-date: YYYY-MM-DD` to raw source frontmatter.
+- [ ] **5c. Wiki subfolder indexes:** Add/update rows in each affected `wiki/*/index.md`.
+- [ ] **5d. Master index:** Update `wiki/index.md` entry counts if any new pages were created.
+- [ ] **5e. Append to wiki/log.md:**
 
 ```markdown
 ## [YYYY-MM-DD HH:MM] compile | [Source Title]
@@ -119,6 +119,8 @@ After all wiki changes:
 - Created: [list of wiki pages created]
 - Indexes: [list of index.md files updated]
 ```
+
+**Self-check before reporting done:** Mentally walk through 5a-5e. If you cannot confirm each one was executed, go back and fix it now.
 
 ## Compile Modes
 
