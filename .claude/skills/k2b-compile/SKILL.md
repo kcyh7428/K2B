@@ -85,9 +85,11 @@ For each planned change:
 Opus applies changes from the MiniMax JSON output:
 
 **For each entry in `pages_to_create`:**
-1. Write the file using frontmatter + content from JSON
-2. Verify wikilinks point to existing pages (glob check)
-3. Create stubs for missing link targets
+1. **BEFORE creating:** Check if the raw source frontmatter has `related:` links pointing to existing wiki pages that cover this entity. If yes, ENRICH the existing page instead of creating a new one. MiniMax's create suggestion is a hint, not a directive -- Opus must verify against existing wiki state.
+2. **BEFORE creating:** Grep `wiki/` for the entity name. If a page already exists, update it instead.
+3. Only if steps 1-2 confirm no existing page: write the file using frontmatter + content from JSON
+4. Verify wikilinks point to existing pages (glob check)
+5. Create stubs for missing link targets
 
 **For each entry in `pages_to_update`:**
 1. Read the current wiki page
