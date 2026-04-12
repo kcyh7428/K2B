@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-12 -- fix autoresearch post-loop handoff
+
+**Commit:** `d7b3477` fix(autoresearch): add post-loop handoff to prompt /ship instead of /sync
+
+**What shipped:** Added a Post-Loop Handoff section to k2b-autoresearch SKILL.md. After the loop completes, the skill now instructs K2B to prompt /ship (not /sync). Autoresearch creates unpushed commits via the commit-before-test protocol; prompting /sync directly skipped shipping discipline (no devlog, no wiki/log, no feature tracking).
+
+**Codex review:** skipped: 9-line addition to a single skill file
+
+**Feature status change:** --no-feature (skill maintenance)
+
+**Follow-ups:** none
+
+**Key decisions:** none
+
+---
+
 ## 2026-04-12 -- k2b-compile autoresearch: index-skip prevention + dedup gates
 
 **Commits:** `c9a4dd5` + `c5513e7` + `2b943c0` + `b27b5a3` (3 experiment iterations + eval infra)
