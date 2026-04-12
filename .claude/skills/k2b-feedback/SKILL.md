@@ -39,7 +39,15 @@ Capture a correction, preference, or best practice.
 2. Read `self_improve_learnings.md`.
 3. Check if a similar learning already exists (match on topic/area). If yes, increment `Reinforced` count and update the entry with any new context. If no, append a new entry.
 4. Write the updated file.
-5. Confirm with one line: what was captured.
+5. **Policy ledger update**: If the learning is actionable as a guard (it says "never do X", "always do Y", "before doing Z, check..."), also append a JSONL entry to `~/Projects/K2B-Vault/wiki/context/policy-ledger.jsonl`:
+   ```json
+   {"type":"guard","scope":"<skill-name-or-*>","action":"<action-type>","rule":"<the learning text>","source":"<learning-ID>","risk":"<low|medium|high|critical>"}
+   ```
+   - Scope: the skill this applies to, or `*` for all skills
+   - Action: what specific action this guards (e.g., `create_wiki_page`, `deploy_remote`, `send_email`)
+   - Risk: how bad it would be to violate this (critical = data loss, high = wrong behavior, medium = suboptimal, low = style)
+   - Check for duplicates in the ledger before appending (match on scope + action + similar rule text)
+6. Confirm with one line: what was captured (and whether a ledger entry was added).
 
 Entry format:
 ```markdown
@@ -60,9 +68,9 @@ Confidence is derived from the Reinforced count:
 
 | Reinforced | Confidence | Behavior |
 |------------|------------|----------|
-| 1-2 | low | Suggest but don't enforce. Mention when relevant. |
-| 3-5 | medium | Apply when relevant. Can be overridden without comment. |
-| 6+ | high | Treat as core behavior. Auto-apply. Loaded at session start. |
+| 1 | low | Suggest but don't enforce. Mention when relevant. |
+| 2-5 | medium | Surfaced in session-start watch list. Apply when relevant. Can be overridden without comment. |
+| 6+ | high | Treat as core behavior. Auto-apply. Candidate for promotion to active rules. |
 
 When updating `Reinforced`, always recalculate and update `Confidence`:
 - Set `low` for 1-2

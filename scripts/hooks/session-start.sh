@@ -7,7 +7,7 @@ set -euo pipefail
 
 VAULT="$HOME/Projects/K2B-Vault"
 K2B="$HOME/Projects/K2B"
-CONTEXT_DIR="$VAULT/Notes/Context"
+CONTEXT_DIR="$VAULT/wiki/context"
 
 output=""
 
@@ -67,6 +67,39 @@ active_rules=$(find -L ~/.claude/projects/ -name "active_rules.md" -type f 2>/de
 if [ -f "$active_rules" 2>/dev/null ]; then
   output+="ACTIVE RULES (follow these every session):"$'\n'
   output+="$(cat "$active_rules")"$'\n\n'
+fi
+
+# --- 4.5 Load reinforced learnings as watch list ---
+# Learnings with Reinforced >= 2 are surfaced as guidance (not full rules).
+# This bridges the gap between "captured once" and "promoted to active rule".
+# Dedupe: exclude learnings whose IDs already appear in active_rules.md.
+learnings_file=$(find -L ~/.claude/projects/ -name "self_improve_learnings.md" -type f 2>/dev/null | head -1)
+if [ -f "$learnings_file" 2>/dev/null ]; then
+  # Build exclusion list from active rules (they reference learning IDs like L-2026-03-26-001)
+  active_ids=""
+  if [ -f "$active_rules" 2>/dev/null ]; then
+    active_ids=$(grep -oE 'L-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+' "$active_rules" 2>/dev/null | sort -u | tr '\n' '|')
+    active_ids="${active_ids%|}"  # strip trailing pipe
+  fi
+  # Extract learning blocks with Reinforced >= 2, excluding already-promoted ones
+  watch_items=$(awk -v exclude="$active_ids" '
+    /^### L-/ { id=$2; learning=""; area="" }
+    /^\- \*\*Area:\*\*/ { gsub(/^- \*\*Area:\*\* */, ""); area=$0 }
+    /^\- \*\*Learning:\*\*/ { gsub(/^- \*\*Learning:\*\* */, ""); learning=$0 }
+    /^\- \*\*Reinforced:\*\*/ {
+      gsub(/^- \*\*Reinforced:\*\* */, "");
+      count=int($0);
+      if (count >= 2 && learning != "") {
+        # Skip if this learning ID is already in active rules
+        if (exclude != "" && id ~ exclude) next;
+        printf "- [%s] (%s) %s\n", id, area, learning
+      }
+    }
+  ' "$learnings_file")
+  if [ -n "$watch_items" ]; then
+    output+="LEARNINGS WATCH LIST (reinforced 2+, not yet promoted to active rules):"$'\n'
+    output+="$watch_items"$'\n\n'
+  fi
 fi
 
 # --- 5. Surface pending-sync mailbox entries ---

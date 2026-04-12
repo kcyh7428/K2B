@@ -40,6 +40,19 @@ Reads raw source captures and compiles them into wiki knowledge pages. Based on 
 
 This is the same pattern used by the observer loop. ~30-50x cheaper than running everything on Opus.
 
+## Policy Ledger Check (MANDATORY -- runs before every compile)
+
+Before creating or updating ANY wiki page, check the policy ledger:
+
+1. **Read** `wiki/context/policy-ledger.jsonl`
+2. **Filter** entries where `scope` is `k2b-compile` or `*` (global)
+3. **For each matching guard**: verify the action complies. Key guards:
+   - `create_wiki_page`: Check raw source `related:` frontmatter and grep wiki/ before creating. Enrich existing pages, don't duplicate.
+   - `update_index`: Must update ALL 4 indexes (subfolder, raw subfolder, master wiki/index.md, wiki/log.md).
+   - `classify_note`: Triage context vs insight correctly.
+4. **For autonomy entries**: if `auto_eligible` is true, proceed without asking. Otherwise ask Keith.
+5. **After Keith approves/rejects**: update the ledger entry's approved/rejected count.
+
 ## Compile Flow
 
 ### 1. Call MiniMax Compile Worker

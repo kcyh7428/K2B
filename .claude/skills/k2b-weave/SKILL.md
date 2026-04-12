@@ -22,6 +22,20 @@ Weaves the wiki graph tighter over time by finding semantically related pages th
 
 **Why MiniMax, not Opus:** ~30-50x cheaper. Same pattern as `k2b-compile` and `k2b-observer`. Cost: ~$1/week total at current vault scale.
 
+## Policy Ledger Check (MANDATORY -- runs before every weave apply)
+
+Before applying any crosslink, check the policy ledger:
+
+1. **Read** `wiki/context/policy-ledger.jsonl`
+2. **Filter** entries where `scope` is `k2b-weave` or `*` (global)
+3. **For `crosslink_apply` autonomy entry**: check if `auto_eligible` is true
+   - If true AND proposal risk is low (both pages exist, single-sided related: addition): auto-apply without asking Keith
+   - If false: require Keith's approval via review/ digest (current behavior)
+4. **After each apply batch**: update the ledger entry's `approved`/`rejected` counts
+5. **Graduation check**: when `approved >= graduation_threshold` AND `rejected / (approved + rejected) < max_rejection_rate`, propose auto-eligibility to Keith. If Keith confirms, update `auto_eligible: true` in the ledger.
+
+This enables weave to gradually earn autonomy. First 10+ proposals are always manual. After proving reliability, Keith can unlock auto-apply for low-risk crosslinks.
+
 ## Commands
 
 - `/weave` or `/weave run` -- trigger a weaving pass (same entry point the cron hits)

@@ -345,6 +345,18 @@ This pass runs AFTER the note is written and validated, not during writing.
 
 **For raw/ captures:** Cross-linking is minimal (just add `compiled: false` frontmatter). The full cross-link pass happens during k2b-compile, which updates wiki pages.
 
+## Policy Ledger Check (MANDATORY -- runs before every mutation)
+
+Before writing, editing, or deleting ANY vault note, check the policy ledger:
+
+1. **Read** `wiki/context/policy-ledger.jsonl`
+2. **Filter** entries where `scope` matches this skill (`k2b-vault-writer`) or is `*` (global)
+3. **For each matching guard**: verify the action complies with the rule. If it doesn't, stop and adjust.
+4. **For each matching autonomy entry**: if `auto_eligible` is true AND the action matches, proceed without asking Keith. Otherwise, ask Keith for approval.
+5. **After Keith approves/rejects an autonomy action**: update the ledger entry's `approved`/`rejected` count. When `approved >= graduation_threshold` AND `rejected / (approved + rejected) < max_rejection_rate`, propose auto-eligibility to Keith. If Keith confirms, set `auto_eligible: true`.
+
+The ledger is the executable form of K2B's learnings. Active rules and learnings are advisory text. The ledger is the gate.
+
 ## Pre-Write Validation (Safety Check)
 
 Before writing or editing ANY vault note, run this checklist. Stop and fix issues before saving.
