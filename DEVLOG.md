@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-04-12 -- close the self-improvement loop with policy ledger
+
+**Commit:** `15b9e7a` feat: add policy ledger and close self-improvement loop
+
+**What shipped:** Fixed a silent bug where observer findings never surfaced at session start (hook read from Notes/Context/ but observer writes to wiki/context/). Added a learnings watch list to session start that shows Reinforced 2+ learnings with active-rules dedupe. Created policy-ledger.jsonl as an executable guardrail layer -- seeded from 7 active rules + key learnings + 3 autonomy-tracking entries for weave, lint, and vault-writer. Added pre-action ledger checks to vault-writer, compile, and weave skills. Updated k2b-feedback to auto-append ledger entries when /learn captures actionable guards. Scheduled weekly /lint on Mac Mini (Sunday 8am HKT, task a6b5059b).
+
+**Codex review:** 2 findings (both fixed before commit). (1) Medium: watch list duplicated already-promoted active rules -- added dedupe via grep exclusion. (2) Low: documentation drift between hook threshold (2+) and feedback skill docs (6+) -- aligned docs.
+
+**Feature status change:** No feature -- infrastructure work (self-improvement loop hardening)
+
+**Follow-ups:**
+- Monitor policy ledger adoption over 2 weeks before building k2b-retro
+- First autonomy graduation candidate: k2b-weave crosslink_apply (needs 10+ approvals)
+- Codex found the observer-candidates path bug -- confirms adversarial review value
+
+**Key decisions:** Policy ledger is JSONL not SQLite (grep-friendly, same pattern as observations.jsonl). Autonomy graduation is per-action-type not per-skill (k2b-weave proposing != k2b-weave editing). Watch list threshold is Reinforced 2+ (not 3+ or 6+) to bridge the gap between single-mention and promoted-rule.
+
+---
+
 ## 2026-04-12 -- rename /inbox to /review
 
 **Commit:** `206b47e` refactor: rename /inbox skill to /review
