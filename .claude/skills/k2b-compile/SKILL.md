@@ -54,9 +54,13 @@ The script:
 3. Sends everything to MiniMax M2.7 with a structured extraction prompt
 4. Returns JSON with: pages_to_update, pages_to_create, content_seeds, summary
 
-### 2. Parse and Present Summary
+### 2. Parse, Validate, and Present Summary
 
-Opus parses the JSON and presents Keith with a concise summary he can approve in ~2 seconds:
+Opus parses the JSON but treats it as a **suggestion, not a directive**. Before presenting to Keith:
+- For each `pages_to_create`: check raw source `related:` frontmatter links and grep `wiki/` for the entity. If an existing page covers this entity, convert the "create" to an "update" in the plan.
+- For each `pages_to_update`: verify the target file exists. If not, convert to a "create".
+
+Then present Keith with a concise summary he can approve in ~2 seconds:
 
 ```
 ## Compile: [Source Title]
