@@ -137,11 +137,24 @@ K2B-Vault/
 
 ## Session Start & Observer
 
-Session startup hook automatically: surfaces usage triggers, reports reviewed review items, shows observer findings, loads high-confidence learnings.
+Session startup hook automatically: surfaces usage triggers, reports reviewed review items, shows observer findings, loads reinforced learnings watch list, and loads active rules.
 - If review items ready: process with /review.
-- If observer candidates surfaced: review with Keith.
+- If observer candidates surfaced: review with Keith using inline confirmation (see below).
 
 Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vault changes and analyzing patterns. See k2b-observer skill for details.
+
+### Inline Observer Confirmation
+
+When observer findings appear at session start, act on them immediately -- don't wait for Keith to remember `/observe`:
+
+**HIGH confidence findings:** Present each one with three options:
+- **confirm** -- run `/learn` inline with the finding text. This auto-creates a policy ledger entry (the correction becomes an executable guardrail).
+- **keep watching** -- do nothing. Let it accumulate more evidence before acting.
+- **reject** -- note the rejection in `wiki/context/preference-signals.jsonl` so the observer learns what Keith doesn't endorse. Format: `{"date":"YYYY-MM-DD","source":"session-start-reject","type":"rejection","description":"<finding text>","confidence":"high","skill":"k2b-observer"}`
+
+**MEDIUM confidence findings:** Show them as context. Don't prompt for action unless Keith asks.
+
+This collapses the old 3-step manual flow (`/observe` -> `/learn` -> wait for reinforcement) into one natural-language response from Keith. `/observe` remains available for deep synthesis but is no longer required for the loop to close.
 
 ## Email Safety
 

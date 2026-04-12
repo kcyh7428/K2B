@@ -58,7 +58,7 @@ fi
 # --- 3. Check observer candidates ---
 candidates="$CONTEXT_DIR/observer-candidates.md"
 if [ -f "$candidates" ] && [ -s "$candidates" ]; then
-  output+="OBSERVER FINDINGS:"$'\n'
+  output+="OBSERVER FINDINGS (review HIGH confidence items -- confirm or reject inline):"$'\n'
   output+="$(cat "$candidates")"$'\n\n'
 fi
 
