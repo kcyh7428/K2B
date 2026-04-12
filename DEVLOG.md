@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-12 -- skill remediation: vault architecture alignment
+
+**Commit:** `b0e6224` chore(skills): align 15 skill/eval files with current vault architecture
+
+**What shipped:** Audited all 22 K2B skills against the current 3-layer vault design (raw/wiki/review). Found 15 files with stale references from the pre-migration era. Fixed 5 cross-cutting patterns: dead Inbox/ folder references (10 replacements), legacy Notes/ paths (5 replacements), hardcoded MOC_ in up: frontmatter (5 fixes), old idea_<slug> naming convention (2 fixes), and one-off issues (empty up: field, missing usage logging). The deepest rewrite was k2b-observer: Phase 1a rewritten to document actual signal sources (observer-loop primary, review queue secondary), signal format docs updated with both schemas, aspirational "How Other Skills Use" section downgraded to Planned status.
+
+**Codex review:** reviewed, 2 findings (both fixed): daily-capture find command and insight-extractor DQL missing wiki/ in their search paths
+
+**Feature status change:** --no-feature (cross-cutting skill maintenance)
+
+**Follow-ups:** none
+
+**Key decisions:** MOCs still valid as up: targets (vault-writer lists 5 active MOCs), but downstream skills should not hardcode a single MOC -- use dynamic selection based on note domain
+
+---
+
 ## 2026-04-12 -- fix autoresearch post-loop handoff
 
 **Commit:** `d7b3477` fix(autoresearch): add post-loop handoff to prompt /ship instead of /sync
