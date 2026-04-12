@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-04-12 -- k2b-compile autoresearch: index-skip prevention + dedup gates
+
+**Commits:** `c9a4dd5` + `c5513e7` + `2b943c0` + `b27b5a3` (3 experiment iterations + eval infra)
+
+**What shipped:** Ran /autoresearch on k2b-compile targeting two recurring real-world failures: (1) raw subfolder index consistently skipped during compile (E-2026-04-12-001, 2x in 4 days), (2) MiniMax output blindly followed, creating duplicate pages instead of enriching existing ones (L-2026-04-12-001). Three structural improvements kept: Step 5 reordered with raw index FIRST + checklist gate + self-check, pre-create dedup check against raw source `related:` links + wiki grep, and Step 2 validation framing MiniMax output as suggestion-not-directive. Also created eval infrastructure (eval.json with 15 assertions across 3 test prompts, results.tsv, learnings.md).
+
+**Codex review:** skipped: autoresearch loop (experiment commits are individually scoped, each changes one thing)
+
+**Feature status change:** --no-feature (skill maintenance)
+
+**Follow-ups:**
+- Binary eval ceiling noted: when a skill mentions all the right steps but fails on execution emphasis, assertions score 100% at baseline. Future evals should test ordering/priority, not just presence.
+- Next compile run is the real test -- will it follow the raw-index-first ordering?
+
+**Key decisions:** none
+
+---
+
 ## 2026-04-12 -- k2b-weave v0: background cross-link weaver
 
 **Commit:** `accf9bb` feat(weave): k2b-weave v0 -- background cross-link weaver via MiniMax M2.7
