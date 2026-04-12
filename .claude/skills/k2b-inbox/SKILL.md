@@ -47,6 +47,20 @@ Check two locations for items Keith has reviewed:
 
 For each item with a decision:
 
+#### crosslink-digest (special case -- delegate to /weave)
+
+If the item has `type: crosslink-digest`, do NOT use the promote/archive flow below. These notes are cross-link proposals from `k2b-weave`, and the Decision column inside the note encodes per-pair actions (check / x / defer) rather than a single review-action.
+
+Delegate processing to the `k2b-weave` skill:
+
+```bash
+~/Projects/K2B/scripts/k2b-weave.sh apply "$FILE_PATH"
+```
+
+The weave script reads the Decision column, applies approved proposals (adds `[[to_slug]]` to the FROM page's `related:` frontmatter field), marks rejected/deferred pairs in the ledger, and deletes the digest note on completion. Report the applied/rejected/deferred counts to Keith.
+
+After delegation, skip the regular promote/archive/delete branches for this item. No feedback signal row is needed (weave owns its own metrics + ledger).
+
 #### promote
 Auto-detect destination from the `type:` frontmatter field:
 
@@ -54,6 +68,7 @@ Auto-detect destination from the `type:` frontmatter field:
 |---------------|-------------------|-------|
 | `content-idea` | `wiki/content-pipeline/` | Set `origin: keith` (Keith adopted it) |
 | `linkedin-draft` | `wiki/content-pipeline/` | Keith approved the draft |
+| `crosslink-digest` | delegated to `/weave apply` | Handled above, do NOT use this table |
 | `project` | `wiki/projects/` | Misrouted -- should not be in review |
 | `insight` | `wiki/insights/` | Misrouted -- should not be in review |
 | `reference` | `wiki/reference/` | Misrouted -- should not be in review |
