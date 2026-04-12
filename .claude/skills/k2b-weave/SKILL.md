@@ -18,7 +18,7 @@ Weaves the wiki graph tighter over time by finding semantically related pages th
 
 **The problem:** `/lint` passively detects orphans and weakly-connected pages but never creates the missing links. Keith wants the wiki to grow *tighter* as it grows -- more edges between related pages, without manually adding every `[[wikilink]]`.
 
-**The solution:** Three times a week, MiniMax M2.7 reads the whole in-scope wiki and returns up to 10 candidate cross-link pairs, ranked by utility. Every proposal lands in a digest note under `review/`. Keith approves during `/inbox`. Approved pairs become `related:` frontmatter entries on the FROM page (single-sided -- Obsidian backlinks show the reverse). Nothing is ever auto-applied in v0.
+**The solution:** Three times a week, MiniMax M2.7 reads the whole in-scope wiki and returns up to 10 candidate cross-link pairs, ranked by utility. Every proposal lands in a digest note under `review/`. Keith approves during `/review`. Approved pairs become `related:` frontmatter entries on the FROM page (single-sided -- Obsidian backlinks show the reverse). Nothing is ever auto-applied in v0.
 
 **Why MiniMax, not Opus:** ~30-50x cheaper. Same pattern as `k2b-compile` and `k2b-observer`. Cost: ~$1/week total at current vault scale.
 
@@ -27,7 +27,7 @@ Weaves the wiki graph tighter over time by finding semantically related pages th
 - `/weave` or `/weave run` -- trigger a weaving pass (same entry point the cron hits)
 - `/weave dry-run` -- run MiniMax, show proposals in terminal, write nothing to disk
 - `/weave status` -- show last 5 runs from metrics, ledger size, top rejection patterns, graph density trend
-- `/weave apply <digest-file>` -- internal, called by `/inbox` when processing a crosslink-digest note
+- `/weave apply <digest-file>` -- internal, called by `/review` when processing a crosslink-digest note
 
 ## Paths
 
@@ -102,7 +102,7 @@ On any error after lock acquisition: always release the lock in a trap. Send not
 
 ## Flow: `/weave apply <digest-file>`
 
-Called internally by `/inbox` when it detects a note with `type: crosslink-digest` and a filled Decision column.
+Called internally by `/review` when it detects a note with `type: crosslink-digest` and a filled Decision column.
 
 1. **Acquire lock** -- same as run flow.
 
@@ -127,9 +127,9 @@ Same as run flow through step 9 (utility scoring + top-10 cut), then prints the 
 
 Read last 5 rows from `weave-metrics.jsonl`, count ledger entries by status, compute graph density (avg inbound wikilinks per in-scope page), compute acceptance rate (applied / (applied + rejected)). Print concise summary. No writes.
 
-## Integration with `/inbox`
+## Integration with `/review`
 
-`k2b-inbox` detects `type: crosslink-digest` in a review/ item and delegates processing to `/weave apply <file>` instead of running its normal promote/archive/delete flow. See the k2b-inbox SKILL.md for where this branch is added.
+`k2b-review` detects `type: crosslink-digest` in a review/ item and delegates processing to `/weave apply <file>` instead of running its normal promote/archive/delete flow. See the k2b-review SKILL.md for where this branch is added.
 
 ## Integration with other skills
 

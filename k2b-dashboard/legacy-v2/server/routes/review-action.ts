@@ -14,19 +14,19 @@ router.post('/:filename/action', (req, res) => {
       return res.status(400).json({ error: 'Invalid action. Use: archive, snooze' })
     }
 
-    // Find the file in Inbox/ or Inbox/Ready/
-    const inboxPath = resolve(config.vaultPath, 'Inbox', `${filename}.md`)
-    const readyPath = resolve(config.vaultPath, 'Inbox/Ready', `${filename}.md`)
+    // Find the file in review/ or review/Ready/
+    const reviewPath = resolve(config.vaultPath, 'review', `${filename}.md`)
+    const readyPath = resolve(config.vaultPath, 'review/Ready', `${filename}.md`)
     let filePath: string | null = null
     try {
-      readFileSync(inboxPath)
-      filePath = inboxPath
+      readFileSync(reviewPath)
+      filePath = reviewPath
     } catch {
       try {
         readFileSync(readyPath)
         filePath = readyPath
       } catch {
-        return res.status(404).json({ error: 'File not found in Inbox' })
+        return res.status(404).json({ error: 'File not found in review queue' })
       }
     }
 
@@ -60,4 +60,4 @@ router.post('/:filename/action', (req, res) => {
   }
 })
 
-export { router as inboxActionRouter }
+export { router as reviewActionRouter }

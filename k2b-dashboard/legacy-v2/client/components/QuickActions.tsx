@@ -2,7 +2,7 @@ import { useState } from "react";
 
 const ACTIONS = [
   { label: "/daily", command: "/daily" },
-  { label: "/inbox", command: "/inbox review" },
+  { label: "/review", command: "/review" },
   { label: "/content", command: "/content" },
   { label: "/sync", command: "/sync" },
   { label: "/observe", command: "/observe" },

@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { usePolling } from "../hooks/usePolling.js";
 import { Tag } from "./Tag.js";
 
-interface InboxItem {
+interface ReviewItem {
   filename: string;
   title: string;
   type: string;
@@ -15,8 +15,8 @@ interface InboxItem {
   excerpt: string;
 }
 
-interface InboxData {
-  items: InboxItem[];
+interface ReviewData {
+  items: ReviewItem[];
   readyCount: number;
   totalCount: number;
   oldestAgeDays: number;
@@ -77,8 +77,8 @@ const FILTER_OPTIONS: { key: FilterType; label: string }[] = [
   { key: "feature-idea", label: "Features" },
 ];
 
-export function Inbox() {
-  const { data, loading, refresh } = usePolling<InboxData>("/api/inbox", 30000);
+export function Review() {
+  const { data, loading, refresh } = usePolling<ReviewData>("/api/review", 30000);
   const [filter, setFilter] = useState<FilterType>("all");
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<string | null>(null);
@@ -86,7 +86,7 @@ export function Inbox() {
   const performAction = useCallback(async (filename: string, action: "archive" | "snooze") => {
     setActionPending(`${filename}-${action}`);
     try {
-      const res = await fetch(`/api/inbox/${filename}/action`, {
+      const res = await fetch(`/api/review/${filename}/action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
@@ -101,7 +101,7 @@ export function Inbox() {
   if (loading && !data) {
     return (
       <div className="panel panel-priority">
-        <span className="panel-title panel-title-priority">Inbox</span>
+        <span className="panel-title panel-title-priority">Review</span>
         <div className="text-muted">Loading...</div>
       </div>
     );
@@ -127,9 +127,9 @@ export function Inbox() {
 
   return (
     <div className="panel panel-priority">
-      <div className="inbox-header">
+      <div className="review-header">
         <span className="panel-title panel-title-priority" style={{ marginBottom: 0 }}>
-          Inbox &middot; {totalCount}
+          Review &middot; {totalCount}
         </span>
         <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11 }}>
           {oldestAge > 0 && (
@@ -141,45 +141,45 @@ export function Inbox() {
       </div>
 
       {/* Filter tabs */}
-      <div className="inbox-filters">
+      <div className="review-filters">
         {FILTER_OPTIONS.map((f) => {
           const count = f.key === "all" ? totalCount : (typeCounts[f.key] || 0);
           if (f.key !== "all" && count === 0) return null;
           return (
             <button
               key={f.key}
-              className={`inbox-filter-btn ${filter === f.key ? "inbox-filter-active" : ""}`}
+              className={`review-filter-btn ${filter === f.key ? "review-filter-active" : ""}`}
               onClick={() => setFilter(f.key)}
             >
-              {f.label} <span className="inbox-filter-count">{count}</span>
+              {f.label} <span className="review-filter-count">{count}</span>
             </button>
           );
         })}
       </div>
 
       {/* Items */}
-      <div className="inbox-items">
+      <div className="review-items">
         {filteredItems.map((item) => {
           const age = daysAgo(item.date);
           const isExpanded = expandedItem === item.filename;
           const isActioning = actionPending?.startsWith(item.filename);
 
           return (
-            <div key={item.path} className={`inbox-card ${isExpanded ? "inbox-card-expanded" : ""}`}>
+            <div key={item.path} className={`review-card ${isExpanded ? "review-card-expanded" : ""}`}>
               <div
-                className="inbox-card-header"
+                className="review-card-header"
                 onClick={() => setExpandedItem(isExpanded ? null : item.filename)}
                 style={{ cursor: "pointer" }}
               >
-                <div className="inbox-card-title-row">
-                  <span className={`inbox-age ${ageColorClass(age)}`}>
+                <div className="review-card-title-row">
+                  <span className={`review-age ${ageColorClass(age)}`}>
                     {daysAgoLabel(age)}
                   </span>
-                  <span className="inbox-card-title">{item.filename}</span>
+                  <span className="review-card-title">{item.filename}</span>
                 </div>
-                <div className="inbox-card-actions">
+                <div className="review-card-actions">
                   <button
-                    className="btn btn-neutral inbox-action-btn"
+                    className="btn btn-neutral review-action-btn"
                     title="Snooze 3 days"
                     disabled={!!isActioning}
                     onClick={(e) => { e.stopPropagation(); performAction(item.filename, "snooze"); }}
@@ -187,7 +187,7 @@ export function Inbox() {
                     {isActioning && actionPending === `${item.filename}-snooze` ? "..." : "Snooze"}
                   </button>
                   <button
-                    className="btn btn-danger inbox-action-btn"
+                    className="btn btn-danger review-action-btn"
                     title="Archive"
                     disabled={!!isActioning}
                     onClick={(e) => { e.stopPropagation(); performAction(item.filename, "archive"); }}
@@ -196,18 +196,18 @@ export function Inbox() {
                   </button>
                 </div>
               </div>
-              <div className="inbox-card-meta">
+              <div className="review-card-meta">
                 <Tag variant={originColor(item.origin)}>{item.origin}</Tag>
                 <Tag variant="default">{typeLabel(item.type)}</Tag>
                 {item.tags?.slice(0, 3).map((tag) => (
-                  <span key={tag} className="inbox-tag">{tag}</span>
+                  <span key={tag} className="review-tag">{tag}</span>
                 ))}
                 {item.reviewAction && (
                   <Tag variant="next">{item.reviewAction}</Tag>
                 )}
               </div>
               {isExpanded && item.excerpt && (
-                <div className="inbox-card-preview text-secondary">
+                <div className="review-card-preview text-secondary">
                   {cleanExcerpt(item.excerpt)}
                 </div>
               )}
@@ -216,7 +216,7 @@ export function Inbox() {
         })}
         {filteredItems.length === 0 && (
           <div className="text-muted" style={{ fontSize: 12 }}>
-            {filter === "all" ? "Inbox empty" : `No ${filter} items`}
+            {filter === "all" ? "Review queue empty" : `No ${filter} items`}
           </div>
         )}
       </div>

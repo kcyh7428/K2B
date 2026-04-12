@@ -18,15 +18,15 @@ router.get('/', async (_req, res) => {
   try {
     const suggestions: Suggestion[] = []
 
-    // 1. Check inbox age
+    // 1. Check review queue age
     try {
-      const inboxFiles = await listVaultFolder('Inbox')
-      const readyFiles = await listVaultFolder('Inbox/Ready')
-      const totalInbox = inboxFiles.length + readyFiles.length
-      if (totalInbox > 0) {
+      const reviewFiles = await listVaultFolder('review')
+      const readyFiles = await listVaultFolder('review/Ready')
+      const totalReview = reviewFiles.length + readyFiles.length
+      if (totalReview > 0) {
         const now = new Date()
         let oldestDays = 0
-        for (const f of [...inboxFiles, ...readyFiles]) {
+        for (const f of [...reviewFiles, ...readyFiles]) {
           const dateStr = f.data.date as string
           if (!dateStr) continue
           const d = new Date(dateStr)
@@ -37,14 +37,14 @@ router.get('/', async (_req, res) => {
         if (oldestDays > 3) {
           suggestions.push({
             priority: 1,
-            message: `Review inbox (${totalInbox} items, oldest ${oldestDays} days)`,
-            command: '/inbox',
+            message: `Review queue (${totalReview} items, oldest ${oldestDays} days)`,
+            command: '/review',
           })
-        } else if (totalInbox > 0) {
+        } else if (totalReview > 0) {
           suggestions.push({
             priority: 4,
-            message: `${totalInbox} inbox items pending review`,
-            command: '/inbox',
+            message: `${totalReview} review items pending`,
+            command: '/review',
           })
         }
       }

@@ -46,7 +46,7 @@ k2b-remote (Telegram Polling Bot)
 
 **Vault & Organization (3 skills)**:
 - `k2b-vault-writer` (223 lines) — Create/update notes with frontmatter & wikilinks
-- `k2b-inbox` (97 lines) — Process Inbox items (promote/archive/delete/revise)
+- `k2b-review` (97 lines) — Process review queue items (promote/archive/delete/revise)
 - `k2b-insight-extractor` (87 lines) — Search vault, surface patterns, synthesize insights
 
 **Content Pipeline (2 skills)**:
@@ -72,7 +72,7 @@ k2b-remote (Telegram Polling Bot)
 **Scheduled Tasks** (Persistent):
 - `weekly-vault-health` — Audit vault structure, orphaned notes, MOC alignment
 - `weekly-external-research` — Perplexity + YouTube + web scanning
-- `daily-inbox-check` — Process review-action flagged items
+- `daily-review-check` — Process review-action flagged items
 - `friday-self-improvement` — Run `/improve review`, synthesize learnings
 - Plus usage-based triggers (e.g., after 10 meeting transcripts, auto-run insight extraction)
 
@@ -137,7 +137,7 @@ PROCESSED_FILE="${2:-.}"
 1. **Moving vault breaks everything**: Renaming vault folder = all skills + scripts fail silently
 2. **Path assumptions in Glob**: `k2b-vault-writer` globs `Notes/People/person_*.md` — fails if naming convention changes
 3. **No environment vars**: Paths are inline, hard to parameterize per environment (MacBook vs Mac Mini differ: `/Users/keithmbpm2/` vs `/Users/fastshower/`)
-4. **Note lifecycle coupling**: `k2b-inbox` assumes specific file naming (e.g., `content_*.md` for ideas) — inconsistencies cause promotion failures
+4. **Note lifecycle coupling**: `k2b-review` assumes specific file naming (e.g., `content_*.md` for ideas) — inconsistencies cause promotion failures
 
 #### C. MCP Server & API Dependency Chain
 
@@ -273,7 +273,7 @@ Layer 5 (External):
 
 - **Vault orphan growth**: New notes created faster than MOCs updated → graph degrades
 - **Skill context saturation**: Each skill reads full vault search results → context window filled by 3-4 concurrent tasks
-- **Scheduled task collisions**: If vault-health and inbox-check run simultaneously, both glob the same vault → contention
+- **Scheduled task collisions**: If vault-health and review-check run simultaneously, both glob the same vault → contention
 
 ### 4.2 When Scripts Accumulate
 

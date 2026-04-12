@@ -1,9 +1,9 @@
 ---
-name: k2b-inbox
-description: Review and process pending content ideas and LinkedIn drafts -- triage review queue items by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /inbox, "check inbox", "process inbox", "what's in inbox", or wants to review/triage Inbox items.
+name: k2b-review
+description: Review and process pending content ideas and LinkedIn drafts -- triage review queue items by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /review, "check review", "process review", "what's in review", or wants to review/triage review queue items.
 ---
 
-# K2B Inbox Manager
+# K2B Review Manager
 
 ## Narrowed Scope (Vault Redesign)
 
@@ -17,7 +17,7 @@ All lifecycle rules (origin tagging, review properties, promote destinations, co
 
 ## Vault Paths
 
-- Inbox: `~/Projects/K2B-Vault/review/`
+- Review queue: `~/Projects/K2B-Vault/review/`
 - Ready queue: `~/Projects/K2B-Vault/review/Ready/`
 - Archive: `~/Projects/K2B-Vault/Archive/`
 
@@ -128,9 +128,9 @@ echo '{"date":"'$(date +%Y-%m-%d)'","file":"'"$FILENAME"'","source_skill":"'"$SK
 
 If the file `preference-signals.jsonl` doesn't exist, create it (first run).
 
-### Step 3: Show remaining Inbox
+### Step 3: Show remaining review queue
 
-After processing actionable items, query remaining Inbox items with:
+After processing actionable items, query remaining review items with:
 ```bash
 ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, date, review-action AS "status" FROM "review" SORT date DESC'
 ```
@@ -157,5 +157,5 @@ Group by type if there are many items.
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-inbox\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed inbox: SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+echo -e "$(date +%Y-%m-%d)\tk2b-review\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed review: SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```

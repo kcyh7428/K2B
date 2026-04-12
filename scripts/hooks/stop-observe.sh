@@ -76,10 +76,10 @@ if [ -n "$recent_vault_changes" ]; then
         wiki/work/*) skill="k2b-vault-writer" ;;
         wiki/concepts/*) skill="k2b-vault-writer" ;;
         wiki/insights/*) skill="k2b-insight-extractor" ;;
-        wiki/content-pipeline/*) skill="k2b-inbox" ;;
+        wiki/content-pipeline/*) skill="k2b-review" ;;
         wiki/reference/*) skill="k2b-compile" ;;
         wiki/context/preference-*) skill="k2b-observer" ;;
-        Archive/*) skill="k2b-inbox" ;;
+        Archive/*) skill="k2b-review" ;;
       esac
     fi
 

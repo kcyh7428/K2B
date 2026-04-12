@@ -46,7 +46,7 @@ Keith partners with Andrew on TalentSignals (AI automations for recruiting firms
 │    ┌─────────────────────────────────────────────────┐  │
 │    │  Scheduled Tasks (persistent, autonomous)       │  │
 │    │  weekly-vault-health │ weekly-external-research  │  │
-│    │  daily-inbox-check   │ friday-self-improvement   │  │
+│    │  daily-review-check  │ friday-self-improvement   │  │
 │    │  + usage-based triggers + one-time reminders    │  │
 │    └─────────────────────────────────────────────────┘  │
 │                                                         │
@@ -179,7 +179,7 @@ K2B-Vault/
 - Usage logging across all 13 k2b-* skills (append-only TSV)
 - Trigger rules system (`usage-triggers.md`) for threshold-based automation
 - Session-start check for ready triggers (`scripts/check-usage-triggers.sh`)
-- 4 seeded tasks: weekly vault health, weekly external research (Perplexity + YouTube + web), daily inbox check, Friday self-improvement review
+- 4 seeded tasks: weekly vault health, weekly external research (Perplexity + YouTube + web), daily review check, Friday self-improvement review
 
 **3-tier scheduling model**:
 1. **Quick reminders** -- CronCreate / `/loop` (session-only, ephemeral)
@@ -238,7 +238,7 @@ Skills are organized by user intent: **Capture** (things come in), **Think** (K2
 ```
 CAPTURE                       THINK                          CREATE
 -------                       -----                          ------
-/daily   --> Daily/            /inbox   --> promotes to        /linkedin --> publishes
+/daily   --> Daily/            /review  --> promotes to        /linkedin --> publishes
 /meeting --> Notes/               Notes/ or Archive/          /media    --> Assets/
 /tldr    --> Inbox/            /insight --> Notes/Insights/
 /youtube --> Inbox/            /content --> Inbox/ (ideas)
@@ -264,7 +264,7 @@ All notes saved to `Inbox/` MUST include `review-action:` and `review-notes: ""`
 | /meeting | Fireflies transcript or manual input | Notes/ | Project notes, person notes |
 | /tldr | Current conversation context | Inbox/ | Project notes (progress) |
 | /youtube | Playlist config, YouTube transcripts | Inbox/ | youtube-processed.md |
-| /inbox | Inbox/ notes with review-action set | Notes/, Archive/ | MOCs (after promote) |
+| /review | review/ notes with review-action set | Notes/, Archive/ | MOCs (after promote) |
 | /insight | Vault-wide search | Notes/Insights/ | MOC_Content-Pipeline |
 | /content | Recent daily + meeting + insight notes | Inbox/ | -- |
 | /research | Vault health, web search, URLs | Inbox/ | -- |

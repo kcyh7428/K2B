@@ -45,7 +45,7 @@ if [ "$total_review" -gt 0 ]; then
   output+="REVIEW QUEUE: $total_review items ready to process"
   [ "$review_ready_count" -gt 0 ] && output+=" ($review_ready_count in Ready/)"
   [ "$review_reviewed_count" -gt 0 ] && output+=" ($review_reviewed_count with review-action set)"
-  output+=". Run /inbox to process them."$'\n\n'
+  output+=". Run /review to process them."$'\n\n'
 fi
 
 # --- 2.5 Inject wiki index summary ---

@@ -42,9 +42,9 @@ Prefer DQL queries over Glob+Read+Filter when scanning multiple files for frontm
 Read `preference-signals.jsonl`. This file has two signal sources:
 
 1. **Observer-loop (primary, active)**: The background observer on Mac Mini analyzes vault behavior via MiniMax M2.7 and appends signals with schema: `{date, source, type, description, confidence, skill}`. This is the main source of signals today.
-2. **Review queue outcomes (secondary)**: When k2b-inbox processes review/ items, it appends signals with schema: `{date, file, source_skill, type, action, days_in_inbox, has_feedback, feedback}`. This source activates as Keith uses /inbox more frequently.
+2. **Review queue outcomes (secondary)**: When k2b-review processes review/ items, it appends signals with schema: `{date, file, source_skill, type, action, days_in_inbox, has_feedback, feedback}`. This source activates as Keith uses /review more frequently.
 
-If the file doesn't exist or is empty, tell Keith: "No preference signals yet. The observer-loop will start generating signals automatically, or process some review/ items with /inbox."
+If the file doesn't exist or is empty, tell Keith: "No preference signals yet. The observer-loop will start generating signals automatically, or process some review/ items with /review."
 
 Then check if this is the first run (no preference-profile.md exists). If so, run the Bootstrapping procedure below.
 
@@ -68,7 +68,7 @@ From the signals, calculate per-skill stats:
 - Archive rate (archived / total)
 - Delete rate (deleted / total)
 - Revise rate (revised / total)
-- Average days in inbox before action
+- Average days in review before action
 - Feedback rate (has_feedback = yes / total)
 
 ### 1d. Content Pipeline Signals
@@ -118,7 +118,7 @@ A pattern requires a minimum of **3 occurrences** of the same behavior to be con
 **Skill-Level Patterns:**
 - "k2b-youtube-capture: 70% archive rate from AI News Daily playlist" (low relevance signal)
 - "k2b-tldr: Keith always provides review-notes mentioning 'too long'" (format preference)
-- "k2b-research: average 5 days in inbox before action" (low urgency/relevance)
+- "k2b-research: average 5 days in review before action" (low urgency/relevance)
 - "k2b-insight-extractor /content ideas: 20% adopt rate" (quality or relevance issue)
 
 **Cross-Skill Patterns:**
@@ -335,7 +335,7 @@ On first `/observe`, if preference-signals.jsonl is empty or doesn't exist:
 4. Generate an initial preference-signals.jsonl from this retrospective data
 5. Run the full synthesis to produce the first preference-profile.md
 
-Tell Keith: "Bootstrapped preference profile from N archived items, N adopted ideas, and N pending review items. This will get more accurate as the observer-loop and /inbox generate more signals."
+Tell Keith: "Bootstrapped preference profile from N archived items, N adopted ideas, and N pending review items. This will get more accurate as the observer-loop and /review generate more signals."
 
 ## /observe reset
 
@@ -357,7 +357,7 @@ One JSON object per line, append-only. Two signal sources produce different sche
 {"date":"2026-04-09","source":"observer-loop","type":"content-preference","description":"YouTube captures from AI channels archived without review","confidence":"medium","skill":"k2b-youtube-capture"}
 ```
 
-**Review queue outcome signals** (secondary source, written by k2b-inbox when processing review/ items):
+**Review queue outcome signals** (secondary source, written by k2b-review when processing review/ items):
 ```json
 {"date":"2026-03-28","file":"youtube_2026-03-25_ai-news.md","source_skill":"k2b-youtube-capture","type":"video-capture","action":"archive","days_in_inbox":3,"has_feedback":"no","feedback":""}
 {"date":"2026-03-28","file":"tldr_2026-03-27_k2b-planning.md","source_skill":"k2b-tldr","type":"tldr","action":"promote","days_in_inbox":1,"has_feedback":"yes","feedback":"good summary but too long, trim to 3 bullets"}
@@ -400,7 +400,7 @@ Background observer loop (MiniMax-M2.7, pm2)
     +--> writes observer-candidates.md (for session-start hook)
     +--> appends to preference-signals.jsonl
     |
-k2b-inbox processes review/ items
+k2b-review processes review/ items
     |
     +--> appends to preference-signals.jsonl (review queue outcome schema)
     |

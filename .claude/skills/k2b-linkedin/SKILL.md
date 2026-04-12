@@ -13,7 +13,7 @@ Draft LinkedIn posts from Keith's content pipeline, generate post images, and pu
 
 ## Vault Redesign Note
 
-LinkedIn drafts remain in `review/` as an exception to the content-ideas-only rule -- they need Keith's approval before publishing. This is tracked in k2b-inbox as an expected review item type alongside k2b-generate content ideas.
+LinkedIn drafts remain in `review/` as an exception to the content-ideas-only rule -- they need Keith's approval before publishing. This is tracked in k2b-review as an expected review item type alongside k2b-generate content ideas.
 
 On publish, update `wiki/content-pipeline/index.md` and append to `wiki/log.md`.
 

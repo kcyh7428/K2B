@@ -195,8 +195,8 @@ Parses observer-candidates.md (pending confirmations + observer status), reads s
 ### GET /api/skills
 Reads skill-usage-log.tsv, aggregates by skill for last 7 days. Lists all k2b-* skills from .claude/skills/, compares against usage to find dormant skills. Reads each dormant skill's SKILL.md for description.
 
-### GET /api/inbox
-Reads all .md files from Inbox/ and Inbox/Ready/. Parses YAML frontmatter. Returns sorted by date descending.
+### GET /api/review
+Reads all .md files from review/ and review/Ready/. Parses YAML frontmatter. Returns sorted by date descending.
 
 ### GET /api/activity
 Merges: vault file mtimes (last 48h), skill-usage-log.tsv entries, scheduled task history from SQLite, git log entries. Sorted by timestamp descending, limit 50.
@@ -225,7 +225,7 @@ k2b-dashboard/
         youtube.ts          # /api/youtube
         intelligence.ts     # /api/intelligence
         skills.ts           # /api/skills
-        inbox.ts            # /api/inbox
+        review.ts           # /api/review
         activity.ts         # /api/activity
         tasks.ts            # /api/tasks
         content-pipeline.ts # /api/content-pipeline

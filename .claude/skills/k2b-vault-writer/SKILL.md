@@ -100,7 +100,7 @@ K2B uses a 3-layer vault architecture (Karpathy model):
 | Insight | `wiki/insights/` | k2b-compile or /insight |
 | Reference | `wiki/reference/` | k2b-compile |
 | Work (SJM) | `wiki/work/` | k2b-compile or direct |
-| Content idea (adopted) | `wiki/content-pipeline/` | /inbox promote |
+| Content idea (adopted) | `wiki/content-pipeline/` | /review promote |
 | Context | `wiki/context/` | Direct write |
 
 ### Review Queue

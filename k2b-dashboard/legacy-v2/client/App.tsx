@@ -9,7 +9,7 @@ import { Roadmap } from './components/Roadmap.js'
 import { YouTubeDigest } from './components/YouTubeDigest.js'
 import { Intelligence } from './components/Intelligence.js'
 import { SkillActivity } from './components/SkillActivity.js'
-import { Inbox } from './components/Inbox.js'
+import { Review } from './components/Review.js'
 import { ActivityFeed } from './components/ActivityFeed.js'
 import { ScheduledTasks } from './components/ScheduledTasks.js'
 import { ContentPipeline } from './components/ContentPipeline.js'
@@ -38,9 +38,9 @@ export function App() {
           <YouTubeDigest />
         </div>
 
-        {/* Row 3: Inbox | Tasks + Content Pipeline + LinkedIn */}
+        {/* Row 3: Review | Tasks + Content Pipeline + LinkedIn */}
         <div className="dashboard-row dashboard-row-2col">
-          <Inbox />
+          <Review />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <ScheduledTasks />
             <ContentPipeline />

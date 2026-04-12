@@ -22,7 +22,7 @@ K2B extends the original pattern with:
 
 **Capture** -- Daily notes, meeting transcripts, YouTube videos, emails, research, and conversation summaries flow into a structured Obsidian vault. Every capture lands in `raw/` as an immutable source, then gets compiled into `wiki/` knowledge pages with automatic cross-linking, frontmatter, and index updates.
 
-**Think** -- Pattern recognition across notes, content idea extraction, deep research on external topics, inbox triage. The wiki is searchable through `index.md` (content catalog) and `log.md` (chronological record) -- no vector DB or RAG infrastructure needed.
+**Think** -- Pattern recognition across notes, content idea extraction, deep research on external topics, review triage. The wiki is searchable through `index.md` (content catalog) and `log.md` (chronological record) -- no vector DB or RAG infrastructure needed. For complex multi-source research, `/research deep` offloads analysis to Google NotebookLM (Gemini) at zero token cost.
 
 **Create** -- LinkedIn posts drafted from vault insights, multi-modal media generation (images, audio, video, music via MiniMax AI), email drafting via Google Workspace.
 
@@ -78,6 +78,54 @@ Opus applies changes atomically:
 - `wiki/index.md` -- content catalog, read FIRST on every query. Navigate to any page in 2 hops.
 - `wiki/log.md` -- append-only record of all vault operations. Parseable with `grep "^## \[" log.md`.
 - Per-subfolder `index.md` files for granular navigation within each wiki category.
+
+## Deep Research with NotebookLM
+
+K2B integrates Google NotebookLM as a third worker model for multi-source research. While MiniMax handles single-source extraction and Opus handles orchestration, NotebookLM (powered by Gemini) handles multi-document synthesis across 10-50 sources at zero token cost to K2B.
+
+**Setup:** `pip install "notebooklm-py[browser]"` + `notebooklm login` + `notebooklm skill install` (MacBook only).
+
+**The flow:**
+
+```
+/research deep "topic"
+    |
+Phase 1: Source Gathering
+    +-- YouTube Data API (yt-search.py, 101 quota units/search)
+    +-- Perplexity MCP (GitHub repos, Reddit, articles, tweets)
+    +-- Vault grep (existing wiki notes on topic)
+    |
+Keith reviews and approves source list
+    |
+Phase 2: NotebookLM Setup
+    +-- notebooklm create "K2B Research: <topic>"
+    +-- notebooklm source add <url> (for each approved source, up to 50)
+    +-- Wait for indexing
+    |
+Phase 3: Structured Research Queries (Gemini does ALL analysis -- FREE)
+    +-- 5-8 targeted questions against the notebook
+    +-- Landscape, architecture, comparison, risks, applicability
+    +-- Citation-grounded answers, zero hallucination
+    |
+Phase 4: Optional Deliverables
+    +-- Audio overview (podcast), mind map, infographic
+    |
+Phase 5: Synthesis (Opus -- only phase that costs tokens)
+    +-- K2B-specific framing (Keith's context, vault architecture fit)
+    +-- Save to raw/research/
+    |
+Phase 6: Compile into wiki pages
+```
+
+**Three-model architecture for research:**
+
+| Role | Model | What it does | Cost |
+|------|-------|-------------|------|
+| Commander | Claude Opus | Source gathering, question design, K2B framing, vault integration | Standard |
+| Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers | Free |
+| Worker 2 | MiniMax M2.7 | Single-source bulk extraction (when source > 10K chars) | ~30-50x cheaper than Opus |
+
+The NotebookLM notebook persists on Google's servers. Keith can revisit it for follow-up queries anytime. Deep research runs on MacBook only (not via Telegram). Compiled wiki pages sync to Mac Mini via Syncthing.
 
 ## YouTube Knowledge Pipeline
 
@@ -208,12 +256,13 @@ crosslink-ledger.jsonl tracks applied/rejected/deferred pairs
 
 ## Commander/Worker Architecture
 
-K2B uses a two-model pattern to balance capability and cost:
+K2B uses a three-model pattern to balance capability, cost, and coverage:
 
 | Role | Model | What it does | Cost |
 |------|-------|-------------|------|
 | **Commander** | Claude Opus (Claude Code) | Daily dialogue, orchestration, tool use, file changes | Standard Opus pricing |
-| **Worker** | MiniMax M2.7 (minimaxi.com API) | Background analysis, compilation, contradiction detection, bulk extraction | ~30-50x cheaper than Opus |
+| **Worker 1** | MiniMax M2.7 (minimaxi.com API) | Background analysis, compilation, contradiction detection, bulk extraction | ~30-50x cheaper than Opus |
+| **Worker 2** | Gemini (via NotebookLM) | Multi-source deep research, cross-referencing, citation-grounded synthesis | Free (Google pays) |
 
 Worker scripts in `scripts/`:
 - `minimax-compile.sh` -- structured extraction for raw -> wiki compilation
@@ -231,12 +280,12 @@ Telegram (mobile)             MacBook (interactive sessions)
     |                              |
 Mac Mini (always-on)          Claude Code + Hooks
     |                              |
-    +-- k2b-remote                 +-- SessionStart hook (inbox, triggers, observer)
+    +-- k2b-remote                 +-- SessionStart hook (review, triggers, observer)
     |   (Anthropic Agent SDK)      +-- Stop hook (observation capture)
     |                              |
     +-- k2b-observer-loop          +-- 22 Skills
     |   (MiniMax M2.7)             |     Capture: /daily, /meeting, /tldr, /youtube, /email, /compile
-    |   Analyzes usage patterns    |     Think:   /inbox, /insight, /content, /research, /observe
+    |   Analyzes usage patterns    |     Think:   /review, /insight, /content, /research, /observe
     |   Writes observer-candidates |     Create:  /linkedin, /media
     |   Updates preference signals |     Teach:   /learn, /error, /request
     |                              |     System:  /ship, /schedule, /usage, /sync, /autoresearch,
@@ -253,7 +302,7 @@ Mac Mini (always-on)          Claude Code + Hooks
 | Category | Skills | What they do |
 |----------|--------|-------------|
 | Capture | daily-capture, meeting-processor, tldr, youtube-capture, email, compile | Ingest from calendar, transcripts, videos, Gmail, compile raw -> wiki |
-| Think | inbox, insight-extractor, observer, research, improve, lint, weave | Triage, pattern detection, preference learning, vault health, cross-linking |
+| Think | review, insight-extractor, observer, research, improve, lint, weave | Triage, pattern detection, preference learning, vault health, cross-linking |
 | Create | linkedin, media-generator, vault-writer | Draft posts, generate media, write vault notes |
 | Teach K2B | feedback, usage-tracker, autoresearch | Corrections, usage stats, Karpathy-style self-improvement |
 | System | ship, sync, scheduler | End-of-session shipping, deploy to Mac Mini, scheduled tasks |
@@ -274,7 +323,8 @@ K2B/
     observer-prompt.md  Structured prompt for observer analysis
     minimax-*.sh        MiniMax API utilities (compile, weave, lint, research, image, speech)
     k2b-weave*.sh/.py   Cross-link weaver scripts
-    yt-*.sh             YouTube API scripts (playlist poll, transcribe, search, auth)
+    yt-*.sh             YouTube API scripts (playlist poll, transcribe, auth)
+    yt-search.py        YouTube Data API v3 search (topic-based video discovery)
     linkedin-*.sh       LinkedIn publishing scripts
     deploy-to-mini.sh   Deployment script for Mac Mini
     vault-query.sh      Vault search utility
@@ -290,6 +340,7 @@ K2B/
 |-----------|------|
 | Claude Code (Opus) | Primary AI engine, interactive sessions, commander |
 | MiniMax M2.7 | Worker model: compilation, observer, weave, lint deep, research extraction (~30-50x cheaper, 204K context) |
+| Google NotebookLM (Gemini) | Deep research worker: multi-source synthesis, citation-grounded answers (free, via teng-lin/notebooklm-py) |
 | Obsidian | Vault UI, graph view, cross-linking |
 | Anthropic Agent SDK | Telegram bot (k2b-remote) |
 | Google Workspace CLI | Gmail, Calendar, Drive integration |
@@ -308,7 +359,7 @@ This architecture is domain-agnostic. The three-layer vault (raw/wiki/review), c
 3. The eval assertions (analysis quality instead of note formatting)
 4. The active rules (trading discipline instead of content identity)
 
-The commander/worker pattern, observation loop, and self-improvement infrastructure remain the same.
+The commander/worker pattern (Opus + MiniMax + NotebookLM), observation loop, and self-improvement infrastructure remain the same.
 
 ## Note
 

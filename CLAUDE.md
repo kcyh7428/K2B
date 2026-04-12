@@ -111,7 +111,7 @@ K2B-Vault/
 - **`/email`** -- Read and triage Gmail (never sends, only drafts)
 
 ### Think
-- **`/inbox`** -- Review pending items in review/ queue (content ideas, compile conflicts)
+- **`/review`** -- Review pending items in review/ queue (content ideas, compile conflicts)
 - **`/insight [topic]`** -- Find patterns across vault notes on a topic
 - **`/content`** -- Surface content ideas from recent insights and daily notes
 - **`/research [topic-or-url]`** -- Deep dive into external topics or URLs
@@ -137,8 +137,8 @@ K2B-Vault/
 
 ## Session Start & Observer
 
-Session startup hook automatically: surfaces usage triggers, reports reviewed inbox items, shows observer findings, loads high-confidence learnings.
-- If inbox items ready: process with /inbox.
+Session startup hook automatically: surfaces usage triggers, reports reviewed review items, shows observer findings, loads high-confidence learnings.
+- If review items ready: process with /review.
 - If observer candidates surfaced: review with Keith.
 
 Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vault changes and analyzing patterns. See k2b-observer skill for details.

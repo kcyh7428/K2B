@@ -29,7 +29,7 @@ You are NOT on Keith's MacBook. You are running on the Mac Mini (`Matthews-Mac-m
 - LinkedIn publishing (`~/.linkedin_token`)
 
 ### Skill discipline
-- Before answering any question that matches a K2B skill (youtube, inbox, daily, email, etc.), invoke the Skill tool first. Do NOT answer from memory or local files when a skill exists for that domain.
+- Before answering any question that matches a K2B skill (youtube, review, daily, email, etc.), invoke the Skill tool first. Do NOT answer from memory or local files when a skill exists for that domain.
 - For real-time external data (playlists, emails, calendar), ALWAYS fetch live data. Never report content from cached files (like youtube-recommended.jsonl) as current playlist contents.
 - When in doubt, use the skill. The skill knows the correct scripts, APIs, and data flow.
 

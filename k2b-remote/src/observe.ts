@@ -15,8 +15,8 @@ function detectSkillFromPath(relpath: string): string {
   if (/^Daily\//.test(relpath)) return 'k2b-daily-capture'
   if (/^Notes\/People\//.test(relpath)) return 'k2b-vault-writer'
   if (/^Notes\/Projects\//.test(relpath)) return 'k2b-vault-writer'
-  if (/^Notes\/Content-Ideas\//.test(relpath)) return 'k2b-inbox'
-  if (/^Archive\//.test(relpath)) return 'k2b-inbox'
+  if (/^Notes\/Content-Ideas\//.test(relpath)) return 'k2b-review'
+  if (/^Archive\//.test(relpath)) return 'k2b-review'
   if (/^Notes\/Context\/preference-/.test(relpath)) return 'k2b-observer'
   return 'unknown'
 }
@@ -26,7 +26,7 @@ function detectSkillFromPrompt(prompt: string): string {
   const lower = prompt.toLowerCase()
   if (/\/youtube|youtube morning/.test(lower)) return 'k2b-youtube-capture'
   if (/\/daily|start the day|end of day/.test(lower)) return 'k2b-daily-capture'
-  if (/\/inbox|process inbox/.test(lower)) return 'k2b-inbox'
+  if (/\/review|process review/.test(lower)) return 'k2b-review'
   if (/\/tldr|summarize this/.test(lower)) return 'k2b-tldr'
   if (/\/linkedin/.test(lower)) return 'k2b-linkedin'
   if (/\/meeting/.test(lower)) return 'k2b-meeting-processor'

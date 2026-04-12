@@ -4,7 +4,7 @@ import type { VaultFile } from '../lib/vault.js'
 
 const router = Router()
 
-interface InboxItem {
+interface ReviewItem {
   filename: string
   title: string
   type: string
@@ -17,7 +17,7 @@ interface InboxItem {
   excerpt: string
 }
 
-function toInboxItem(file: VaultFile, folder: string): InboxItem {
+function toReviewItem(file: VaultFile, folder: string): ReviewItem {
   const data = file.data
   const tags = Array.isArray(data.tags) ? (data.tags as string[]) : []
 
@@ -37,14 +37,14 @@ function toInboxItem(file: VaultFile, folder: string): InboxItem {
 
 router.get('/', async (_req, res) => {
   try {
-    const [inboxFiles, readyFiles] = await Promise.all([
-      listVaultFolder('Inbox'),
-      listVaultFolder('Inbox/Ready'),
+    const [reviewFiles, readyFiles] = await Promise.all([
+      listVaultFolder('review'),
+      listVaultFolder('review/Ready'),
     ])
 
     const items = [
-      ...inboxFiles.map((f) => toInboxItem(f, 'Inbox')),
-      ...readyFiles.map((f) => toInboxItem(f, 'Inbox/Ready')),
+      ...reviewFiles.map((f) => toReviewItem(f, 'review')),
+      ...readyFiles.map((f) => toReviewItem(f, 'review/Ready')),
     ]
 
     const readyCount = readyFiles.length
@@ -83,4 +83,4 @@ router.get('/', async (_req, res) => {
   }
 })
 
-export { router as inboxRouter }
+export { router as reviewRouter }

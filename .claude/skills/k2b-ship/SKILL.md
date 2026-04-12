@@ -17,7 +17,7 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 ## When NOT to Use
 
-- Vault-only changes (daily notes, inbox processing, content drafts) -- these sync via Syncthing, no commit needed
+- Vault-only changes (daily notes, review processing, content drafts) -- these sync via Syncthing, no commit needed
 - Emergency hotfixes where Keith explicitly says "just commit, skip review"
 - When the user is mid-implementation and just wants an interim checkpoint -- they should say `/commit` or commit manually
 
