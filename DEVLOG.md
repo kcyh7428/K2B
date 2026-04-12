@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-04-12 -- rename /inbox to /review
+
+**Commit:** `206b47e` refactor: rename /inbox skill to /review
+
+**What shipped:** Renamed the k2b-inbox skill to k2b-review across the entire codebase (28 files). The slash command is now `/review` instead of `/inbox`, aligning with the `review/` vault directory it operates on. Also fixed stale `Inbox/` vault paths in the legacy dashboard routes to use `review/`. Dashboard files renamed (inbox.ts -> review.ts, Inbox.tsx -> Review.tsx), CSS classes updated (inbox-* -> review-*), API endpoints changed (/api/inbox -> /api/review).
+
+**Codex review:** skipped: Keith declined Codex rescue
+
+**Feature status change:** none (--no-feature, infrastructure refactoring)
+
+**Follow-ups:**
+- Run /sync to deploy skill + code + dashboard + script changes to Mac Mini
+
+**Key decisions:** none
+
+---
+
 ## 2026-04-12 -- NotebookLM deep research capability
 
 **Commit:** `4f23749` feat(research): add NotebookLM deep research mode and YouTube Data API search
