@@ -1,6 +1,6 @@
 ---
 name: k2b-observer
-description: Harvest implicit preference signals from vault behavior and synthesize a preference profile that other skills reference. This skill should be used when Keith says /observe, "what have you noticed", "check preferences", "review feedback", or on session-start/scheduled runs. It reads inbox processing outcomes, revision patterns, and adoption rates to learn what Keith actually wants without him having to say it explicitly.
+description: Harvest implicit preference signals from vault behavior and synthesize a preference profile that other skills reference. This skill should be used when Keith says /observe, "what have you noticed", "check preferences", "review feedback", or on session-start/scheduled runs. It reads observer-loop analysis, review queue outcomes, YouTube feedback, revision patterns, and adoption rates to learn what Keith actually wants without him having to say it explicitly.
 ---
 
 # K2B Observer
@@ -37,11 +37,14 @@ Prefer DQL queries over Glob+Read+Filter when scanning multiple files for frontm
 
 ## Phase 1: Harvest Signals
 
-### 1a. Inbox Outcome Signals
+### 1a. Preference Signal Sources
 
-Read `preference-signals.jsonl`. This file is populated by k2b-inbox every time it processes an item. Each line is a JSON object with: date, file, source_skill, type, action, days_in_inbox, has_feedback, feedback.
+Read `preference-signals.jsonl`. This file has two signal sources:
 
-If the file doesn't exist or is empty, tell Keith: "No preference signals yet. Process some inbox items with /inbox first, and I'll start learning."
+1. **Observer-loop (primary, active)**: The background observer on Mac Mini analyzes vault behavior via MiniMax M2.7 and appends signals with schema: `{date, source, type, description, confidence, skill}`. This is the main source of signals today.
+2. **Review queue outcomes (secondary)**: When k2b-inbox processes review/ items, it appends signals with schema: `{date, file, source_skill, type, action, days_in_inbox, has_feedback, feedback}`. This source activates as Keith uses /inbox more frequently.
+
+If the file doesn't exist or is empty, tell Keith: "No preference signals yet. The observer-loop will start generating signals automatically, or process some review/ items with /inbox."
 
 Then check if this is the first run (no preference-profile.md exists). If so, run the Bootstrapping procedure below.
 
@@ -184,7 +187,7 @@ Based on: N feedback signals over N days
 ## General Preferences
 
 - **Response length**: [observed pattern across skills]
-- **Inbox processing speed**: Keith acts fastest on [type], slowest on [type]
+- **Review processing speed**: Keith acts fastest on [type], slowest on [type]
 - **Content pipeline**: [observed adoption patterns]
 
 ## Candidate Learnings
@@ -295,18 +298,20 @@ If Keith agrees, call the k2b-feedback workflow to capture it with proper dedup 
 
 **Never auto-promote without Keith's confirmation.** The observer suggests, Keith decides.
 
-## How Other Skills Use the Preference Profile
+## How Other Skills Use the Preference Profile (Planned)
 
-Skills that produce output Keith reviews should read the preference profile before generating:
+**Status: Not yet implemented.** The design intent is documented here for when preference-based adaptation is added to downstream skills. Currently, no skill reads preference-profile.md before producing output.
+
+**Planned integration** -- skills that produce output Keith reviews would read the preference profile before generating:
 
 1. **k2b-tldr**: Read preference-profile.md section for k2b-tldr. Apply any length, section, or format preferences.
 2. **k2b-youtube-capture**: Read preference-profile.md for playlist-specific preferences. Adjust analysis depth.
 3. **k2b-linkedin**: Read preference-profile.md for draft preferences. Apply revision patterns.
 4. **k2b-insight-extractor**: Read preference-profile.md for content idea adoption patterns.
 
-**Implementation**: Each skill adds one line to its workflow: "Read `wiki/context/preference-profile.md` for skill-specific preferences. Apply any relevant preferences to output formatting."
+**When implemented**: Each skill would add one line to its workflow: "Read `wiki/context/preference-profile.md` for skill-specific preferences. Apply any relevant preferences to output formatting."
 
-This is NOT an automated modification -- it's a reference document. Skills read it the same way they read resource.md or brand voice docs. Keith decides when to update skill instructions based on strong preferences.
+The preference profile is a reference document, not an enforcement mechanism. Keith decides when to update skill instructions based on strong preferences.
 
 ## Bootstrapping (First Run)
 
@@ -322,15 +327,15 @@ On first `/observe`, if preference-signals.jsonl is empty or doesn't exist:
    ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, origin, status FROM "wiki/content-pipeline"'
    ```
    These are implicit "this was valuable" signals.
-3. Query stale inbox items:
+3. Query stale review items:
    ```bash
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE date, review-action AS "action" FROM "Inbox" WHERE date <= date(today) - dur(7 days)'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE date, review-action AS "action" FROM "review" WHERE date <= date(today) - dur(7 days)'
    ```
    Items older than 7 days with no review-action = low urgency signal.
 4. Generate an initial preference-signals.jsonl from this retrospective data
 5. Run the full synthesis to produce the first preference-profile.md
 
-Tell Keith: "Bootstrapped preference profile from N archived items, N adopted ideas, and N pending inbox items. This will get more accurate as you process more inbox items going forward."
+Tell Keith: "Bootstrapped preference profile from N archived items, N adopted ideas, and N pending review items. This will get more accurate as the observer-loop and /inbox generate more signals."
 
 ## /observe reset
 
@@ -344,12 +349,21 @@ When Keith says `/observe reset`:
 
 ### preference-signals.jsonl
 
-One JSON object per line, append-only:
+One JSON object per line, append-only. Two signal sources produce different schemas:
 
+**Observer-loop signals** (primary source, written by background MiniMax M2.7 analysis):
+```json
+{"date":"2026-04-08","source":"observer-loop","type":"vault-behavior","description":"Keith revised the daily note 3 times, shortening each section","confidence":"high","skill":"k2b-daily-capture"}
+{"date":"2026-04-09","source":"observer-loop","type":"content-preference","description":"YouTube captures from AI channels archived without review","confidence":"medium","skill":"k2b-youtube-capture"}
+```
+
+**Review queue outcome signals** (secondary source, written by k2b-inbox when processing review/ items):
 ```json
 {"date":"2026-03-28","file":"youtube_2026-03-25_ai-news.md","source_skill":"k2b-youtube-capture","type":"video-capture","action":"archive","days_in_inbox":3,"has_feedback":"no","feedback":""}
 {"date":"2026-03-28","file":"tldr_2026-03-27_k2b-planning.md","source_skill":"k2b-tldr","type":"tldr","action":"promote","days_in_inbox":1,"has_feedback":"yes","feedback":"good summary but too long, trim to 3 bullets"}
 ```
+
+When reading signals, check for `source` field (observer-loop) vs `source_skill` field (review queue) to distinguish the schemas.
 
 ### preference-profile.md
 
@@ -386,9 +400,9 @@ Background observer loop (MiniMax-M2.7, pm2)
     +--> writes observer-candidates.md (for session-start hook)
     +--> appends to preference-signals.jsonl
     |
-k2b-inbox processes items
+k2b-inbox processes review/ items
     |
-    +--> appends to preference-signals.jsonl
+    +--> appends to preference-signals.jsonl (review queue outcome schema)
     |
 k2b-observer (/observe command) reads preference-signals.jsonl + observer-candidates.md
     |
@@ -400,7 +414,7 @@ Session-start hook reads observer-candidates.md
     |
     +--> surfaces findings to Keith
     |
-Other skills read preference-profile.md before producing output
+Other skills can read preference-profile.md before producing output (planned, not yet implemented)
     |
 k2b-improve reviews preference-profile.md alongside learnings/errors/requests
 

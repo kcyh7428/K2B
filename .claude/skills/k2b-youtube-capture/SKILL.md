@@ -204,7 +204,7 @@ Body sections:
 {wikilinks to related vault notes -- search vault for relevant connections}
 ```
 
-For **K2B Content** playlist: also create `wiki/content-pipeline/idea_<slug>.md` for each content seed found.
+For **K2B Content** playlist: also create `wiki/content-pipeline/content_<slug>.md` for each content seed found.
 
 For **K2B Learn** playlist: append to or create `wiki/context/learning-paths.md` linking this video in sequence.
 

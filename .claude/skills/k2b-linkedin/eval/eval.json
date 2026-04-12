@@ -17,7 +17,7 @@
       "assertions": [
         "Does the draft have 3 or fewer hashtags, positioned at the end and not inline within the text?",
         "Does the draft avoid AI cliches such as game-changer, unlock, leverage, in today's fast-paced world, paradigm shift?",
-        "Does the output save or propose saving to a file path matching Inbox/linkedin_YYYY-MM-DD_loaded-career-into-ai.md?",
+        "Does the output save or propose saving to a file path matching review/linkedin_YYYY-MM-DD_loaded-career-into-ai.md?",
         "Does the draft YAML frontmatter include type: linkedin-draft and a source field linking to the content idea?",
         "Does the draft have a clear closing takeaway or call to reflection rather than trailing off or using a generic CTA?"
       ]

@@ -16,7 +16,7 @@
       ]
     },
     {
-      "prompt": "Run /daily for 2026-04-04 (evening). No Telegram messages today. One TLDR exists in Inbox: '2026-04-04_tldr-daily-redesign.md' about redesigning the /daily skill. Yesterday's daily note has open loop: '- [ ] Send ATS vendor shortlist to procurement'. No other vault notes created today.",
+      "prompt": "Run /daily for 2026-04-04 (evening). No Telegram messages today. One TLDR exists in raw/tldrs/: '2026-04-04_tldr-daily-redesign.md' about redesigning the /daily skill. Yesterday's daily note has open loop: '- [ ] Send ATS vendor shortlist to procurement'. No other vault notes created today.",
       "expected_output": "A minimal daily note with just K2B Build and Open Loops. Should note the quiet day and ask if anything was missed.",
       "assertions": [
         "Does it include K2B Build section referencing the daily redesign work?",

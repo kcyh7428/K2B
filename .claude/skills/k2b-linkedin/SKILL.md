@@ -70,7 +70,7 @@ Show recent LinkedIn posts. Engagement metrics available after Community Managem
 1. **Determine source type:**
    - If slug matches `wiki/content-pipeline/content_*.md` -- content idea (richest source)
    - If slug matches `wiki/insights/insight_*.md` -- insight note
-   - If slug matches `Notes/YYYY-MM-DD_*.md` or `Daily/YYYY-MM-DD.md` -- meeting/daily note
+   - If slug matches `raw/meetings/YYYY-MM-DD_*.md` or `Daily/YYYY-MM-DD.md` -- meeting/daily note
    - If slug matches `wiki/context/*.md` -- context note
    - If quoted string -- direct topic from Keith (no vault source)
 
@@ -80,7 +80,7 @@ Show recent LinkedIn posts. Engagement metrics available after Community Managem
 
 4. **Search the vault for related material:**
    - Follow `[[wiki links]]` from the source note -- read linked notes
-   - Use `mcp__obsidian__search` to find notes mentioning key terms from the source (replaces grep across Notes/, Daily/, review/)
+   - Use `mcp__obsidian__search` to find notes mentioning key terms from the source (searches across raw/, wiki/, Daily/, review/)
    - Look for meetings, insights, daily notes, context that mention the same topics
    - Collect Keith's actual words, specific details, numbers, anecdotes
 
@@ -305,7 +305,7 @@ This is what gets extracted by linkedin-publish.sh and posted to LinkedIn.]
 - Every draft links back to its source note (`[[content_slug]]`, `[[insight_slug]]`, etc.)
 - Every draft links to vault notes that informed it
 - When published, update the source content idea with a link to the draft under `## Published Posts`
-- Add draft link to `MOC_Content-Pipeline.md` under Drafts section
+- Update `wiki/content-pipeline/index.md` with a link to the draft
 
 ---
 

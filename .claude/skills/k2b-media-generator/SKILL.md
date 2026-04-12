@@ -153,7 +153,7 @@ rm -f /tmp/k2b-transcribe-input.mp3 /tmp/k2b-transcribe-chunk_*.mp3
 ### Workflow (after transcription)
 1. Transcription saves to `K2B-Vault/raw/daily/YYYY-MM-DD_transcription_slug.md`
 2. The output note includes frontmatter, the full transcript, and an embed of the source audio
-3. Keith can then process the transcription (move to Notes/, link to meetings, extract insights)
+3. Keith can then process the transcription (compile to wiki/, link to meetings, extract insights)
 4. Set `transcript_method: groq-whisper` or `minimax` in frontmatter
 
 ### Use Cases
@@ -189,7 +189,7 @@ If Keith is on Plus tier, show the same upgrade message as video.
 This is the high-value workflow. Reads a content idea and generates appropriate media.
 
 ### Workflow
-1. Read `K2B-Vault/wiki/content-pipeline/idea_<slug>.md`
+1. Read `K2B-Vault/wiki/content-pipeline/content_<slug>.md`
 2. Extract: title, hook, platform (linkedin/youtube), core insight
 3. Based on platform:
    - **LinkedIn**: Generate a 16:9 header image using the hook + topic as prompt context. Add style: "professional, corporate, modern design, suitable for LinkedIn"

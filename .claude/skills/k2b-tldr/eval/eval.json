@@ -2,11 +2,11 @@
   "tests": [
     {
       "prompt": "Summarize this conversation: We discussed migrating the KIRA AirTable data to K2B. Decided to skip historical projects older than 6 months. Keith will export the People table this week. We also realized the meeting note template needs a 'project' field in frontmatter. Action: update the template, then process the backlog of 5 meeting transcripts from last week.",
-      "expected_output": "A concise TLDR note saved to Inbox",
+      "expected_output": "A concise TLDR note saved to raw/tldrs/",
       "assertions": [
         "Does the output include separate Decisions, Action Items, and Insights sections?",
         "Are action items formatted as checkboxes (- [ ])?",
-        "Does the file path start with Inbox/ and follow the YYYY-MM-DD_tldr-topic.md convention?",
+        "Does the file path start with raw/tldrs/ and follow the YYYY-MM-DD_tldr-topic.md convention?",
         "Is the total content under 300 words (excluding frontmatter)?"
       ]
     },

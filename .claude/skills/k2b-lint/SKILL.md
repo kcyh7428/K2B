@@ -252,3 +252,10 @@ When run manually (`/lint`):
 - All other fixes require Keith's approval.
 - Always update `wiki/log.md` after a lint pass.
 - If lint finds 0 issues, still log it (proves the check ran).
+
+## Usage Logging
+
+After completing the main task:
+```bash
+echo -e "$(date +%Y-%m-%d)\tk2b-lint\t$(echo $RANDOM | md5sum | head -c 8)\tlint: MODE SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+```

@@ -37,7 +37,8 @@ Prefer `mcp__obsidian__search` over Grep for vault-wide content search. Prefer D
 1. Query recent notes with DQL:
    ```bash
    ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, tags, date FROM "Daily" WHERE date >= date(today) - dur(7 days)'
-   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, tags, date FROM "Notes" WHERE date >= date(today) - dur(7 days)'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, tags, date FROM "raw" WHERE date >= date(today) - dur(7 days)'
+   ~/Projects/K2B/scripts/vault-query.sh dql 'TABLE type, tags, date FROM "wiki" WHERE date >= date(today) - dur(7 days)'
    ```
 2. Read the matching daily notes and meeting notes
 3. Read any new insight notes

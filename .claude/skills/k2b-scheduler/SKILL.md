@@ -158,7 +158,7 @@ echo -e "$(date +%Y-%m-%d)\tk2b-scheduler\t$(echo $RANDOM | md5 | head -c 8)\tcr
 
 ### Weekly research
 ```
-/schedule weekly wednesday "Run /research external 'AI recruiting tools' and save to Inbox"
+/schedule weekly wednesday "Run /research external 'AI recruiting tools' and save to review/"
 ```
 
 ### Daily check

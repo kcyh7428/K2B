@@ -43,7 +43,7 @@ date: YYYY-MM-DD
 type: tldr
 origin: k2b-extract
 source: claude-code-session
-up: "[[MOC_K2B-System]]"
+up: "[[Home]]"
 ---
 ```
 

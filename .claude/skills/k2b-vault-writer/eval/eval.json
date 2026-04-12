@@ -5,9 +5,9 @@
       "expected_output": "A properly structured project note with frontmatter and cross-links",
       "assertions": [
         "Does the YAML frontmatter include tags, date, type: project, status: on, domain, and up fields?",
-        "Does the up field point to [[MOC_SJM-Work]]?",
+        "Does the up field point to an appropriate MOC or Home?",
         "Does the note include wikilinks to [[person_Gerard-Walker]] and [[person_Keith-Brown]]?",
-        "Does the file path follow the convention Notes/Projects/project_ai-recruiter-pilot.md?",
+        "Does the file path follow the convention wiki/projects/project_ai-recruiter-pilot.md?",
         "Does the note include sections for Objective, Current Status, Key Milestones, and Related Notes?"
       ]
     },
@@ -15,7 +15,7 @@
       "prompt": "Create a person note for Jane Smith, a recruiter at Hays who Keith met at a conference. She specializes in tech recruitment in the APAC region.",
       "expected_output": "A person note with proper naming and frontmatter",
       "assertions": [
-        "Does the file path follow Notes/People/person_Jane-Smith.md?",
+        "Does the file path follow wiki/people/person_Jane-Smith.md?",
         "Does the YAML frontmatter include organization, role, and relationship fields?",
         "Does the up field point to a relevant MOC?",
         "Does the note avoid em dashes?",
@@ -26,7 +26,7 @@
       "prompt": "Create an insight note about how combining internal mobility data with external market data creates a more complete picture of talent availability. This came from the hiring sync meeting on 2026-03-20.",
       "expected_output": "An insight note with proper cross-linking to source",
       "assertions": [
-        "Does the file path follow Notes/Insights/insight_[slug].md?",
+        "Does the file path follow wiki/insights/insight_[slug].md?",
         "Does the YAML frontmatter include content-potential: true or false?",
         "Does the note include a wikilink to the source meeting [[2026-03-20_Hiring-Sync]] or similar?",
         "Does the up field point to a relevant MOC?",

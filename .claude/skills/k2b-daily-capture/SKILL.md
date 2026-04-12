@@ -40,7 +40,7 @@ ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/store/k2b-remote.db \
 
 **b) Vault notes created or modified today:**
 ```bash
-find ~/Projects/K2B-Vault/{Inbox,Notes,Daily} -name "*.md" -newer ~/Projects/K2B-Vault/Daily/$(date -v-1d +%Y-%m-%d).md 2>/dev/null
+find ~/Projects/K2B-Vault/{review,raw,wiki,Daily} -name "*.md" -newer ~/Projects/K2B-Vault/Daily/$(date -v-1d +%Y-%m-%d).md 2>/dev/null
 ```
 Or glob for today's date prefix in filenames.
 
@@ -127,7 +127,7 @@ tags: [daily]
 date: YYYY-MM-DD
 type: daily-note
 origin: keith
-up: ""
+up: "[[Home]]"
 ---
 ```
 

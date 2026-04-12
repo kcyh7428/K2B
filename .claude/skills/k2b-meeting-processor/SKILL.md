@@ -80,5 +80,5 @@ echo -e "$(date +%Y-%m-%d)\tk2b-meeting-processor\t$(echo $RANDOM | md5sum | hea
 - No em dashes, no AI cliches, no sycophancy
 - Always add YAML frontmatter with tags, date, type, origin, up, project, and participants
 - Always set `origin: k2b-extract` in frontmatter (these notes are derived from Keith's meeting transcripts)
-- Always set `up: "[[MOC_SJM-Work]]"` (or appropriate MOC based on meeting domain)
+- Set `up:` to the appropriate MOC based on meeting domain (`[[MOC_SJM-Work]]` for SJM, `[[MOC_TalentSignals]]` for TalentSignals, `[[MOC_Agency-at-Scale]]` for Agency at Scale, `[[Home]]` for general meetings)
 - Use the k2b-vault-writer skill conventions for all note creation and updates

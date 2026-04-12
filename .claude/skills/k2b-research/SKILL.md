@@ -124,7 +124,7 @@ tags: [research, k2b-system]
 date: YYYY-MM-DD
 type: reference
 origin: k2b-generate
-up: "[[MOC_K2B-System]]"
+up: "[[Home]]"
 ---
 
 # Research Briefing -- YYYY-MM-DD
@@ -158,7 +158,7 @@ date: YYYY-MM-DD
 type: research-briefing
 origin: k2b-generate
 source: "[Title](URL)"
-up: "[[MOC_K2B-System]]"
+up: "[[Home]]"
 ---
 
 # Deep Dive: [Topic/Source Title]
