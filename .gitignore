@@ -25,6 +25,16 @@ workspace/uploads/
 # Autoresearch iteration logs (per-skill, not committed)
 **/eval/results.tsv
 
+# Allhands presentation (side project, not K2B)
+allhands/
+docs/superpowers/specs/2026-03-30-allhands-presentation-design.md
+
+# Side scripts (not K2B)
+scripts/generate-org-chart.py
+
+# Claude Code plan artifacts
+.claude/plans/
+
 # OS files
 .DS_Store
 k2b-dashboard/.env
