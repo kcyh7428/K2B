@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-04-12 -- inline observer confirmation at session start
+
+**Commit:** `d02c574` feat: inline observer confirmation at session start
+
+**What shipped:** Observer findings at session start now prompt Keith for inline action on HIGH confidence items (confirm as guard / keep watching / reject). Confirm runs /learn which auto-creates a policy ledger entry. Reject logs to preference-signals.jsonl. This collapses the old 3-step manual flow (/observe -> /learn -> reinforce) into one natural-language response. /observe remains available for deep synthesis but is no longer required.
+
+**Codex review:** skipped (trivial: one-line hook header + CLAUDE.md docs)
+
+**Feature status change:** No feature -- continuation of self-improvement loop hardening
+
+**Follow-ups:** none
+
+---
+
 ## 2026-04-12 -- close the self-improvement loop with policy ledger
 
 **Commit:** `15b9e7a` feat: add policy ledger and close self-improvement loop
