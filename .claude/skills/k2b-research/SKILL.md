@@ -1,17 +1,19 @@
 ---
 name: k2b-research
-description: Deep dive into external topics -- scan for new AI tools, techniques, and ideas; analyze URLs, YouTube videos, and GitHub repos. This skill should be used when Keith says /research, "look into this", "what's new in AI", or wants to deep-dive into a topic, URL, or repo. For internal system health, use /improve instead.
+description: Deep dive into external topics -- scan for new AI tools, techniques, and ideas; analyze URLs, YouTube videos, and GitHub repos. This skill should be used when Keith says /research, "look into this", "what's new in AI", or wants to deep-dive into a topic, URL, or repo. Also triggers on /research deep for multi-source NotebookLM research. For internal system health, use /improve instead.
 ---
 
 # K2B Research Agent
 
-On-demand research that scans externally for new tools, techniques, and ideas, and deep dives into specific topics or URLs.
+On-demand research that scans externally for new tools, techniques, and ideas, and deep dives into specific topics or URLs. Supports multi-source deep research via NotebookLM.
 
 ## Commands
 
 - `/research` -- External scanning using research-topics.md
 - `/research "topic"` -- Deep dive on a specific topic
 - `/research <url>` -- Deep dive on a specific URL (YouTube, GitHub, article)
+- `/research deep <topic>` -- Multi-source deep research via NotebookLM (see below)
+- `/research deep <topic> --sources <url1> <url2> ...` -- Deep research with specific sources
 
 > For internal vault health and system auditing, use `/improve vault` instead.
 
@@ -68,6 +70,188 @@ Detect URL type and handle accordingly:
 - Key takeaways (5-10 bullet points)
 - K2B applicability analysis
 - Specific recommendations with implementation ideas
+
+## Deep Research Mode (`/research deep <topic>`) -- added 2026-04-12
+
+Multi-source research powered by Google NotebookLM. Creates a dedicated notebook, loads multiple sources, runs structured queries (analysis done by Gemini at zero token cost to K2B), then synthesizes findings into the vault.
+
+**Prerequisites**: `notebooklm-py` installed and authenticated (`notebooklm auth check --test`).
+
+### When to use deep vs regular research
+
+- **Regular** (`/research "topic"` or `/research <url>`): Single source or quick web scan. Fast, cheap.
+- **Deep** (`/research deep <topic>`): Multi-source synthesis across 10-50 sources. When the topic requires cross-referencing multiple perspectives, comparing implementations, or building a comprehensive understanding.
+
+### Workflow
+
+#### Phase 1: Source Gathering
+
+1. Search for sources in parallel:
+   - **YouTube**: Run `python3 ~/Projects/K2B/scripts/yt-search.py "<topic>" --count 15 --months 6` for relevant videos. Uses YouTube Data API v3 with K2B's OAuth credentials (works on both MacBook and Mac Mini). Costs ~101 quota units per search (100 for search.list + 1 for videos.list) out of 10,000/day.
+   - **Perplexity**: Use `mcp__perplexity-ask__perplexity_ask` for broader research including GitHub repos, Reddit discussions, blog posts, tweets. Ask for specific URLs and repo names.
+   - **Vault**: Grep `~/Projects/K2B-Vault/wiki/` for existing vault notes on the topic
+2. Present a numbered source list to Keith. Include title, source type, and brief reason for inclusion.
+3. Keith reviews, adds/removes sources, approves.
+
+If Keith provides `--sources <url1> <url2>`, skip the search phase and use those directly.
+
+#### Phase 2: NotebookLM Setup
+
+Run these commands sequentially:
+
+```bash
+notebooklm create "K2B Research: <topic>" --json
+# Parse notebook_id from JSON output
+notebooklm use <notebook_id>
+```
+
+Add each approved source:
+```bash
+# URLs, YouTube, articles
+notebooklm source add "<url>"
+
+# Vault notes (pass path directly -- notebooklm-py handles .md files natively)
+notebooklm source add ~/Projects/K2B-Vault/wiki/path/to/note.md
+
+# Local files (PDFs, text, markdown, Word docs)
+notebooklm source add ./path/to/file.pdf
+```
+
+Wait for all sources to be indexed:
+```bash
+notebooklm source list --json
+# All sources should show status: "ready"
+```
+
+**Source limit**: 50 per notebook (standard tier). If more than 50 sources, prioritize by relevance.
+
+#### Phase 3: Structured Research Queries
+
+Run 5-8 targeted questions against the notebook. NotebookLM (Gemini) does ALL the analysis -- zero Opus tokens for this phase.
+
+```bash
+notebooklm ask "<question>"
+```
+
+**Standard question categories** (adapt to topic):
+1. **Landscape**: "What are the main approaches/patterns for <topic> across these sources?"
+2. **Architecture**: "What architectural or implementation patterns do these sources recommend?"
+3. **Comparison**: "Compare the different approaches. What are the tradeoffs?"
+4. **Risks**: "What are the biggest failure modes, limitations, or mistakes people report?"
+5. **Minimal viable**: "What's the simplest starting point, and what's the recommended evolution path?"
+6. **Keith-specific**: "How would this apply to someone who is [Keith's context -- SJM executive, building a personal AI second brain, uses Obsidian vault]?"
+
+Add 1-2 topic-specific questions based on Keith's original prompt.
+
+Use `--json` if you need citation references for attribution in the vault note.
+
+#### Phase 4: Optional Deliverables
+
+Ask Keith: "Want an audio overview to listen to, a mind map, or an infographic?"
+
+If yes:
+```bash
+# Audio overview (podcast)
+notebooklm generate audio "Focus on <specific angle>" --json
+# Wait for completion (can use subagent or poll)
+notebooklm artifact wait <artifact_id> --timeout 1200
+notebooklm download audio ~/Projects/K2B-Vault/Assets/audio/<date>_research_<topic>.mp3
+
+# Mind map (instant)
+notebooklm generate mind-map
+notebooklm download mind-map ~/Projects/K2B-Vault/Assets/<date>_research_<topic>_mindmap.json
+
+# Infographic
+notebooklm generate infographic --detail detailed
+notebooklm artifact wait <artifact_id> --timeout 600
+notebooklm download infographic ~/Projects/K2B-Vault/Assets/images/<date>_research_<topic>.png
+```
+
+#### Phase 5: Synthesis
+
+Opus reads all NotebookLM answers and writes a structured vault note. This is the ONLY phase that costs Opus tokens. Apply K2B identity framing:
+- How does this apply to Keith's SJM/Signhub/TalentSignals context?
+- What maps to K2B's existing architecture (raw/wiki/review, commander/worker)?
+- What's actionable now vs later?
+
+Save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md` using the Deep Research Output Format below.
+
+#### Phase 6: Compile
+
+Trigger k2b-compile on the new raw research note:
+- Updates relevant wiki pages (concepts, projects, reference)
+- Creates new reference pages if needed
+- Updates cross-links
+
+### Deep Research Output Format
+
+```markdown
+---
+tags: [research, deep-dive, {topic-tags}]
+date: YYYY-MM-DD
+type: research-briefing
+origin: k2b-generate
+source: "NotebookLM deep research, N sources"
+notebooklm-notebook: "<notebook-id>"
+up: "[[Home]]"
+---
+
+# Deep Dive: [Topic Title]
+
+## Sources Analyzed
+N sources (X YouTube, Y GitHub repos, Z articles, W vault notes)
+NotebookLM notebook: [notebook-id] (persistent -- can revisit for follow-up queries)
+
+## Key Findings
+1. [finding with context]
+2. ...
+
+## Architecture/Patterns
+### [Pattern/Approach A]
+- What it is
+- Who uses it
+- Tradeoffs
+
+### [Pattern/Approach B]
+...
+
+## K2B Applicability
+### What maps directly to our architecture
+- [specific mapping]
+
+### What we'd need to build new
+- [gap analysis]
+
+### Recommended approach for Keith
+- [concrete recommendation]
+
+## Risks and Limitations
+- [risk 1]
+- [risk 2]
+
+## Implementation Ideas
+- [ ] [concrete next step]
+- [ ] ...
+
+## Deliverables
+- Audio overview: [[Assets/audio/YYYY-MM-DD_research_topic.mp3]] (if generated)
+- Mind map: [[Assets/YYYY-MM-DD_research_topic_mindmap.json]] (if generated)
+
+## Linked Notes
+[wikilinks to related vault notes]
+```
+
+### Commander/Worker Pattern for Deep Research
+
+Deep research adds Gemini (via NotebookLM) as a third worker alongside MiniMax:
+
+| Role | Who | What they do in deep research |
+|------|-----|-------------------------------|
+| Commander | Opus | Source gathering, question design, K2B framing, vault integration |
+| Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers |
+| Worker 2 | MiniMax M2.7 | Bulk extraction on individual long sources (if needed, per size gate) |
+
+Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. MiniMax handles individual source extraction when sources exceed the 10K char size gate.
 
 ## MiniMax extraction offload (added 2026-04-10)
 
