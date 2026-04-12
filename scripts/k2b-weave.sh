@@ -603,19 +603,29 @@ import re, sys
 path = sys.argv[1]
 with open(path, 'r') as f:
     content = f.read()
-# Find the first "| # | From | To |" table header
+# Find the proposals table header. Obsidian may add extra whitespace inside cells,
+# so normalize cells before matching: split on |, strip each cell, compare keywords.
 lines = content.splitlines()
 in_table = False
 header_seen = False
+
+def is_header_row(line):
+    """Match '| # | From | To | ...' with any amount of internal whitespace."""
+    cells = [c.strip().lower() for c in line.strip().strip("|").split("|")]
+    return len(cells) >= 3 and cells[0] == "#" and cells[1] == "from" and cells[2] == "to"
+
+def is_separator_row(line):
+    """Match '| --- | --- | ...' separator rows."""
+    return bool(re.match(r"^\|[\s\-:]+(\|[\s\-:]+)+\|?\s*$", line.strip()))
+
 for line in lines:
     stripped = line.strip()
-    if stripped.startswith("| # | From | To |"):
+    if not in_table and is_header_row(stripped):
         in_table = True
         header_seen = False
         continue
     if in_table:
-        # Separator line like |---|----|
-        if re.match(r"^\|[\s\-:]+\|", stripped):
+        if is_separator_row(stripped):
             header_seen = True
             continue
         if not stripped.startswith("|"):
@@ -623,20 +633,25 @@ for line in lines:
             continue
         if not header_seen:
             continue
-        # Parse row
+        # Parse row: split on |, strip, handle missing trailing pipe
+        if not stripped.endswith("|"):
+            stripped += " |"
         cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if len(cells) < 7:
+        if len(cells) < 3:
             continue
-        _num, from_slug, to_slug, _conf, _why, _evidence, decision = cells[:7]
+        # Map by position: #, From, To, Confidence, Why, Evidence, Decision
+        from_slug = cells[1] if len(cells) > 1 else ""
+        to_slug = cells[2] if len(cells) > 2 else ""
+        decision = cells[6] if len(cells) > 6 else ""
+        if not from_slug or not to_slug:
+            continue
         # Normalize decision tokens
         d = decision.lower().strip()
-        if d in ("check", "✓", "yes", "y", "ok", "x-check"):
+        if d in ("check", "✓", "yes", "y", "ok"):
             d_norm = "check"
         elif d in ("x", "✗", "no", "n", "reject"):
             d_norm = "x"
-        elif d == "defer":
-            d_norm = "defer"
-        elif d == "":
+        elif d in ("defer", ""):
             d_norm = "defer"
         else:
             d_norm = d
