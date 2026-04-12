@@ -222,6 +222,15 @@ After completing the main task, log this skill invocation:
 echo -e "$(date +%Y-%m-%d)\tk2b-autoresearch\t$(echo $RANDOM | md5sum | head -c 8)\tran autoresearch on SKILL" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
+## Post-Loop Handoff
+
+After the loop completes (perfect score, interrupted, or iteration limit):
+1. Report the summary (iterations run, kept, discarded, final pass rate)
+2. Prompt Keith: "Autoresearch created N commits. Run /ship to push + devlog?"
+3. Do NOT prompt /sync directly -- /ship handles the sync handoff in its step 12.
+
+Autoresearch always creates commits (Phase 4: commit before test). These commits are local-only until /ship pushes them. Skipping /ship means no devlog entry, no wiki/log.md entry, and the Mac Mini stays stale.
+
 ## Notes
 
 - No em dashes, no AI cliches, no sycophancy
