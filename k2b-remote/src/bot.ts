@@ -153,29 +153,29 @@ async function handleMessage(
   const chatId = String(ctx.chat?.id)
   if (!chatId) return
 
-  // Build memory context
-  const memoryContext = await buildMemoryContext(chatId, rawText)
-  const fullMessage = memoryContext + rawText
-
-  // Get existing session
-  const sessionId = getSession(chatId, 'interactive')
-
-  // Start typing indicator
   let typingInterval: ReturnType<typeof setInterval> | undefined
-  const sendTyping = async () => {
-    try {
-      await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
-    } catch {
-      // ignore typing errors
-    }
-  }
-  await sendTyping()
-  typingInterval = setInterval(sendTyping, TYPING_REFRESH_MS)
-
-  const obsMarker = markObservationStart()
-  const outboxMark = Date.now()
 
   try {
+    // Build memory context
+    const memoryContext = await buildMemoryContext(chatId, rawText)
+    const fullMessage = memoryContext + rawText
+
+    // Get existing session
+    const sessionId = getSession(chatId, 'interactive')
+
+    // Start typing indicator
+    const sendTyping = async () => {
+      try {
+        await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
+      } catch {
+        // ignore typing errors
+      }
+    }
+    await sendTyping()
+    typingInterval = setInterval(sendTyping, TYPING_REFRESH_MS)
+
+    const obsMarker = markObservationStart()
+    const outboxMark = Date.now()
     const { text, newSessionId, hadError } = await runAgent(fullMessage, sessionId, sendTyping)
 
     // Log observations (vault file changes from this agent run)
@@ -229,6 +229,13 @@ async function handleMessage(
           logger.info({ nudged }, 'Sent YouTube nudge buttons after message')
         }
       }
+    }
+  } catch (err) {
+    logger.error({ err, chatId, rawText }, 'handleMessage failed')
+    try {
+      await ctx.api.sendMessage(ctx.chat!.id, 'Something went wrong processing that. Try again.')
+    } catch (sendErr) {
+      logger.error({ err: sendErr }, 'Failed to send error fallback to Telegram')
     }
   } finally {
     if (typingInterval) clearInterval(typingInterval)
