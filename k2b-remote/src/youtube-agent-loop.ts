@@ -15,36 +15,22 @@ import {
   resetYtState,
   getYtPendingCandidates,
   setYtPendingCandidates,
-  clearFromAgentState,
-  addVideoToWatch,
-  skipVideoFromWatch,
   expireVideoFromWatch,
-  type VideoMetadata,
   type PendingCandidate,
   type YouTubeAgentState,
 } from './youtube.js'
 import { tasteModel } from './taste-model.js'
-import { runAgent } from './agent.js'
-import { getSession, setSession } from './db.js'
+import { runStatelessQuery } from './agent.js'
 import { logger } from './logger.js'
 
 // ---------------------------------------------------------------------------
-// Session-aware agent wrapper
+// Stateless classifier calls
 // ---------------------------------------------------------------------------
-// Every agent call for a given chat must resume the same Claude Code session
-// so that proactive YouTube messages and Keith's subsequent replies share one
-// continuous conversation. Previously each runAgent() call here spawned a
-// fresh session, which caused contradicting replies when Keith switched topic.
-
-async function runAgentWithSession(
-  chatId: string,
-  prompt: string,
-): Promise<{ text: string | null; newSessionId?: string; hadError?: boolean }> {
-  const sessionId = getSession(chatId, 'youtube')
-  const result = await runAgent(prompt, sessionId)
-  if (result.newSessionId) setSession(chatId, result.newSessionId, 'youtube')
-  return result
-}
+// The background loop only needs one thing from the agent: turn a structured
+// prompt into text. It does NOT need conversation history, tool access, or a
+// persisted session. `runStatelessQuery` wraps query() with
+// `persistSession: false` so these calls never write to ~/.claude/projects/.
+// See plans/2026-04-13_session-design-v3.md section D.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -205,7 +191,7 @@ export async function runYouTubeAgentLoop(
       '',
       'Keep it conversational, like a friend. Return ONLY the message text.',
     ].join('\n')
-    const { text: checkInMsg } = await runAgentWithSession(chatId, checkInPrompt)
+    const checkInMsg = await runStatelessQuery(checkInPrompt)
 
     if (checkInMsg) {
       await sendMessage(chatId, checkInMsg)
@@ -336,8 +322,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
     `- "${c.title}" by ${c.channel} (${c.duration_string}, uploaded ${c.upload_date})`
   ).join('\n')
 
-  const { text: screeningResult } = await runAgentWithSession(
-    chatId,
+  const screeningResult = await runStatelessQuery(
     `IMPORTANT: You are screening videos and composing a Telegram message. Do NOT use any tools. Do NOT read files. Do NOT run commands. Analyze the data provided below, give verdicts, compose the message, and return JSON. Nothing else.\n\nYou are K2B's YouTube curator screening videos for Keith.\n\nKeith's context:\n${vaultContext}\n\nTaste model:\n${tasteModel.toSummary()}\n\nCandidates:\n${candidateList}\n\nFor each candidate, give a verdict: RECOMMEND / MAYBE / SKIP with a one-sentence reason.\nThen compose a SHORT Telegram message presenting your top 2-3 picks conversationally:\n- Why each is worth Keith's time\n- How it connects to what he's working on\n- Any caveats\n\nEnd with: "Want me to add these to your Watch list?"\n\nReturn JSON: { "verdicts": [{"index": 0, "verdict": "RECOMMEND", "reason": "..."}], "message": "..." }`,
   )
 
@@ -430,267 +415,18 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
 }
 
 // ---------------------------------------------------------------------------
-// Handle Keith's response when agent is active
+// NOTE: Text-message routing used to live here (handleYouTubeAgentResponse,
+// parseAndExecuteActions, youtubeKeywords) and dispatched Keith's messages
+// to forced-choice prompts. Deleted in session-design-v3: the interactive
+// agent now reads YouTube state on demand via the `youtube_get_pending` MCP
+// tool in agent.ts and decides conversationally what to do. No text router
+// means "show me both" about infographics can no longer be keyword-caught
+// and handed to a forced-choice prompt that hallucinates add/skip actions.
 // ---------------------------------------------------------------------------
-
-export async function handleYouTubeAgentResponse(
-  text: string,
-  sendMessage: SendFn,
-  sendWithButtons: SendWithButtonsFn,
-  chatId: string
-): Promise<boolean> {
-  // Returns true if the message was handled, false if not a YouTube agent context
-
-  // Read state once -- use this snapshot throughout to avoid race conditions
-  const state = getYtState()
-  if (state.phase === 'idle') return false
-
-  const lower = text.toLowerCase().trim()
-
-  // Escape hatch: if the message clearly isn't about the pending YouTube videos,
-  // let it fall through to regular chat instead of swallowing it as a YouTube response.
-  // This prevents "show me the investment infographic" from being eaten when
-  // the YouTube agent is waiting for a response about video recommendations.
-  const youtubeKeywords = ['add', 'skip', 'pass', 'keep', 'watch', 'busy', 'not now', 'later',
-    'not interested', 'swap', 'replace', 'screen', 'youtube', 'video', 'claude', 'all', 'them',
-    'first', 'second', 'both', 'neither', 'outdated', 'old', 'stale']
-  const hasVideoId = state.pendingVideoIds.some(id => lower.includes(id.toLowerCase()))
-  const hasYoutubeKeyword = youtubeKeywords.some(kw => lower.includes(kw))
-  if (!hasVideoId && !hasYoutubeKeyword) {
-    // Not a YouTube response -- let it through to regular chat
-    logger.info({ phase: state.phase, text: text.slice(0, 80) }, 'YouTube handler: message not YouTube-related, passing through')
-    return false
-  }
-
-  if (state.phase === 'checking-watch') {
-    if (lower.includes('busy') || lower.includes('not now') || lower.includes('later')) {
-      resetYtState()
-      await sendMessage(chatId, 'No worries. Will check in next cycle.')
-      return true
-    }
-
-    if (lower.includes('skip') || lower.includes('not interested') || lower.includes('swap') || lower.includes('replace')) {
-      const toSkip = [...state.pendingVideoIds]
-      for (const vid of toSkip) {
-        try {
-          skipVideoFromWatch(vid, 'user-requested-swap', 'text-reply:swap', text)
-        } catch (err) {
-          logger.error({ err, vid }, 'skipVideoFromWatch failed during swap-all')
-        }
-      }
-      await sendMessage(chatId, 'Cleared. Finding fresh content...')
-      await findNewContent(sendMessage, sendWithButtons, chatId)
-      return true
-    }
-
-    // Complex response about videos -- parse into structured actions
-    const pendingRecs = readRecommendations().filter(r => state.pendingVideoIds.includes(r.video_id))
-    const executed = await parseAndExecuteActions(text, pendingRecs, 'watch-list', sendMessage, chatId)
-    if (executed.actedCount > 0 && executed.remainingCount === 0) {
-      resetYtState()
-    }
-    return true
-  }
-
-  if (state.phase === 'presenting-picks') {
-    if (lower.includes('add') && (lower.includes('all') || lower.includes('them'))) {
-      const toAdd = [...state.pendingVideoIds]
-      const candidatesMap = getYtPendingCandidates()
-      let addedCount = 0
-      for (const vid of toAdd) {
-        const cand = candidatesMap.get(vid)
-        if (!cand || !cand.title || cand.title === vid || !cand.channel || cand.channel === 'unknown') {
-          logger.warn({ vid, hasCached: !!cand }, 'add-all rejected: no real metadata')
-          continue
-        }
-        const meta: VideoMetadata = {
-          videoId: vid,
-          title: cand.title,
-          channel: cand.channel,
-          duration: cand.duration || undefined,
-          uploadDate: cand.uploadDate || undefined,
-          verdict: cand.reason || undefined,
-          verdictValue: (cand.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined) || undefined,
-        }
-        try {
-          addVideoToWatch(meta, 'text-reply:add-all')
-          addedCount++
-        } catch (err) {
-          logger.error({ err, vid }, 'addVideoToWatch failed during add-all')
-        }
-      }
-      resetYtState()
-      await sendMessage(chatId, `Added ${addedCount} to your Watch list.`)
-      return true
-    }
-
-    if (lower.includes('no') || lower.includes('skip') || lower.includes('pass')) {
-      resetYtState()
-      await sendMessage(chatId, 'No problem. Will find different content next time.')
-      return true
-    }
-
-    // Complex response about videos -- parse into structured actions
-    const pendingRecs = readRecommendations().filter(r => state.pendingVideoIds.includes(r.video_id))
-    const executed = await parseAndExecuteActions(text, pendingRecs, 'new-picks', sendMessage, chatId)
-    if (executed.actedCount > 0 && executed.remainingCount === 0) {
-      resetYtState()
-    }
-    return true
-  }
-
-  return false
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-interface ParsedActionPlan {
-  actions: Array<{ videoId: string; action: 'keep' | 'skip' | 'add' }>
-  message: string
-}
-
-interface ActionablePending {
-  videoId: string
-  title: string
-  channel: string
-  uploadDate: string
-}
-
-async function parseAndExecuteActions(
-  userText: string,
-  pendingRecs: YouTubeRecommendation[],
-  phase: 'watch-list' | 'new-picks',
-  sendMessage: SendFn,
-  chatId: string,
-): Promise<{ actedCount: number; remainingCount: number }> {
-  // Build the actionable list from either pendingRecs (watch-list phase)
-  // or pendingCandidates cache (new-picks phase, not yet in JSONL)
-  const currentCandidates = getYtPendingCandidates()
-  const currentPendingIds = getYtState().pendingVideoIds
-  const actionable: ActionablePending[] = phase === 'watch-list'
-    ? pendingRecs.map(r => ({ videoId: r.video_id, title: r.title ?? r.video_id, channel: r.channel || 'unknown', uploadDate: r.upload_date ?? '' }))
-    : currentPendingIds
-        .map((vid: string) => currentCandidates.get(vid))
-        .filter((c): c is PendingCandidate => !!c)
-        .map((c: PendingCandidate) => ({ videoId: c.videoId, title: c.title, channel: c.channel, uploadDate: c.uploadDate }))
-
-  if (actionable.length === 0) {
-    await sendMessage(chatId, 'No pending videos to act on.')
-    return { actedCount: 0, remainingCount: 0 }
-  }
-
-  const videoList = actionable.map(r => {
-    const publishDate = formatUploadDate(r.uploadDate)
-    const ageDays = r.uploadDate ? ageDaysFromYmd(r.uploadDate) : null
-    const ageStr = ageDays !== null ? `, ${ageDays}d since publish` : ''
-    return `  ${r.videoId}: "${r.title}" by ${r.channel} (published ${publishDate}${ageStr})`
-  }).join('\n')
-
-  const allowedActions = phase === 'watch-list'
-    ? '"keep" (leave in Watch list) or "skip" (remove from Watch list)'
-    : '"add" (add to Watch list) or "skip" (discard this recommendation)'
-
-  const prompt = [
-    'IMPORTANT: Return ONLY a valid JSON object. Do NOT use tools. Do NOT read files. Do NOT run commands.',
-    '',
-    `Keith said: "${userText}"`,
-    '',
-    `He is reviewing these pending videos:`,
-    videoList,
-    '',
-    `Interpret his intent and return JSON with this exact shape:`,
-    '{',
-    '  "actions": [',
-    `    { "videoId": "<id from list above>", "action": ${allowedActions.replace(/\(.+?\)/g, '').trim()} }`,
-    '  ],',
-    '  "message": "Short confirmation text (1-2 sentences) for Telegram"',
-    '}',
-    '',
-    'Rules:',
-    `- Include one action entry for EACH pending video. Use exactly the videoIds from the list.`,
-    `- If Keith mentions "outdated", "old", "2024", "2025": those match videos with the older publish dates.`,
-    `- If he says "keep the Claude one": match the video whose title contains "Claude".`,
-    `- action must be one of: ${allowedActions}`,
-    `- If intent is unclear, return message asking for clarification and empty actions array.`,
-    '',
-    'Return ONLY the JSON, no markdown fences, no prose.',
-  ].join('\n')
-
-  let parsed: ParsedActionPlan
-  try {
-    const { text: raw } = await runAgentWithSession(chatId, prompt)
-    if (!raw) throw new Error('empty response')
-    const jsonStr = raw.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
-    parsed = JSON.parse(jsonStr) as ParsedActionPlan
-  } catch (err) {
-    logger.error({ err, userText }, 'Failed to parse action plan')
-    await sendMessage(chatId, "Sorry, I couldn't parse that. Please tap the buttons on each card to add or skip individually.")
-    return { actedCount: 0, remainingCount: pendingRecs.length }
-  }
-
-  if (!parsed.actions || parsed.actions.length === 0) {
-    if (parsed.message) await sendMessage(chatId, parsed.message)
-    return { actedCount: 0, remainingCount: pendingRecs.length }
-  }
-
-  const actionableMap = new Map(actionable.map(a => [a.videoId, a]))
-  let actedCount = 0
-
-  for (const a of parsed.actions) {
-    const pending = actionableMap.get(a.videoId)
-    if (!pending) continue
-
-    try {
-      if (a.action === 'skip') {
-        // Canonical skip. For new-picks phase the video isn't in JSONL yet,
-        // so skipVideoFromWatch becomes a no-op on JSONL + a taste-model learn.
-        if (phase === 'watch-list') {
-          skipVideoFromWatch(a.videoId, 'text-reply-skip', `text-reply:${phase}`, userText)
-        } else {
-          // new-picks: just train the taste model and clear state; no playlist op needed
-          // (the video was never added).
-          if (pending.channel && pending.channel !== 'unknown') {
-            tasteModel.recordAction(a.videoId, pending.channel, 'skip', userText)
-          }
-          clearFromAgentState(a.videoId)
-        }
-        actedCount++
-      } else if (a.action === 'add' && phase === 'new-picks') {
-        // Canonical add-to-Watch. Requires real metadata from pendingCandidates.
-        const cand = currentCandidates.get(a.videoId)
-        if (!cand || !cand.title || cand.title === a.videoId || !cand.channel || cand.channel === 'unknown') {
-          logger.warn({ videoId: a.videoId, hasCached: !!cand }, 'text-reply add rejected: no real metadata')
-          continue
-        }
-        const meta: VideoMetadata = {
-          videoId: a.videoId,
-          title: cand.title,
-          channel: cand.channel,
-          duration: cand.duration || undefined,
-          uploadDate: cand.uploadDate || undefined,
-          verdict: cand.reason || undefined,
-          verdictValue: (cand.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined) || undefined,
-        }
-        addVideoToWatch(meta, `text-reply:${phase}`)
-        actedCount++
-      } else if (a.action === 'keep') {
-        // Leave as-is, just clear from pending state
-        clearFromAgentState(a.videoId)
-        actedCount++
-      }
-    } catch (err) {
-      logger.error({ err, videoId: a.videoId, action: a.action }, 'Action execution failed')
-    }
-  }
-
-  if (parsed.message) {
-    await sendMessage(chatId, parsed.message)
-  }
-
-  return { actedCount, remainingCount: getYtState().pendingVideoIds.length }
-}
 
 function readVaultContext(): string {
   const lines: string[] = []

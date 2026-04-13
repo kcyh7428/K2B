@@ -34,10 +34,10 @@ import {
   resetYtState,
   getYtPendingCandidates,
   setYtPendingCandidates,
+  ytMutex,
   type VideoMetadata,
 } from './youtube.js'
 import { tasteModel } from './taste-model.js'
-import { handleYouTubeAgentResponse } from './youtube-agent-loop.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
@@ -161,7 +161,7 @@ async function handleMessage(
     const fullMessage = memoryContext + rawText
 
     // Get existing session
-    const sessionId = getSession(chatId, 'interactive')
+    const sessionId = getSession(chatId)
 
     // Start typing indicator
     const sendTyping = async () => {
@@ -183,7 +183,7 @@ async function handleMessage(
 
     // Save session
     if (newSessionId) {
-      setSession(chatId, newSessionId, 'interactive')
+      setSession(chatId, newSessionId)
     }
 
     // Save to memory
@@ -213,23 +213,6 @@ async function handleMessage(
       }
     }
 
-    // After YouTube-related messages, send appropriate buttons
-    // Skip if agent returned an error or if the message is just a URL (not a command)
-    const lowerText = rawText.toLowerCase()
-    const isYouTubeRelated = lowerText.includes('youtube') && !rawText.match(/^https?:\/\//)
-    if (isYouTubeRelated && !hadError) {
-      if (rawText.toLowerCase().includes('screen')) {
-        const screenCount = await sendScreenOptions(chatId)
-        if (screenCount > 0) {
-          logger.info({ screenCount }, 'Sent YouTube screen options after message')
-        }
-      } else {
-        const nudged = await sendPendingNudges(chatId)
-        if (nudged > 0) {
-          logger.info({ nudged }, 'Sent YouTube nudge buttons after message')
-        }
-      }
-    }
   } catch (err) {
     logger.error({ err, chatId, rawText }, 'handleMessage failed')
     try {
@@ -271,9 +254,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 - If Keith wants to save something (content idea, feature, insight), create the vault note via k2b-vault-writer
 - If Keith wants to move the video to a category playlist (K2B Claude, K2B Recruit, etc.), use scripts/yt-playlist-add.sh`
     const highlightsMarker = markObservationStart()
-    const priorSessionId = getSession(chatId, 'interactive')
+    const priorSessionId = getSession(chatId)
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
+    if (newSessionId) setSession(chatId, newSessionId)
     logObservations(highlightsMarker, `youtube-highlights-${videoId}`, prompt)
     const result = text ?? '(could not generate highlights)'
 
@@ -293,9 +276,11 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     }
 
   } else if (action === 'watch') {
-    // Canonical mark-watched path
+    // Canonical mark-watched path (mutex-guarded)
     try {
-      markVideoWatched(videoId, 'button:watch')
+      await ytMutex.runExclusive(async () => {
+        markVideoWatched(videoId, 'button:watch')
+      })
       await ctx.api.sendMessage(ctx.chat!.id, `Marked as watched. Enjoy!`)
     } catch (err) {
       logger.error({ err, videoId }, 'markVideoWatched failed')
@@ -307,9 +292,11 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendMessage(ctx.chat!.id, "What's your take?")
 
   } else if (action === 'screen') {
-    // Canonical move-to-Screen path
+    // Canonical move-to-Screen path (mutex-guarded)
     try {
-      moveVideoToScreen(videoId, 'button:screen')
+      await ytMutex.runExclusive(async () => {
+        moveVideoToScreen(videoId, 'button:screen')
+      })
       await ctx.api.sendMessage(ctx.chat!.id, 'Sent to Screen.')
     } catch (err) {
       logger.error({ err, videoId }, 'moveVideoToScreen failed')
@@ -350,19 +337,21 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     const reason = tasteModel.deduceSkipReasonKey(deductionSource)
 
     try {
-      if (rec) {
-        skipVideoFromWatch(videoId, reason, 'button:skip-confirm')
-      } else if (cand) {
-        // New-pick skip: train taste model, log signal, clear state
-        appendFeedbackSignal(videoId, 'skip_reason', reason)
-        if (cand.channel && cand.channel !== 'unknown') {
-          tasteModel.recordAction(videoId, cand.channel, 'skip', reason)
+      await ytMutex.runExclusive(async () => {
+        if (rec) {
+          skipVideoFromWatch(videoId, reason, 'button:skip-confirm')
+        } else if (cand) {
+          // New-pick skip: train taste model, log signal, clear state
+          appendFeedbackSignal(videoId, 'skip_reason', reason)
+          if (cand.channel && cand.channel !== 'unknown') {
+            tasteModel.recordAction(videoId, cand.channel, 'skip', reason)
+          }
+          clearFromAgentState(videoId)
+        } else {
+          logger.warn({ videoId }, 'skip-confirm: no rec or pendingCandidate, clearing state only')
+          clearFromAgentState(videoId)
         }
-        clearFromAgentState(videoId)
-      } else {
-        logger.warn({ videoId }, 'skip-confirm: no rec or pendingCandidate, clearing state only')
-        clearFromAgentState(videoId)
-      }
+      })
       await ctx.api.sendMessage(ctx.chat!.id, 'Skipped. Got it.')
     } catch (err) {
       logger.error({ err, videoId }, 'skip-confirm failed')
@@ -397,7 +386,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
       verdictValue: cached.verdict as 'HIGH' | 'MEDIUM' | 'LOW' | undefined,
     }
     try {
-      addVideoToWatch(meta, 'button:agent-add')
+      await ytMutex.runExclusive(async () => {
+        addVideoToWatch(meta, 'button:agent-add')
+      })
       await ctx.api.sendMessage(ctx.chat!.id, `Added "${cached.title}" to Watch list.`)
     } catch (err) {
       logger.error({ err, videoId }, 'addVideoToWatch failed')
@@ -436,9 +427,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in wiki/context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in review/.`
     const promoteMarker = markObservationStart()
-    const priorSessionId = getSession(chatId, 'interactive')
+    const priorSessionId = getSession(chatId)
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
+    if (newSessionId) setSession(chatId, newSessionId)
     logObservations(promoteMarker, `youtube-promote-${videoId}`, prompt)
     const result = text ?? '(created)'
 
@@ -467,16 +458,18 @@ Your job:
 2. Create a vault note in raw/youtube/ via k2b-vault-writer.
 3. Return a short summary of the note you created.`
     const screenMarker = markObservationStart()
-    const priorSessionId = getSession(chatId, 'interactive')
+    const priorSessionId = getSession(chatId)
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
+    if (newSessionId) setSession(chatId, newSessionId)
     logObservations(screenMarker, `youtube-screen-${videoId}`, prompt)
 
-    // Canonical state mutation: mark processed + remove from Screen playlist
+    // Canonical state mutation: mark processed + remove from Screen playlist (mutex-guarded)
     try {
-      skipVideoFromScreen(videoId, 'screen-processed', 'button:screen-process')
-      // Override status from 'skipped' to 'processed' (skipVideoFromScreen uses 'skipped')
-      updateRecommendation(videoId, { status: 'processed', outcome: 'screen-processed' })
+      await ytMutex.runExclusive(async () => {
+        skipVideoFromScreen(videoId, 'screen-processed', 'button:screen-process')
+        // Override status from 'skipped' to 'processed' (skipVideoFromScreen uses 'skipped')
+        updateRecommendation(videoId, { status: 'processed', outcome: 'screen-processed' })
+      })
     } catch (err) {
       logger.error({ err, videoId }, 'screen-process post-agent state mutation failed')
     }
@@ -493,9 +486,11 @@ Your job:
     }
 
   } else if (action === 'screen-skip') {
-    // Canonical skip-from-Screen path
+    // Canonical skip-from-Screen path (mutex-guarded)
     try {
-      skipVideoFromScreen(videoId, 'screen-skipped', 'button:screen-skip')
+      await ytMutex.runExclusive(async () => {
+        skipVideoFromScreen(videoId, 'screen-skipped', 'button:screen-skip')
+      })
       await ctx.api.sendMessage(ctx.chat!.id, 'Skipped and removed from Screen.')
     } catch (err) {
       logger.error({ err, videoId }, 'skipVideoFromScreen failed')
@@ -543,14 +538,16 @@ Your job:
 3. Return a short summary of the note you created.`
       const screenMarker = markObservationStart()
       try {
-        const priorSessionId = getSession(chatId, 'interactive')
+        const priorSessionId = getSession(chatId)
         const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-        if (newSessionId) setSession(chatId, newSessionId, 'interactive')
+        if (newSessionId) setSession(chatId, newSessionId)
         logObservations(screenMarker, `youtube-screen-${v.id}`, prompt)
-        // Canonical state mutation after agent returns
+        // Canonical state mutation after agent returns (mutex-guarded)
         try {
-          skipVideoFromScreen(v.id, 'screen-processed', 'button:screen-all')
-          updateRecommendation(v.id, { status: 'processed', outcome: 'screen-processed' })
+          await ytMutex.runExclusive(async () => {
+            skipVideoFromScreen(v.id, 'screen-processed', 'button:screen-all')
+            updateRecommendation(v.id, { status: 'processed', outcome: 'screen-processed' })
+          })
         } catch (mutErr) {
           logger.error({ err: mutErr, videoId: v.id }, 'screen-all post-agent state mutation failed')
         }
@@ -583,23 +580,26 @@ async function handleCommentOrSkipReason(
   if (pendingKey.startsWith('skip:')) {
     // Skip reason capture -- execute the canonical skip now that we have the reason.
     // Handles BOTH Watch-list skips (rec in JSONL) and new-pick skips (pendingCandidates only).
+    // Wrapped in ytMutex (Codex v3 round 4: this was the missing-mutex gap).
     const videoId = pendingKey.slice(5)
-    const rec = readRecommendations().find(r => r.video_id === videoId)
-    const cand = getYtPendingCandidates().get(videoId)
     try {
-      if (rec) {
-        skipVideoFromWatch(videoId, text, 'text-reply:skip-reason', text)
-      } else if (cand) {
-        // New-pick skip: train taste model, log signal, clear state
-        appendFeedbackSignal(videoId, 'skip_reason', 'user-provided', text)
-        if (cand.channel && cand.channel !== 'unknown') {
-          tasteModel.recordAction(videoId, cand.channel, 'skip', text)
+      await ytMutex.runExclusive(async () => {
+        const rec = readRecommendations().find(r => r.video_id === videoId)
+        const cand = getYtPendingCandidates().get(videoId)
+        if (rec) {
+          skipVideoFromWatch(videoId, text, 'text-reply:skip-reason', text)
+        } else if (cand) {
+          // New-pick skip: train taste model, log signal, clear state
+          appendFeedbackSignal(videoId, 'skip_reason', 'user-provided', text)
+          if (cand.channel && cand.channel !== 'unknown') {
+            tasteModel.recordAction(videoId, cand.channel, 'skip', text)
+          }
+          clearFromAgentState(videoId)
+        } else {
+          logger.warn({ videoId }, 'skip-reason capture: no rec or pendingCandidate')
+          clearFromAgentState(videoId)
         }
-        clearFromAgentState(videoId)
-      } else {
-        logger.warn({ videoId }, 'skip-reason capture: no rec or pendingCandidate')
-        clearFromAgentState(videoId)
-      }
+      })
       await ctx.api.sendMessage(ctx.chat!.id, 'Got it, skip reason noted.')
     } catch (err) {
       logger.error({ err, videoId }, 'skip-reason capture failed')
@@ -744,9 +744,9 @@ async function handleDirectYouTubeUrl(
     .text('Skip', `youtube:skip:${videoId}`)
 
   try {
-    const priorSessionId = getSession(chatId, 'interactive')
+    const priorSessionId = getSession(chatId)
     const { text: verdict, newSessionId } = await runAgent(screenPrompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
+    if (newSessionId) setSession(chatId, newSessionId)
     const verdictText = verdict ?? `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Could not screen this video)`
     const formatted = formatForTelegram(verdictText)
     await ctx.api.sendMessage(ctx.chat!.id, formatted, { parse_mode: 'HTML', reply_markup: keyboard })
@@ -866,29 +866,6 @@ export function createBot(): Bot {
       await handleDirectYouTubeUrl(ctx, ytMatch[1], text.trim(), chatId)
       return
     }
-
-    // Check if YouTube agent loop is waiting for a response
-    const handled = await handleYouTubeAgentResponse(
-      text,
-      async (cid, msg) => {
-        try {
-          await ctx.api.sendMessage(Number(cid), formatForTelegram(msg), { parse_mode: 'HTML' })
-        } catch {
-          await ctx.api.sendMessage(Number(cid), msg.replace(/<[^>]+>/g, ''))
-        }
-      },
-      async (cid, msg, _buttons, prebuiltKeyboard) => {
-        const opts: Record<string, unknown> = { parse_mode: 'HTML' }
-        if (prebuiltKeyboard) opts.reply_markup = prebuiltKeyboard
-        try {
-          await ctx.api.sendMessage(Number(cid), formatForTelegram(msg), opts)
-        } catch {
-          await ctx.api.sendMessage(Number(cid), msg.replace(/<[^>]+>/g, ''))
-        }
-      },
-      chatId
-    )
-    if (handled) return
 
     if (text.startsWith('/')) return // skip unhandled commands
     await handleMessage(ctx, text)

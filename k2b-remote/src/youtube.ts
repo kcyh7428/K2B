@@ -1,10 +1,19 @@
 import { readFileSync, appendFileSync, writeFileSync, existsSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { Mutex } from 'async-mutex'
 import { K2B_PROJECT_ROOT, ALLOWED_CHAT_ID } from './config.js'
 import { tasteModel } from './taste-model.js'
 import { logger } from './logger.js'
 import { getYouTubeAgentState, upsertYouTubeAgentState, resetYouTubeAgentState, type YouTubeAgentStateRow } from './db.js'
+
+// Process-local mutex serializing ALL YouTube mutations (add/skip/clear/move).
+// Both button callbacks (bot.ts) and agent MCP tool handlers (agent.ts) acquire
+// this same lock, so a button click racing with an in-flight agent tool call
+// cannot double-add or double-remove a video. The mutex is process-local, not
+// DB-level -- correctness depends on pm2 running a single k2b-remote process.
+// See plans/2026-04-13_session-design-v3.md section B.
+export const ytMutex = new Mutex()
 
 const VAULT = process.env.K2B_VAULT ?? '/Users/fastshower/Projects/K2B-Vault'
 const RECOMMENDED_FILE = `${VAULT}/wiki/context/youtube-recommended.jsonl`
@@ -480,4 +489,125 @@ export function expireVideoFromWatch(videoId: string, source: string): void {
   }
   clearFromAgentState(videoId)
   logger.info({ videoId, source }, 'Canonical expire-from-Watch completed')
+}
+
+// ---------------------------------------------------------------------------
+// Guarded mutation wrappers (agent MCP tool path)
+// ---------------------------------------------------------------------------
+//
+// These wrappers are called by agent tool handlers (see agent.ts). They:
+//  1. Acquire ytMutex so the mutation cannot race against a concurrent button
+//     click or other agent turn.
+//  2. Re-read state INSIDE the lock (TOCTOU-safe).
+//  3. No-op with `already_handled` if the video has already been cleared from
+//     pendingVideoIds by someone else (e.g. Keith tapped the button first).
+//  4. Return a structured result the agent can present to Keith instead of
+//     throwing, so the conversation stays coherent.
+//
+// Button callbacks in bot.ts do NOT use these wrappers -- they wrap the raw
+// mutation functions in `ytMutex.runExclusive(...)` directly, because a button
+// tap is the authoritative user action and should succeed regardless of state.
+
+export type GuardedMutationResult =
+  | { status: 'done'; videoId: string; title?: string }
+  | { status: 'idle' }
+  | { status: 'already_handled'; videoId: string }
+  | { status: 'stale_state'; reason: string }
+
+export async function guardedAddVideoToWatch(
+  meta: VideoMetadata,
+  source: string,
+): Promise<GuardedMutationResult> {
+  return ytMutex.runExclusive(async () => {
+    const state = getYtState()
+    if (state.phase === 'idle') return { status: 'idle' }
+    if (!state.pendingVideoIds.includes(meta.videoId)) {
+      return { status: 'already_handled', videoId: meta.videoId }
+    }
+    addVideoToWatch(meta, source)
+    return { status: 'done', videoId: meta.videoId, title: meta.title }
+  })
+}
+
+export async function guardedSkipVideoFromWatch(
+  videoId: string,
+  reason: string,
+  source: string,
+  userText?: string,
+): Promise<GuardedMutationResult> {
+  return ytMutex.runExclusive(async () => {
+    const state = getYtState()
+    if (state.phase === 'idle') return { status: 'idle' }
+    if (!state.pendingVideoIds.includes(videoId)) {
+      return { status: 'already_handled', videoId }
+    }
+    const rec = readRecommendations().find(r => r.video_id === videoId)
+    const cand = getYtPendingCandidates().get(videoId)
+    if (rec) {
+      skipVideoFromWatch(videoId, reason, source, userText)
+    } else if (cand) {
+      // New-pick skip: never added to playlist, just train + clear
+      appendFeedbackSignal(videoId, 'skip_reason', reason, userText)
+      if (cand.channel && cand.channel !== 'unknown') {
+        tasteModel.recordAction(videoId, cand.channel, 'skip', reason)
+      }
+      clearFromAgentState(videoId)
+    } else {
+      clearFromAgentState(videoId)
+    }
+    return { status: 'done', videoId }
+  })
+}
+
+/** Agent "keep this one" tool: just clears from pending state without any
+ *  playlist mutation. Used when Keith wants the video to stay where it is. */
+export async function guardedKeepVideo(videoId: string): Promise<GuardedMutationResult> {
+  return ytMutex.runExclusive(async () => {
+    const state = getYtState()
+    if (state.phase === 'idle') return { status: 'idle' }
+    if (!state.pendingVideoIds.includes(videoId)) {
+      return { status: 'already_handled', videoId }
+    }
+    clearFromAgentState(videoId)
+    return { status: 'done', videoId }
+  })
+}
+
+/** Agent "swap all" tool: skip every currently pending video. All target IDs
+ *  must still be pending or the whole call fails with stale_state (no partial
+ *  apply). Codex refinement from v3 round 3. */
+export async function guardedSwapAll(
+  reason: string,
+  source: string,
+): Promise<GuardedMutationResult & { skipped?: string[] }> {
+  return ytMutex.runExclusive(async () => {
+    const state = getYtState()
+    if (state.phase === 'idle') return { status: 'idle' }
+    const targets = [...state.pendingVideoIds]
+    if (targets.length === 0) {
+      return { status: 'stale_state', reason: 'no_pending_videos' }
+    }
+    const skipped: string[] = []
+    for (const videoId of targets) {
+      const rec = readRecommendations().find(r => r.video_id === videoId)
+      const cand = getYtPendingCandidates().get(videoId)
+      try {
+        if (rec) {
+          skipVideoFromWatch(videoId, reason, source)
+        } else if (cand) {
+          appendFeedbackSignal(videoId, 'skip_reason', reason)
+          if (cand.channel && cand.channel !== 'unknown') {
+            tasteModel.recordAction(videoId, cand.channel, 'skip', reason)
+          }
+          clearFromAgentState(videoId)
+        } else {
+          clearFromAgentState(videoId)
+        }
+        skipped.push(videoId)
+      } catch (err) {
+        logger.error({ err, videoId }, 'guardedSwapAll: per-video skip failed (continuing)')
+      }
+    }
+    return { status: 'done', videoId: '', skipped }
+  })
 }

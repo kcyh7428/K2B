@@ -12,6 +12,8 @@ dist/
 store/
 *.log
 *.pid
+k2b-remote/tasks.db
+k2b-remote/*.db
 
 # Deferred-sync mailbox (local to each machine, never committed)
 # One file per /ship --defer, consumed and deleted by /sync.

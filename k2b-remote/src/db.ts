@@ -19,39 +19,38 @@ export function initDatabase(): void {
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
 
-  // Sessions table (v2: scoped by workflow)
+  // Sessions table (v3: one session per chat, no scope)
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
-      chat_id TEXT NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'interactive',
-      session_id TEXT NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (chat_id, scope)
+      chat_id TEXT PRIMARY KEY,
+      session_id TEXT,
+      updated_at INTEGER
     )
   `)
 
-  // Migration: if sessions has old single-column PK (no scope), rebuild
+  // Migration: v1 (chat_id PK, no scope) or v2 (composite PK with scope) -> v3
   const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>
-  if (!sessionCols.some(c => c.name === 'scope')) {
+  if (sessionCols.some(c => c.name === 'scope')) {
+    // v2 -> v3: drop the scope column, keep only the interactive rows. Stale
+    // youtube-scope rows are dropped -- the new design (session-design-v3)
+    // collapses both into one persistent conversational session per chat.
     db.exec('BEGIN TRANSACTION')
     try {
       db.exec(`
-        CREATE TABLE sessions_v2 (
-          chat_id TEXT NOT NULL,
-          scope TEXT NOT NULL DEFAULT 'interactive',
-          session_id TEXT NOT NULL,
-          updated_at INTEGER NOT NULL,
-          PRIMARY KEY (chat_id, scope)
+        CREATE TABLE sessions_v3 (
+          chat_id TEXT PRIMARY KEY,
+          session_id TEXT,
+          updated_at INTEGER
         )
       `)
       db.exec(`
-        INSERT INTO sessions_v2 (chat_id, scope, session_id, updated_at)
-        SELECT chat_id, 'interactive', session_id, updated_at FROM sessions
+        INSERT INTO sessions_v3 (chat_id, session_id, updated_at)
+        SELECT chat_id, session_id, updated_at FROM sessions WHERE scope = 'interactive'
       `)
       db.exec('DROP TABLE sessions')
-      db.exec('ALTER TABLE sessions_v2 RENAME TO sessions')
+      db.exec('ALTER TABLE sessions_v3 RENAME TO sessions')
       db.exec('COMMIT')
-      logger.info('Migrated sessions: added scope column')
+      logger.info('Migrated sessions: dropped scope column (v2 -> v3)')
     } catch (err) {
       db.exec('ROLLBACK')
       throw err
@@ -144,27 +143,23 @@ export function initDatabase(): void {
 
 // --- Session CRUD ---
 
-export function getSession(chatId: string, scope: 'interactive' | 'youtube' = 'interactive'): string | undefined {
+export function getSession(chatId: string): string | undefined {
   const row = getDb()
-    .prepare('SELECT session_id FROM sessions WHERE chat_id = ? AND scope = ?')
-    .get(chatId, scope) as { session_id: string } | undefined
-  return row?.session_id
+    .prepare('SELECT session_id FROM sessions WHERE chat_id = ?')
+    .get(chatId) as { session_id: string | null } | undefined
+  return row?.session_id ?? undefined
 }
 
-export function setSession(chatId: string, sessionId: string, scope: 'interactive' | 'youtube' = 'interactive'): void {
+export function setSession(chatId: string, sessionId: string): void {
   getDb()
     .prepare(
-      'INSERT INTO sessions (chat_id, scope, session_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(chat_id, scope) DO UPDATE SET session_id = ?, updated_at = ?'
+      'INSERT INTO sessions (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = ?, updated_at = ?'
     )
-    .run(chatId, scope, sessionId, Date.now(), sessionId, Date.now())
+    .run(chatId, sessionId, Date.now(), sessionId, Date.now())
 }
 
-export function clearSession(chatId: string, scope?: 'interactive' | 'youtube'): void {
-  if (scope) {
-    getDb().prepare('DELETE FROM sessions WHERE chat_id = ? AND scope = ?').run(chatId, scope)
-  } else {
-    getDb().prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId)
-  }
+export function clearSession(chatId: string): void {
+  getDb().prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId)
 }
 
 // --- Memory CRUD ---
