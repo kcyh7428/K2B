@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-04-13 -- Telegram media sending via outbox directory
+
+**Commits:** `1050e52` feat: Telegram media sending via outbox directory | `51a4d8e` fix: delete outbox manifests after send, not before
+
+**What shipped:** K2B can now send images, audio, video, and documents to Keith via Telegram. Agent writes a JSON manifest to `workspace/telegram-outbox/`, bot scans after `runAgent()` returns and sends files via grammy's `sendPhoto`/`sendAudio`/`sendVideo`/`sendDocument`. Supports 10MB photo limit with document fallback, 50MB hard cap. Updated k2b-media-generator skill and k2b-remote CLAUDE.md with outbox instructions so the agent knows how to use it.
+
+**Codex review:** 5 findings. Fixed 2: (1) manifest deleted before send -- now deleted only after successful send. (2) TOCTOU on file stat -- moved inside try block. Accepted 3: same-millisecond timestamp miss (extremely rare), concurrent scanOutbox race (Node single-threaded), wrong-chat-id (single-user bot).
+
+**Feature status change:** No feature -- infrastructure enhancement
+
+**Follow-ups:** none
+
+---
+
 ## 2026-04-13 -- session isolation: split YouTube agent from Telegram chat
 
 **Commits:** `66d39cb` feat: scoped sessions + persistent YouTube agent state in SQLite | `3f38712` refactor: migrate youtube-agent-loop to persisted SQLite state | `e70a3d7` refactor: migrate bot.ts to DB-backed session scopes and YouTube state | `448815d` fix: enforce 12h expiry on pendingCandidates reads
