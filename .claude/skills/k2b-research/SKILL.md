@@ -253,6 +253,121 @@ Deep research adds Gemini (via NotebookLM) as a third worker alongside MiniMax:
 
 Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. MiniMax handles individual source extraction when sources exceed the 10K char size gate.
 
+## `/research videos "<query>"` -- on-demand video discovery via NotebookLM
+
+Retires the old YouTube recommend agent. Finds videos matching a query, filters them via NotebookLM using Keith's baked framing + the tail of `wiki/context/video-preferences.md`, adds suitable ones to the K2B Watch playlist, drops per-video review notes, sends a Telegram notification.
+
+**Prerequisites:** `notebooklm auth check --test` passes. `K2B_BOT_TOKEN` is set in env.
+
+### Baked Keith framing (do not edit per query)
+
+> Senior TA leader running AI transformation in a large traditional corporate (SJM Resorts, Macau). Also operates Signhub Tech (HK), TalentSignals, Agency at Scale. Content angle: showing how senior executives in traditional corporates use AI to 10x effectiveness. Prefer content creators with clear concrete examples over academic papers. Prefer actionable over theoretical. Prefer deployable in 90 days over visionary. Skip pure hype, skip thumbnails with "SHOCKING" / "INSANE", skip anything under 3 minutes, skip Chinese-only content unless specifically requested.
+
+### Flow
+
+1. **Create fresh notebook:**
+   ```bash
+   NB_ID=$(notebooklm create "Videos: <query>" --json | jq -r '.id')
+   ```
+
+2. **Deep research on the query:**
+   ```bash
+   notebooklm source add-research "<query>" --mode deep --no-wait -n "$NB_ID"
+   ```
+
+3. **Wait for research + source indexing** via subagent pattern (see notebooklm skill docs). Use timeout 1800s.
+
+4. **Read the preference tail** into a variable:
+   ```bash
+   PREF_TAIL=$(tail -n 30 ~/Projects/K2B-Vault/wiki/context/video-preferences.md | sed 's/"/\\"/g')
+   ```
+
+5. **Ask NotebookLM with the JSON filter prompt** (below), capture the answer:
+   ```bash
+   notebooklm ask "$(cat <<EOF
+   From the sources in this notebook, list every YouTube video and classify it.
+
+   Return JSON: [{"url", "title", "channel", "duration", "suitable": true|false, "why"}].
+
+   Definition of "suitable" -- this is for Keith Cheung:
+
+   Senior TA leader running AI transformation in a large traditional corporate (SJM Resorts, Macau). Also operates Signhub Tech (HK), TalentSignals, Agency at Scale. Content angle: showing how senior executives in traditional corporates use AI to 10x effectiveness. Prefer content creators with clear concrete examples over academic papers. Prefer actionable over theoretical. Prefer deployable in 90 days over visionary. Skip pure hype, skip thumbnails with "SHOCKING" / "INSANE", skip anything under 3 minutes, skip Chinese-only content unless specifically requested.
+
+   Recent feedback from Keith to consider (most recent at bottom):
+
+   $PREF_TAIL
+
+   For each video, set suitable=true only if it matches the framing AND does not contradict recent feedback. For suitable=true videos, "why" should be a single sentence explaining the relevance hook (what specifically Keith will get out of watching). For suitable=false videos, "why" should be a single sentence explaining what disqualified it.
+
+   Return ONLY the JSON array, no prose before or after.
+   EOF
+   )" -n "$NB_ID"
+   ```
+
+6. **Parse the JSON answer defensively.** If the answer has prose around the JSON, extract the array with `jq` or a Python one-liner. If parse fails, retry the ask once with a stricter prompt. If second parse fails, log raw answer to the run record, notify Keith the run failed parsing, abort the playlist/review-note steps.
+
+7. **For each `suitable: true` entry:**
+   a. Extract `video_id` from the URL (the `v=` query param, or last path segment for `youtu.be/`).
+   b. Call `scripts/yt-playlist-add.sh "PLg0PUkz5itjwIXWVuSlvxud0ZR2JBsacX" "$VIDEO_ID"`. Log success/failure per video.
+   c. Create review note at `K2B-Vault/review/video_$(date +%F)_<title-slug>.md` using the template in Step 8.
+
+8. **Review note template** (one per added video):
+   ```markdown
+   ---
+   type: video-feedback
+   review-action: pending
+   review-notes: ""
+   video-url: <url from JSON>
+   video-title: "<title from JSON>"
+   channel: "<channel from JSON>"
+   duration: "<duration from JSON>"
+   added: <YYYY-MM-DD>
+   why-suitable: "<why from JSON>"
+   query: "<original query>"
+   up: "[[index]]"
+   ---
+   ```
+   Body is empty. Keith will fill `review-notes` and flip `review-action` after watching.
+
+9. **Write run record** at `K2B-Vault/raw/research/$(date +%F)_videos_<query-slug>.md` with frontmatter + sections: query, baked framing version, preference tail used, full JSON response (suitable + skipped with reasons), playlist adds, review notes created, any errors. This is the durable audit trail.
+
+10. **Send Telegram notification:**
+    ```bash
+    MSG="K2B found <N> videos for: *<query>*\n\n"
+    # For each suitable video, append: "• <title> -- <why>\n<url>\n"
+    scripts/send-telegram.sh "$MSG"
+    ```
+    Keep under 4000 chars (Telegram hard limit is 4096). If more than 4 videos, batch into 2 messages.
+
+11. **Delete the notebook** (fresh per run, no accumulation):
+    ```bash
+    notebooklm notebook delete "$NB_ID"
+    ```
+
+12. **Append to skill-usage-log** as usual.
+
+### Scheduling (not a skill concern)
+
+Wrap with `/schedule`:
+```
+/schedule add "research-videos-ai-recruiting" weekly "/research videos \"AI recruiting tools for large enterprises\""
+```
+The scheduler runs the command on the Mac Mini weekly. Output lands in the vault via Syncthing. Telegram notification fires from the Mac Mini using `send-telegram.sh`.
+
+### Failure modes
+
+- **NotebookLM research times out (1800s):** abort, log to run record, notify Keith "research timed out on: <query>".
+- **JSON parse fails twice:** log raw answer, notify Keith "filter response wasn't parseable, see raw/research/".
+- **Playlist add fails for a video:** log per-video in run record, continue with the others, include the failure count in the Telegram summary.
+- **Zero suitable videos:** still write the run record, notify Keith "nothing new worth watching for: <query> (N candidates screened, all rejected -- see run record for why)".
+
+### What NOT to do
+
+- Do NOT cache NotebookLM notebooks across runs. Fresh per run.
+- Do NOT dedupe across runs via a URL log. The filter prompt's preference tail handles this naturally once Keith rates videos.
+- Do NOT ask Keith to confirm each add. The filter already decided. Keith's feedback comes after watching.
+- Do NOT write to `wiki/context/video-preferences.md` from `/research videos`. Only `/review` appends there.
+
 ## MiniMax extraction offload (added 2026-04-10)
 
 **Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to MiniMax M2.7 and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
