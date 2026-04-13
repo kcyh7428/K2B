@@ -123,20 +123,12 @@ export function initDatabase(): void {
     logger.info('Migrated scheduled_tasks: added type column')
   }
 
-  // YouTube agent workflow state (persists across restarts)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS youtube_agent_state (
-      chat_id TEXT PRIMARY KEY,
-      phase TEXT NOT NULL DEFAULT 'idle',
-      pending_video_ids TEXT NOT NULL DEFAULT '[]',
-      pending_candidates TEXT NOT NULL DEFAULT '{}',
-      started_at TEXT NOT NULL DEFAULT '',
-      stale_after INTEGER,
-      last_cycle_at TEXT,
-      cycles_today INTEGER NOT NULL DEFAULT 0,
-      last_cycle_date TEXT
-    )
-  `)
+  // Migration v3 -> v4: drop the youtube_agent_state table created by the
+  // retired YouTube agent. The table held in-process loop state for the
+  // Telegram-driven YouTube curation pipeline that was retired in Phase 4 of
+  // feature_youtube-agent (replaced by /research videos via NotebookLM).
+  // DROP IF EXISTS so this is safe on fresh installs and idempotent on rerun.
+  db.exec('DROP TABLE IF EXISTS youtube_agent_state')
 
   logger.info('Database initialized')
 }
@@ -387,60 +379,3 @@ export function listAllTasks(): Array<{
   }>
 }
 
-// --- YouTube Agent State CRUD ---
-
-export interface YouTubeAgentStateRow {
-  phase: string
-  pending_video_ids: string
-  pending_candidates: string
-  started_at: string
-  stale_after: number | null
-  last_cycle_at: string | null
-  cycles_today: number
-  last_cycle_date: string | null
-}
-
-export function getYouTubeAgentState(chatId: string): YouTubeAgentStateRow | undefined {
-  return getDb()
-    .prepare('SELECT phase, pending_video_ids, pending_candidates, started_at, stale_after, last_cycle_at, cycles_today, last_cycle_date FROM youtube_agent_state WHERE chat_id = ?')
-    .get(chatId) as YouTubeAgentStateRow | undefined
-}
-
-export function upsertYouTubeAgentState(chatId: string, updates: Partial<YouTubeAgentStateRow>): void {
-  const existing = getYouTubeAgentState(chatId)
-  if (!existing) {
-    getDb().prepare(
-      `INSERT INTO youtube_agent_state (chat_id, phase, pending_video_ids, pending_candidates, started_at, stale_after, last_cycle_at, cycles_today, last_cycle_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      chatId,
-      updates.phase ?? 'idle',
-      updates.pending_video_ids ?? '[]',
-      updates.pending_candidates ?? '{}',
-      updates.started_at ?? '',
-      updates.stale_after ?? null,
-      updates.last_cycle_at ?? null,
-      updates.cycles_today ?? 0,
-      updates.last_cycle_date ?? null
-    )
-  } else {
-    const fields: string[] = []
-    const values: unknown[] = []
-    for (const [key, val] of Object.entries(updates)) {
-      fields.push(`${key} = ?`)
-      values.push(val)
-    }
-    if (fields.length > 0) {
-      values.push(chatId)
-      getDb().prepare(`UPDATE youtube_agent_state SET ${fields.join(', ')} WHERE chat_id = ?`).run(...values)
-    }
-  }
-}
-
-export function resetYouTubeAgentState(chatId: string): void {
-  getDb().prepare(
-    `INSERT INTO youtube_agent_state (chat_id, phase, pending_video_ids, pending_candidates, started_at, stale_after)
-     VALUES (?, 'idle', '[]', '{}', '', NULL)
-     ON CONFLICT(chat_id) DO UPDATE SET phase = 'idle', pending_video_ids = '[]', pending_candidates = '{}', started_at = '', stale_after = NULL`
-  ).run(chatId)
-}
