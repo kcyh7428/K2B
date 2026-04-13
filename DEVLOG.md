@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-04-13 -- session isolation: split YouTube agent from Telegram chat
+
+**Commits:** `66d39cb` feat: scoped sessions + persistent YouTube agent state in SQLite | `3f38712` refactor: migrate youtube-agent-loop to persisted SQLite state | `e70a3d7` refactor: migrate bot.ts to DB-backed session scopes and YouTube state | `448815d` fix: enforce 12h expiry on pendingCandidates reads
+
+**What shipped:** Fixed a fundamental design flaw where the proactive YouTube agent loop and regular Telegram chat shared one Claude Code session, causing context contamination. Root cause: "one chat = one session" model when the system actually runs multiple independent workflows. Sessions table now has a (chat_id, scope) composite key -- YouTube agent gets scope='youtube', regular chat gets scope='interactive'. YouTube agent state (phase, pendingVideoIds, pendingCandidates) moved from in-memory globals to SQLite, surviving pm2 restarts. 12h auto-expiry timer prevents the "stuck forever" bug when Keith doesn't respond to YouTube check-ins. Migration preserves existing sessions as 'interactive'. /newchat also resets YouTube workflow state.
+
+**Codex review:** 2 findings. (1) IMPORTANT: getYtPendingCandidates() didn't enforce stale_after expiry, allowing old Telegram buttons to act on expired candidates -- fixed in 448815d. (2) MINOR: verdict/verdictValue field mapping is overloaded in PendingCandidate -- pre-existing, deferred.
+
+**Feature status change:** No feature -- infrastructure bugfix (session cross-contamination)
+
+**Follow-ups:**
+- awaitingComment Map still in-memory (low priority -- rarely hit)
+- sentNudgeIds Map still in-memory (cosmetic duplicate nudges on restart)
+- verdict/verdictValue field semantics cleanup in PendingCandidate
+
+---
+
 ## 2026-04-12 -- inline observer confirmation at session start
 
 **Commit:** `d02c574` feat: inline observer confirmation at session start
