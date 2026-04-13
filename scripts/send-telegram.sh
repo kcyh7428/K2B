@@ -22,5 +22,4 @@ fi
 curl -fsS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
   -d "chat_id=${CHAT_ID}" \
   --data-urlencode "text=${TEXT}" \
-  -d "parse_mode=Markdown" \
   -d "disable_web_page_preview=false"
