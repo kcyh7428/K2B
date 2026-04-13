@@ -156,6 +156,19 @@ When observer findings appear at session start, act on them immediately -- don't
 
 This collapses the old 3-step manual flow (`/observe` -> `/learn` -> wait for reinforcement) into one natural-language response from Keith. `/observe` remains available for deep synthesis but is no longer required for the loop to close.
 
+## Video Feedback via Telegram
+
+When Keith reacts to a video in a Telegram conversation (examples: "the Wolfe video was great", "that Operator breakdown was shallow, skip Matthew Berman", "I liked #3 from yesterday's batch"), do the following without asking for confirmation:
+
+1. Glob `K2B-Vault/review/video_*.md`.
+2. Read the candidates to find the match. Prefer URL match if Keith pasted one, then exact title match, then channel match, then recency (most recently added first). If Keith says "yesterday's batch #3", match by `added` date and ordinal position.
+3. If exactly one match: Edit the frontmatter to set `review-action` to `liked` / `disliked` / `neutral` based on Keith's tone, and write his distilled reaction into `review-notes`. Reply in Telegram confirming which video was updated ("updated: <title> -> liked, notes saved").
+4. If zero matches: reply with "no matching video in review queue -- want me to log this as a standalone preference line?" and wait for Keith's answer.
+5. If multiple matches: list the candidates in Telegram with their `added` dates and ask Keith to disambiguate.
+6. Do NOT append to `wiki/context/video-preferences.md` directly -- that's `/review`'s job. You are only updating the transient review note.
+
+This rule relies on the interactive Claude session's built-in Edit/Glob/Grep tools. No new MCP tool, no routing code, no keyword matching -- the "is this video feedback?" decision is made by reading the conversation context.
+
 ## Email Safety
 
 - NEVER send emails. Only draft.
