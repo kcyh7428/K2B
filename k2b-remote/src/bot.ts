@@ -29,8 +29,11 @@ import {
   moveVideoToScreen,
   skipVideoFromScreen,
   clearFromAgentState,
-  youtubeAgentState,
-  pendingCandidates,
+  getYtState,
+  setYtState,
+  resetYtState,
+  getYtPendingCandidates,
+  setYtPendingCandidates,
   type VideoMetadata,
 } from './youtube.js'
 import { tasteModel } from './taste-model.js'
@@ -154,7 +157,7 @@ async function handleMessage(
   const fullMessage = memoryContext + rawText
 
   // Get existing session
-  const sessionId = getSession(chatId)
+  const sessionId = getSession(chatId, 'interactive')
 
   // Start typing indicator
   let typingInterval: ReturnType<typeof setInterval> | undefined
@@ -178,7 +181,7 @@ async function handleMessage(
 
     // Save session
     if (newSessionId) {
-      setSession(chatId, newSessionId)
+      setSession(chatId, newSessionId, 'interactive')
     }
 
     // Save to memory
@@ -251,9 +254,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
 - If Keith wants to save something (content idea, feature, insight), create the vault note via k2b-vault-writer
 - If Keith wants to move the video to a category playlist (K2B Claude, K2B Recruit, etc.), use scripts/yt-playlist-add.sh`
     const highlightsMarker = markObservationStart()
-    const priorSessionId = getSession(chatId)
+    const priorSessionId = getSession(chatId, 'interactive')
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId)
+    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
     logObservations(highlightsMarker, `youtube-highlights-${videoId}`, prompt)
     const result = text ?? '(could not generate highlights)'
 
@@ -302,7 +305,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     // (only in pendingCandidates). The actual mutation is deferred to skip-confirm
     // / skip-other / skip-reason-typed to avoid split-phase writes.
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    const cand = pendingCandidates.get(videoId)
+    const cand = getYtPendingCandidates().get(videoId)
     const title = rec?.title ?? cand?.title ?? 'this video'
     // Normalize into a shape deduceSkipReason understands
     const deductionSource = rec ?? (cand ? { channel: cand.channel, upload_date: cand.uploadDate, topics: [] as string[] } : undefined)
@@ -325,7 +328,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     // playlist op since never added, no JSONL update since never written,
     // but still train taste model and log the feedback signal).
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    const cand = pendingCandidates.get(videoId)
+    const cand = getYtPendingCandidates().get(videoId)
     const deductionSource = rec ?? (cand ? { channel: cand.channel, upload_date: cand.uploadDate, topics: [] as string[] } : undefined)
     const reason = tasteModel.deduceSkipReasonKey(deductionSource)
 
@@ -358,7 +361,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     // Canonical add-to-Watch path. REQUIRES real metadata from pendingCandidates
     // (populated by handleDirectYouTubeUrl or agent loop's findNewContent).
     // Refuses to save placeholder data.
-    const cached = pendingCandidates.get(videoId)
+    const cached = getYtPendingCandidates().get(videoId)
     if (!cached || !cached.title || cached.title === videoId || !cached.channel || cached.channel === 'unknown') {
       logger.warn({ videoId, hasCached: !!cached }, 'agent-add rejected: no real metadata in cache')
       await ctx.api.sendMessage(
@@ -389,7 +392,7 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     // confirmation flow. This handler remains as a safety net for any stale
     // cards still in Keith's Telegram history pointing at the old callback.
     // Behaviour: redirect to the same deduction flow as `skip`.
-    const cand = pendingCandidates.get(videoId)
+    const cand = getYtPendingCandidates().get(videoId)
     const title = cand?.title ?? 'this video'
     const deductionSource = cand ? { channel: cand.channel, upload_date: cand.uploadDate, topics: [] as string[] } : undefined
     const deducedReason = tasteModel.deduceSkipReason(deductionSource)
@@ -416,9 +419,9 @@ Keep it concise for Telegram. When Keith responds with his feedback:
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
     const prompt = `You are K2B. Create a ${promoteType} vault note from YouTube video ${videoId}. Look up the video details in wiki/context/youtube-recommended.jsonl. Use k2b-vault-writer to create the note in review/.`
     const promoteMarker = markObservationStart()
-    const priorSessionId = getSession(chatId)
+    const priorSessionId = getSession(chatId, 'interactive')
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId)
+    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
     logObservations(promoteMarker, `youtube-promote-${videoId}`, prompt)
     const result = text ?? '(created)'
 
@@ -447,9 +450,9 @@ Your job:
 2. Create a vault note in raw/youtube/ via k2b-vault-writer.
 3. Return a short summary of the note you created.`
     const screenMarker = markObservationStart()
-    const priorSessionId = getSession(chatId)
+    const priorSessionId = getSession(chatId, 'interactive')
     const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId)
+    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
     logObservations(screenMarker, `youtube-screen-${videoId}`, prompt)
 
     // Canonical state mutation: mark processed + remove from Screen playlist
@@ -523,9 +526,9 @@ Your job:
 3. Return a short summary of the note you created.`
       const screenMarker = markObservationStart()
       try {
-        const priorSessionId = getSession(chatId)
+        const priorSessionId = getSession(chatId, 'interactive')
         const { text, newSessionId } = await runAgent(prompt, priorSessionId)
-        if (newSessionId) setSession(chatId, newSessionId)
+        if (newSessionId) setSession(chatId, newSessionId, 'interactive')
         logObservations(screenMarker, `youtube-screen-${v.id}`, prompt)
         // Canonical state mutation after agent returns
         try {
@@ -565,7 +568,7 @@ async function handleCommentOrSkipReason(
     // Handles BOTH Watch-list skips (rec in JSONL) and new-pick skips (pendingCandidates only).
     const videoId = pendingKey.slice(5)
     const rec = readRecommendations().find(r => r.video_id === videoId)
-    const cand = pendingCandidates.get(videoId)
+    const cand = getYtPendingCandidates().get(videoId)
     try {
       if (rec) {
         skipVideoFromWatch(videoId, text, 'text-reply:skip-reason', text)
@@ -670,7 +673,8 @@ async function handleDirectYouTubeUrl(
   // a second yt-dlp round trip. This is the ONLY place direct-URL metadata
   // gets into pendingCandidates; if it's absent, agent-add will reject the save.
   if (title && title !== videoId && channel && channel !== 'unknown') {
-    pendingCandidates.set(videoId, {
+    const candidates = getYtPendingCandidates()
+    candidates.set(videoId, {
       videoId,
       title,
       channel,
@@ -679,6 +683,7 @@ async function handleDirectYouTubeUrl(
       verdict: '',
       reason: 'direct-url',
     })
+    setYtPendingCandidates(candidates)
   }
 
   // Check taste model
@@ -722,9 +727,9 @@ async function handleDirectYouTubeUrl(
     .text('Skip', `youtube:skip:${videoId}`)
 
   try {
-    const priorSessionId = getSession(chatId)
+    const priorSessionId = getSession(chatId, 'interactive')
     const { text: verdict, newSessionId } = await runAgent(screenPrompt, priorSessionId)
-    if (newSessionId) setSession(chatId, newSessionId)
+    if (newSessionId) setSession(chatId, newSessionId, 'interactive')
     const verdictText = verdict ?? `**${title}**\n${channel} -- ${duration}\nPublished: ${uploadDate}\n(Could not screen this video)`
     const formatted = formatForTelegram(verdictText)
     await ctx.api.sendMessage(ctx.chat!.id, formatted, { parse_mode: 'HTML', reply_markup: keyboard })
@@ -782,11 +787,13 @@ export function createBot(): Bot {
 
   bot.command('newchat', async (ctx) => {
     clearSession(String(ctx.chat.id))
+    resetYtState()
     await ctx.reply('Session cleared. Starting fresh.')
   })
 
   bot.command('forget', async (ctx) => {
     clearSession(String(ctx.chat.id))
+    resetYtState()
     await ctx.reply('Session cleared. Starting fresh.')
   })
 
