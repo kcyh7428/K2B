@@ -19,14 +19,44 @@ export function initDatabase(): void {
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
 
-  // Sessions table
+  // Sessions table (v2: scoped by workflow)
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
-      chat_id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'interactive',
       session_id TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (chat_id, scope)
     )
   `)
+
+  // Migration: if sessions has old single-column PK (no scope), rebuild
+  const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>
+  if (!sessionCols.some(c => c.name === 'scope')) {
+    db.exec('BEGIN TRANSACTION')
+    try {
+      db.exec(`
+        CREATE TABLE sessions_v2 (
+          chat_id TEXT NOT NULL,
+          scope TEXT NOT NULL DEFAULT 'interactive',
+          session_id TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (chat_id, scope)
+        )
+      `)
+      db.exec(`
+        INSERT INTO sessions_v2 (chat_id, scope, session_id, updated_at)
+        SELECT chat_id, 'interactive', session_id, updated_at FROM sessions
+      `)
+      db.exec('DROP TABLE sessions')
+      db.exec('ALTER TABLE sessions_v2 RENAME TO sessions')
+      db.exec('COMMIT')
+      logger.info('Migrated sessions: added scope column')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+  }
 
   // Full memory: semantic + episodic
   db.exec(`
@@ -94,28 +124,47 @@ export function initDatabase(): void {
     logger.info('Migrated scheduled_tasks: added type column')
   }
 
+  // YouTube agent workflow state (persists across restarts)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS youtube_agent_state (
+      chat_id TEXT PRIMARY KEY,
+      phase TEXT NOT NULL DEFAULT 'idle',
+      pending_video_ids TEXT NOT NULL DEFAULT '[]',
+      pending_candidates TEXT NOT NULL DEFAULT '{}',
+      started_at TEXT NOT NULL DEFAULT '',
+      stale_after INTEGER,
+      last_cycle_at TEXT,
+      cycles_today INTEGER NOT NULL DEFAULT 0,
+      last_cycle_date TEXT
+    )
+  `)
+
   logger.info('Database initialized')
 }
 
 // --- Session CRUD ---
 
-export function getSession(chatId: string): string | undefined {
+export function getSession(chatId: string, scope: 'interactive' | 'youtube' = 'interactive'): string | undefined {
   const row = getDb()
-    .prepare('SELECT session_id FROM sessions WHERE chat_id = ?')
-    .get(chatId) as { session_id: string } | undefined
+    .prepare('SELECT session_id FROM sessions WHERE chat_id = ? AND scope = ?')
+    .get(chatId, scope) as { session_id: string } | undefined
   return row?.session_id
 }
 
-export function setSession(chatId: string, sessionId: string): void {
+export function setSession(chatId: string, sessionId: string, scope: 'interactive' | 'youtube' = 'interactive'): void {
   getDb()
     .prepare(
-      'INSERT INTO sessions (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = ?, updated_at = ?'
+      'INSERT INTO sessions (chat_id, scope, session_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(chat_id, scope) DO UPDATE SET session_id = ?, updated_at = ?'
     )
-    .run(chatId, sessionId, Date.now(), sessionId, Date.now())
+    .run(chatId, scope, sessionId, Date.now(), sessionId, Date.now())
 }
 
-export function clearSession(chatId: string): void {
-  getDb().prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId)
+export function clearSession(chatId: string, scope?: 'interactive' | 'youtube'): void {
+  if (scope) {
+    getDb().prepare('DELETE FROM sessions WHERE chat_id = ? AND scope = ?').run(chatId, scope)
+  } else {
+    getDb().prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId)
+  }
 }
 
 // --- Memory CRUD ---
@@ -341,4 +390,62 @@ export function listAllTasks(): Array<{
     status: string
     type: string
   }>
+}
+
+// --- YouTube Agent State CRUD ---
+
+export interface YouTubeAgentStateRow {
+  phase: string
+  pending_video_ids: string
+  pending_candidates: string
+  started_at: string
+  stale_after: number | null
+  last_cycle_at: string | null
+  cycles_today: number
+  last_cycle_date: string | null
+}
+
+export function getYouTubeAgentState(chatId: string): YouTubeAgentStateRow | undefined {
+  return getDb()
+    .prepare('SELECT phase, pending_video_ids, pending_candidates, started_at, stale_after, last_cycle_at, cycles_today, last_cycle_date FROM youtube_agent_state WHERE chat_id = ?')
+    .get(chatId) as YouTubeAgentStateRow | undefined
+}
+
+export function upsertYouTubeAgentState(chatId: string, updates: Partial<YouTubeAgentStateRow>): void {
+  const existing = getYouTubeAgentState(chatId)
+  if (!existing) {
+    getDb().prepare(
+      `INSERT INTO youtube_agent_state (chat_id, phase, pending_video_ids, pending_candidates, started_at, stale_after, last_cycle_at, cycles_today, last_cycle_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      chatId,
+      updates.phase ?? 'idle',
+      updates.pending_video_ids ?? '[]',
+      updates.pending_candidates ?? '{}',
+      updates.started_at ?? '',
+      updates.stale_after ?? null,
+      updates.last_cycle_at ?? null,
+      updates.cycles_today ?? 0,
+      updates.last_cycle_date ?? null
+    )
+  } else {
+    const fields: string[] = []
+    const values: unknown[] = []
+    for (const [key, val] of Object.entries(updates)) {
+      fields.push(`${key} = ?`)
+      values.push(val)
+    }
+    if (fields.length > 0) {
+      values.push(chatId)
+      getDb().prepare(`UPDATE youtube_agent_state SET ${fields.join(', ')} WHERE chat_id = ?`).run(...values)
+    }
+  }
+}
+
+export function resetYouTubeAgentState(chatId: string): void {
+  getDb().prepare(
+    `INSERT INTO youtube_agent_state (chat_id, phase, pending_video_ids, pending_candidates, started_at, stale_after)
+     VALUES (?, 'idle', '[]', '{}', '', NULL)
+     ON CONFLICT(chat_id) DO UPDATE SET phase = 'idle', pending_video_ids = '[]', pending_candidates = '{}', started_at = '', stale_after = NULL`
+  ).run(chatId)
 }

@@ -1,9 +1,10 @@
 import { readFileSync, appendFileSync, writeFileSync, existsSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { resolve } from 'node:path'
-import { K2B_PROJECT_ROOT } from './config.js'
+import { K2B_PROJECT_ROOT, ALLOWED_CHAT_ID } from './config.js'
 import { tasteModel } from './taste-model.js'
 import { logger } from './logger.js'
+import { getYouTubeAgentState, upsertYouTubeAgentState, resetYouTubeAgentState, type YouTubeAgentStateRow } from './db.js'
 
 const VAULT = process.env.K2B_VAULT ?? '/Users/fastshower/Projects/K2B-Vault'
 const RECOMMENDED_FILE = `${VAULT}/wiki/context/youtube-recommended.jsonl`
@@ -172,15 +173,6 @@ export interface YouTubeAgentState {
   lastCycleDate: string | null
 }
 
-export const youtubeAgentState: YouTubeAgentState = {
-  phase: 'idle',
-  pendingVideoIds: [],
-  startedAt: '',
-  lastCycleAt: null,
-  cyclesToday: 0,
-  lastCycleDate: null,
-}
-
 /** Cached metadata for candidates not yet persisted to JSONL (new-picks + direct URL).
  *  Populated by findNewContent and handleDirectYouTubeUrl; consumed by canonical functions. */
 export interface PendingCandidate {
@@ -192,7 +184,67 @@ export interface PendingCandidate {
   verdict: string
   reason: string
 }
-export const pendingCandidates = new Map<string, PendingCandidate>()
+
+const STALE_TIMEOUT_MS = 12 * 60 * 60 * 1000
+
+export function getYtState(): YouTubeAgentState {
+  const chatId = ALLOWED_CHAT_ID
+  if (!chatId) return { phase: 'idle', pendingVideoIds: [], startedAt: '', lastCycleAt: null, cyclesToday: 0, lastCycleDate: null }
+  const row = getYouTubeAgentState(chatId)
+  if (!row) return { phase: 'idle', pendingVideoIds: [], startedAt: '', lastCycleAt: null, cyclesToday: 0, lastCycleDate: null }
+  if (row.phase !== 'idle' && row.stale_after && Date.now() > row.stale_after) {
+    logger.info({ phase: row.phase, startedAt: row.started_at }, 'YouTube agent state auto-expired (12h timeout)')
+    resetYouTubeAgentState(chatId)
+    return { phase: 'idle', pendingVideoIds: [], startedAt: '', lastCycleAt: row.last_cycle_at, cyclesToday: row.cycles_today, lastCycleDate: row.last_cycle_date }
+  }
+  return {
+    phase: row.phase as YouTubeAgentState['phase'],
+    pendingVideoIds: JSON.parse(row.pending_video_ids),
+    startedAt: row.started_at,
+    lastCycleAt: row.last_cycle_at,
+    cyclesToday: row.cycles_today,
+    lastCycleDate: row.last_cycle_date,
+  }
+}
+
+export function setYtState(updates: Partial<YouTubeAgentState>): void {
+  const chatId = ALLOWED_CHAT_ID
+  if (!chatId) return
+  const dbUpdates: Partial<YouTubeAgentStateRow> = {}
+  if (updates.phase !== undefined) {
+    dbUpdates.phase = updates.phase
+    dbUpdates.stale_after = updates.phase !== 'idle' ? Date.now() + STALE_TIMEOUT_MS : null
+  }
+  if (updates.pendingVideoIds !== undefined) dbUpdates.pending_video_ids = JSON.stringify(updates.pendingVideoIds)
+  if (updates.startedAt !== undefined) dbUpdates.started_at = updates.startedAt
+  if (updates.lastCycleAt !== undefined) dbUpdates.last_cycle_at = updates.lastCycleAt
+  if (updates.cyclesToday !== undefined) dbUpdates.cycles_today = updates.cyclesToday
+  if (updates.lastCycleDate !== undefined) dbUpdates.last_cycle_date = updates.lastCycleDate
+  upsertYouTubeAgentState(chatId, dbUpdates)
+}
+
+export function resetYtState(): void {
+  const chatId = ALLOWED_CHAT_ID
+  if (!chatId) return
+  resetYouTubeAgentState(chatId)
+}
+
+export function getYtPendingCandidates(): Map<string, PendingCandidate> {
+  const chatId = ALLOWED_CHAT_ID
+  if (!chatId) return new Map()
+  const row = getYouTubeAgentState(chatId)
+  if (!row) return new Map()
+  const obj = JSON.parse(row.pending_candidates) as Record<string, PendingCandidate>
+  return new Map(Object.entries(obj))
+}
+
+export function setYtPendingCandidates(candidates: Map<string, PendingCandidate>): void {
+  const chatId = ALLOWED_CHAT_ID
+  if (!chatId) return
+  upsertYouTubeAgentState(chatId, {
+    pending_candidates: JSON.stringify(Object.fromEntries(candidates))
+  })
+}
 
 class MetadataValidationError extends Error {
   constructor(message: string) {
@@ -211,15 +263,19 @@ function assertValidMetadata(meta: VideoMetadata): void {
   }
 }
 
-/** Clears a video from all in-memory agent state (pendingVideoIds + pendingCandidates).
+/** Clears a video from all agent state (pendingVideoIds + pendingCandidates).
  *  Safe to call even if the video is not tracked. Resets phase to 'idle' if no
  *  pending videos remain. */
 export function clearFromAgentState(videoId: string): void {
-  const idx = youtubeAgentState.pendingVideoIds.indexOf(videoId)
-  if (idx >= 0) youtubeAgentState.pendingVideoIds.splice(idx, 1)
-  pendingCandidates.delete(videoId)
-  if (youtubeAgentState.pendingVideoIds.length === 0 && youtubeAgentState.phase !== 'searching') {
-    youtubeAgentState.phase = 'idle'
+  const state = getYtState()
+  const newPending = state.pendingVideoIds.filter(id => id !== videoId)
+  const candidates = getYtPendingCandidates()
+  candidates.delete(videoId)
+  setYtPendingCandidates(candidates)
+  if (newPending.length === 0 && state.phase !== 'searching') {
+    resetYtState()
+  } else {
+    setYtState({ pendingVideoIds: newPending })
   }
 }
 
