@@ -9,9 +9,12 @@ import {
   getPlaylistVideoIds,
   WATCH_PLAYLIST_ID,
   type YouTubeRecommendation,
-  // Canonical state machinery (all moved from this file into youtube.ts)
-  youtubeAgentState,
-  pendingCandidates,
+  // Canonical state machinery (persisted to SQLite via db.ts)
+  getYtState,
+  setYtState,
+  resetYtState,
+  getYtPendingCandidates,
+  setYtPendingCandidates,
   clearFromAgentState,
   addVideoToWatch,
   skipVideoFromWatch,
@@ -37,9 +40,9 @@ async function runAgentWithSession(
   chatId: string,
   prompt: string,
 ): Promise<{ text: string | null; newSessionId?: string; hadError?: boolean }> {
-  const sessionId = getSession(chatId)
+  const sessionId = getSession(chatId, 'youtube')
   const result = await runAgent(prompt, sessionId)
-  if (result.newSessionId) setSession(chatId, result.newSessionId)
+  if (result.newSessionId) setSession(chatId, result.newSessionId, 'youtube')
   return result
 }
 
@@ -88,7 +91,8 @@ function ageDaysFromYmd(raw: string): number | null {
 }
 
 // Re-export for backward compatibility with existing importers (bot.ts, index.ts)
-export { youtubeAgentState, pendingCandidates, type YouTubeAgentState, type PendingCandidate }
+export { getYtState, setYtState, resetYtState, getYtPendingCandidates, setYtPendingCandidates }
+export type { YouTubeAgentState, PendingCandidate }
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,7 +113,8 @@ export async function runYouTubeAgentLoop(
   // Step 0: Guards -----------------------------------------------------------
 
   // Don't run if already in a cycle
-  if (youtubeAgentState.phase !== 'idle') {
+  const initialState = getYtState()
+  if (initialState.phase !== 'idle') {
     logger.info('YouTube agent loop skipped -- already in progress')
     return
   }
@@ -124,16 +129,14 @@ export async function runYouTubeAgentLoop(
 
   // Reset daily counter
   const today = new Date().toISOString().slice(0, 10)
-  if (youtubeAgentState.lastCycleDate !== today) {
-    youtubeAgentState.cyclesToday = 0
-    youtubeAgentState.lastCycleDate = today
+  if (initialState.lastCycleDate !== today) {
+    setYtState({ cyclesToday: 0, lastCycleDate: today })
   }
 
   // Step 1: Check existing Watch list ----------------------------------------
 
   try {
-  youtubeAgentState.phase = 'checking-watch'
-  youtubeAgentState.startedAt = new Date().toISOString()
+  setYtState({ phase: 'checking-watch', startedAt: new Date().toISOString() })
 
   let pending = readRecommendations().filter(r => r.status === 'nudge_sent')
 
@@ -209,7 +212,7 @@ export async function runYouTubeAgentLoop(
     }
 
     // Send video cards with info + buttons for each pending video
-    youtubeAgentState.pendingVideoIds = pending.map(r => r.video_id)
+    setYtState({ pendingVideoIds: pending.map(r => r.video_id) })
     for (const rec of pending) {
       const link = `https://youtu.be/${rec.video_id}`
       // Send URL first for thumbnail preview
@@ -256,8 +259,7 @@ export async function runYouTubeAgentLoop(
 
   } catch (err) {
     logger.error({ err }, 'YouTube agent loop error')
-    youtubeAgentState.phase = 'idle'
-    youtubeAgentState.pendingVideoIds = []
+    resetYtState()
   }
 }
 
@@ -267,7 +269,7 @@ export async function runYouTubeAgentLoop(
 
 async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButtonsFn, chatId: string): Promise<void> {
   try {
-  youtubeAgentState.phase = 'searching'
+  setYtState({ phase: 'searching' })
 
   // Read vault context
   const vaultContext = readVaultContext()
@@ -307,7 +309,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
   })
 
   if (allResults.length === 0) {
-    youtubeAgentState.phase = 'idle'
+    resetYtState()
     await sendMessage(chatId, 'Searched but nothing good came up this round. Will try again later.')
     return
   }
@@ -340,7 +342,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
   )
 
   if (!screeningResult) {
-    youtubeAgentState.phase = 'idle'
+    resetYtState()
     await sendMessage(chatId, 'Screening failed. Will try again next cycle.')
     return
   }
@@ -354,7 +356,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
   } catch {
     // If JSON parsing fails, just send the raw text
     await sendMessage(chatId, screeningResult)
-    youtubeAgentState.phase = 'idle'
+    resetYtState()
     return
   }
 
@@ -368,9 +370,8 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
     .filter(v => v.verdict === 'RECOMMEND' || v.verdict === 'MAYBE')
     .slice(0, 4)
 
-  youtubeAgentState.pendingVideoIds = []
-  youtubeAgentState.phase = 'presenting-picks'
-  pendingCandidates.clear()
+  setYtState({ pendingVideoIds: [], phase: 'presenting-picks' })
+  setYtPendingCandidates(new Map())
 
   for (const v of recommended) {
     const candidate = candidates[v.index]
@@ -400,8 +401,12 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
       .text('Screen', `youtube:screen:${candidate.id}`)
 
     // Store as pending recommendation (not yet in JSONL) + cache metadata
-    youtubeAgentState.pendingVideoIds.push(candidate.id)
-    pendingCandidates.set(candidate.id, {
+    const currentState = getYtState()
+    currentState.pendingVideoIds.push(candidate.id)
+    setYtState({ pendingVideoIds: currentState.pendingVideoIds })
+
+    const candidates_map = getYtPendingCandidates()
+    candidates_map.set(candidate.id, {
       videoId: candidate.id,
       title: candidate.title,
       channel: candidate.channel,
@@ -410,6 +415,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
       verdict: v.verdict,
       reason: v.reason,
     })
+    setYtPendingCandidates(candidates_map)
 
     await sendWithButtons(chatId, infoLines, [], keyboard)
   }
@@ -419,8 +425,7 @@ async function findNewContent(sendMessage: SendFn, sendWithButtons: SendWithButt
 
   } catch (err) {
     logger.error({ err }, 'findNewContent error')
-    youtubeAgentState.phase = 'idle'
-    youtubeAgentState.pendingVideoIds = []
+    resetYtState()
   }
 }
 
@@ -436,13 +441,15 @@ export async function handleYouTubeAgentResponse(
 ): Promise<boolean> {
   // Returns true if the message was handled, false if not a YouTube agent context
 
-  if (youtubeAgentState.phase === 'idle') return false
+  // Read state once -- use this snapshot throughout to avoid race conditions
+  const state = getYtState()
+  if (state.phase === 'idle') return false
 
   const lower = text.toLowerCase().trim()
 
-  if (youtubeAgentState.phase === 'checking-watch') {
+  if (state.phase === 'checking-watch') {
     if (lower.includes('busy') || lower.includes('not now') || lower.includes('later')) {
-      youtubeAgentState.phase = 'idle'
+      resetYtState()
       await sendMessage(chatId, 'No worries. Will check in next cycle.')
       return true
     }
@@ -451,7 +458,7 @@ export async function handleYouTubeAgentResponse(
       // Canonical skip-from-Watch for each pending video.
       // Previously this marked 'expired' with no playlist removal, no feedback,
       // and no taste model update. Now it's a real skip decision from Keith.
-      const toSkip = [...youtubeAgentState.pendingVideoIds] // copy -- skipVideoFromWatch mutates this
+      const toSkip = [...state.pendingVideoIds] // copy -- skipVideoFromWatch mutates state
       for (const vid of toSkip) {
         try {
           skipVideoFromWatch(vid, 'user-requested-swap', 'text-reply:swap', text)
@@ -466,24 +473,24 @@ export async function handleYouTubeAgentResponse(
 
     // Complex response -- parse into structured actions and execute directly.
     // NEVER let the agent execute playlist operations; we do it here with helpers.
-    const pendingRecs = readRecommendations().filter(r => youtubeAgentState.pendingVideoIds.includes(r.video_id))
+    const pendingRecs = readRecommendations().filter(r => state.pendingVideoIds.includes(r.video_id))
     const executed = await parseAndExecuteActions(text, pendingRecs, 'watch-list', sendMessage, chatId)
     if (executed.actedCount > 0 && executed.remainingCount === 0) {
-      youtubeAgentState.phase = 'idle'
-      youtubeAgentState.pendingVideoIds = []
+      resetYtState()
     }
     return true
   }
 
-  if (youtubeAgentState.phase === 'presenting-picks') {
+  if (state.phase === 'presenting-picks') {
     if (lower.includes('add') && (lower.includes('all') || lower.includes('them'))) {
       // Canonical add-to-Watch for every pending candidate. Metadata comes from
       // pendingCandidates cache (findNewContent populated it). If a candidate
       // is missing from the cache, skip it and log -- don't write placeholder.
-      const toAdd = [...youtubeAgentState.pendingVideoIds]
+      const toAdd = [...state.pendingVideoIds]
+      const candidatesMap = getYtPendingCandidates()
       let addedCount = 0
       for (const vid of toAdd) {
-        const cand = pendingCandidates.get(vid)
+        const cand = candidatesMap.get(vid)
         if (!cand || !cand.title || cand.title === vid || !cand.channel || cand.channel === 'unknown') {
           logger.warn({ vid, hasCached: !!cand }, 'add-all rejected: no real metadata')
           continue
@@ -504,27 +511,22 @@ export async function handleYouTubeAgentResponse(
           logger.error({ err, vid }, 'addVideoToWatch failed during add-all')
         }
       }
-      youtubeAgentState.phase = 'idle'
-      youtubeAgentState.pendingVideoIds = []
-      pendingCandidates.clear()
+      resetYtState()  // clears phase, pendingVideoIds, AND pendingCandidates
       await sendMessage(chatId, `Added ${addedCount} to your Watch list.`)
       return true
     }
 
     if (lower.includes('no') || lower.includes('skip') || lower.includes('pass')) {
-      youtubeAgentState.phase = 'idle'
-      youtubeAgentState.pendingVideoIds = []
-      pendingCandidates.clear()
+      resetYtState()
       await sendMessage(chatId, 'No problem. Will find different content next time.')
       return true
     }
 
     // Complex response -- parse into structured actions and execute directly.
-    const pendingRecs = readRecommendations().filter(r => youtubeAgentState.pendingVideoIds.includes(r.video_id))
+    const pendingRecs = readRecommendations().filter(r => state.pendingVideoIds.includes(r.video_id))
     const executed = await parseAndExecuteActions(text, pendingRecs, 'new-picks', sendMessage, chatId)
     if (executed.actedCount > 0 && executed.remainingCount === 0) {
-      youtubeAgentState.phase = 'idle'
-      youtubeAgentState.pendingVideoIds = []
+      resetYtState()
     }
     return true
   }
@@ -557,12 +559,14 @@ async function parseAndExecuteActions(
 ): Promise<{ actedCount: number; remainingCount: number }> {
   // Build the actionable list from either pendingRecs (watch-list phase)
   // or pendingCandidates cache (new-picks phase, not yet in JSONL)
+  const currentCandidates = getYtPendingCandidates()
+  const currentPendingIds = getYtState().pendingVideoIds
   const actionable: ActionablePending[] = phase === 'watch-list'
     ? pendingRecs.map(r => ({ videoId: r.video_id, title: r.title ?? r.video_id, channel: r.channel || 'unknown', uploadDate: r.upload_date ?? '' }))
-    : youtubeAgentState.pendingVideoIds
-        .map(vid => pendingCandidates.get(vid))
+    : currentPendingIds
+        .map((vid: string) => currentCandidates.get(vid))
         .filter((c): c is PendingCandidate => !!c)
-        .map(c => ({ videoId: c.videoId, title: c.title, channel: c.channel, uploadDate: c.uploadDate }))
+        .map((c: PendingCandidate) => ({ videoId: c.videoId, title: c.title, channel: c.channel, uploadDate: c.uploadDate }))
 
   if (actionable.length === 0) {
     await sendMessage(chatId, 'No pending videos to act on.')
@@ -647,7 +651,7 @@ async function parseAndExecuteActions(
         actedCount++
       } else if (a.action === 'add' && phase === 'new-picks') {
         // Canonical add-to-Watch. Requires real metadata from pendingCandidates.
-        const cand = pendingCandidates.get(a.videoId)
+        const cand = currentCandidates.get(a.videoId)
         if (!cand || !cand.title || cand.title === a.videoId || !cand.channel || cand.channel === 'unknown') {
           logger.warn({ videoId: a.videoId, hasCached: !!cand }, 'text-reply add rejected: no real metadata')
           continue
@@ -677,7 +681,7 @@ async function parseAndExecuteActions(
     await sendMessage(chatId, parsed.message)
   }
 
-  return { actedCount, remainingCount: youtubeAgentState.pendingVideoIds.length }
+  return { actedCount, remainingCount: getYtState().pendingVideoIds.length }
 }
 
 function readVaultContext(): string {
