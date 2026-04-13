@@ -265,17 +265,34 @@ Retires the old YouTube recommend agent. Finds videos matching a query, filters 
 
 ### Flow
 
-1. **Create fresh notebook:**
+1. **Get candidate YouTube URLs** via `yt-search.py` (not NotebookLM — NotebookLM is the filter, not the discovery engine):
    ```bash
-   NB_ID=$(notebooklm create "Videos: <query>" --json | jq -r '.id')
+   python3 ~/Projects/K2B/scripts/yt-search.py "<query>" --count 25 --months 1 --json > /tmp/candidates.json
    ```
+   Parse the JSON (shape: `{"query", "count", "results": [{"url", "title", "channel", "duration", "published", ...}]}`). If `.count` is zero, abort with a Telegram notification: `no recent videos found for <query>`.
 
-2. **Deep research on the query:**
+   **Why these args:** `--count 25` gives higher recall before filtering (Gemini typically rejects 60-80%, so 25 candidates yields ~5-10 suitable, matching the 3-10-per-run target). `--months 1` keeps the semantics at "what's new and worth knowing" -- six months of backlog dilutes recency. If a topic is thin in the last month, the run returns fewer videos and that's fine; silence beats stale.
+
+2. **Create fresh notebook and add each candidate as a YouTube source:**
    ```bash
-   notebooklm source add-research "<query>" --mode deep --no-wait -n "$NB_ID"
+   NB_ID=$(notebooklm create "Videos: <query>" --json | jq -r '.notebook.id')
+   SOURCE_IDS=()
+   for URL in $(jq -r '.results[].url' /tmp/candidates.json); do
+     SRC_ID=$(notebooklm source add "$URL" -n "$NB_ID" --json | jq -r '.source.id // .id')
+     SOURCE_IDS+=("$SRC_ID")
+   done
    ```
+   `notebooklm source add` auto-detects YouTube URLs and pulls the transcript as the indexed content. `source add` itself returns quickly; processing happens in the background and is polled via `source wait`.
 
-3. **Wait for research + source indexing** via subagent pattern (see notebooklm skill docs). Use timeout 1800s.
+3. **Wait for all sources to index** via the subagent pattern (parallel, 600s per source):
+   ```bash
+   # In a subagent: wait for each source ID in parallel
+   for ID in "${SOURCE_IDS[@]}"; do
+     notebooklm source wait "$ID" -n "$NB_ID" --timeout 600 &
+   done
+   wait
+   ```
+   If any source fails to index (private video, transcription unavailable, rate-limited), log the failure per-source in the run record and continue with the rest. **Require at least 5 successful sources to proceed**; below that, abort with a Telegram notification `only <N> of <total> videos indexed for <query>, aborting -- see run record`.
 
 4. **Read the preference tail** into a variable:
    ```bash
@@ -285,7 +302,7 @@ Retires the old YouTube recommend agent. Finds videos matching a query, filters 
 5. **Ask NotebookLM with the JSON filter prompt** (below), capture the answer:
    ```bash
    notebooklm ask "$(cat <<EOF
-   From the sources in this notebook, list every YouTube video and classify it.
+   Each source in this notebook is a YouTube video. Classify each one.
 
    Return JSON: [{"url", "title", "channel", "duration", "suitable": true|false, "why"}].
 
