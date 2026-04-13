@@ -41,6 +41,7 @@ import { handleYouTubeAgentResponse } from './youtube-agent-loop.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
+import { scanOutbox, sendMedia } from './telegram-outbox.js'
 
 // --- Telegram formatting ---
 
@@ -172,6 +173,7 @@ async function handleMessage(
   typingInterval = setInterval(sendTyping, TYPING_REFRESH_MS)
 
   const obsMarker = markObservationStart()
+  const outboxMark = Date.now()
 
   try {
     const { text, newSessionId, hadError } = await runAgent(fullMessage, sessionId, sendTyping)
@@ -187,6 +189,12 @@ async function handleMessage(
     // Save to memory
     if (text) {
       await saveConversationTurn(chatId, rawText, text)
+    }
+
+    // Send any media files the agent dropped into the outbox
+    const manifests = scanOutbox(outboxMark)
+    for (const m of manifests) {
+      await sendMedia(ctx.api, ctx.chat!.id, m)
     }
 
     // Send response

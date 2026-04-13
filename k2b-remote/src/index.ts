@@ -11,6 +11,7 @@ import { startHeartbeat, stopHeartbeat } from './health.js'
 import { runYouTubeAgentLoop } from './youtube-agent-loop.js'
 import { startIntakeServer } from './http-server.js'
 import { startIntakeWatcher } from './intake-watcher.js'
+import { ensureOutboxDir } from './telegram-outbox.js'
 import { logger } from './logger.js'
 
 const PID_FILE = resolve(STORE_DIR, 'k2b-remote.pid')
@@ -73,6 +74,9 @@ async function main(): Promise<void> {
 
   // Cleanup old uploads
   cleanupOldUploads()
+
+  // Ensure Telegram outbox directory exists
+  ensureOutboxDir()
 
   // Create and start bot
   const bot = createBot()

@@ -9,6 +9,7 @@ const env = readEnvFile()
 export const PROJECT_ROOT = resolve(__dirname, '..')
 export const STORE_DIR = resolve(PROJECT_ROOT, 'store')
 export const UPLOADS_DIR = resolve(PROJECT_ROOT, 'workspace', 'uploads')
+export const TELEGRAM_OUTBOX_DIR = resolve(PROJECT_ROOT, 'workspace', 'telegram-outbox')
 
 // K2B paths (relative: k2b-remote sits inside K2B/)
 export const K2B_PROJECT_ROOT = env['CLAUDE_PROJECT_ROOT'] ?? resolve(__dirname, '../..')

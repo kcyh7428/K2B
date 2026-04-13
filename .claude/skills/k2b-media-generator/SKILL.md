@@ -51,8 +51,12 @@ If MCP tools are unavailable, use the bash scripts:
 1. If using MCP: call `text_to_image` with prompt and aspect_ratio
 2. If using bash: run `scripts/minimax-image.sh "prompt" aspect slug`
 3. Asset saves to `K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png`
-4. Print the Obsidian embed: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
-5. If generating for a vault note, update that note with the embed link
+4. **Send to Telegram** (if running via k2b-remote): write an outbox manifest so the bot delivers the image to Keith:
+   ```bash
+   echo '{"type":"photo","path":"'$HOME'/Projects/K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png","caption":"description"}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
+   ```
+5. Print the Obsidian embed: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
+6. If generating for a vault note, update that note with the embed link
 
 ### Style Tips for Prompts
 - LinkedIn headers: "professional, corporate, modern, clean design"
@@ -72,7 +76,11 @@ If MCP tools are unavailable, use the bash scripts:
 1. If using MCP: call `text_to_audio` with text, voiceId, emotion
 2. If using bash: run `scripts/minimax-speech.sh "text" voice emotion slug`
 3. Asset saves to `K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3`
-4. Print embed: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
+4. **Send to Telegram** (if running via k2b-remote): write an outbox manifest:
+   ```bash
+   echo '{"type":"audio","path":"'$HOME'/Projects/K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3","caption":"description"}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
+   ```
+5. Print embed: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
 
 ### Language Support
 40 languages including Mandarin, Cantonese, English. Set `languageBoost` to the primary language for best results, or `auto` for mixed-language text.

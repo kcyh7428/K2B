@@ -105,6 +105,20 @@ Use a list:
 - Commands: "Done." or one-line summary
 - Voice messages arrive as `[Voice transcribed]: ...` -- treat as normal text
 
+## Sending Images/Files to Telegram
+
+When you want to send an image, audio, video, or any file to Keith via Telegram, write an outbox manifest:
+
+```bash
+echo '{"type":"photo","path":"/absolute/path/to/file.png","caption":"optional description"}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
+```
+
+Types: `photo` (png/jpg/gif/webp), `audio` (mp3/wav/ogg), `video` (mp4), `document` (any other file).
+
+The bot picks up manifests after your response finishes and sends the file to Keith automatically. Always write the manifest AND mention the file in your text response so Keith gets both the image and your explanation.
+
+For vault images, use the Mac Mini path: `~/Projects/K2B-Vault/Assets/images/<filename>`
+
 ## Telegram Session Management
 
 ### `convolife`
