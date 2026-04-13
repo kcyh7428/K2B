@@ -234,6 +234,13 @@ export function getYtPendingCandidates(): Map<string, PendingCandidate> {
   if (!chatId) return new Map()
   const row = getYouTubeAgentState(chatId)
   if (!row) return new Map()
+  // Enforce same stale_after expiry as getYtState() so old Telegram buttons
+  // can't act on expired candidates after the 12h timeout
+  if (row.phase !== 'idle' && row.stale_after && Date.now() > row.stale_after) {
+    logger.info({ phase: row.phase }, 'YouTube candidates expired (12h timeout) -- clearing')
+    resetYouTubeAgentState(chatId)
+    return new Map()
+  }
   const obj = JSON.parse(row.pending_candidates) as Record<string, PendingCandidate>
   return new Map(Object.entries(obj))
 }
