@@ -41,7 +41,7 @@ import { handleYouTubeAgentResponse } from './youtube-agent-loop.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
-import { scanOutbox, sendMedia } from './telegram-outbox.js'
+import { scanOutbox, sendMedia, consumeManifest } from './telegram-outbox.js'
 
 // --- Telegram formatting ---
 
@@ -192,9 +192,11 @@ async function handleMessage(
     }
 
     // Send any media files the agent dropped into the outbox
-    const manifests = scanOutbox(outboxMark)
-    for (const m of manifests) {
-      await sendMedia(ctx.api, ctx.chat!.id, m)
+    const outboxItems = scanOutbox(outboxMark)
+    for (const { manifest, manifestPath } of outboxItems) {
+      const sent = await sendMedia(ctx.api, ctx.chat!.id, manifest)
+      if (sent) consumeManifest(manifestPath)
+      // On failure, manifest stays for diagnosis (won't re-trigger -- afterMs has passed)
     }
 
     // Send response

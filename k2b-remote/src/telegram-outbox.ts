@@ -19,9 +19,9 @@ export function ensureOutboxDir(): void {
   mkdirSync(TELEGRAM_OUTBOX_DIR, { recursive: true })
 }
 
-/** Scan outbox for manifests created after the given timestamp. Consumes (deletes) each manifest. */
-export function scanOutbox(afterMs: number): OutboxManifest[] {
-  const results: OutboxManifest[] = []
+/** Scan outbox for manifests created after the given timestamp. Returns manifests with their file paths for cleanup after sending. */
+export function scanOutbox(afterMs: number): Array<{ manifest: OutboxManifest; manifestPath: string }> {
+  const results: Array<{ manifest: OutboxManifest; manifestPath: string }> = []
   let files: string[]
   try {
     files = readdirSync(TELEGRAM_OUTBOX_DIR)
@@ -36,15 +36,21 @@ export function scanOutbox(afterMs: number): OutboxManifest[] {
       if (stat.mtimeMs <= afterMs) continue
       const manifest = JSON.parse(readFileSync(full, 'utf-8')) as OutboxManifest
       if (manifest.path && manifest.type) {
-        results.push(manifest)
+        results.push({ manifest, manifestPath: full })
+      } else {
+        unlinkSync(full)  // invalid manifest -- clean up
       }
-      unlinkSync(full)
     } catch (err) {
       logger.error({ err, file: f }, 'Failed to read outbox manifest')
       try { unlinkSync(full) } catch { /* ignore */ }
     }
   }
   return results
+}
+
+/** Clean up a consumed manifest file. Call after sendMedia succeeds. */
+export function consumeManifest(manifestPath: string): void {
+  try { unlinkSync(manifestPath) } catch { /* ignore */ }
 }
 
 // Minimal type for the grammy context API methods we need
@@ -61,28 +67,28 @@ export async function sendMedia(
   chatId: number,
   manifest: OutboxManifest
 ): Promise<boolean> {
-  if (!existsSync(manifest.path)) {
-    logger.warn({ path: manifest.path }, 'Outbox file not found, skipping')
-    return false
-  }
-
-  const size = statSync(manifest.path).size
-  if (size > FILE_MAX_BYTES) {
-    logger.warn({ path: manifest.path, size }, 'File exceeds 50MB Telegram limit, skipping')
-    return false
-  }
-
-  const caption = manifest.caption || undefined
-  const file = new InputFile(manifest.path)
-
-  // Fall back to document if photo exceeds sendPhoto limit
-  let effectiveType = manifest.type
-  if (effectiveType === 'photo' && size > PHOTO_MAX_BYTES) {
-    logger.info({ path: manifest.path, size }, 'Photo too large for sendPhoto, sending as document')
-    effectiveType = 'document'
-  }
-
   try {
+    if (!existsSync(manifest.path)) {
+      logger.warn({ path: manifest.path }, 'Outbox file not found, skipping')
+      return false
+    }
+
+    const size = statSync(manifest.path).size
+    if (size > FILE_MAX_BYTES) {
+      logger.warn({ path: manifest.path, size }, 'File exceeds 50MB Telegram limit, skipping')
+      return false
+    }
+
+    const caption = manifest.caption || undefined
+    const file = new InputFile(manifest.path)
+
+    // Fall back to document if photo exceeds sendPhoto limit
+    let effectiveType = manifest.type
+    if (effectiveType === 'photo' && size > PHOTO_MAX_BYTES) {
+      logger.info({ path: manifest.path, size }, 'Photo too large for sendPhoto, sending as document')
+      effectiveType = 'document'
+    }
+
     switch (effectiveType) {
       case 'photo':
         await api.sendPhoto(chatId, file, { caption })
