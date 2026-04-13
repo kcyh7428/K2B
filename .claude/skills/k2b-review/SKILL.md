@@ -153,6 +153,24 @@ Group by type if there are many items.
 - After processing, report a summary: "Processed X items: Y promoted, Z archived, W revised"
 - Cross-link promoted notes to relevant MOCs
 
+## Video feedback from `/research videos`
+
+`review/video_*.md` notes are dropped by `/research videos` when suitable videos are added to the K2B Watch playlist. Each note has frontmatter with `review-action: pending` initially. Keith watches the video, then updates the note (via Obsidian or Telegram) -- flipping `review-action` to `liked` / `disliked` / `neutral` and writing his reaction in `review-notes`.
+
+### Processing
+
+For each `review/video_*.md` file where `review-action != pending`:
+
+1. Read the file frontmatter. Extract `review-action`, `review-notes`, `channel`, `video-title`, `added` date.
+2. Compose one distilled line: `<added-date> <review-action>: <channel or title> -- <one-sentence distillation of review-notes>`.
+   Example: `2026-04-13 liked: Matt Wolfe -- clear concrete examples, prefer tools demos with deployment numbers`.
+   Keep the distillation under ~25 words -- this is for the NotebookLM filter prompt, which reads the tail of `video-preferences.md` each run.
+3. Append the line to `K2B-Vault/wiki/context/video-preferences.md` (after the `## Preferences` heading, at the end of the list).
+4. Delete the review note: `rm K2B-Vault/review/<file>.md`. The distilled line is the durable record -- the raw note is transient.
+5. Log the action to `wiki/log.md` as usual ("processed N video feedback notes").
+
+Review notes with `review-action: pending` are left untouched -- Keith hasn't watched those videos yet.
+
 ## Usage Logging
 
 After completing the main task, log this skill invocation:
