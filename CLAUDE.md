@@ -211,10 +211,13 @@ status: ideating | designed | next | in-progress | shipped | parked
 priority: high | medium | low
 effort: S | M | L | XL
 impact: high | medium | low
+mvp: "one sentence -- the smallest version that delivers value"
 shipped-date: YYYY-MM-DD  # only when shipped
 depends-on: [slug1, slug2]  # optional
 up: "[[index]]"
 ```
+
+Every feature spec must define `mvp:` -- the smallest version that delivers value. Build that first.
 
 For multi-ship features (e.g. `feature_mission-control-v3`), include a Shipping Status table and adopt the phase gate pattern from [[project_minimax-offload]]: `/observe` runs as the primary gate between ships, Codex adversarial review drafts the next spec, Keith makes the go/no-go decision.
 
