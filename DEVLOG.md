@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-04-13 -- session-design-v3 Phase 1: collapse two-session model
+
+**Commit:** `61ab89a` refactor(k2b-remote): collapse two-session design, delete keyword router
+
+**What shipped:** Phase 1 of a 4-phase v3 architecture refactor of the k2b-remote YouTube/interactive agent split. Collapses the `(chat_id, scope)` composite session PK back down to `chat_id` -- one persistent Claude Code session per chat instead of two -- and deletes the keyword-router dispatch (`handleYouTubeAgentResponse`, `parseAndExecuteActions`, `youtubeKeywords` array, `runAgentWithSession` helper, plus the forced-choice prompt that caused the "show me both" hallucination). YouTube state now lives behind an in-process MCP read tool (`youtube_get_pending`) the agent calls only when it judges the message is video-related; four mutation tools (`youtube_add_to_watch` / `youtube_skip` / `youtube_keep` / `youtube_swap_all`) handle changes via `guarded*` wrappers in `youtube.ts` that acquire a process-local `async-mutex` (`ytMutex`) and re-check `pendingVideoIds` inside the lock for TOCTOU safety. Background classifier calls (check-in copy, screening JSON) now go through a new `runStatelessQuery` helper that wraps `query()` with `persistSession: false` so the loop never writes orphan sessions to `~/.claude/projects/`. Every button callback mutation in `bot.ts` AND the `handleCommentOrSkipReason` text-reply skip-reason path are wrapped in `ytMutex.runExclusive`. `sessions` table v2->v3 migration preserves the `scope='interactive'` rows and drops the stale `scope='youtube'` rows. Added `k2b-remote/tasks.db` to `.gitignore`. Net delta: ~469 insertions / ~406 deletions across 7 files plus `package.json` + lockfile (`async-mutex` new dep).
+
+**Codex review:** Skipped at Checkpoint 2 with documented reason -- the v3 plan (`plans/2026-04-13_session-design-v3.md`) underwent 4 rounds of Codex adversarial review pre-implementation. Round 3 fixed the must-fix triad: `unstable_v2_prompt` is not one-shot (use `query({ persistSession: false })` instead, verified at `runtimeTypes.d.ts:360`), pre-check-then-mutate is TOCTOU-vulnerable (process-local async mutex), dual-pm2 hot rollback is unsafe (cold rollback only with DB snapshot). Round 4 fixed the missing-mutex gap on `handleCommentOrSkipReason`. A second-opinion Claude Code session 2026-04-13 read the full plan + diff and confirmed implementation fidelity, recommending ship-as-is without revert or extension.
+
+**Feature status change:** `feature_youtube-agent` shipped -> in-progress (v3 iteration row added to its Shipping Status table). Index lane updated.
+
+**Follow-ups:**
+- Run `/sync` to deploy `k2b-remote/` to the Mac Mini (build + pm2 restart).
+- Phase 2 (cooperative loop presentation, 60s quiet-window check) and Phase 3 (migrate `handleDirectYouTubeUrl`/screen-process/highlights/promote off the persistent session) are both parked, superseded by Phase 4.
+- Phase 4 (designed): retire the YouTube agent loop entirely, replace with a NotebookLM-backed K2B skill for standing-topic weekly digests. Designed in a separate Claude Code session. Phase 1 buys a stable bot during the 1-3 week NotebookLM build + validation window.
+- Known non-blocker carried forward: `expireVideoFromWatch` (called from the loop on phantom-playlist entries) internally composes `clearFromAgentState` and isn't wrapped in `ytMutex`. Loop's own phase guard makes it serial in practice. Will be deleted wholesale in Phase 4.
+
+**Key decisions (divergent from claude.ai project specs):**
+- State-as-tool, not state-as-context. The plan explicitly rejected prepending YouTube state into the prompt with `resume=sessionId` because anything sent that way becomes persisted history and would accumulate stale state in the transcript over days. The `youtube_get_pending` read tool only fires when the agent judges the message is video-related and tool results are bounded/compactable -- no transcript pollution.
+- `feature_youtube-agent` reopened (not a new `feature_session-design-v3` feature note). The v3 work is iteration 2 of the YouTube agent feature. Reopening keeps the full arc (built -> iterated -> retired in Phase 4) in one feature note.
+
+---
+
 ## 2026-04-13 -- fix silent failure in handleMessage
 
 **Commit:** `cfa5c72` fix(k2b-remote): add catch block to handleMessage to prevent silent failures
