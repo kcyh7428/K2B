@@ -447,6 +447,21 @@ export async function handleYouTubeAgentResponse(
 
   const lower = text.toLowerCase().trim()
 
+  // Escape hatch: if the message clearly isn't about the pending YouTube videos,
+  // let it fall through to regular chat instead of swallowing it as a YouTube response.
+  // This prevents "show me the investment infographic" from being eaten when
+  // the YouTube agent is waiting for a response about video recommendations.
+  const youtubeKeywords = ['add', 'skip', 'pass', 'keep', 'watch', 'busy', 'not now', 'later',
+    'not interested', 'swap', 'replace', 'screen', 'youtube', 'video', 'claude', 'all', 'them',
+    'first', 'second', 'both', 'neither', 'outdated', 'old', 'stale']
+  const hasVideoId = state.pendingVideoIds.some(id => lower.includes(id.toLowerCase()))
+  const hasYoutubeKeyword = youtubeKeywords.some(kw => lower.includes(kw))
+  if (!hasVideoId && !hasYoutubeKeyword) {
+    // Not a YouTube response -- let it through to regular chat
+    logger.info({ phase: state.phase, text: text.slice(0, 80) }, 'YouTube handler: message not YouTube-related, passing through')
+    return false
+  }
+
   if (state.phase === 'checking-watch') {
     if (lower.includes('busy') || lower.includes('not now') || lower.includes('later')) {
       resetYtState()
@@ -455,10 +470,7 @@ export async function handleYouTubeAgentResponse(
     }
 
     if (lower.includes('skip') || lower.includes('not interested') || lower.includes('swap') || lower.includes('replace')) {
-      // Canonical skip-from-Watch for each pending video.
-      // Previously this marked 'expired' with no playlist removal, no feedback,
-      // and no taste model update. Now it's a real skip decision from Keith.
-      const toSkip = [...state.pendingVideoIds] // copy -- skipVideoFromWatch mutates state
+      const toSkip = [...state.pendingVideoIds]
       for (const vid of toSkip) {
         try {
           skipVideoFromWatch(vid, 'user-requested-swap', 'text-reply:swap', text)
@@ -471,8 +483,7 @@ export async function handleYouTubeAgentResponse(
       return true
     }
 
-    // Complex response -- parse into structured actions and execute directly.
-    // NEVER let the agent execute playlist operations; we do it here with helpers.
+    // Complex response about videos -- parse into structured actions
     const pendingRecs = readRecommendations().filter(r => state.pendingVideoIds.includes(r.video_id))
     const executed = await parseAndExecuteActions(text, pendingRecs, 'watch-list', sendMessage, chatId)
     if (executed.actedCount > 0 && executed.remainingCount === 0) {
@@ -483,9 +494,6 @@ export async function handleYouTubeAgentResponse(
 
   if (state.phase === 'presenting-picks') {
     if (lower.includes('add') && (lower.includes('all') || lower.includes('them'))) {
-      // Canonical add-to-Watch for every pending candidate. Metadata comes from
-      // pendingCandidates cache (findNewContent populated it). If a candidate
-      // is missing from the cache, skip it and log -- don't write placeholder.
       const toAdd = [...state.pendingVideoIds]
       const candidatesMap = getYtPendingCandidates()
       let addedCount = 0
@@ -511,7 +519,7 @@ export async function handleYouTubeAgentResponse(
           logger.error({ err, vid }, 'addVideoToWatch failed during add-all')
         }
       }
-      resetYtState()  // clears phase, pendingVideoIds, AND pendingCandidates
+      resetYtState()
       await sendMessage(chatId, `Added ${addedCount} to your Watch list.`)
       return true
     }
@@ -522,7 +530,7 @@ export async function handleYouTubeAgentResponse(
       return true
     }
 
-    // Complex response -- parse into structured actions and execute directly.
+    // Complex response about videos -- parse into structured actions
     const pendingRecs = readRecommendations().filter(r => state.pendingVideoIds.includes(r.video_id))
     const executed = await parseAndExecuteActions(text, pendingRecs, 'new-picks', sendMessage, chatId)
     if (executed.actedCount > 0 && executed.remainingCount === 0) {
