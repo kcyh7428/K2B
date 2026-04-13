@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-04-13 -- fix silent failure in handleMessage
+
+**Commit:** `cfa5c72` fix(k2b-remote): add catch block to handleMessage to prevent silent failures
+
+**What shipped:** handleMessage had a try/finally with no catch block. When anything after runAgent() threw (sendMessage, scanOutbox, saveConversationTurn), the error was silently swallowed and the bot went quiet with no log entry and no reply to Keith. Added a catch block that logs the error via pino and sends a fallback "Something went wrong" reply to Telegram. Also widened the try scope to cover buildMemoryContext and typing setup per Codex review.
+
+**Codex review:** 3 findings. Fixed 2: (1) try scope too narrow -- widened to cover buildMemoryContext and sendTyping. (2) log message said "after agent returned" but runAgent errors also land in the catch -- fixed to generic "handleMessage failed". Noted 1: pre-existing chatId guard bug (String(undefined) = 'undefined' is truthy) -- separate fix, deferred.
+
+**Feature status change:** No feature -- bugfix (bot going silent on post-agent errors)
+
+**Follow-ups:**
+- Fix chatId guard: validate ctx.chat?.id before String() conversion (pre-existing bug)
+
+---
+
 ## 2026-04-13 -- Telegram media sending via outbox directory
 
 **Commits:** `1050e52` feat: Telegram media sending via outbox directory | `51a4d8e` fix: delete outbox manifests after send, not before
