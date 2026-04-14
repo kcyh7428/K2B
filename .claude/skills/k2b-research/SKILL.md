@@ -375,7 +375,7 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
 
 6. **K2B-as-judge -- Claude reasoning inline (NOT a bash invocation).** This step is the Claude session running the skill applying judgment to the NBLM descriptions and writing `$SUITABLE_JSON`. Execute the following substeps explicitly:
 
-   a. **Parse the NBLM answer defensively.** Same citation-marker strip (`re.sub(r'\s*\[\d+(?:,\s*\d+)*\]', '', raw)`) and synthetic-URL rejoin-by-title against `$CANDIDATES` as before. On parse failure, retry the ask once with a stricter prompt; on second failure, log the raw answer to the run record, send Telegram abort, delete the notebook, exit 1. If an NBLM entry's real URL or real title cannot be rejoined, it is NOT dropped -- it goes into `rejects` with `reason: "identity resolution failed"`.
+   a. **Parse the NBLM answer defensively.** Same citation-marker strip (`re.sub(r'\s*\[\d+(?:,\s*\d+)*\]', '', raw)`) and synthetic-URL rejoin-by-title against `$CANDIDATES` as before. On parse failure, retry the ask once with a stricter prompt; on second failure, log the raw answer to the run record, send Telegram abort, delete the notebook, exit 1. If an NBLM entry's real URL or real title cannot be rejoined, it is NOT dropped -- it goes into `rejects` with `reason: "identity resolution failed"`. **The rejoin ALSO pulls `published` from `$CANDIDATES` into each NBLM entry** -- NBLM reads transcripts and cannot be trusted for upload metadata, so `real_published` is always sourced from yt-search, never from Gemini. Normalize the value to `YYYY-MM-DD` before assigning it to `real_published`. If yt-search returned a relative string ("2 weeks ago") that can't be normalized deterministically, emit `"unknown"` -- the jq gate accepts both the ISO-8601 prefix and the literal `"unknown"`, and the recency veto simply skips candidates with `"unknown"` (neither fresh nor stale).
 
    b. **Load Keith's framing from the skill header, explicitly.** Read the block at the "### Baked Keith framing (do not edit per query)" callout above (lines 262-264 of this SKILL.md). The Claude session reads that block directly from the skill file -- single source of truth, explicit load, no implicit "scroll up and remember". Do NOT re-inline the framing text into the Step 5 NBLM prompt; Gemini does not get taste context.
 
@@ -387,6 +387,7 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    d. **Apply the judgment rubric** to each parsed NBLM entry:
    - A candidate is a **pick** only if K2B can name a *specific* reason Keith will finish it through one of these lenses: concrete-examples, 90-day-deployable, senior-TA-in-traditional-corporate.
    - Any line in the preference tail that contradicts a candidate (disliked channel, disliked style, level mismatch) is a **veto** -- it goes into `rejects`.
+   - **Recency veto.** If the topic moves fast (new model capabilities, tool releases, market news, "what's new in X") AND `real_published` is more than 6 months older than the run date (i.e. `today - real_published > 180 days`), the candidate goes into `rejects` with `reason: "outdated: published <date>, topic moves faster than that"`. Evergreen topics (mindset, frameworks, interview patterns, management principles) are NOT subject to this veto. K2B decides per candidate whether the topic is fast-moving. The run date anchor is always "today" at run time, never hardcoded, so the veto window drifts with the calendar.
    - Fewer than 5 clear winners → pick fewer. **Pad-to-target is forbidden.**
    - **Zero picks is allowed and explicit.** If nothing clears the bar, emit `picks: []`.
    - **Cap is 5.** Even if 10 candidates look good, pick the top 5 by confidence.
@@ -403,7 +404,8 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
          "real_title": "...",
          "real_channel": "...",
          "real_duration": "...",
-         "why_k2b": "2-3 sentences in K2B's voice: what the video covers, why it matches Keith's lens, which preference-tail lines it respects or avoids",
+         "real_published": "2026-03-20",
+         "why_k2b": "2-3 sentences in K2B's voice: what the video covers, why it matches Keith's lens, which preference-tail lines it respects or avoids. Mention age only when relevant (e.g. 'from 3 weeks ago, so tool versions still current')",
          "suggested_category": "K2B Claude",
          "confidence": 0.85,
          "preference_evidence": ["2026-04-13 liked: Matt Wolfe -- clear concrete examples"]
@@ -458,6 +460,8 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
      (.picks | all(
        (has("pick_id")) and (has("video_id")) and (has("real_url")) and
        (has("real_title")) and (has("real_channel")) and (has("real_duration")) and
+       (has("real_published")) and ((.real_published | type) == "string") and
+       ((.real_published | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")) or (.real_published == "unknown")) and
        (has("why_k2b")) and (has("suggested_category")) and (has("confidence")) and
        ((.confidence | type) == "number") and (.confidence >= 0) and (.confidence <= 1) and
        (has("preference_evidence")) and ((.preference_evidence | type) == "array")
@@ -532,7 +536,7 @@ PYEOF
    <why_k2b prose — this is what Keith reads>
 
    - **url:** <real_url>
-   - **channel:** <real_channel>  ·  **duration:** <real_duration>
+   - **channel:** <real_channel>  ·  **duration:** <real_duration>  ·  **published:** <real_published>
 
    ```yaml
    pick_id: 2026-04-14-<query-slug>-01
@@ -540,6 +544,7 @@ PYEOF
    real_url: <real_url>
    real_title: "<real_title>"
    real_channel: "<real_channel>"
+   real_published: "<real_published>"
    suggested_category: K2B Claude
    category_override: ""
    decision: pending          # keith: keep | drop | neutral
@@ -549,7 +554,7 @@ PYEOF
    notes: ""
    ```
 
-   The `real_url`, `real_title`, and `real_channel` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the Telegram feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean.
+   The `real_url`, `real_title`, `real_channel`, and `real_published` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the Telegram feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean. `real_published` is sourced from yt-search, never NBLM.
 
    ### 2. <real_title>
 
