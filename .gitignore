@@ -37,6 +37,9 @@ scripts/generate-org-chart.py
 # Claude Code plan artifacts
 .claude/plans/
 
+# Scheduler runtime lock (orphaned if a scheduler session dies uncleanly)
+.claude/scheduled_tasks.lock
+
 # OS files
 .DS_Store
 k2b-dashboard/.env
