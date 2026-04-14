@@ -348,77 +348,257 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    PREF_TAIL=$(tail -n 30 ~/Projects/K2B-Vault/wiki/context/video-preferences.md | sed 's/"/\\"/g')
    ```
 
-5. **Ask NotebookLM with the JSON filter prompt** (below), capture the answer:
+5. **Ask NotebookLM for content descriptions only -- NotebookLM is the reader, K2B is the judge.** The baked Keith framing and the preference tail are NOT passed to Gemini; K2B holds them for Step 6. Gemini must not rank, filter, or judge suitability. Ask:
    ```bash
-   notebooklm ask "$(cat <<EOF
-   Each source in this notebook is a YouTube video. Classify each one.
+   notebooklm ask "$(cat <<'EOF'
+   Each source in this notebook is a YouTube video. For each one, return an objective content description.
 
-   Return JSON: [{"url", "title", "channel", "duration", "suitable": true|false, "why"}].
+   Return JSON: [
+     {
+       "url",
+       "title",
+       "channel",
+       "duration",
+       "what_it_covers": "2-3 sentences describing the topic and main claims",
+       "style": "tutorial | talk | demo | news | listicle | interview",
+       "level": "beginner | intermediate | advanced",
+       "concrete_examples": true,
+       "key_speakers_or_companies": ["..."]
+     }
+   ]
 
-   Definition of "suitable" -- this is for Keith Cheung:
-
-   Senior TA leader running AI transformation in a large traditional corporate (SJM Resorts, Macau). Also operates Signhub Tech (HK), TalentSignals, Agency at Scale. Content angle: showing how senior executives in traditional corporates use AI to 10x effectiveness. Prefer content creators with clear concrete examples over academic papers. Prefer actionable over theoretical. Prefer deployable in 90 days over visionary. Skip pure hype, skip thumbnails with "SHOCKING" / "INSANE", skip anything under 3 minutes, skip Chinese-only content unless specifically requested.
-
-   Recent feedback from Keith to consider (most recent at bottom):
-
-   $PREF_TAIL
-
-   For each video, set suitable=true only if it matches the framing AND does not contradict recent feedback. For suitable=true videos, "why" should be a single sentence explaining the relevance hook (what specifically Keith will get out of watching). For suitable=false videos, "why" should be a single sentence explaining what disqualified it.
-
-   Return ONLY the JSON array, no prose before or after.
+   Do NOT judge whether a video is good, suitable, relevant, or recommended. Do NOT rank or sort. Describe what the video contains and stop. Return ONLY the JSON array, no prose before or after.
    EOF
    )" -n "$NB_ID"
    ```
+   Capture the raw answer into a variable `NBLM_RAW`.
 
-6. **Parse the JSON answer defensively** and persist the suitable-only subset to a per-run tmpfile that downstream steps consume. If the answer has prose around the JSON, extract the array with `jq` or a Python one-liner. NotebookLM responses sometimes embed citation markers like `[44, 47]` inside string values; strip them with `re.sub(r'\s*\[\d+(?:,\s*\d+)*\]', '', raw)` before `json.loads`. NotebookLM also sometimes returns synthetic `v=1..N` placeholder URLs in the `url` field instead of real ones; rejoin to the real candidate URLs by matching on the normalized title. If parse fails, retry the ask once with a stricter prompt. If second parse fails, log raw answer to the run record, notify Keith the run failed parsing, abort the playlist/review-note steps.
+6. **K2B-as-judge -- Claude reasoning inline (NOT a bash invocation).** This step is the Claude session running the skill applying judgment to the NBLM descriptions and writing `$SUITABLE_JSON`. Execute the following substeps explicitly:
+
+   a. **Parse the NBLM answer defensively.** Same citation-marker strip (`re.sub(r'\s*\[\d+(?:,\s*\d+)*\]', '', raw)`) and synthetic-URL rejoin-by-title against `$CANDIDATES` as before. On parse failure, retry the ask once with a stricter prompt; on second failure, log the raw answer to the run record, send Telegram abort, delete the notebook, exit 1. If an NBLM entry's real URL or real title cannot be rejoined, it is NOT dropped -- it goes into `rejects` with `reason: "identity resolution failed"`.
+
+   b. **Load Keith's framing from the skill header, explicitly.** Read the block at the "### Baked Keith framing (do not edit per query)" callout above (lines 262-264 of this SKILL.md). The Claude session reads that block directly from the skill file -- single source of truth, explicit load, no implicit "scroll up and remember". Do NOT re-inline the framing text into the Step 5 NBLM prompt; Gemini does not get taste context.
+
+   c. **Load the preference tail** (point-in-time snapshot):
+   ```bash
+   PREF_TAIL=$(tail -n 30 ~/Projects/K2B-Vault/wiki/context/video-preferences.md)
+   ```
+
+   d. **Apply the judgment rubric** to each parsed NBLM entry:
+   - A candidate is a **pick** only if K2B can name a *specific* reason Keith will finish it through one of these lenses: concrete-examples, 90-day-deployable, senior-TA-in-traditional-corporate.
+   - Any line in the preference tail that contradicts a candidate (disliked channel, disliked style, level mismatch) is a **veto** -- it goes into `rejects`.
+   - Fewer than 5 clear winners → pick fewer. **Pad-to-target is forbidden.**
+   - **Zero picks is allowed and explicit.** If nothing clears the bar, emit `picks: []`.
+   - **Cap is 5.** Even if 10 candidates look good, pick the top 5 by confidence.
+   - For each pick, K2B chooses a `suggested_category` from the playlist map (see below). If nothing fits, K2B may suggest a new category name -- that pick is flagged for Keith's approval in the run note and `/review` leaves it `playlist_action: pending` with `new category suggested: <name>` appended to `notes:`.
+
+   e. **Write `$SUITABLE_JSON` with this strict shape.** Every field is mandatory.
+   ```json
+   {
+     "picks": [
+       {
+         "pick_id": "2026-04-14-<query-slug>-01",
+         "video_id": "...",
+         "real_url": "...",
+         "real_title": "...",
+         "real_channel": "...",
+         "real_duration": "...",
+         "why_k2b": "2-3 sentences in K2B's voice: what the video covers, why it matches Keith's lens, which preference-tail lines it respects or avoids",
+         "suggested_category": "K2B Claude",
+         "confidence": 0.85,
+         "preference_evidence": ["2026-04-13 liked: Matt Wolfe -- clear concrete examples"]
+       }
+     ],
+     "rejects": [
+       {
+         "real_title": "...",
+         "real_channel": "...",
+         "reason": "one sentence in K2B's voice"
+       }
+     ]
+   }
+   ```
+
+   **Hard rules K2B MUST follow when building this JSON:**
+   - `picks` sorted by `confidence` descending.
+   - Every pick has `confidence` in `[0.0, 1.0]`. If K2B cannot confidently rate a candidate, it belongs in `rejects`, not `picks`.
+   - Every pick has `preference_evidence: []` -- a list of zero or more verbatim lines from `$PREF_TAIL` that justified the decision. Empty list is allowed; the field must exist.
+   - `rejects` MUST include every non-pick candidate parsed from the NBLM answer. Silent drops are forbidden. `len(picks) + len(rejects)` must equal the count of parsed NBLM entries.
+   - `pick_id` format: `YYYY-MM-DD-<query-slug>-NN` (1-indexed, zero-padded NN, stable across the run).
+   - `suggested_category` must be one of the names in `scripts/k2b-playlists.json` OR a new name clearly flagged by K2B for Keith's approval.
+
+   f. **Allocate the tmpfile, extend the trap, and write the JSON.** The Claude session running this skill executes these steps explicitly via its Bash and Write tools (the session IS the judge, so the "write" is not a subagent hand-off -- it is Claude directly emitting the validated object to the file):
 
    ```bash
    SUITABLE_JSON=$(mktemp -t k2b-suitable.XXXXXX.json)
    trap 'rm -f "$CANDIDATES" "$READY_LOG" "$SUITABLE_JSON"' EXIT
-   # ... parse + rejoin URLs + write the suitable-only array to "$SUITABLE_JSON" ...
+   echo "$SUITABLE_JSON"   # print the path so Claude can reference it explicitly
    ```
-   `$SUITABLE_JSON` holds a JSON array of `{video_id, real_url, real_title, real_channel, real_duration, why}` objects, one per `suitable: true` entry. Step 7 (playlist add), Step 8 (review notes), Step 9 (run record) and Step 10 (Telegram count) all read from this file.
 
-7. **For each `suitable: true` entry:**
-   a. Extract `video_id` from the URL (the `v=` query param, or last path segment for `youtu.be/`).
-   b. Call `scripts/yt-playlist-add.sh "PLg0PUkz5itjwIXWVuSlvxud0ZR2JBsacX" "$VIDEO_ID"`. Log success/failure per video.
-   c. Create review note at `K2B-Vault/review/video_$(date +%F)_<title-slug>.md` using the template in Step 8.
+   Then Claude writes the `{picks, rejects}` JSON object to that exact path via the Write tool (preferred for JSON correctness) OR via an atomic heredoc:
+   ```bash
+   cat > "$SUITABLE_JSON" <<'JSON_EOF'
+   { "picks": [...], "rejects": [...] }
+   JSON_EOF
+   ```
+   Do NOT use `jq -n --argjson` with shell-interpolated pick data -- the JSON is too structured and too long, and shell metacharacters in `why_k2b` / `preference_evidence` will corrupt it. The Write tool or a quoted heredoc is the only safe path.
 
-8. **Review note template** (one per added video):
-   ```markdown
+   After the write, verify the file is non-empty and parseable as JSON before proceeding:
+   ```bash
+   [[ -s "$SUITABLE_JSON" ]] || { echo "FATAL: $SUITABLE_JSON is empty" >&2; exit 1; }
+   jq empty "$SUITABLE_JSON" || { echo "FATAL: $SUITABLE_JSON is not valid JSON" >&2; exit 1; }
+   ```
+
+   g. **Schema validation gate (mandatory before Step 7).** Validates BOTH `picks[]` and `rejects[]` object shapes. On failure, log the raw NBLM answer to the run record, Telegram abort, delete notebook, exit 1.
+   ```bash
+   jq -e '
+     (type == "object") and
+     (has("picks") and (.picks | type == "array")) and
+     (has("rejects") and (.rejects | type == "array")) and
+     (.picks | all(
+       (has("pick_id")) and (has("video_id")) and (has("real_url")) and
+       (has("real_title")) and (has("real_channel")) and (has("real_duration")) and
+       (has("why_k2b")) and (has("suggested_category")) and (has("confidence")) and
+       ((.confidence | type) == "number") and (.confidence >= 0) and (.confidence <= 1) and
+       (has("preference_evidence")) and ((.preference_evidence | type) == "array")
+     )) and
+     (.rejects | all(
+       (has("real_title")) and (has("real_channel")) and (has("reason")) and
+       ((.real_title | type) == "string") and ((.real_channel | type) == "string") and
+       ((.reason | type) == "string")
+     ))
+   ' "$SUITABLE_JSON" >/dev/null || {
+     # Write raw NBLM answer to partial run record FIRST -- the audit trail is most valuable on failure.
+     python3 - <<PYEOF
+import os, datetime
+vault = os.path.expanduser("~/Projects/K2B-Vault")
+slug  = os.environ.get("QUERY_SLUG", "unknown")
+today = datetime.date.today().isoformat()
+path  = os.path.join(vault, "raw", "research", f"{today}_videos_{slug}.md")
+raw   = os.environ.get("NBLM_RAW", "(NBLM_RAW not captured)")
+with open(path, "w") as f:
+    f.write(f"---\ntype: research-run\nstatus: schema-validation-failed\nquery: \"{slug}\"\n---\n\n# Schema validation failed\n\n## Raw NBLM answer\n\n```\n{raw}\n```\n")
+PYEOF
+     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: schema validation failed for: $QUERY -- see run record"
+     notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
+     exit 1
+   }
+   ```
+
+7. **For each `.picks[]` entry, add to K2B Watch.** Playlist ID comes from the canonical map, never hardcoded:
+   ```bash
+   K2B_WATCH_ID=$(jq -r '."K2B Watch"' ~/Projects/K2B/scripts/k2b-playlists.json)
+   jq -c '.picks[]' "$SUITABLE_JSON" | while IFS= read -r PICK; do
+     VIDEO_ID=$(printf '%s' "$PICK" | jq -r '.video_id')
+     ~/Projects/K2B/scripts/yt-playlist-add.sh "$K2B_WATCH_ID" "$VIDEO_ID" \
+       || echo "WARN: playlist add failed for $VIDEO_ID" >&2
+   done
+   ```
+
+8. **Write one run-level review note.** Replaces the old per-video template. Path:
+   ```
+   K2B-Vault/review/videos_$(date +%F)_${QUERY_SLUG}.md
+   ```
+   Use an atomic write-then-rename so `/review` and Telegram feedback paths can never observe a half-written file:
+   ```bash
+   RUN_NOTE="$K2B_VAULT/review/videos_$(date +%F)_${QUERY_SLUG}.md"
+   RUN_NOTE_TMP="$K2B_VAULT/review/.videos_$(date +%F)_${QUERY_SLUG}.md.tmp.$$"
+   # ... build the rendered content into $RUN_NOTE_TMP via cat/python/jq ...
+   mv "$RUN_NOTE_TMP" "$RUN_NOTE"
+   ```
+
+   **Template** (rendered from `.picks[]` and `.rejects[]`):
+
+   ````markdown
    ---
-   type: video-feedback
+   type: video-run
    review-action: pending
    review-notes: ""
-   video-url: <url from JSON>
-   video-title: "<title from JSON>"
-   channel: "<channel from JSON>"
-   duration: "<duration from JSON>"
-   added: <YYYY-MM-DD>
-   why-suitable: "<why from JSON>"
-   query: "<original query>"
+   query: "<QUERY>"
+   run-date: <YYYY-MM-DD>
+   picks-count: <N>
+   watch-playlist: K2B Watch
    up: "[[index]]"
    ---
+
+   # Videos for: <QUERY>
+
+   **Run:** <YYYY-MM-DD> · **Candidates screened:** <CANDIDATES_SCREENED> · **K2B picked:** <N>
+
+   ## K2B's picks
+
+   ### 1. <real_title>
+
+   <why_k2b prose — this is what Keith reads>
+
+   - **url:** <real_url>
+   - **channel:** <real_channel>  ·  **duration:** <real_duration>
+
+   ```yaml
+   pick_id: 2026-04-14-<query-slug>-01
+   video_id: <video_id>
+   real_url: <real_url>
+   real_title: "<real_title>"
+   real_channel: "<real_channel>"
+   suggested_category: K2B Claude
+   category_override: ""
+   decision: pending          # keith: keep | drop | neutral
+   playlist_action: pending   # pending | done | failed
+   preference_logged: false
+   processed_at: null
+   notes: ""
    ```
-   Body is empty. Keith will fill `review-notes` and flip `review-action` after watching.
 
-9. **Write run record** at `K2B-Vault/raw/research/$(date +%F)_videos_<query-slug>.md` with frontmatter + sections: query, baked framing version, preference tail used, full JSON response (suitable + skipped with reasons), playlist adds, review notes created, any errors. This is the durable audit trail.
+   The `real_url`, `real_title`, and `real_channel` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the Telegram feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean.
 
-10. **Send Telegram notification.** `send-telegram.sh` enforces the Telegram 4096-byte hard limit by auto-splitting on a safe boundary (blank line / newline / character) and fails non-zero on any non-2xx response, so the calling skill MUST check its exit code -- never swallow a failed notification on a `/schedule` run. **Use the count of NotebookLM-approved entries from Step 6 (`SUITABLE_COUNT`), NOT the indexing-success count from Step 3 (`READY_COUNT`)** -- they are different numbers and will diverge on every run.
+   ### 2. <real_title>
+
+   ... same block ...
+
+   ## Candidates K2B rejected (<N_rejected>)
+
+   - <real_title> · <real_channel> — <reason>
+   - ...
+   ````
+
+   **Parsing contract.** The `/review` handler and the Telegram feedback path parse ONLY the fenced ` ```yaml ... ``` ` block after each `### N. ` heading (via PyYAML). The prose above the YAML fence is for Keith to read, never parsed. Keith edits only `decision:`, `category_override:`, and `notes:` -- everything else is K2B-managed state.
+
+   **N=0 still writes the note.** The note exists with an empty picks section and the full rejects list. Audit trail is mandatory even when nothing cleared the bar.
+
+9. **Write run record** at `K2B-Vault/raw/research/$(date +%F)_videos_${QUERY_SLUG}.md`. Sections:
+   - Frontmatter: `type: research-run`, `query`, `candidates_screened: <count from $CANDIDATES, never hardcoded>`, `picks-count`, `outcome: zero-picks | has-picks`.
+   - Query + baked framing version in use.
+   - Preference tail snapshot that K2B saw (the literal `$PREF_TAIL` value).
+   - **Picks-mode runs (`outcome: has-picks`):** the NBLM `what_it_covers` descriptions for picks only, plus K2B's `why_k2b` reasoning per pick, plus the rejects list (title · channel · one-line reason).
+   - **Zero-picks runs (`outcome: zero-picks`):** include ALL NBLM descriptions (all 25, or however many were parsed) so the "why nothing was worth watching" evidence trail is durable. Zero-picks runs are exactly the ones Keith will want to audit later.
+   - Ready/fail log from Step 3.
+   - Per-video playlist-add results from Step 7.
+   - Any Telegram failures from Step 10.
+
+   This is the durable audit trail. It persists after `/review` moves the run note out of `review/`.
+
+10. **Send Telegram notification.** Count picks from `.picks[]` (NOT `READY_COUNT`). Zero picks gets a dedicated message pointing Keith at the run note.
     ```bash
-    SUITABLE_COUNT=$(jq 'length' "$SUITABLE_JSON")  # from Step 6's parse output
-    MSG="K2B found $SUITABLE_COUNT suitable videos for: $QUERY"$'\n\n'
-    # For each suitable video, append: "- <title>\n  <why>\n  <url>\n\n"
+    PICKS_COUNT=$(jq '.picks | length' "$SUITABLE_JSON")
+
+    if (( PICKS_COUNT == 0 )); then
+      MSG="K2B: nothing worth watching this week for: $QUERY"$'\n\n'
+      MSG+="Candidates screened: $CANDIDATES_SCREENED. K2B picked 0. See the run note for per-candidate reasons."
+    else
+      MSG="K2B picked $PICKS_COUNT videos for: $QUERY"$'\n\n'
+      MSG+=$(jq -r '.picks[] | "- \(.real_title)\n  why: \(.why_k2b)\n  category: \(.suggested_category)\n  \(.real_url)\n"' "$SUITABLE_JSON")
+    fi
+
     if ! ~/Projects/K2B/scripts/send-telegram.sh "$MSG"; then
       echo "WARN: telegram notification failed for query: $QUERY" >&2
       # Continue: notebook delete + run record still need to happen.
     fi
     ```
-    `send-telegram.sh` chunks the message internally; callers should NOT pre-batch.
+    `send-telegram.sh` handles the 4096-byte chunking internally; callers do NOT pre-batch. Exit-code check is mandatory.
 
 11. **Delete the notebook** (fresh per run, no accumulation):
     ```bash
-    notebooklm notebook delete "$NB_ID"
+    notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
     ```
 
 12. **Append to skill-usage-log** as usual.
@@ -431,19 +611,27 @@ Wrap with `/schedule`:
 ```
 The scheduler runs the command on the Mac Mini weekly. Output lands in the vault via Syncthing. Telegram notification fires from the Mac Mini using `send-telegram.sh`.
 
+### Playlist ID resolution
+
+All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the canonical name→ID map. Lookup via `jq -r '."<name>"' ~/Projects/K2B/scripts/k2b-playlists.json`. Never hardcode an ID in this skill, `k2b-review/SKILL.md`, or CLAUDE.md. If K2B suggests a category name not present in the JSON (K2B-invented category), the run note still writes the pick but `/review` leaves `playlist_action: pending` with a "new category suggested" note until Keith approves creating the playlist.
+
 ### Failure modes
 
-- **NotebookLM research times out (1800s):** abort, log to run record, notify Keith "research timed out on: <query>".
-- **JSON parse fails twice:** log raw answer, notify Keith "filter response wasn't parseable, see raw/research/".
-- **Playlist add fails for a video:** log per-video in run record, continue with the others, include the failure count in the Telegram summary.
-- **Zero suitable videos:** still write the run record, notify Keith "nothing new worth watching for: <query> (N candidates screened, all rejected -- see run record for why)".
+- **NotebookLM ask times out or errors:** abort, log to run record, notify Keith "research timed out on: <query>", delete the notebook.
+- **NBLM JSON parse fails twice:** log raw answer to run record, notify Keith "NBLM descriptions weren't parseable, see raw/research/", abort downstream steps.
+- **K2B schema validation fails on `$SUITABLE_JSON`:** Write partial run record with raw NBLM answer to `raw/research/` first, then Telegram abort, delete notebook, exit 1. This is the Step 6g gate.
+- **Playlist add fails for a pick:** log per-video in run record, continue with the others, include the failure count in the Telegram summary.
+- **Zero picks:** still write the run note + run record + Telegram message ("nothing worth watching this week"), still delete the notebook. N=0 is normal, not an error.
 
 ### What NOT to do
 
 - Do NOT cache NotebookLM notebooks across runs. Fresh per run.
-- Do NOT dedupe across runs via a URL log. The filter prompt's preference tail handles this naturally once Keith rates videos.
-- Do NOT ask Keith to confirm each add. The filter already decided. Keith's feedback comes after watching.
-- Do NOT write to `wiki/context/video-preferences.md` from `/research videos`. Only `/review` appends there.
+- Do NOT dedupe across runs via a URL log. The preference tail handles this naturally once Keith rates videos.
+- Do NOT ask Keith to confirm each add. K2B already decided in Step 6. Keith's feedback comes after watching via Telegram reaction or `/review`.
+- Do NOT write to `wiki/context/video-preferences.md` from `/research videos`. Only `/review` and the Telegram feedback path append there, and both do so via atomic write-then-rename.
+- Do NOT re-inline the baked Keith framing into the Step 5 NBLM prompt. Gemini must not see Keith's taste. Only K2B (Step 6) sees framing + preference tail.
+- Do NOT hardcode playlist IDs. Always `jq`-lookup from `scripts/k2b-playlists.json`.
+- Do NOT pad picks to 5 when fewer clearly deserve it. Zero is a valid outcome.
 
 ## MiniMax extraction offload (added 2026-04-10)
 

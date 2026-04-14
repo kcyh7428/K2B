@@ -156,18 +156,29 @@ When observer findings appear at session start, act on them immediately -- don't
 
 This collapses the old 3-step manual flow (`/observe` -> `/learn` -> wait for reinforcement) into one natural-language response from Keith. `/observe` remains available for deep synthesis but is no longer required for the loop to close.
 
-## Video Feedback via Telegram
+## Video Feedback via Telegram (run-level)
 
-When Keith reacts to a video in a Telegram conversation (examples: "the Wolfe video was great", "that Operator breakdown was shallow, skip Matthew Berman", "I liked #3 from yesterday's batch"), do the following without asking for confirmation:
+When Keith reacts to a video in a Telegram conversation (examples: "the Wolfe video was great, move it to K2B Claude", "that Operator breakdown was shallow, drop Matthew Berman", "I liked pick #3 from today's batch", "loved all 3 today"), do the following without asking for confirmation:
 
-1. Glob `K2B-Vault/review/video_*.md`.
-2. Read the candidates to find the match. Prefer URL match if Keith pasted one, then exact title match, then channel match, then recency (most recently added first). If Keith says "yesterday's batch #3", match by `added` date and ordinal position.
-3. If exactly one match: Edit the frontmatter to set `review-action` to `liked` / `disliked` / `neutral` based on Keith's tone, and write his distilled reaction into `review-notes`. Reply in Telegram confirming which video was updated ("updated: <title> -> liked, notes saved").
-4. If zero matches: reply with "no matching video in review queue -- want me to log this as a standalone preference line?" and wait for Keith's answer.
-5. If multiple matches: list the candidates in Telegram with their `added` dates and ask Keith to disambiguate.
-6. Do NOT append to `wiki/context/video-preferences.md` directly -- that's `/review`'s job. You are only updating the transient review note.
+1. Glob `K2B-Vault/review/videos_*.md` (run-level notes; not `video_*.md`).
+2. Read candidates from the most recent `run-date` backwards. Within each file, parse the picks via their fenced ` ```yaml ... ``` ` blocks (same contract as `/review`: locate each `^### \d+\. ` heading, read the first YAML fence inside that pick). Match rule: URL if Keith pasted one → exact title → channel → "pick #N" ordinal within the most recent run. Bulk reactions ("loved all 3", "drop the last two") iterate through matched picks in sequence.
+3. For each matched pick, acquire `flock -x 9` on `/tmp/k2b-review-videos.lock`, then:
+   - Edit the pick's YAML block in place (read full file, rewrite with the updated block, atomic rename via `.tmp` + `mv`). Set `decision:` to `keep` / `drop` / `neutral` based on Keith's tone. Optionally set `category_override:` if Keith's reaction implies a different category ("move the Wolfe video to K2B Claude"). Append Keith's distilled reaction to `notes:` (do NOT overwrite existing text).
+   - Immediately run the same playlist move logic as `/review`: `K2B_WATCH_ID=$(jq -r '."K2B Watch"' ~/Projects/K2B/scripts/k2b-playlists.json)`, resolve `effective_category` via `jq -r --arg name "$EFFECTIVE_CATEGORY" '.[$name] // empty' ~/Projects/K2B/scripts/k2b-playlists.json`, call `scripts/yt-playlist-remove.sh "$K2B_WATCH_ID" "$VIDEO_ID"`, and on `keep` also call `scripts/yt-playlist-add.sh "$DEST_ID" "$VIDEO_ID"`.
+   - Append one distilled line to `wiki/context/video-preferences.md` via atomic write-then-rename (NEVER `>>` or `echo >>`). Format per `/review`: `<run-date> kept [<category>]: <channel> -- <notes>`, `<run-date> dropped: <channel> -- <notes>`, or `<run-date> neutral: <channel> -- <notes>`.
+   - On success: update the pick's YAML block with `playlist_action: done`, `processed_at: <ISO8601>`, `preference_logged: true`. On failure: `playlist_action: failed`, append the error to `notes`, leave `preference_logged` at its prior value.
+   - Release the flock.
+4. Reply in Telegram with the concrete result for each pick processed: `"done -- moved <title> to K2B Claude"` / `"done -- dropped <title> from Watch"`. For bulk reactions, combine into one reply.
+5. If zero matches: reply `"no matching pick in recent run notes -- want me to log this as a standalone preference line?"` and wait for Keith's answer.
+6. If ambiguous within one file: list the candidate picks in Telegram with their `pick_id`s and ask Keith to disambiguate.
 
-This rule relies on the interactive Claude session's built-in Edit/Glob/Grep tools. No new MCP tool, no routing code, no keyword matching -- the "is this video feedback?" decision is made by reading the conversation context.
+**Forbidden on the Telegram path (prevents the Liam Ottley bug from recurring):**
+
+- **NEVER append directly to `wiki/context/video-preferences.md`.** The file is jointly owned by `/review` and the Telegram path, but ALL writes go through the SAME atomic read-rewrite-rename helper -- never `>>`, never `echo >>`, never `obsidian_append_content`. If you catch yourself about to do a direct append, STOP: read the file, rewrite it in full to a `.tmp` sibling, then `mv` atomically. The direct-append pattern is exactly what produced the Liam Ottley bug during B8 testing and this rule exists to prevent recurrence.
+- **NEVER hardcode playlist IDs.** Always `jq`-lookup from `scripts/k2b-playlists.json`.
+- **NEVER skip the flock.** `/review` can be running concurrently; double-execution of a playlist move is exactly the failure mode this locking prevents.
+
+This rule uses the interactive Claude session's built-in Edit/Glob/Grep/Bash tools. No new MCP tool, no routing code, no keyword matching -- the "is this video feedback?" decision is made by reading the conversation context.
 
 ## Email Safety
 

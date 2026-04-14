@@ -153,23 +153,66 @@ Group by type if there are many items.
 - After processing, report a summary: "Processed X items: Y promoted, Z archived, W revised"
 - Cross-link promoted notes to relevant MOCs
 
-## Video feedback from `/research videos`
+## Video feedback from `/research videos` (run-level)
 
-`review/video_*.md` notes are dropped by `/research videos` when suitable videos are added to the K2B Watch playlist. Each note has frontmatter with `review-action: pending` initially. Keith watches the video, then updates the note (via Obsidian or Telegram) -- flipping `review-action` to `liked` / `disliked` / `neutral` and writing his reaction in `review-notes`.
+`review/videos_YYYY-MM-DD_<query-slug>.md` files are run-level notes dropped by `/research videos`. Each note carries 0-5 picks; each pick has a fenced ` ```yaml ... ``` ` block with K2B-managed state (`pick_id`, `video_id`, `suggested_category`, `category_override`, `decision`, `playlist_action`, `preference_logged`, `processed_at`, `notes`). Keith edits ONLY `decision`, `category_override`, and `notes` in Obsidian -- or sends a Telegram reaction and CLAUDE.md's video feedback path edits the same block.
 
-### Processing
+### Concurrency and atomicity
 
-For each `review/video_*.md` file where `review-action != pending`:
+All processing of `videos_*.md` files takes a narrow flock around the per-file update:
 
-1. Read the file frontmatter. Extract `review-action`, `review-notes`, `channel`, `video-title`, `added` date.
-2. Compose one distilled line: `<added-date> <review-action>: <channel or title> -- <one-sentence distillation of review-notes>`.
-   Example: `2026-04-13 liked: Matt Wolfe -- clear concrete examples, prefer tools demos with deployment numbers`.
-   Keep the distillation under ~25 words -- this is for the NotebookLM filter prompt, which reads the tail of `video-preferences.md` each run.
-3. Append the line to `K2B-Vault/wiki/context/video-preferences.md` (after the `## Preferences` heading, at the end of the list).
-4. Delete the review note: `rm K2B-Vault/review/<file>.md`. The distilled line is the durable record -- the raw note is transient.
-5. Log the action to `wiki/log.md` as usual ("processed N video feedback notes").
+```bash
+exec 9>/tmp/k2b-review-videos.lock
+flock -x 9
+# ... process one file, edit YAML blocks in place, release ...
+exec 9>&-
+```
 
-Review notes with `review-action: pending` are left untouched -- Keith hasn't watched those videos yet.
+Preference-tail appends to `wiki/context/video-preferences.md` are atomic write-then-rename (write full file to `.tmp`, then `mv`). Never direct `>>` append -- the Telegram feedback path can be racing.
+
+### Playlist map
+
+All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json`. Lookup:
+```bash
+K2B_WATCH_ID=$(jq -r '."K2B Watch"' ~/Projects/K2B/scripts/k2b-playlists.json)
+DEST_ID=$(jq -r --arg name "$EFFECTIVE_CATEGORY" '.[$name] // empty' ~/Projects/K2B/scripts/k2b-playlists.json)
+```
+If `DEST_ID` is empty, K2B suggested a new category that doesn't exist yet. Leave that pick `playlist_action: pending`, append `new category suggested: <name>` to its `notes:` field, surface it in the `/review` summary for Keith to approve. Do NOT run any Data API call to create the playlist.
+
+### Processing flow
+
+1. Glob `K2B-Vault/review/videos_*.md`.
+2. For each file, acquire the flock, then:
+   - Read the frontmatter (`query`, `run-date`, `review-action`, `picks-count`).
+   - Parse pick YAML blocks with a Python helper. The parser locates each `^### \d+\. ` heading, finds the first fenced ` ```yaml ... ``` ` block inside that pick, and parses it with PyYAML. The prose above each YAML fence is ignored.
+   - For each pick, derive `effective_category`: if `category_override` is non-empty, use it; otherwise use `suggested_category`.
+3. For each pick where `decision != pending` **AND** (`playlist_action != done` OR `preference_logged != true`):
+   - Resolve `effective_category` → YouTube playlist ID via the JSON map.
+   - Extract `video_id` directly from the pick's YAML (already K2B-managed state).
+   - `decision: keep`:
+     - `scripts/yt-playlist-remove.sh "$K2B_WATCH_ID" "$VIDEO_ID"` (remove from K2B Watch; idempotent).
+     - `scripts/yt-playlist-add.sh "$DEST_ID" "$VIDEO_ID"` (add to category).
+     - Append distilled line to `video-preferences.md` via atomic write-rename: `<run-date> kept [<effective_category>]: <real_channel from pick YAML> -- <notes distilled to one sentence>`.
+   - `decision: drop`:
+     - `scripts/yt-playlist-remove.sh "$K2B_WATCH_ID" "$VIDEO_ID"`.
+     - Append distilled line: `<run-date> dropped: <channel> -- <notes distilled or "no notes">`.
+   - `decision: neutral`:
+     - `scripts/yt-playlist-remove.sh "$K2B_WATCH_ID" "$VIDEO_ID"`.
+     - Append distilled line: `<run-date> neutral: <channel> -- <notes or "nothing notable">`.
+4. **Per-pick state updates after each action** (partial-state tracking prevents double-execution):
+   - On success: edit the pick's YAML block in place -- set `playlist_action: done`, `processed_at: <ISO8601>`, and after a successful preference-tail append set `preference_logged: true`. Use a full file read + rewrite + atomic rename (never line-by-line edit in place).
+   - On failure: set `playlist_action: failed`, append the error to `notes:` (do NOT overwrite Keith's existing notes text), leave `preference_logged` at its prior value. Log to `wiki/log.md`. Leave the file in `review/`; next `/review` retries the failed pick only.
+5. **File-level completion check.** After processing all picks in a file:
+   - If EVERY pick has `decision != pending` AND `playlist_action == done` AND `preference_logged == true`: set the file's frontmatter `review-action: processed`, write a one-line summary into `review-notes` (e.g., `"2 kept to K2B Claude, 1 dropped"`), then move the file from `review/` to `raw/research/` as a durable audit trail. Do NOT delete -- the run note's K2B reasoning + rejects list + per-pick state history has audit value beyond the distilled lines.
+   - Otherwise leave the file in place with `review-action: pending`. Next `/review` catches the remaining picks.
+6. Release the flock, log to `wiki/log.md` ("processed N picks in videos_<slug>.md: X kept, Y dropped, Z neutral, W failed").
+
+### Forbidden
+
+- **Do NOT parse the prose above a pick's YAML fence.** It exists only for Keith to read.
+- **Do NOT double-execute picks.** Always check `playlist_action == done` and `preference_logged == true` before skipping.
+- **Do NOT direct-append to `video-preferences.md`.** Always use atomic write-then-rename; the Telegram feedback path is racing you.
+- **Do NOT create YouTube playlists automatically** when K2B suggests a new category. Flag and wait for Keith.
 
 ## Usage Logging
 
