@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-04-14 -- feature_research-videos-notebooklm: Phase B end-to-end shipping
+
+**Commits:** `fee5317`..`25bf78d` (9 commits, range `30c079f..25bf78d` on `main`)
+
+- `fee5317` feat(scripts): add send-telegram.sh for text notifications
+- `8224217` feat(k2b-research): add /research videos subcommand
+- `f1be7ed` feat(k2b-review): handle video feedback notes from /research videos
+- `e49c1e6` docs(CLAUDE.md): add video feedback via telegram rule
+- `1965895` fix(k2b-research): /research videos uses yt-search, not deep research
+- `c78c687` fix(send-telegram): drop parse_mode=Markdown default
+- `11003df` style(k2b-research): replace em dash with double hyphen
+- `c293d59` fix(k2b-research,send-telegram): harden /research videos for unattended runs
+- `25bf78d` docs(plans): phase B blockers + resolution log
+
+**What shipped:** Phase B of `plans/2026-04-13_retire-youtube-and-build-research-videos.md` -- the on-demand `/research videos "<query>"` replacement for the retired YouTube agent. Live tested end-to-end against the query "AI agents for corporate workflows 2026". Pipeline: `yt-search.py --count 25 --months 1` -> 25 fresh YouTube candidates -> `notebooklm source add` per candidate (NotebookLM transcribes natively) -> parallel `notebooklm source wait` with a hard >=5 ready threshold gate -> NotebookLM `ask` filter prompt with baked Keith framing + tail of `wiki/context/video-preferences.md` -> JSON parse with citation-marker stripping + synthetic-URL rejoin by title -> `scripts/yt-playlist-add.sh` per suitable -> per-video `review/video_*.md` notes -> run record at `raw/research/` -> Telegram notification via `scripts/send-telegram.sh` (auto-chunks under the 4096-byte limit, fails on non-2xx) -> notebook delete. Run 1 produced 20 suitable from 25 candidates and added all 20 to K2B Watch. Telegram feedback rule (CLAUDE.md) edited 4 review notes from free-form Telegram reactions; one rule violation (Liam Ottley reaction wrote a JSONL line directly to `video-preferences.md` instead of editing the note, cause unknown, applied intent manually). `/review` distillation collapsed 5 disliked notes into preference lines. Run 2 same query produced 7 suitable from 25 candidates: all 5 disliked channels rejected with explicit citation of Keith's preferences ("Disqualified based on recent explicit feedback rejecting this channel for being too beginner-focused"), plus generalization hits on Mikey No Code and Automation Feed for the "no beginner content" pattern. Feedback loop closed.
+
+**Files affected:**
+- `.claude/skills/k2b-research/SKILL.md` (+150 lines: full /research videos section)
+- `.claude/skills/k2b-review/SKILL.md` (+18: video feedback handler)
+- `CLAUDE.md` (+13: Video Feedback via Telegram rule)
+- `scripts/send-telegram.sh` (new, 88 lines: chunker + HTTP error gate)
+- `plans/2026-04-14_phaseB-blockers.md` (new, 117: mid-flight resolution log)
+- vault: `wiki/context/video-preferences.md`, `wiki/concepts/feature_research-videos-notebooklm.md` (-> shipped), `wiki/concepts/index.md` (Shipped lane), 5 distilled preference lines, run record + B10 validation record, 15 still-pending review notes
+
+**Codex review:** 3 rounds. Round 1: 1 BLOCKER + 2 HIGH + 2 MEDIUM. Round 2: 2 fix-induced regressions (HIGH chunker NUL-separator bug, MEDIUM count name confusion). Round 3: clean. All 7 issues closed in `c293d59`. Findings ranged from logic (source-wait gate never enforced because bare `wait` only checks the last backgrounded job) to security (literal interpolation of user-supplied query into bash, fixed via `printf %q` discipline) to silent-failure (send-telegram swallowed HTTP errors and ignored Telegram's 4096-byte hard limit, fixed via Python chunker + non-2xx fail).
+
+**Plan deviations from the original 2026-04-13 spec:**
+1. **`notebooklm source add-research --mode deep` is not a video-discovery engine.** Empirically returned 65/65 web articles + 0 YouTube videos for the test query. Pivoted mid-session: `yt-search.py` (already kept alive by Phase A) does discovery, NotebookLM is the filter only. Cleaner shape, eliminates a 5-15 min `add-research` wait per run, preserves the entire feedback loop architecture.
+2. **`scripts/send-telegram.sh` parse_mode=Markdown removed.** Telegram's Markdown v1 parser returned HTTP 400 on 3 of 4 batches in the live B7 test because of underscores in channel names ("Nate Herk | AI Automation"). Plain text is the reliable default. Documented as a deferred opt-in for callers that need bold.
+3. **Task B11 (weekly `/schedule` run) deferred.** Keith opted to validate the signal-to-noise ratio across a few manual runs before wiring the unattended schedule.
+
+**Status:**
+- What works: full pipeline (discovery, indexing, filter, playlist add, review notes, Telegram notification, run record, notebook cleanup, Telegram feedback edit, /review distillation, second-run feedback loop).
+- What's incomplete: weekly /schedule (deferred, B11). Liam Ottley Telegram feedback path failed once silently -- needs diagnosis.
+- What's next: 2-3 more manual runs against different queries to validate signal/noise, then wire B11. Resolve Liam Ottley feedback diagnostic. Optionally tune the filter prompt (20 suitable in run 1 was above the 3-10 target, filter runs hot).
+
+**Feature status change:** `feature_research-videos-notebooklm` `designed -> shipped` (vault edit, mirrored in `wiki/concepts/index.md` Shipped lane).
+
+**Follow-ups:**
+- Diagnose why one Telegram feedback message bypassed the CLAUDE.md rule and wrote a JSONL line to `video-preferences.md` directly.
+- Add a positional-fallback to the title-rejoin in Step 6 (current title-only rejoin would miss if the filter ever reorders or omits entries).
+- `deploy-to-mini.sh auto` only synced `scripts/`, missing skill + CLAUDE.md changes -- detection logic needs review.
+- Revisit `notebooklm source add` bulk-loop reliability: first attempt today had silent failures, second pass clean. Add per-call retry with backoff before B11 unattended runs.
+- Consider tightening the filter prompt's "when in doubt, keep it" bias after observing 2-3 more runs.
+
+---
+
 ## 2026-04-14 -- k2b-remote: retire YouTube agent (feature_youtube-agent Phase 4)
 
 **Commit:** `9362b2c` feat(k2b-remote): retire youtube agent (phase 4 of feature_youtube-agent)
