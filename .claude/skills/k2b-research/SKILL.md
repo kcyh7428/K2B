@@ -265,34 +265,83 @@ Retires the old YouTube recommend agent. Finds videos matching a query, filters 
 
 ### Flow
 
-1. **Get candidate YouTube URLs** via `yt-search.py` (not NotebookLM -- NotebookLM is the filter, not the discovery engine):
+**Capture the query as the first thing the skill does.** The query is user-supplied and may contain quotes, backticks, dollar signs, or other shell metacharacters. Never interpolate `<query>` literally into a bash block -- always go through the bound variables defined here.
+
+```bash
+QUERY="$1"                           # raw user input, never echoed unescaped into shell
+QUERY_SAFE=$(printf '%q' "$QUERY")   # safe for inline use inside double-quoted strings
+QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//' | cut -c1-60)
+```
+
+1. **Get candidate YouTube URLs** via `yt-search.py` (not NotebookLM -- NotebookLM is the filter, not the discovery engine). Use a per-run scratch file via `mktemp` so concurrent scheduled runs cannot stomp each other:
    ```bash
-   python3 ~/Projects/K2B/scripts/yt-search.py "<query>" --count 25 --months 1 --json > /tmp/candidates.json
+   CANDIDATES=$(mktemp -t k2b-candidates.XXXXXX.json)
+   trap 'rm -f "$CANDIDATES"' EXIT
+   python3 ~/Projects/K2B/scripts/yt-search.py "$QUERY" --count 25 --months 1 --json > "$CANDIDATES"
    ```
-   Parse the JSON (shape: `{"query", "count", "results": [{"url", "title", "channel", "duration", "published", ...}]}`). If `.count` is zero, abort with a Telegram notification: `no recent videos found for <query>`.
+   Parse the JSON (shape: `{"query", "count", "results": [{"url", "title", "channel", "duration", "published", ...}]}`).
+
+   **Zero-candidate guard (mandatory before Step 2).** If yt-search returned zero results, abort cleanly with a Telegram notification and exit -- do NOT proceed to notebook creation:
+   ```bash
+   COUNT=$(jq '.count' "$CANDIDATES")
+   if [[ "$COUNT" == "0" ]]; then
+     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: no recent videos found for: $QUERY"
+     exit 0
+   fi
+   ```
 
    **Why these args:** `--count 25` gives higher recall before filtering (Gemini typically rejects 60-80%, so 25 candidates yields ~5-10 suitable, matching the 3-10-per-run target). `--months 1` keeps the semantics at "what's new and worth knowing" -- six months of backlog dilutes recency. If a topic is thin in the last month, the run returns fewer videos and that's fine; silence beats stale.
 
-2. **Create fresh notebook and add each candidate as a YouTube source:**
+2. **Create fresh notebook and add each candidate as a YouTube source.** Build the notebook title via the safe-quoted variable; iterate URLs via a `while read` loop (NOT `for URL in $(jq ...)`) so URLs containing whitespace or shell metacharacters cannot break the loop:
    ```bash
-   NB_ID=$(notebooklm create "Videos: <query>" --json | jq -r '.notebook.id')
+   NB_ID=$(notebooklm create "Videos: $QUERY" --json | jq -r '.notebook.id')
    SOURCE_IDS=()
-   for URL in $(jq -r '.results[].url' /tmp/candidates.json); do
-     SRC_ID=$(notebooklm source add "$URL" -n "$NB_ID" --json | jq -r '.source.id // .id')
-     SOURCE_IDS+=("$SRC_ID")
-   done
+   while IFS= read -r URL; do
+     [[ -z "$URL" ]] && continue
+     SRC_ID=$(notebooklm source add "$URL" -n "$NB_ID" --json 2>/dev/null | jq -r '.source.id // .id // empty')
+     if [[ -n "$SRC_ID" ]]; then
+       SOURCE_IDS+=("$SRC_ID")
+     fi
+   done < <(jq -r '.results[].url' "$CANDIDATES")
    ```
    `notebooklm source add` auto-detects YouTube URLs and pulls the transcript as the indexed content. `source add` itself returns quickly; processing happens in the background and is polled via `source wait`.
 
-3. **Wait for all sources to index** via the subagent pattern (parallel, 600s per source):
+3. **Wait for all sources to index in parallel, and ENFORCE the >=5 ready threshold.** A bare `wait` only checks the last backgrounded job, so we must collect each child PID, `wait $PID` individually, and count the successes ourselves:
    ```bash
-   # In a subagent: wait for each source ID in parallel
+   declare -a WAIT_PIDS=()
+   declare -a WAIT_IDS=()
+   READY_LOG=$(mktemp -t k2b-ready.XXXXXX.log)
+   trap 'rm -f "$CANDIDATES" "$READY_LOG"' EXIT
+
    for ID in "${SOURCE_IDS[@]}"; do
-     notebooklm source wait "$ID" -n "$NB_ID" --timeout 600 &
+     (
+       if notebooklm source wait "$ID" -n "$NB_ID" --timeout 600 --json 2>/dev/null \
+            | jq -e '.status == "ready"' >/dev/null; then
+         echo "ready $ID" >> "$READY_LOG"
+       else
+         echo "fail  $ID" >> "$READY_LOG"
+       fi
+     ) &
+     WAIT_PIDS+=("$!")
+     WAIT_IDS+=("$ID")
    done
-   wait
+
+   for PID in "${WAIT_PIDS[@]}"; do wait "$PID" || true; done
+
+   READY_COUNT=$(grep -c '^ready ' "$READY_LOG" || true)
+   FAIL_COUNT=$(grep -c '^fail '  "$READY_LOG" || true)
+   TOTAL_COUNT=${#SOURCE_IDS[@]}
+
+   if (( READY_COUNT < 5 )); then
+     ~/Projects/K2B/scripts/send-telegram.sh \
+       "K2B /research videos: only $READY_COUNT of $TOTAL_COUNT videos indexed for: $QUERY -- aborting, see run record"
+     # Still write a partial run record + delete the notebook before exiting
+     notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
+     exit 1
+   fi
    ```
-   If any source fails to index (private video, transcription unavailable, rate-limited), log the failure per-source in the run record and continue with the rest. **Require at least 5 successful sources to proceed**; below that, abort with a Telegram notification `only <N> of <total> videos indexed for <query>, aborting -- see run record`.
+
+   Per-source failures below the threshold (private video, transcription unavailable, rate-limited) are tolerated -- only failures that drop the success count below 5 abort the run. Log the per-source results from `$READY_LOG` into the run record in Step 9.
 
 4. **Read the preference tail** into a variable:
    ```bash
@@ -321,7 +370,14 @@ Retires the old YouTube recommend agent. Finds videos matching a query, filters 
    )" -n "$NB_ID"
    ```
 
-6. **Parse the JSON answer defensively.** If the answer has prose around the JSON, extract the array with `jq` or a Python one-liner. If parse fails, retry the ask once with a stricter prompt. If second parse fails, log raw answer to the run record, notify Keith the run failed parsing, abort the playlist/review-note steps.
+6. **Parse the JSON answer defensively** and persist the suitable-only subset to a per-run tmpfile that downstream steps consume. If the answer has prose around the JSON, extract the array with `jq` or a Python one-liner. NotebookLM responses sometimes embed citation markers like `[44, 47]` inside string values; strip them with `re.sub(r'\s*\[\d+(?:,\s*\d+)*\]', '', raw)` before `json.loads`. NotebookLM also sometimes returns synthetic `v=1..N` placeholder URLs in the `url` field instead of real ones; rejoin to the real candidate URLs by matching on the normalized title. If parse fails, retry the ask once with a stricter prompt. If second parse fails, log raw answer to the run record, notify Keith the run failed parsing, abort the playlist/review-note steps.
+
+   ```bash
+   SUITABLE_JSON=$(mktemp -t k2b-suitable.XXXXXX.json)
+   trap 'rm -f "$CANDIDATES" "$READY_LOG" "$SUITABLE_JSON"' EXIT
+   # ... parse + rejoin URLs + write the suitable-only array to "$SUITABLE_JSON" ...
+   ```
+   `$SUITABLE_JSON` holds a JSON array of `{video_id, real_url, real_title, real_channel, real_duration, why}` objects, one per `suitable: true` entry. Step 7 (playlist add), Step 8 (review notes), Step 9 (run record) and Step 10 (Telegram count) all read from this file.
 
 7. **For each `suitable: true` entry:**
    a. Extract `video_id` from the URL (the `v=` query param, or last path segment for `youtu.be/`).
@@ -348,13 +404,17 @@ Retires the old YouTube recommend agent. Finds videos matching a query, filters 
 
 9. **Write run record** at `K2B-Vault/raw/research/$(date +%F)_videos_<query-slug>.md` with frontmatter + sections: query, baked framing version, preference tail used, full JSON response (suitable + skipped with reasons), playlist adds, review notes created, any errors. This is the durable audit trail.
 
-10. **Send Telegram notification:**
+10. **Send Telegram notification.** `send-telegram.sh` enforces the Telegram 4096-byte hard limit by auto-splitting on a safe boundary (blank line / newline / character) and fails non-zero on any non-2xx response, so the calling skill MUST check its exit code -- never swallow a failed notification on a `/schedule` run. **Use the count of NotebookLM-approved entries from Step 6 (`SUITABLE_COUNT`), NOT the indexing-success count from Step 3 (`READY_COUNT`)** -- they are different numbers and will diverge on every run.
     ```bash
-    MSG="K2B found <N> videos for: *<query>*\n\n"
-    # For each suitable video, append: "• <title> -- <why>\n<url>\n"
-    scripts/send-telegram.sh "$MSG"
+    SUITABLE_COUNT=$(jq 'length' "$SUITABLE_JSON")  # from Step 6's parse output
+    MSG="K2B found $SUITABLE_COUNT suitable videos for: $QUERY"$'\n\n'
+    # For each suitable video, append: "- <title>\n  <why>\n  <url>\n\n"
+    if ! ~/Projects/K2B/scripts/send-telegram.sh "$MSG"; then
+      echo "WARN: telegram notification failed for query: $QUERY" >&2
+      # Continue: notebook delete + run record still need to happen.
+    fi
     ```
-    Keep under 4000 chars (Telegram hard limit is 4096). If more than 4 videos, batch into 2 messages.
+    `send-telegram.sh` chunks the message internally; callers should NOT pre-batch.
 
 11. **Delete the notebook** (fresh per run, no accumulation):
     ```bash
