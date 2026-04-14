@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-14 -- v2 K2B-as-curator refactor for /research videos
+
+**Commit:** `042471e` refactor(k2b-research,k2b-review): v2 K2B-as-curator for /research videos
+
+**What shipped:** NBLM reader / K2B judge split: Step 5 NBLM ask now requests objective content descriptions only (no taste context passed to Gemini); Step 6 K2B applies judgment inline using the baked framing from the skill header + last 30 lines of video-preferences.md. Produces strict `{picks[], rejects[]}` JSON with `pick_id`, `video_id`, `real_url`, `real_title`, `real_channel`, `why_k2b`, `suggested_category`, `confidence`, `preference_evidence` per pick. jq schema validation gate validates both `picks[]` and `rejects[]` shapes, type-checks confidence. Run-level review note replaces per-video notes: one `review/videos_YYYY-MM-DD_<slug>.md` with human-readable prose + machine-parseable fenced YAML block per pick. Feedback drives physical playlist moves: keep removes from K2B Watch + adds to category; drop/neutral removes from Watch. `scripts/k2b-playlists.json` is the canonical name-to-ID map. flock + atomic write-rename hardening across `/review` and CLAUDE.md Telegram path. Schema gate failure path now writes partial run record with raw NBLM answer before aborting.
+
+**Codex review:** 3 passes total. Pass 1 (prior session): 1 BLOCKER + 2 HIGH + 1 NIT -- all fixed (real_url/title/channel added to YAML block, rejects[] schema-validated, Write-tool handoff made explicit with post-write verification, CLAUDE.md wording corrected). Pass 2 (prior session, truncated): fixes verified. Pass 3 (this session): 1 HIGH + 1 MEDIUM + 1 NIT -- all fixed (schema gate writes run record on failure, new-category state machine aligned to playlist_action: pending not decision: pending, real_channel sourced from YAML not prose).
+
+**Feature status change:** feature_research-videos-notebooklm shipped -> shipped (same-day v2 amendment; feature note already contains v2 amendment section).
+
+**Follow-ups:** End-to-end verification deferred -- NotebookLM auth degradation blocked run on "AI agents for corporate workflows 2026". See plans/2026-04-14_curator-refactor-blockers.md.
+
+**Key decisions:** none diverging from claude.ai project specs.
+
+---
+
 ## 2026-04-14 -- docs(CLAUDE.md): post-retirement command cleanup
 
 **Commit:** `5bc83ab` docs(CLAUDE.md): update /youtube + /research command entries post-retirement
