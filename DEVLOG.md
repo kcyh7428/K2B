@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-04-15 -- /research videos: post-first-run hardening
+
+**Commits:** `fb10504` docs(plans), `99a99ac` fix(k2b-research), `d972cb2` fix(parse-nblm), `7a5a184` docs(plans)
+
+**What shipped:** Four schedule-blocking fixes to the v2 K2B-as-curator `/research videos` pipeline after the first live run (query: "Claude agent skills production 2026") surfaced issues that had to be worked around inline. Step 1 zero-candidate guard hardened against empty/non-numeric $COUNT (original incident log blamed yt-search.py progress pollution, but empirical test confirmed progress already routes to stderr; real hole was `[[ "$COUNT" == "0" ]]` silently passing). Step 3 gained per-source retry (2 attempts, 2s backoff) plus canonical `notebooklm source list --json` reconcile after the wait loop -- first run lost 8 of 25 sources to single-shot timeouts and had no visibility into real-vs-transient failures. Step 6a defensive parse extracted from inline Python into the committed helper `scripts/parse-nblm.py` (widened citation regex covering comma lists + dash ranges + mixed forms, character-walker newline normalizer inside JSON string literals, outermost-array extraction that skips prose `[words]` false positives via a heuristic requiring object content, rejoin-by-title against $CANDIDATES with identity_resolved=false fallback). Step 6g schema gate tightened with `type == "string" and length > 0` on every identity field, plus the Python heredoc that writes the schema-failure run record fixed to take QUERY/QUERY_SLUG/NBLM_RAW via explicit prefix-env (those bash vars are never `export`ed in the skill, so the old code always wrote "unknown" to the frontmatter) and to use `<<'PYEOF'` quoting. Step 6a's failure handler now writes a full raw+stderr audit trail to raw/research/ before aborting. Trap cascade extended across 4 steps and 7 tmpfiles.
+
+**Codex review:** 2 rounds dispatched this session (plus 2 rounds from the first Codex run earlier today which produced the original incident log analysis). Round 1 against the working tree pre-commit caught Step 6a's retry/audit inconsistency (comment promised retry-and-log, bash just exited 1) plus an unsafe fixed-path `/tmp/k2b-parse-err.log` -- both fixed before the first commit. Round 2 against commit 99a99ac hinted at "parser edge behavior" before its wrapper ran out of turns; probed locally, reproduced an `extract_json_array` false-positive when NBLM output contains an incidental `[words]` in prose before the real array, fixed in d972cb2. Both round wrapper agents hit the codex-companion reconnect loop early but recovered; extracted the partial findings via bounded Python reads of the sub-agent transcript. A third round was intentionally skipped per Keith's approval -- diminishing returns.
+
+**Feature status change:** feature_research-videos-notebooklm shipped -> shipped (follow-up hardening; feature note gained a `## 2026-04-15 post-first-run hardening` section; no lane movement in wiki/concepts/index.md).
+
+**Follow-ups:**
+- **MEDIUM-3**: `flock(1)` is Linux-only; `k2b-review/SKILL.md` and CLAUDE.md's Video Feedback via Telegram rule use `flock -x 9` which silently fails on macOS. Keith worked around during the live run via a Python `fcntl.flock` helper. Recommended inline fix per the plan: replace `flock -x 9` with `python3 -c "import fcntl; fcntl.flock(...)"`. Deferred until after the first full Telegram-feedback cycle validates the fixed `/research videos` pipeline.
+- **MEDIUM-1** (Telegram fallback on MacBook when `K2B_BOT_TOKEN` unset), **LOW** (same-day same-query run-note filename collision), **LOW** (Step 7 per-pick playlist-add result capture) -- all documented in plans/2026-04-15_research-videos-first-run-issues.md. Revisit after the first full cycle run.
+- Confirmed non-issues against the committed skill: MEDIUM-2 (notebooklm delete syntax -- skill already correct), LOW-1 (synthetic URLs -- handled by rejoin), LOW-2 (unknown duration -- handled by real_duration from yt-search).
+
+**Key decisions:**
+- Re-scoped BLOCKER-1 rather than implement the incident log's proposed fix. The log blamed yt-search.py's progress line; empirical test confirmed the progress line has always routed to stderr. The real fix is to validate the guard's parseability, not to fix the non-existent stdout leak.
+- Step 6a NBLM ask retry loop explicitly NOT implemented despite being in the original skill contract. `parse-nblm.py` already encapsulates every defensive pass we know about, so a failure at this point almost always means NBLM returned genuinely malformed output (safety refusal, API error, empty body) that a retry would not fix. Full audit-trail failure handler replaces the retry contract; if repeat failures surface in production, the right move is to harden `parse-nblm.py` rather than bolt on a retry loop.
+- `parse-nblm.py` committed as a standalone helper (not inlined into SKILL.md) so Claude does not have to reinvent the defensive passes on every run. Six smoke tests pass: dash-range + literal newline + prose wrapper multi-entry happy path, prose-bracket false positive, string-literal bracket false positive, title-match failure negative path, no-JSON-array negative path, usage-error negative path.
+
+---
+
 ## 2026-04-14 -- /research videos: real_published + recency veto
 
 **Commit:** `bcf064a` feat(k2b-research): add real_published + recency veto to /research videos
