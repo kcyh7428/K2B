@@ -281,10 +281,16 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    ```
    Parse the JSON (shape: `{"query", "count", "results": [{"url", "title", "channel", "duration", "published", ...}]}`).
 
-   **Zero-candidate guard (mandatory before Step 2).** If yt-search returned zero results, abort cleanly with a Telegram notification and exit -- do NOT proceed to notebook creation:
+   **Zero-candidate + unparseable-output guard (mandatory before Step 2).** The old `[[ "$COUNT" == "0" ]]` check silently passed on any non-numeric / empty `$COUNT`, so a broken `$CANDIDATES` (disk full, truncated write, upstream yt-search failure writing garbage to stdout) would bypass the guard and hit `notebooklm create` anyway. Fail loud on parse errors, separately from the legitimate zero-result case:
    ```bash
-   COUNT=$(jq '.count' "$CANDIDATES")
-   if [[ "$COUNT" == "0" ]]; then
+   COUNT=$(jq '.count' "$CANDIDATES" 2>/dev/null)
+   if [[ -z "$COUNT" || ! "$COUNT" =~ ^[0-9]+$ ]]; then
+     echo "FATAL: yt-search produced unparseable output in $CANDIDATES" >&2
+     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: yt-search output unparseable for: $QUERY -- aborting, see run log" || true
+     exit 1
+   fi
+   CANDIDATES_SCREENED="$COUNT"   # consumed by Step 10 zero-picks Telegram message
+   if (( COUNT == 0 )); then
      ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: no recent videos found for: $QUERY"
      exit 0
    fi
@@ -306,21 +312,28 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    ```
    `notebooklm source add` auto-detects YouTube URLs and pulls the transcript as the indexed content. `source add` itself returns quickly; processing happens in the background and is polled via `source wait`.
 
-3. **Wait for all sources to index in parallel, and ENFORCE the >=5 ready threshold.** A bare `wait` only checks the last backgrounded job, so we must collect each child PID, `wait $PID` individually, and count the successes ourselves:
+3. **Wait for all sources to index in parallel, with per-source retry, then canonical-reconcile against `notebooklm source list --json` before enforcing the >=5 ready threshold.** A bare `wait` only checks the last backgrounded job, so we collect each child PID and `wait $PID` individually. A single-shot `source wait` loses transient failures to silent timeouts (the first-run incident on 2026-04-15 dropped 8 of 25 sources with no retry and no visibility into whether those were real failures or indexer stalls), so each child gets one retry with a 2s backoff before it concedes. And the ephemeral `$READY_LOG` can diverge from NotebookLM's actual state because it reflects the per-child `source wait` return code, not notebook truth -- the same run observed NBLM describe 24 sources while `$READY_LOG` said only 17 were ready. After the parallel loop returns, we re-query the notebook once more via `source list --json` and prefer that canonical count for the threshold check, falling back to `$READY_LOG` only if the canonical query fails.
    ```bash
    declare -a WAIT_PIDS=()
    declare -a WAIT_IDS=()
    READY_LOG=$(mktemp -t k2b-ready.XXXXXX.log)
-   trap 'rm -f "$CANDIDATES" "$READY_LOG"' EXIT
+   CANONICAL_JSON=$(mktemp -t k2b-canonical.XXXXXX.json)
+   trap 'rm -f "$CANDIDATES" "$READY_LOG" "$CANONICAL_JSON"' EXIT
 
    for ID in "${SOURCE_IDS[@]}"; do
      (
-       if notebooklm source wait "$ID" -n "$NB_ID" --timeout 600 --json 2>/dev/null \
-            | jq -e '.status == "ready"' >/dev/null; then
-         echo "ready $ID" >> "$READY_LOG"
-       else
-         echo "fail  $ID" >> "$READY_LOG"
-       fi
+       # One retry with 2s backoff. `source wait` may spuriously time out on
+       # transient indexer stalls -- a second attempt after a short pause
+       # usually resolves it. Total worst-case per source: 600 + 2 + 600 = 1202s.
+       for ATTEMPT in 1 2; do
+         if notebooklm source wait "$ID" -n "$NB_ID" --timeout 600 --json 2>/dev/null \
+              | jq -e '.status == "ready"' >/dev/null 2>&1; then
+           echo "ready $ID attempt=$ATTEMPT" >> "$READY_LOG"
+           exit 0
+         fi
+         (( ATTEMPT == 1 )) && sleep 2
+       done
+       echo "fail  $ID attempts=2" >> "$READY_LOG"
      ) &
      WAIT_PIDS+=("$!")
      WAIT_IDS+=("$ID")
@@ -328,20 +341,43 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
 
    for PID in "${WAIT_PIDS[@]}"; do wait "$PID" || true; done
 
-   READY_COUNT=$(grep -c '^ready ' "$READY_LOG" || true)
-   FAIL_COUNT=$(grep -c '^fail '  "$READY_LOG" || true)
-   TOTAL_COUNT=${#SOURCE_IDS[@]}
+   # Canonical reconcile: ask NotebookLM for the current source list once more
+   # after all child waits have returned. Prefer this over $READY_LOG because
+   # (a) parallel children race on shared-file appends (<PIPE_BUF so atomic, but
+   # the counts can still diverge from truth), and (b) a `source wait` that
+   # returned non-ready may have quietly finished indexing just after its timeout.
+   notebooklm source list -n "$NB_ID" --json > "$CANONICAL_JSON" 2>/dev/null || true
+   READY_COUNT=""
+   TOTAL_COUNT=""
+   if [[ -s "$CANONICAL_JSON" ]] && jq empty "$CANONICAL_JSON" 2>/dev/null; then
+     READY_COUNT=$(jq '
+       if type == "array" then [.[] | select((.status // "") == "ready")] | length
+       elif type == "object" and has("sources") then [.sources[] | select((.status // "") == "ready")] | length
+       else empty end' "$CANONICAL_JSON" 2>/dev/null)
+     TOTAL_COUNT=$(jq '
+       if type == "array" then length
+       elif type == "object" and has("sources") then .sources | length
+       else empty end' "$CANONICAL_JSON" 2>/dev/null)
+   fi
+   if [[ -z "$READY_COUNT" || -z "$TOTAL_COUNT" ]]; then
+     READY_COUNT=$(grep -c '^ready ' "$READY_LOG" 2>/dev/null || true)
+     TOTAL_COUNT=${#SOURCE_IDS[@]}
+     RECONCILE_SOURCE="ephemeral \$READY_LOG (canonical reconcile failed)"
+   else
+     RECONCILE_SOURCE="canonical source list"
+   fi
+   FAIL_COUNT=$(grep -c '^fail '  "$READY_LOG" 2>/dev/null || true)
 
    if (( READY_COUNT < 5 )); then
      ~/Projects/K2B/scripts/send-telegram.sh \
-       "K2B /research videos: only $READY_COUNT of $TOTAL_COUNT videos indexed for: $QUERY -- aborting, see run record"
+       "K2B /research videos: only $READY_COUNT of $TOTAL_COUNT videos indexed for: $QUERY (reconcile=$RECONCILE_SOURCE) -- aborting, see run record"
      # Still write a partial run record + delete the notebook before exiting
      notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
      exit 1
    fi
    ```
 
-   Per-source failures below the threshold (private video, transcription unavailable, rate-limited) are tolerated -- only failures that drop the success count below 5 abort the run. Log the per-source results from `$READY_LOG` into the run record in Step 9.
+   Per-source failures below the threshold (private video, transcription unavailable, rate-limited) are tolerated -- only failures that drop the canonical ready count below 5 abort the run. Log BOTH the per-source results from `$READY_LOG` (with `attempt=` / `attempts=` suffixes so the retry pattern is auditable) AND the `$RECONCILE_SOURCE` marker into the run record in Step 9.
 
 4. **Read the preference tail** into a variable:
    ```bash
@@ -375,7 +411,62 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
 
 6. **K2B-as-judge -- Claude reasoning inline (NOT a bash invocation).** This step is the Claude session running the skill applying judgment to the NBLM descriptions and writing `$SUITABLE_JSON`. Execute the following substeps explicitly:
 
-   a. **Parse the NBLM answer defensively.** Same citation-marker strip (`re.sub(r'\s*\[\d+(?:,\s*\d+)*\]', '', raw)`) and synthetic-URL rejoin-by-title against `$CANDIDATES` as before. On parse failure, retry the ask once with a stricter prompt; on second failure, log the raw answer to the run record, send Telegram abort, delete the notebook, exit 1. If an NBLM entry's real URL or real title cannot be rejoined, it is NOT dropped -- it goes into `rejects` with `reason: "identity resolution failed"`. **The rejoin ALSO pulls `published` from `$CANDIDATES` into each NBLM entry** -- NBLM reads transcripts and cannot be trusted for upload metadata, so `real_published` is always sourced from yt-search, never from Gemini. Normalize the value to `YYYY-MM-DD` before assigning it to `real_published`. If yt-search returned a relative string ("2 weeks ago") that can't be normalized deterministically, emit `"unknown"` -- the jq gate accepts both the ISO-8601 prefix and the literal `"unknown"`, and the recency veto simply skips candidates with `"unknown"` (neither fresh nor stale).
+   a. **Parse the NBLM answer defensively** via the committed helper `scripts/parse-nblm.py`. The helper encapsulates three defensive passes that a prior incident (2026-04-15) hit in a single run, so this step no longer describes inline Python: (1) citation-marker stripping with a regex that handles comma lists AND dash ranges (`[44, 47]`, `[1-4]`, mixed `[13-16, 17-20]`; the old inline regex was comma-only and silently let dash markers survive into `json.loads`), (2) literal-newline normalization inside JSON string literals via a character walker that tracks `in_string` state (NBLM sometimes wraps long `what_it_covers` values with raw `\n` bytes which `json.loads` rejects as invalid control characters), and (3) rejoin-by-title against `$CANDIDATES` so every entry carries authoritative `real_url`, `real_title`, `real_channel`, `real_duration`, `real_published`, and `video_id` from yt-search instead of NBLM's synthetic `v=<name>` placeholders.
+
+   Run the helper via:
+   ```bash
+   NBLM_RAW_FILE=$(mktemp -t k2b-nblm-raw.XXXXXX.txt)
+   PARSED_JSON=$(mktemp -t k2b-nblm-parsed.XXXXXX.json)
+   NBLM_PARSE_ERR=$(mktemp -t k2b-nblm-err.XXXXXX.log)
+   trap 'rm -f "$CANDIDATES" "$READY_LOG" "$CANONICAL_JSON" "$NBLM_RAW_FILE" "$PARSED_JSON" "$NBLM_PARSE_ERR"' EXIT
+   printf '%s' "$NBLM_RAW" > "$NBLM_RAW_FILE"
+
+   if ! python3 ~/Projects/K2B/scripts/parse-nblm.py "$NBLM_RAW_FILE" "$CANDIDATES" > "$PARSED_JSON" 2>"$NBLM_PARSE_ERR"; then
+     # Parse failed after all defensive passes in parse-nblm.py. Write the raw
+     # NBLM answer + the parse-nblm.py stderr to raw/research/ as the durable
+     # audit trail BEFORE aborting, then send Telegram, delete the notebook,
+     # exit 1. The audit trail is most valuable on failure, so it is written
+     # first and always.
+     #
+     # Not implemented here (deliberate): an NBLM ask retry with a stricter
+     # prompt. parse-nblm.py already encapsulates every defensive pass we
+     # know about, so a failure here almost always means NBLM returned
+     # genuinely malformed output (safety refusal, API error, empty body)
+     # that a retry would not fix. If you see repeat failures in production,
+     # harden parse-nblm.py rather than adding a retry loop around it.
+     echo "FATAL: parse-nblm.py could not normalize NBLM output for: $QUERY" >&2
+     cat "$NBLM_PARSE_ERR" >&2
+
+     QUERY="$QUERY" QUERY_SLUG="$QUERY_SLUG" NBLM_RAW="$NBLM_RAW" \
+       NBLM_PARSE_ERR_FILE="$NBLM_PARSE_ERR" python3 - <<'PYEOF'
+import os, datetime
+vault = os.path.expanduser("~/Projects/K2B-Vault")
+slug  = os.environ.get("QUERY_SLUG") or "unknown"
+query = os.environ.get("QUERY") or slug
+query_yaml = query.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+today = datetime.date.today().isoformat()
+path  = os.path.join(vault, "raw", "research", f"{today}_videos_{slug}.md")
+raw   = os.environ.get("NBLM_RAW") or "(NBLM_RAW not captured)"
+err_path = os.environ.get("NBLM_PARSE_ERR_FILE") or ""
+try:
+    err = open(err_path).read() if err_path else ""
+except OSError:
+    err = ""
+with open(path, "w") as f:
+    f.write(
+        f'---\ntype: research-run\nstatus: nblm-parse-failed\nquery: "{query_yaml}"\n---\n\n'
+        f'# NBLM parse failed\n\n## parse-nblm.py stderr\n\n```\n{err}\n```\n\n'
+        f'## Raw NBLM answer\n\n```\n{raw}\n```\n'
+    )
+PYEOF
+
+     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: NBLM parse failed for: $QUERY -- see run record" || true
+     notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
+     exit 1
+   fi
+   ```
+
+   The helper outputs a JSON array where each entry carries both the NBLM content fields (`what_it_covers`, `style`, `level`, `concrete_examples`, `key_speakers_or_companies`) AND the candidate-sourced identity fields. Entries where title-rejoin failed appear with `identity_resolved: false`, `match_method: "failed"`, `video_id: ""`, and `real_published: "unknown"` -- **these are NOT dropped silently**; Step 6d must sort them into `rejects[]` with `reason: "identity resolution failed"`. `real_published` is pre-normalized by the helper to `YYYY-MM-DD` or the literal `"unknown"`, and the jq schema gate in Step 6g accepts both forms. The recency veto in Step 6d simply skips candidates with `"unknown"` (neither fresh nor stale).
 
    b. **Load Keith's framing from the skill header, explicitly.** Read the block at the "### Baked Keith framing (do not edit per query)" callout above (lines 262-264 of this SKILL.md). The Claude session reads that block directly from the skill file -- single source of truth, explicit load, no implicit "scroll up and remember". Do NOT re-inline the framing text into the Step 5 NBLM prompt; Gemini does not get taste context.
 
@@ -433,7 +524,7 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
 
    ```bash
    SUITABLE_JSON=$(mktemp -t k2b-suitable.XXXXXX.json)
-   trap 'rm -f "$CANDIDATES" "$READY_LOG" "$SUITABLE_JSON"' EXIT
+   trap 'rm -f "$CANDIDATES" "$READY_LOG" "$CANONICAL_JSON" "$NBLM_RAW_FILE" "$PARSED_JSON" "$NBLM_PARSE_ERR" "$SUITABLE_JSON"' EXIT
    echo "$SUITABLE_JSON"   # print the path so Claude can reference it explicitly
    ```
 
@@ -451,37 +542,46 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    jq empty "$SUITABLE_JSON" || { echo "FATAL: $SUITABLE_JSON is not valid JSON" >&2; exit 1; }
    ```
 
-   g. **Schema validation gate (mandatory before Step 7).** Validates BOTH `picks[]` and `rejects[]` object shapes. On failure, log the raw NBLM answer to the run record, Telegram abort, delete notebook, exit 1.
+   g. **Schema validation gate (mandatory before Step 7).** Validates BOTH `picks[]` and `rejects[]` object shapes. Identity fields are checked with `type == "string"` AND `length > 0` so an empty-string `video_id` cannot slip past a bare `has(...)` check and hit `yt-playlist-add.sh` with a blank ID. On failure, log the raw NBLM answer to the run record, Telegram abort, delete notebook, exit 1.
    ```bash
    jq -e '
      (type == "object") and
      (has("picks") and (.picks | type == "array")) and
      (has("rejects") and (.rejects | type == "array")) and
      (.picks | all(
-       (has("pick_id")) and (has("video_id")) and (has("real_url")) and
-       (has("real_title")) and (has("real_channel")) and (has("real_duration")) and
+       (has("pick_id")) and ((.pick_id | type) == "string") and ((.pick_id | length) > 0) and
+       (has("video_id")) and ((.video_id | type) == "string") and ((.video_id | length) > 0) and
+       (has("real_url")) and ((.real_url | type) == "string") and ((.real_url | length) > 0) and
+       (has("real_title")) and ((.real_title | type) == "string") and ((.real_title | length) > 0) and
+       (has("real_channel")) and ((.real_channel | type) == "string") and ((.real_channel | length) > 0) and
+       (has("real_duration")) and ((.real_duration | type) == "string") and
        (has("real_published")) and ((.real_published | type) == "string") and
        ((.real_published | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")) or (.real_published == "unknown")) and
-       (has("why_k2b")) and (has("suggested_category")) and (has("confidence")) and
-       ((.confidence | type) == "number") and (.confidence >= 0) and (.confidence <= 1) and
+       (has("why_k2b")) and ((.why_k2b | type) == "string") and ((.why_k2b | length) > 0) and
+       (has("suggested_category")) and ((.suggested_category | type) == "string") and ((.suggested_category | length) > 0) and
+       (has("confidence")) and ((.confidence | type) == "number") and (.confidence >= 0) and (.confidence <= 1) and
        (has("preference_evidence")) and ((.preference_evidence | type) == "array")
      )) and
      (.rejects | all(
-       (has("real_title")) and (has("real_channel")) and (has("reason")) and
-       ((.real_title | type) == "string") and ((.real_channel | type) == "string") and
-       ((.reason | type) == "string")
+       (has("real_title")) and ((.real_title | type) == "string") and ((.real_title | length) > 0) and
+       (has("real_channel")) and ((.real_channel | type) == "string") and ((.real_channel | length) > 0) and
+       (has("reason")) and ((.reason | type) == "string") and ((.reason | length) > 0)
      ))
    ' "$SUITABLE_JSON" >/dev/null || {
      # Write raw NBLM answer to partial run record FIRST -- the audit trail is most valuable on failure.
-     python3 - <<PYEOF
+     # Env vars are passed explicitly on the python3 line because QUERY / QUERY_SLUG / NBLM_RAW are set
+     # earlier in the skill without `export`, so a child process won't inherit them otherwise.
+     QUERY="$QUERY" QUERY_SLUG="$QUERY_SLUG" NBLM_RAW="$NBLM_RAW" python3 - <<'PYEOF'
 import os, datetime
 vault = os.path.expanduser("~/Projects/K2B-Vault")
-slug  = os.environ.get("QUERY_SLUG", "unknown")
+slug  = os.environ.get("QUERY_SLUG") or "unknown"
+query = os.environ.get("QUERY") or slug   # real query for the YAML frontmatter; fall back to slug if unset
+query_yaml = query.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 today = datetime.date.today().isoformat()
 path  = os.path.join(vault, "raw", "research", f"{today}_videos_{slug}.md")
-raw   = os.environ.get("NBLM_RAW", "(NBLM_RAW not captured)")
+raw   = os.environ.get("NBLM_RAW") or "(NBLM_RAW not captured)"
 with open(path, "w") as f:
-    f.write(f"---\ntype: research-run\nstatus: schema-validation-failed\nquery: \"{slug}\"\n---\n\n# Schema validation failed\n\n## Raw NBLM answer\n\n```\n{raw}\n```\n")
+    f.write(f'---\ntype: research-run\nstatus: schema-validation-failed\nquery: "{query_yaml}"\n---\n\n# Schema validation failed\n\n## Raw NBLM answer\n\n```\n{raw}\n```\n')
 PYEOF
      ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: schema validation failed for: $QUERY -- see run record"
      notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
