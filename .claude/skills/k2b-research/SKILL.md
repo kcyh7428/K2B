@@ -265,7 +265,7 @@ Retires the old YouTube recommend agent. Finds videos matching a query, filters 
 
 ### Flow
 
-1. **Get candidate YouTube URLs** via `yt-search.py` (not NotebookLM — NotebookLM is the filter, not the discovery engine):
+1. **Get candidate YouTube URLs** via `yt-search.py` (not NotebookLM -- NotebookLM is the filter, not the discovery engine):
    ```bash
    python3 ~/Projects/K2B/scripts/yt-search.py "<query>" --count 25 --months 1 --json > /tmp/candidates.json
    ```
