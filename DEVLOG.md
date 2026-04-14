@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-14 -- docs(CLAUDE.md): post-retirement command cleanup
+
+**Commit:** `5bc83ab` docs(CLAUDE.md): update /youtube + /research command entries post-retirement
+
+**What shipped:** Updated `CLAUDE.md` slash command list to reflect the YouTube agent retirement (25bf78d). `/youtube` now described as capture-only via `k2b-youtube-capture` with an explicit note that `recommend`/`screen`/`morning` subcommands were retired 2026-04-14 and discovery should use `/research videos`. `/research` entry annotated with the new `videos` subcommand. Paired with a `/lint` pass that auto-fixed 4 stale indexes (wiki/index.md counts, raw/index.md + tldrs + research row additions) to catch up on the retirement + NotebookLM ships.
+
+**Codex review:** skipped -- 4-line docs edit, no logic (per CLAUDE.md "When to Skip": one-line/docs changes).
+
+**Feature status change:** none (--no-feature; this is post-ship documentation cleanup for already-shipped `feature_research-videos-notebooklm`).
+
+**Follow-ups:** 3 HIGH uncompiled raw sources still pending `/compile` (ai-trading-skills-architecture, ai-trading-analyst video, mempalace video). 3 retirement-era tldrs + 2 video run records need a compile/operational-marker decision.
+
+**Key decisions:** none.
+
+---
+
 ## 2026-04-14 -- feature_research-videos-notebooklm: Phase B end-to-end shipping
 
 **Commits:** `fee5317`..`25bf78d` (9 commits, range `30c079f..25bf78d` on `main`)
