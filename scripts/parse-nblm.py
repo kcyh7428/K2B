@@ -92,18 +92,24 @@ def normalize_newlines_in_strings(text: str) -> str:
 
 
 def extract_json_array(text: str) -> str:
-    """Return the outermost JSON array as a substring, stripping any surrounding
-    prose. Uses a bracket-depth walker that ignores brackets inside string
-    literals so nested `"key_speakers_or_companies": ["Alice"]` does not
-    confuse the depth count."""
-    start = text.find("[")
-    if start < 0:
-        raise ValueError("no '[' found in NBLM raw output")
-    depth = 0
+    """Return the first top-level JSON array that contains at least one object.
+
+    Walks the entire text from position 0 tracking string-literal state so
+    brackets inside `"..."` literals are ignored. When a balanced `[...]` group
+    closes at top level, the group is returned only if it contains `{` (i.e.
+    looks like a JSON array of objects). Groups without `{` are skipped, which
+    handles NBLM responses that wrap the real JSON with prose containing
+    incidental `[like this]` bracket structures.
+
+    Nested arrays inside `"key_speakers_or_companies": ["Alice"]` are handled
+    correctly by the depth counter since they are only entered after the top-
+    level array has been opened.
+    """
     in_string = False
     escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
+    start = -1
+    depth = 0
+    for i, ch in enumerate(text):
         if escaped:
             escaped = False
             continue
@@ -116,12 +122,19 @@ def extract_json_array(text: str) -> str:
         if in_string:
             continue
         if ch == "[":
+            if depth == 0:
+                start = i
             depth += 1
         elif ch == "]":
-            depth -= 1
             if depth == 0:
-                return text[start : i + 1]
-    raise ValueError("unbalanced brackets in NBLM raw output")
+                continue
+            depth -= 1
+            if depth == 0 and start >= 0:
+                candidate = text[start : i + 1]
+                if "{" in candidate:
+                    return candidate
+                start = -1
+    raise ValueError("no top-level JSON array with object entries found in NBLM raw output")
 
 
 def normalize_title(s: str) -> str:
