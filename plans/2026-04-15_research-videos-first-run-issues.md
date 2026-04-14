@@ -247,6 +247,35 @@ the playlist so Keith sees them on youtube.com.
 
 ---
 
+## MEDIUM-3 — `flock` unavailable on macOS (BSD)
+
+**Where:** `k2b-review/SKILL.md` Video feedback Concurrency and atomicity section + `CLAUDE.md` Video Feedback via Telegram rule
+
+**What happened:** The skill says to acquire a file lock via:
+
+```bash
+exec 9>/tmp/k2b-review-videos.lock
+flock -x 9
+```
+
+This fails on macOS with `command not found: flock` because `flock(1)` is a Linux-only utility. macOS BSD has `lockf(1)` (different API) but not `flock(1)`.
+
+**Why it matters:** The MacBook is a valid run environment for `/review` and the CLAUDE.md Telegram feedback path — both use the same lock. If `flock` silently fails (bash continues past a missing command in non-strict mode), the concurrency invariant the skill depends on is gone and `video-preferences.md` could get corrupted if two sessions race.
+
+**Fix options:**
+
+1. **Replace `flock` with `python3 -c "import fcntl; fcntl.flock(...)"`** — `fcntl` is cross-platform, works on both macOS and Linux. This is what I used in the live run via a helper script.
+2. **Install util-linux via brew** (`brew install util-linux`) to get a `flock` binary on macOS. Requires a new dependency on every MacBook.
+3. **Use `mkdir` for atomic locking** (classic Unix pattern): `mkdir /tmp/k2b-review-videos.lock` succeeds only if the directory doesn't exist. Portable across all Unixes.
+
+**Recommended:** Option 1 — inline the lock acquisition via Python `fcntl.flock` since the skill already uses Python helpers elsewhere (YAML parsing, atomic write-rename), and it's the most portable.
+
+**Severity:** MEDIUM — the single-session run tonight had no race condition so nothing corrupted, but on a multi-session / Telegram-racing workload the failure would be silent and destructive.
+
+**Fixed inline during run:** yes, via `/tmp/k2b-review-apply.py` using `fcntl.flock`. The skill still says `flock -x 9` which is broken on macOS.
+
+---
+
 ## MEDIUM-2 — `notebooklm delete` syntax gotcha
 
 **Where:** `k2b-research/SKILL.md` Step 11
@@ -304,6 +333,7 @@ the rejoin (which pulls `real_duration` from yt-search, not from NBLM).
 | HIGH-4 | HIGH | Step 3 ready-count accuracy | not fixed in skill |
 | MEDIUM-1 | MEDIUM | Step 10 Telegram | not fixed in skill |
 | MEDIUM-2 | MEDIUM | Step 11 syntax gotcha | skill is correct, operator error |
+| MEDIUM-3 | MEDIUM | k2b-review flock on macOS | not fixed in skill |
 | LOW-1 | LOW | NBLM synthetic URLs | handled by rejoin |
 | LOW-2 | LOW | NBLM unknown duration | handled by rejoin |
 
