@@ -107,14 +107,14 @@ K2B-Vault/
 - **`/meeting [title]`** -- Process a meeting transcript into a structured note
 - **`/tldr`** -- Save this conversation's key decisions, actions, and insights to raw/tldrs/
 - **`/compile`** -- Compile raw sources into wiki knowledge pages
-- **`/youtube [subcommand]`** -- YouTube knowledge pipeline (playlists, single URLs, recommend, screen, morning, status)
+- **`/youtube [playlist|url]`** -- Batch-capture videos from K2B category playlists or a single URL into raw/youtube/ (via k2b-youtube-capture). Recommendation/screen/morning subcommands were retired 2026-04-14; use `/research videos "<query>"` for discovery.
 - **`/email`** -- Read and triage Gmail (never sends, only drafts)
 
 ### Think
 - **`/review`** -- Review pending items in review/ queue (content ideas, compile conflicts)
 - **`/insight [topic]`** -- Find patterns across vault notes on a topic
 - **`/content`** -- Surface content ideas from recent insights and daily notes
-- **`/research [topic-or-url]`** -- Deep dive into external topics or URLs
+- **`/research [topic-or-url]`** -- Deep dive into external topics or URLs. `/research videos "<query>"` discovers + filters YouTube videos via NotebookLM using Keith's preference tail.
 - **`/observe`** -- Harvest implicit preferences and synthesize profile (harvest, profile, signals, reset)
 - **`/improve`** -- System health dashboard
 - **`/lint`** -- Vault health check: indexes, orphans, stale content, uncompiled sources, sparse articles, backlinks. `/lint deep` adds contradiction detection.
