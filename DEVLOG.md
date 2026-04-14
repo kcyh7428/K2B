@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-14 -- /research videos: real_published + recency veto
+
+**Commit:** `bcf064a` feat(k2b-research): add real_published + recency veto to /research videos
+
+**What shipped:** Thread yt-search's publish date through the K2B-as-curator pipeline so K2B can veto outdated content on fast-moving topics. 5 touchpoints in k2b-research/SKILL.md: (1) Step 6a rejoin pulls `published` from $CANDIDATES and normalizes to YYYY-MM-DD or "unknown"; (2) Step 6d adds an explicit recency veto -- if topic moves fast AND `today - real_published > 180 days`, pick goes to rejects; evergreen topics exempt; run-date anchor is today at run time (never hardcoded); (3) Step 6e $SUITABLE_JSON schema gains `real_published`; (4) Step 6g jq gate validates string + ISO-8601 prefix OR literal "unknown"; (5) Step 9 review note YAML block carries `real_published` + display line in the prose header. Companion docs edits (not in this commit; Syncthing-managed): Welcome to K2B.md replaced `/inbox` with `/review` and added `/research videos` command rows; Home.md gained a plain-English "Finding New Videos to Watch — /research videos" walkthrough section.
+
+**Codex review:** 1 pass. Returned 2 MEDIUM findings: (a) recency rule needed explicit "today" anchor to avoid drift, (b) jq gate only type-checked string but didn't validate date shape. Both fixed inline before commit: anchor now says "today - real_published > 180 days", gate now regex-validates `^[0-9]{4}-[0-9]{2}-[0-9]{2}` OR literal "unknown".
+
+**Feature status change:** feature_research-videos-notebooklm shipped -> shipped (same-day follow-up; feature note unchanged, no lane move).
+
+**Follow-ups:** End-to-end verification still deferred (NotebookLM auth degradation, see plans/2026-04-14_curator-refactor-blockers.md). First live run will exercise the new `real_published` path.
+
+**Key decisions:** NBLM is NOT asked to return upload dates -- it reads transcripts and would hallucinate. yt-search is the sole source of truth for publish metadata.
+
+---
+
 ## 2026-04-14 -- v2 K2B-as-curator refactor for /research videos
 
 **Commit:** `042471e` refactor(k2b-research,k2b-review): v2 K2B-as-curator for /research videos
