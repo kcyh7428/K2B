@@ -231,7 +231,7 @@ When run via weekly schedule:
 1. Run all checks (1-11; check 12 is skipped in weekly runs)
 2. Auto-fix what's safe
 3. Write structured report to `wiki/context/lint-report.md` (overwrite)
-4. Append lint summary to `wiki/log.md`
+4. Append lint summary via `scripts/wiki-log-append.sh /lint <lint-run-id> "<summary>"`
 5. If any "needs review" items: leave report in vault for Keith
 
 Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules staleness) run as part of the weekly schedule.
@@ -243,14 +243,14 @@ When run manually (`/lint`):
 3. Ask Keith which auto-fixes to apply
 4. Apply approved fixes
 5. Write structured report to `wiki/context/lint-report.md` (overwrite)
-6. Append to `wiki/log.md`
+6. Append via `scripts/wiki-log-append.sh /lint <lint-run-id> "<summary>"`
 
 ## Rules
 
 - Never delete notes. Only flag for Keith's decision.
 - Auto-fix is limited to: adding missing index entries, removing ghost index entries, creating stubs from templates.
 - All other fixes require Keith's approval.
-- Always update `wiki/log.md` after a lint pass.
+- Always update `wiki/log.md` via `scripts/wiki-log-append.sh` (never `>>`) after a lint pass.
 - If lint finds 0 issues, still log it (proves the check ran).
 
 ## Usage Logging

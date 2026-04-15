@@ -15,7 +15,7 @@ Draft LinkedIn posts from Keith's content pipeline, generate post images, and pu
 
 LinkedIn drafts remain in `review/` as an exception to the content-ideas-only rule -- they need Keith's approval before publishing. This is tracked in k2b-review as an expected review item type alongside k2b-generate content ideas.
 
-On publish, update `wiki/content-pipeline/index.md` and append to `wiki/log.md`.
+On publish, update `wiki/content-pipeline/index.md` and append to `wiki/log.md` via `scripts/wiki-log-append.sh`.
 
 ## Key Paths
 
@@ -205,7 +205,7 @@ Insights with content potential:
       - Update source content idea: add `## Published Posts` section with link to draft
       - Log to resource.md Post Performance table (date, slug, chars, image y/n)
       - **Update `wiki/content-pipeline/index.md`** if source content idea was updated
-      - **Append to `wiki/log.md`**: record publish action with post-urn
+      - **Append via helper:** `scripts/wiki-log-append.sh /linkedin "<post-slug>" "published urn=<post-urn>"`
    d. On failure:
       - If 401: "Token expired. Run: `cd ~/Projects/signhub-io/scripts && ./linkedin-auth.sh`"
       - If rate limit: "LinkedIn rate limit hit. Try again later."

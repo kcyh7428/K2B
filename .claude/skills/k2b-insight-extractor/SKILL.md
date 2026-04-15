@@ -76,12 +76,12 @@ After saving any note, run the vault-writer post-write pass:
 **For /insight notes (wiki/insights/):**
 1. Update `wiki/insights/index.md` with new row
 2. Cross-link: update person/project pages mentioned in the insight
-3. Append to `wiki/log.md`
+3. Append to `wiki/log.md` via `scripts/wiki-log-append.sh /insight <insight-file> "<one-line-summary>"`
 
 **For /content idea notes (review/):**
 1. No index update needed (review/ has no index)
 2. Verify `review-action:` and `review-notes: ""` are present (review queue write contract)
-3. Append to `wiki/log.md`
+3. Append to `wiki/log.md` via `scripts/wiki-log-append.sh /insight <content-file> "content idea: <short-topic>"`
 
 ## Frontmatter Templates
 

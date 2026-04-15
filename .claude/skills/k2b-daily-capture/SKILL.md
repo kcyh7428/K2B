@@ -95,7 +95,8 @@ Based on Keith's responses:
 - Save to `~/Projects/K2B-Vault/Daily/YYYY-MM-DD.md` (auto-promote -- Daily/ notes never go through Inbox)
 - If the file already exists (morning + evening use), **merge** new content into existing note rather than overwriting
 - Use the k2b-vault-writer skill for the actual write
-- After saving, append to `wiki/log.md` with cross-linked entities
+- After saving, append via helper:
+  `scripts/wiki-log-append.sh /daily <daily-note> "captured: <entities>"`
 
 **Channel-aware preview:**
 - On Claude Code terminal: show the full note before saving

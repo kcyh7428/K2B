@@ -331,15 +331,10 @@ After creating any note, run a cross-link pass to connect it to existing vault c
    - Glob to check if a page exists (e.g., `wiki/people/person_*.md`)
    - If exists: add a wikilink in the new note AND add a dated backlink in the entity page's `## Updates` or `## Key Interactions` section
    - If not exists: create a stub from template in wiki/{subfolder}/, add to index
-3. **Update `wiki/log.md`**: Append an entry recording what was created and cross-linked
+3. **Update `wiki/log.md` via helper:**
+   `scripts/wiki-log-append.sh /vault-writer <note-path> "created/updated: <summary>, linked: <targets>"`
 
-Log entry format:
-```markdown
-## [YYYY-MM-DD HH:MM] <skill> | <note title>
-- Created: <path to new note>
-- Cross-linked: <list of entity pages updated>
-- Index updated: <which index.md files>
-```
+Helper is the only permitted writer for wiki/log.md. Do NOT `>>`-append directly.
 
 This pass runs AFTER the note is written and validated, not during writing.
 
