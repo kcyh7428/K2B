@@ -69,6 +69,30 @@ K2B-Vault/
 - Use **k2b-compile** skill to digest raw sources into wiki knowledge.
 - review/ notes MUST have `review-action:` and `review-notes:` fields.
 
+## Memory Layer Ownership
+
+Every fact has exactly one home. When a rule or procedure lives in more than one place, the second copy rots first.
+
+| Fact type | Single home | Loaded at session start? |
+|---|---|---|
+| Soft rules (tone, no em dashes, no AI cliches) | `CLAUDE.md` top-level prose | yes |
+| Hard rules (rsync, feature-status edits) | Code -- pre-sync script + pre-commit hook | enforced, not loaded |
+| Domain conventions (file naming, frontmatter, taxonomy) | `CLAUDE.md` File Conventions section | yes |
+| Skill how-tos (flock patterns, atomic rename, multi-step procedures) | The skill's `SKILL.md` body | yes (on skill invoke) |
+| Auto-promoted learned preferences | `active_rules.md` (cap 12, LRU) | yes |
+| Raw learnings history | `self_improve_learnings.md` | no -- reference only |
+| Raw errors history | `self_improve_errors.md` | no -- reference only |
+| Memory index (pointers only) | `MEMORY.md` | yes |
+| Index/log mutations | Single helper function (one flock holder each) | enforced |
+
+Day-one consequences:
+
+1. **No procedural content in CLAUDE.md.** "How to do X" lives in the skill that does X. CLAUDE.md points to the skill.
+2. **Hard rules ship as code, not prose.** If a rule cannot be violated without human override, it belongs in a pre-commit hook or a wrapper script, not in a markdown bullet.
+3. **Single-writer hubs.** `wiki/log.md` and the 4 compile indexes have exactly one writer script each; no skill `>>`-appends directly.
+
+Ownership drift is checked advisory-only by `/ship` via `scripts/audit-ownership.sh`. Repeated drift is a promotion signal: fold it into one of the homes above or make it enforceable code.
+
 ## Rules
 
 - No em dashes. Ever.
