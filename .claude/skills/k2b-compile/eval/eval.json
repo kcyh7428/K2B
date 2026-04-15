@@ -7,7 +7,7 @@
         "Does the output explicitly update the raw subfolder index (raw/youtube/index.md) to reflect the compilation?",
         "Does the output update at least one wiki subfolder index (e.g. wiki/reference/index.md or wiki/people/index.md)?",
         "Does the output update master wiki/index.md entry counts?",
-        "Does the output append an entry to wiki/log.md with the compile log format?",
+        "Does the output call scripts/compile-index-update.py with 3 args (raw source, updated csv, created csv)?",
         "Does the output mark the raw source frontmatter with compiled: true and compiled-date?"
       ]
     },
@@ -18,7 +18,7 @@
         "Does the compile summary present a clear approve/skip/edit prompt before making changes?",
         "Does the output update raw/meetings/index.md (the raw subfolder index for this source type)?",
         "Does the output check for existing wiki pages before creating new ones (merge not duplicate)?",
-        "Does the output append to wiki/log.md with source path, updated pages, created pages, and indexes listed?",
+        "Does the output invoke compile-index-update.py exactly once, as an executable command, not as prose?",
         "Does the output mark the raw source with compiled: true in frontmatter after all updates are done?"
       ]
     },
@@ -30,7 +30,7 @@
         "Does the output update the master wiki/index.md entry counts if any new pages were created?",
         "Does the output present the compile summary BEFORE executing changes (not after)?",
         "Does the output call the MiniMax compile worker script as the first step?",
-        "Are all 4 index update points (wiki subfolder, raw subfolder, master index, wiki/log.md) explicitly mentioned or executed in the output?"
+        "Does the output avoid any direct hand-edit of wiki/<sub>/index.md, raw/<sub>/index.md, wiki/index.md, or wiki/log.md during the compile run?"
       ]
     }
   ]
