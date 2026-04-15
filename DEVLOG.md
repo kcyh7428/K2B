@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-04-15 -- CLAUDE.md cleanup: strip procedural content into skill bodies (audit Fix #4)
+
+**Commit:** `972665f` refactor(CLAUDE.md): strip procedural content into skill bodies (audit Fix #4)
+
+**What shipped:** First execution of the K2B-Investment audit's Axis 4 "Clogged" recommendations. CLAUDE.md shrinks from 287 to 219 lines (24% reduction) by moving procedural how-to content into the correct skill bodies, enforcing the ownership rule: CLAUDE.md owns identity, taxonomy, and soft rules; skill bodies own procedures. Copy-in phase added new sections to three skills, each faithfully preserving the procedural detail CLAUDE.md used to carry: (1) `k2b-review/SKILL.md` gained "Video Feedback from Telegram (run-level)" with the reaction-match rule (URL -> title -> channel -> pick ordinal), flock-and-atomic-rewrite recipe, zero-match reply text, ambiguity prompt, and all three Liam Ottley forbidden rules (never direct-append to video-preferences.md, never hardcode playlist IDs, never skip the flock). (2) `k2b-ship/SKILL.md` gained "Codex Adversarial Review -- the two checkpoints" with Checkpoint 1 (plan review) spelled out, the three skip conditions (vault-only, config tweaks, emergency hotfixes), the "never skip both" rule, and the presentation rules (neutral reporting, no pre-filtering). (3) `k2b-observer/SKILL.md` gained "Session-Start Inline Confirmation" with the HIGH/MEDIUM 3-option recipe, the exact rejection JSONL format preserved verbatim, and an idempotency note for cross-session deduplication. Strip phase then deleted seven CLAUDE.md sections (A: Video Feedback via Telegram 40 lines, B: Email Safety 4 lines, C: Codex Adversarial Review 28 lines, D: Session Discipline manual fallback 7 lines, E: Inline Observer Confirmation 20 lines, plus Codex-recommended extras: the duplicate /ship block inside "Roadmap & Feature Notes" and the procedural lines inside "Obsidian Cross-Linking"), replacing each with a 1-paragraph pointer naming the target skill. Kept intact: File Conventions, Slash Commands index, Rules list, /ship top-level mandate, session-start hook summary.
+
+**Codex review:** 2 rounds. Round 1 (plan review) challenged the proposed strip set and flagged that strip A (not just C and E) also needed copy-first -- k2b-review had the file-locking mechanics but not the Telegram reaction-match/reply logic. Also surfaced two extras beyond the original 7-row plan: the duplicate /ship block at CLAUDE.md:246-249, and procedural lines inside "Obsidian Cross-Linking" (the latter verified to be already covered in k2b-vault-writer). Plan adjusted to copy-first A + C + E before stripping. Round 2 (pre-commit) returned APPROVE with zero findings -- content preservation verified at specific line numbers for all three copy-ins, no dangling pointers, no em dashes, no accidental deletions, 4 expected files only.
+
+**Feature status change:** none (shipped as `--no-feature`; this is audit-derived infrastructure cleanup, not feature work attached to either In Progress lane entry).
+
+**Follow-ups:**
+- Next audit items from Axis 4 "Clogged": Fix #1 (auto-promote shipped-file-location rule to active_rules after 3x reinforcement), Fix #2 (atomic helper for compile-4-index bookkeeping), Fix #3 (single-writer log-writer helper for wiki/log.md's 13 call-sites).
+- Next audit items from Axis 5 "Conflicts": "NEVER manual rsync" enforcement via code (pre-sync validator), "Never edit feature status manually" enforcement via git pre-commit hook, observer inline confirmation vs /observe idempotency marker, active rules LRU cap policy.
+- k2b-review/SKILL.md line 158 dangling pointer rewritten as part of this commit (it had still named "CLAUDE.md's video feedback path" even after that section moved into the same skill).
+
+**Key decisions:**
+- Shipped as `--no-feature`. Two features in In Progress (mission-control-v3, minimax-offload) but neither owns this audit-driven cleanup. Attaching it to either would misrepresent lane membership.
+- Strip scope expanded mid-session based on Codex plan review. Originally proposed 7 rows (A-G with F/G as keeps); Codex identified that strip A was not safely housed in k2b-review and that the extra /ship block + Obsidian Cross-Linking procedural lines should be in the same pass. Keith approved the expanded scope.
+- Copy-in done as new sections rather than editing existing sections in target skills, so the diff is auditable and zero-risk to existing workflows.
+
+---
+
 ## 2026-04-15 -- /research videos: post-first-run hardening
 
 **Commits:** `fb10504` docs(plans), `99a99ac` fix(k2b-research), `d972cb2` fix(parse-nblm), `7a5a184` docs(plans)
