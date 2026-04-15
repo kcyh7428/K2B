@@ -1,0 +1,44 @@
+# scripts/ownership-watchlist.yml
+# Format: list of rule entries checked by audit-ownership.sh
+#
+# Each entry:
+#   id:               unique identifier
+#   phrase:           case-sensitive fixed-string the audit greps for (literal)
+#   phrase_regex:     alternative to phrase; ripgrep-style extended regex
+#   canonical_home:   path(s) where this phrase is allowed to appear
+#   severity:         warn | error (advisory uses warn; error is reserved)
+
+rules:
+  - id: compile-all-indexes
+    phrase: "Compile must update ALL indexes"
+    canonical_home:
+      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
+      - ".claude/skills/k2b-compile/SKILL.md"
+    severity: warn
+
+  - id: compile-4-index-taxonomy
+    phrase: "subfolder, raw subfolder, master wiki/index.md, wiki/log.md"
+    canonical_home:
+      - ".claude/skills/k2b-compile/SKILL.md"
+      - "scripts/compile-index-update.py"
+    severity: warn
+
+  - id: rsync-hard-rule
+    phrase: "NEVER manual rsync"
+    canonical_home:
+      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
+    severity: warn
+
+  - id: shipped-file-location
+    phrase: "wiki/concepts/Shipped/"
+    canonical_home:
+      - ".claude/skills/k2b-ship/SKILL.md"
+      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
+      - "CLAUDE.md"
+      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/feedback_shipped_feature_file_location.md"
+    severity: warn
+
+  - id: wiki-log-direct-append
+    phrase_regex: '>>\s+[^[:space:]]*wiki/log\.md'
+    canonical_home: []
+    severity: warn
