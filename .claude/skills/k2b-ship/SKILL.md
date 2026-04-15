@@ -212,11 +212,13 @@ If shipping multiple logical changes in one session (two or more code commits ba
 
 ### 9. Append wiki/log.md
 
-Per Active Rule 13. Single-line entry:
+Call the single-writer helper (never append to wiki/log.md directly):
 
+```bash
+scripts/wiki-log-append.sh /ship "<feature-slug>" "shipped <feature-slug>: <one-line-summary>"
 ```
-YYYY-MM-DD HH:MM  /ship  <feature-slug>  <short-sha>  <summary>
-```
+
+Replace `<feature-slug>` with the feature note basename (e.g. `feature_k2b-ship`) and `<one-line-summary>` with the same text used in the commit message subject. Helper handles locking, timestamp, and format.
 
 ### 10. Multi-ship gate handling
 
