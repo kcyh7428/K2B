@@ -30,6 +30,23 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 ## Workflow
 
+### 0a. Ownership drift check (advisory)
+
+Run:
+
+```bash
+scripts/audit-ownership.sh || true
+```
+
+The script exits non-zero when it finds known rule phrases outside their canonical home (see `scripts/ownership-watchlist.yml`). This step is **advisory**. Drift does not block `/ship`. Surface the offenders to Keith inline:
+
+```
+[warn] ownership drift: rule=<id> phrase=<phrase>
+  offender: <path>
+```
+
+Keith decides fix-inline or defer. When he defers, append the drift summary to the ship commit body under a "Deferred:" trailer so the next session sees it.
+
 ### 1. Scope detection
 
 Run in parallel:
