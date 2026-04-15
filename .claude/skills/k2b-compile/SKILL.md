@@ -48,7 +48,7 @@ Before creating or updating ANY wiki page, check the policy ledger:
 2. **Filter** entries where `scope` is `k2b-compile` or `*` (global)
 3. **For each matching guard**: verify the action complies. Key guards:
    - `create_wiki_page`: Check raw source `related:` frontmatter and grep wiki/ before creating. Enrich existing pages, don't duplicate.
-   - `update_index`: Must update ALL 4 indexes (subfolder, raw subfolder, master wiki/index.md, wiki/log.md).
+   - `update_index`: Must call scripts/compile-index-update.py -- the helper covers all 4 indexes atomically.
    - `classify_note`: Triage context vs insight correctly.
 4. **For autonomy entries**: if `auto_eligible` is true, proceed without asking. Otherwise ask Keith.
 5. **After Keith approves/rejects**: update the ledger entry's approved/rejected count.
@@ -121,23 +121,28 @@ Opus applies changes from the MiniMax JSON output:
 - If new info contradicts existing info: flag in the update with `> [!warning] Potential conflict` and add to review/ queue
 - Minimum 2 wikilinks per new page (soft target, not hard enforcement)
 
-### 5. Update Indexes + Log (mandatory checklist -- do in this exact order)
+### 5. Update indexes (single helper call)
 
-After all wiki changes, execute this checklist top to bottom. Do NOT report "done" until all 5 items are checked off. The raw index is FIRST because it is the most-skipped step (2 failures in 4 days, see L-2026-04-12-002).
-
-- [ ] **5a. Raw subfolder index FIRST:** Update `raw/<type>/index.md` -- mark the source row as compiled with today's date. This is the step that gets forgotten. Do it before anything else.
-- [ ] **5b. Mark source compiled:** Add `compiled: true` and `compiled-date: YYYY-MM-DD` to raw source frontmatter.
-- [ ] **5c. Wiki subfolder indexes:** Add/update rows in each affected `wiki/*/index.md`.
-- [ ] **5d. Master index:** Update `wiki/index.md` entry counts if any new pages were created.
-- [ ] **5e. Append to wiki/log.md via helper:**
+Call the atomic 4-index helper. This is the ONLY permitted way to update any index during a compile run. Do NOT hand-edit `wiki/<sub>/index.md`, `raw/<sub>/index.md`, `wiki/index.md`, or append to `wiki/log.md` directly.
 
 ```bash
-scripts/wiki-log-append.sh /compile "<raw-source-path>" "updated: <comma-list> | created: <comma-list>"
+~/Projects/K2B/scripts/compile-index-update.py \
+  "<raw-source-path>" \
+  "<comma-separated-updated-pages>" \
+  "<comma-separated-created-pages>"
 ```
 
-Helper is the only permitted writer for wiki/log.md. Do NOT `>>`-append directly.
+The helper:
+- Resolves each wiki page to its deepest containing subfolder (nested-aware, so `wiki/projects/k2b-investment/foo.md` maps to `projects/k2b-investment`, not `projects`).
+- Groups mixed-subfolder updates and touches every affected subfolder index exactly once.
+- Parses the existing `Last updated: ... | Entries: N` header and the master 3-column table in place; never rewrites shape.
+- Validates every target index; exits 1 if any shape is unrecognized (nothing mutated).
+- Stages all updates into tempfiles under a mkdir lock at `/tmp/k2b-compile-index.lock.d`, then atomic-renames each into place.
+- Calls `scripts/wiki-log-append.sh` (Fix #1) to append the log line. If the log append fails, exits 2 -- the indices are already written, so loud failure is preferred over silent.
 
-**Self-check before reporting done:** Mentally walk through 5a-5e. If you cannot confirm each one was executed, go back and fix it now.
+Exit codes: 0 ok, 1 validation failure, 2 partial write (indices written, log append failed or mid-rename failure), 3 lock timeout. On non-zero exit, stop the compile run and surface stderr to Keith. Do not retry blindly.
+
+Before calling the helper, still mark the raw source frontmatter with `compiled: true` and `compiled-date: YYYY-MM-DD`. That is a content edit on the raw source file, not an index update, so it stays outside the helper's scope.
 
 ## Compile Modes
 
