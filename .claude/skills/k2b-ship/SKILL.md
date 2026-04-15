@@ -30,6 +30,51 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 ## Workflow
 
+### 0. Active rules auto-promotion scan
+
+Before anything else, scan for learnings that have crossed the promotion threshold (reinforced 3x) and surface them to Keith for inline y/n/skip confirmation. This step runs on every `/ship` call, including `--no-feature` and `--defer` variants. It is read-only until Keith answers `y`.
+
+Run:
+
+```bash
+scripts/promote-learnings.py
+```
+
+The scanner prints a JSON array of candidate learnings. Each candidate has: `learn_id`, `count`, `distilled_rule`, `source_excerpt`, `would_exceed_cap`, `current_active_count`, `cap`. If the array is empty, print `auto-promote: 0 candidates` and continue to step 1.
+
+For each candidate, surface Keith inline:
+
+```
+L-<id> has been reinforced <count>x and is not in active_rules.
+Distilled: "<distilled_rule>"
+Promote now? [y/n/skip]
+```
+
+If `distilled_rule` is `null` (no frontmatter line, no bolded first sentence in the body), print the full `source_excerpt` first and ask Keith to supply the rule text inline before promoting. Save his answer as the rule text for the append step.
+
+Act on Keith's answer:
+
+- **y**: Append a new numbered rule to `active_rules.md` using the distilled rule text. Section placement is by topical fit (Identity, Vault, Deployment, Karpathy); if unsure, drop it in the section the source learning's `Area:` field maps to. Include `(<L-id>, last-reinforced: <today>)` in the parenthetical per the Fix #5 format.
+  - **Before** appending, if `would_exceed_cap` is `true` OR the post-append rule count would exceed `cap`, resolve the LRU victim:
+    ```bash
+    scripts/select-lru-victim.py
+    ```
+    The helper reads `active_rules.md`, parses `last-reinforced:` and reinforcement count, and prints the oldest rule as JSON (`{"rule_number": N, "title": "...", "l_id": "...", "last_reinforced": "..."}`). Surface the demotion to Keith as `⚠ demoting rule <N> (<title>) to make room for <new rule>` and wait for his confirmation. On `y`, call:
+    ```bash
+    scripts/demote-rule.sh <N>
+    ```
+    which moves the rule block intact into `self_improve_learnings.md`'s `## Demoted Rules` section, renumbers the remaining rules contiguously, and logs via the Fix #1 helper. Only after the demotion returns success do you append the new rule.
+- **n**: Append `auto-promote-rejected: true` to the learning's entry body in `self_improve_learnings.md` (as a bullet: `- **auto-promote-rejected:** true`) so the scanner skips it on future `/ship` runs. Do not modify the count.
+- **skip**: Do nothing. The candidate will re-appear on the next `/ship`.
+
+After all candidates are processed, log the net change via the Fix #1 helper:
+
+```bash
+scripts/wiki-log-append.sh /ship "step-0" "promoted=<N> rejected=<M> skipped=<K> demoted=<D>"
+```
+
+Then continue to step 1.
+
 ### 1. Scope detection
 
 Run in parallel:
