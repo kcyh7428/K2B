@@ -108,7 +108,8 @@ This enables weave to gradually earn autonomy. First 10+ proposals are always ma
 
 12. **Append metrics row** to `weave-metrics.jsonl`: `{date, run_id, pages_scanned, candidates_raw, proposals_top10, tokens_in, tokens_out, cost_usd, duration_ms, error}`.
 
-13. **Append summary line** to `wiki/log.md`: `[weave] YYYY-MM-DD_HHMM -- N proposals in review/crosslinks_..._HHMM.md`.
+13. **Append summary via helper:**
+    `scripts/wiki-log-append.sh /weave crosslinks_<slug>_HHMM.md "N proposals"`
 
 14. **Release lock** -- delete `wiki/.weave.lock`.
 
@@ -129,7 +130,8 @@ Called internally by `/review` when it detects a note with `type: crosslink-dige
 
 4. **Delete digest note** -- once every row is processed. Atomic delete via rename to `.trash` then unlink.
 
-5. **Append summary line** to `wiki/log.md`: `[weave-apply] <digest-file> -- N applied, M rejected, K deferred`.
+5. **Append summary via helper:**
+   `scripts/wiki-log-append.sh /weave-apply <digest-file> "N applied, M rejected, K deferred"`
 
 6. **Release lock.**
 
