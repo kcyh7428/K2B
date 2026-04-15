@@ -137,62 +137,23 @@ K2B-Vault/
 
 ## Session Start & Observer
 
-Session startup hook automatically: surfaces usage triggers, reports reviewed review items, shows observer findings, loads reinforced learnings watch list, and loads active rules.
-- If review items ready: process with /review.
-- If observer candidates surfaced: review with Keith using inline confirmation (see below).
+Session startup hook automatically surfaces: usage triggers, reviewed review items, observer findings, reinforced learnings watch list, and active rules.
+- If review items are ready, process them with `/review`.
+- If observer findings are surfaced, act on them inline per the HIGH/MEDIUM recipe in the **k2b-observer** skill body ("Session-Start Inline Confirmation") -- do not wait for Keith to remember `/observe`.
 
-Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vault changes and analyzing patterns. See k2b-observer skill for details.
+Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vault changes and analyzing patterns. See the **k2b-observer** skill for both the background loop details and the inline confirmation procedure.
 
-### Inline Observer Confirmation
+## Video Feedback via Telegram
 
-When observer findings appear at session start, act on them immediately -- don't wait for Keith to remember `/observe`:
-
-**HIGH confidence findings:** Present each one with three options:
-- **confirm** -- run `/learn` inline with the finding text. This auto-creates a policy ledger entry (the correction becomes an executable guardrail).
-- **keep watching** -- do nothing. Let it accumulate more evidence before acting.
-- **reject** -- note the rejection in `wiki/context/preference-signals.jsonl` so the observer learns what Keith doesn't endorse. Format: `{"date":"YYYY-MM-DD","source":"session-start-reject","type":"rejection","description":"<finding text>","confidence":"high","skill":"k2b-observer"}`
-
-**MEDIUM confidence findings:** Show them as context. Don't prompt for action unless Keith asks.
-
-This collapses the old 3-step manual flow (`/observe` -> `/learn` -> wait for reinforcement) into one natural-language response from Keith. `/observe` remains available for deep synthesis but is no longer required for the loop to close.
-
-## Video Feedback via Telegram (run-level)
-
-When Keith reacts to a video in a Telegram conversation (examples: "the Wolfe video was great, move it to K2B Claude", "that Operator breakdown was shallow, drop Matthew Berman", "I liked pick #3 from today's batch", "loved all 3 today"), do the following without asking for confirmation:
-
-1. Glob `K2B-Vault/review/videos_*.md` (run-level notes; not `video_*.md`).
-2. Read candidates from the most recent `run-date` backwards. Within each file, parse the picks via their fenced ` ```yaml ... ``` ` blocks (same contract as `/review`: locate each `^### \d+\. ` heading, read the first YAML fence inside that pick). Match rule: URL if Keith pasted one → exact title → channel → "pick #N" ordinal within the most recent run. Bulk reactions ("loved all 3", "drop the last two") iterate through matched picks in sequence.
-3. For each matched pick, acquire `flock -x 9` on `/tmp/k2b-review-videos.lock`, then:
-   - Edit the pick's YAML block in place (read full file, rewrite with the updated block, atomic rename via `.tmp` + `mv`). Set `decision:` to `keep` / `drop` / `neutral` based on Keith's tone. Optionally set `category_override:` if Keith's reaction implies a different category ("move the Wolfe video to K2B Claude"). Append Keith's distilled reaction to `notes:` (do NOT overwrite existing text).
-   - Immediately run the same playlist move logic as `/review`: `K2B_WATCH_ID=$(jq -r '."K2B Watch"' ~/Projects/K2B/scripts/k2b-playlists.json)`, resolve `effective_category` via `jq -r --arg name "$EFFECTIVE_CATEGORY" '.[$name] // empty' ~/Projects/K2B/scripts/k2b-playlists.json`, call `scripts/yt-playlist-remove.sh "$K2B_WATCH_ID" "$VIDEO_ID"`, and on `keep` also call `scripts/yt-playlist-add.sh "$DEST_ID" "$VIDEO_ID"`.
-   - Append one distilled line to `wiki/context/video-preferences.md` via atomic write-then-rename (NEVER `>>` or `echo >>`). Format per `/review`: `<run-date> kept [<category>]: <channel> -- <notes>`, `<run-date> dropped: <channel> -- <notes>`, or `<run-date> neutral: <channel> -- <notes>`.
-   - On success: update the pick's YAML block with `playlist_action: done`, `processed_at: <ISO8601>`, `preference_logged: true`. On failure: `playlist_action: failed`, append the error to `notes`, leave `preference_logged` at its prior value.
-   - Release the flock.
-4. Reply in Telegram with the concrete result for each pick processed: `"done -- moved <title> to K2B Claude"` / `"done -- dropped <title> from Watch"`. For bulk reactions, combine into one reply.
-5. If zero matches: reply `"no matching pick in recent run notes -- want me to log this as a standalone preference line?"` and wait for Keith's answer.
-6. If ambiguous within one file: list the candidate picks in Telegram with their `pick_id`s and ask Keith to disambiguate.
-
-**Forbidden on the Telegram path (prevents the Liam Ottley bug from recurring):**
-
-- **NEVER append directly to `wiki/context/video-preferences.md`.** The file is jointly owned by `/review` and the Telegram path, but ALL writes go through the SAME atomic read-rewrite-rename helper -- never `>>`, never `echo >>`, never `obsidian_append_content`. If you catch yourself about to do a direct append, STOP: read the file, rewrite it in full to a `.tmp` sibling, then `mv` atomically. The direct-append pattern is exactly what produced the Liam Ottley bug during B8 testing and this rule exists to prevent recurrence.
-- **NEVER hardcode playlist IDs.** Always `jq`-lookup from `scripts/k2b-playlists.json`.
-- **NEVER skip the flock.** `/review` can be running concurrently; double-execution of a playlist move is exactly the failure mode this locking prevents.
-
-This rule uses the interactive Claude session's built-in Edit/Glob/Grep/Bash tools. No new MCP tool, no routing code, no keyword matching -- the "is this video feedback?" decision is made by reading the conversation context.
+When Keith reacts to a video in a Telegram conversation, act on it without asking for confirmation. The procedure (match the reaction to a pick, edit the YAML block under flock, run the playlist move, append to `video-preferences.md` atomically, reply in Telegram) lives in the **k2b-review** skill body under "Video Feedback from Telegram (run-level)". Do not reproduce the procedure here.
 
 ## Email Safety
 
-- NEVER send emails. Only draft.
-- NEVER delete emails.
-- Always confirm before creating any draft.
-- Use specific search criteria.
+Gmail operations ship through the **k2b-email** skill, which owns non-negotiable safety rules (never send, never delete, always confirm before drafting). Do not reproduce them here.
 
 ## Obsidian Cross-Linking
 
-- Use `[[filename_without_extension]]` for all internal links.
-- Before linking, glob the vault to confirm the target note exists.
-- If a referenced person or project doesn't have a note yet, create a stub from template.
-- Every note should have wiki links to related people, projects, meetings, or decisions.
+Use `[[filename_without_extension]]` for all internal links. Every note should have wiki links to related people, projects, meetings, or decisions. The glob-before-link and stub-creation procedures live in the **k2b-vault-writer** skill.
 
 ## File Conventions
 
@@ -243,45 +204,16 @@ up: "[[index]]"
 
 Every feature spec must define `mvp:` -- the smallest version that delivers value. Build that first.
 
-For multi-ship features (e.g. `feature_mission-control-v3`), include a Shipping Status table and adopt the phase gate pattern from [[project_minimax-offload]]: `/observe` runs as the primary gate between ships, Codex adversarial review drafts the next spec, Keith makes the go/no-go decision.
+For multi-ship features, include a Shipping Status table and adopt the phase gate pattern from [[project_minimax-offload]]: `/observe` runs as the primary gate between ships, Codex adversarial review drafts the next spec, Keith makes the go/no-go decision.
 
-**Never edit feature status manually mid-flight. Use `/ship` for all state transitions.** `/ship` updates the feature note frontmatter, moves files between lanes in `wiki/concepts/index.md`, runs Codex pre-commit review, stages + commits + pushes, appends `DEVLOG.md` and `wiki/log.md`, suggests the next Backlog promotion to Next Up, and ends with an explicit "run /sync now or defer?" question when project files changed -- on defer it writes a unique entry to the `.pending-sync/` mailbox directory so the stale-Mini state survives session boundaries and surfaces at next session start. `/sync` is the sole consumer of that mailbox and only deletes the specific entries it processed, so concurrent `/ship --defer` runs can never race.
+**Never edit feature status manually mid-flight. Use `/ship` for all state transitions.** All `/ship` mechanics (lane moves, Codex review, commit/push, DEVLOG, wiki/log, `.pending-sync/` mailbox) live in the **k2b-ship** skill body. Do not reproduce them here.
 
 The legacy `MOC_K2B-Roadmap.md` at vault root is now a redirect pointer kept only for backlink compatibility.
 
 ## Codex Adversarial Review
 
-K2B uses OpenAI Codex (via `/codex:` plugin) as a second-model reviewer to catch blind spots Claude can't see in its own work. Two mandatory checkpoints:
-
-### Checkpoint 1: Plan Review
-Before implementing any new feature or skill, after the plan is written:
-- Run `/codex:adversarial-review challenge the plan` with the plan file path
-- Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
-- Adjust the plan based on findings before writing code
-
-### Checkpoint 2: Pre-Commit Review
-Before committing changes from a build session (new features, skills, or significant refactors):
-- Run `/codex:review` on uncommitted changes
-- Look for: bugs, logic errors, drift from the plan, edge cases
-- Fix issues before committing
-
-### When to Skip
-- Vault-only changes (daily notes, inbox processing, content drafts)
-- Config tweaks, typo fixes, one-line changes
-- Emergency hotfixes (review after)
-
-### Rules
-- Never skip both checkpoints. If you skip plan review (e.g. small feature), do pre-commit review.
-- Report Codex findings to Keith before proceeding with fixes.
-- Do not argue with Codex findings. Present them neutrally and let Keith decide.
+K2B uses OpenAI Codex (via the `/codex:` plugin) as a mandatory second-model reviewer at two checkpoints: **plan review** before implementation, and **pre-commit review** before committing. Both are non-negotiable; if one is skipped, the other is mandatory. Procedures, skip conditions, and presentation rules live in the **k2b-ship** skill body and the `/codex:*` plugin commands.
 
 ## Session Discipline
 
-At the END of every Claude Code session, before closing, run **`/ship`**. It handles: Codex pre-commit review, commit + push to origin main, DEVLOG.md + wiki/log.md entries, feature note status transitions, `wiki/concepts/index.md` lane updates, and -- when project files changed -- an explicit "run /sync now or defer?" question followed by either an in-line sync or a new entry in the durable `.pending-sync/` mailbox directory on defer. `/ship` is never allowed to end with a bare reminder; the sync obligation must resolve to either "done now" or "entry recorded in the mailbox for later".
-
-If `/ship` is skipped (vault-only session or /ship is unavailable), the manual fallback is:
-- Stage and commit all changes with a descriptive commit message
-- Push to GitHub (`git push origin main`) so the Claude project on claude.ai sees the latest code
-- Append a devlog entry to DEVLOG.md covering what was done
-- If any architecture decisions were made that differ from the specs in the K2B claude.ai project, note them clearly in the devlog entry under "Key decisions"
-- **If project files in `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md`, `k2b-remote/`, `k2b-dashboard/`, or `scripts/` were modified, also run `/sync` (or `~/Projects/K2B/scripts/deploy-to-mini.sh auto`) after the commit to push to the Mac Mini.** If the sync is deliberately deferred to a later session, `/ship` records that as a new entry in the `~/Projects/K2B/.pending-sync/` mailbox directory (gitignored, local-only) so the next session's startup hook and the next `/sync` invocation can catch up automatically. The manual fallback does not write an entry, so deferred syncs outside `/ship` rely on Keith remembering.
+At the END of every Claude Code session, before closing, run **`/ship`**. It is never allowed to end with a bare reminder; the sync obligation must resolve to either "done now" or "entry recorded in the `.pending-sync/` mailbox for later". All mechanics live in the **k2b-ship** skill body. If `/ship` is genuinely unavailable in the current harness, the skill body also documents the manual fallback and its recovery caveats -- do not duplicate them here.

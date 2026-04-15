@@ -68,7 +68,7 @@ For multi-ship features (e.g. `feature_mission-control-v3`), read the feature no
 
 ### 3. Codex pre-commit review gate
 
-**Mandatory unless `--skip-codex <reason>` is passed.** Per CLAUDE.md Checkpoint 2.
+**Mandatory unless `--skip-codex <reason>` is passed.** This is **Checkpoint 2** of the two K2B adversarial review checkpoints. (Checkpoint 1 is **plan review** -- see below -- and runs earlier, before implementation. `/ship` only owns Checkpoint 2.)
 
 ```
 /codex:review
@@ -76,11 +76,39 @@ For multi-ship features (e.g. `feature_mission-control-v3`), read the feature no
 
 on the uncommitted diff. Capture findings.
 
-- Present findings neutrally to Keith. Do not argue with Codex (per CLAUDE.md).
+- Present findings neutrally to Keith. Do not argue with Codex. Let Keith decide.
 - Keith decides: fix now, defer, or accept. If he fixes, re-run /codex:review on the new diff.
 - Log the gate result: `reviewed / skipped:<reason>`, number of findings, fix verdict.
 
 If Codex plugin is not configured: fail loudly with "Run `/codex:setup` or re-run with `/ship --skip-codex <reason>`."
+
+### Codex Adversarial Review -- the two checkpoints
+
+K2B uses OpenAI Codex (via the `/codex:` plugin) as a second-model reviewer to catch blind spots Claude cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
+
+**Checkpoint 1: Plan Review.** Before implementing any new feature, skill, or significant refactor, after the plan is written but before code is touched:
+
+- Run `/codex:adversarial-review challenge the plan` with the plan file path
+- Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
+- Adjust the plan based on findings BEFORE writing code
+
+This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit.
+
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs `/codex:review` on the uncommitted diff (step 3 above). Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+
+**When Codex review can be skipped:**
+
+- Vault-only changes (daily notes, review processing, content drafts)
+- Config tweaks, typo fixes, one-line changes
+- Emergency hotfixes where the bug-fix speed matters more than review (review after the fact)
+
+**Never skip both checkpoints.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if Checkpoint 2 is skipped via `/ship --skip-codex <reason>`, Checkpoint 1 must have run earlier in the session -- otherwise the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
+
+**Rules for presenting Codex findings to Keith:**
+
+- Report findings neutrally. Do not argue with Codex.
+- Do not pre-filter findings by "importance" before Keith sees them.
+- Let Keith decide which to fix, defer, or accept.
 
 ### 4. Generate commit message
 

@@ -386,6 +386,30 @@ K2B runs a background observer on Mac Mini (`scripts/observer-loop.sh`, managed 
 - They complement each other: background loop catches patterns continuously, `/observe` does deep synthesis on demand
 - `/observe` should read `observer-candidates.md` and incorporate any background findings
 
+## Session-Start Inline Confirmation
+
+When observer findings appear in the session-start hook output, act on them immediately -- do not wait for Keith to remember `/observe`. This collapses the old 3-step manual flow (`/observe` -> `/learn` -> wait for reinforcement) into one natural-language response from Keith. `/observe` remains available for deep synthesis but is no longer required for the loop to close.
+
+### HIGH confidence findings
+
+Present each HIGH finding with three options:
+
+- **confirm** -- run `/learn` inline with the finding text. This auto-creates a policy ledger entry (the correction becomes an executable guardrail).
+- **keep watching** -- do nothing. Let the finding accumulate more evidence before acting on it.
+- **reject** -- note the rejection in `wiki/context/preference-signals.jsonl` so the observer learns what Keith does NOT endorse. Use the exact format below (one JSON object per line, trailing newline, atomic write):
+
+```json
+{"date":"YYYY-MM-DD","source":"session-start-reject","type":"rejection","description":"<finding text>","confidence":"high","skill":"k2b-observer"}
+```
+
+### MEDIUM confidence findings
+
+Show MEDIUM findings as context. Do not prompt for action unless Keith asks. They exist to nudge Keith's awareness, not to force a decision.
+
+### Idempotency
+
+Once a finding is confirmed/kept/rejected inline, it is considered processed for this session. A subsequent `/observe` run in the same session should filter out findings whose text already appears as a recent `session-start-*` entry in `preference-signals.jsonl`, so Keith isn't asked the same question twice.
+
 ## Integration Map
 
 ```
