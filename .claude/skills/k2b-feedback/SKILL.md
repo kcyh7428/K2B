@@ -53,12 +53,29 @@ Entry format:
 ```markdown
 ### L-YYYY-MM-DD-NNN
 - **Area:** [preferences | workflow | knowledge | tools | writing-style | vault]
-- **Learning:** [what K2B should do differently]
+- **Distilled rule:** [one-sentence active-voice rule, max ~150 chars, the exact text that would land in active_rules.md on promotion]
+- **Learning:** [what K2B should do differently, longer form]
 - **Context:** [what triggered this learning]
 - **Reinforced:** 1
 - **Confidence:** low
 - **Date:** YYYY-MM-DD
 ```
+
+Also write a frontmatter-style `distilled-rule:` field at the top of the entry body so `scripts/promote-learnings.py` can parse it without relying on bullet-text heuristics:
+
+```markdown
+### L-YYYY-MM-DD-NNN
+distilled-rule: "one-sentence active-voice rule"
+- **Area:** ...
+- **Distilled rule:** same text as the frontmatter line above
+- **Learning:** ...
+- **Reinforced:** 1
+...
+```
+
+Both forms (the `distilled-rule:` line and the `- **Distilled rule:**` bullet) should be written on every new entry. The scanner prefers the frontmatter line. The bullet is there so a human skimming the file sees the rule text without decoding frontmatter.
+
+**Reinforcement handling:** If a new `/learn` call cites an existing L-ID or matches an existing `distilled-rule:` (case-insensitive substring), increment the existing entry's `- **Reinforced:**` count (keeping the `Reinforced` field name as-is) and append a note to its body with the new date and context. Do not create a duplicate entry. The `distilled-rule:` line is never rewritten on reinforcement; only the first capture sets it.
 
 ID format: `L-YYYY-MM-DD-NNN` where NNN auto-increments based on existing entries for that date.
 
