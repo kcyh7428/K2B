@@ -82,7 +82,7 @@ On promote:
 - If `review-notes:` has feedback, incorporate it into the note content before promoting
 - Update the relevant MOC with a wikilink to the promoted note
 - **Update the destination folder's `wiki/*/index.md`** (mandatory per vault-writer contract)
-- **Append to `wiki/log.md`** recording the promote action
+- **Append to `wiki/log.md` via helper:** `scripts/wiki-log-append.sh /review <review-file> "promoted: <target-path>"`
 
 #### archive
 - Move file to `Archive/`
@@ -201,11 +201,12 @@ If `DEST_ID` is empty, K2B suggested a new category that doesn't exist yet. Leav
      - Append distilled line: `<run-date> neutral: <channel> -- <notes or "nothing notable">`.
 4. **Per-pick state updates after each action** (partial-state tracking prevents double-execution):
    - On success: edit the pick's YAML block in place -- set `playlist_action: done`, `processed_at: <ISO8601>`, and after a successful preference-tail append set `preference_logged: true`. Use a full file read + rewrite + atomic rename (never line-by-line edit in place).
-   - On failure: set `playlist_action: failed`, append the error to `notes:` (do NOT overwrite Keith's existing notes text), leave `preference_logged` at its prior value. Log to `wiki/log.md`. Leave the file in `review/`; next `/review` retries the failed pick only.
+   - On failure: set `playlist_action: failed`, append the error to `notes:` (do NOT overwrite Keith's existing notes text), leave `preference_logged` at its prior value. Log via helper: `scripts/wiki-log-append.sh /review <review-file> "(failed: <error>)"`. Leave the file in `review/`; next `/review` retries the failed pick only.
 5. **File-level completion check.** After processing all picks in a file:
    - If EVERY pick has `decision != pending` AND `playlist_action == done` AND `preference_logged == true`: set the file's frontmatter `review-action: processed`, write a one-line summary into `review-notes` (e.g., `"2 kept to K2B Claude, 1 dropped"`), then move the file from `review/` to `raw/research/` as a durable audit trail. Do NOT delete -- the run note's K2B reasoning + rejects list + per-pick state history has audit value beyond the distilled lines.
    - Otherwise leave the file in place with `review-action: pending`. Next `/review` catches the remaining picks.
-6. Release the flock, log to `wiki/log.md` ("processed N picks in videos_<slug>.md: X kept, Y dropped, Z neutral, W failed").
+6. Release the flock and log via helper:
+   `scripts/wiki-log-append.sh /review videos_<slug>.md "processed N picks: X kept, Y dropped, Z neutral, W failed"`
 
 ### Forbidden
 
