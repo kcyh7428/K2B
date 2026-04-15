@@ -48,6 +48,20 @@ If the file doesn't exist or is empty, tell Keith: "No preference signals yet. T
 
 Then check if this is the first run (no preference-profile.md exists). If so, run the Bootstrapping procedure below.
 
+### 1a-filter. Filter out processed signals (APPEND-cutoff reader)
+
+Walk `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl` top-to-bottom. Track two things:
+
+1. `past_cutoff` boolean, starting False. When a line with `type: "grandfather-cutoff"` is seen, set `past_cutoff = True`. All lines BEFORE the cutoff are implicitly grandfathered (treated as already processed, never surfaced). All lines AFTER the cutoff are subject to signal_id dedup.
+2. `processed_ids` set. For every line with `type: "signal-processed"` whose `action` is `confirmed` or `rejected`, add its `signal_id` to the set. `action: watching` is intentionally EXCLUDED from the filter set -- deferring a signal should resurface it next session, not silence it forever.
+
+A signal is filtered out (not surfaced) when any of these is true:
+- It appears before the grandfather-cutoff line (`past_cutoff == False` when the signal is read).
+- Its `signal_id` is in `processed_ids`.
+- It has no `signal_id` field at all (pre-Fix #6 historical; grandfathered by the cutoff).
+
+Remaining signals flow into Phase 2 pattern detection and Phase 3 synthesis.
+
 ### 1b. Revision Detection
 
 For items with action = "promote" in the signals log:
@@ -406,9 +420,19 @@ Present each HIGH finding with three options:
 
 Show MEDIUM findings as context. Do not prompt for action unless Keith asks. They exist to nudge Keith's awareness, not to force a decision.
 
+### Post-action mark
+
+After Keith answers y/n/skip, mark the signal as processed via the helper so both the session-start inline flow and `/observe` deep synthesis filter it out on the next read:
+
+```bash
+scripts/observer-mark-processed.sh <signal_id> <confirmed|rejected|watching> [L-ID]
+```
+
+Pass `confirmed` when Keith answered yes and a learning was created, `rejected` when he said no (do not surface again), `watching` when he deferred. Include the new L-ID as the third argument when the action produced a learning. `watching` is recorded but does NOT suppress the signal on subsequent reads -- deferred findings resurface next session.
+
 ### Idempotency
 
-Once a finding is confirmed/kept/rejected inline, it is considered processed for this session. A subsequent `/observe` run in the same session should filter out findings whose text already appears as a recent `session-start-*` entry in `preference-signals.jsonl`, so Keith isn't asked the same question twice.
+Once a finding is confirmed/kept/rejected inline, it is considered processed for this session. A subsequent `/observe` run streams `preference-signals.jsonl` using the Phase 1a-filter APPEND-cutoff reader: signals written before the `grandfather-cutoff` line are skipped, signals after the cutoff are filtered by `signal_id` against any `signal-processed` lines with `action: confirmed` or `action: rejected`. Keith is never asked the same question twice.
 
 ## Integration Map
 
