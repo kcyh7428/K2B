@@ -129,15 +129,13 @@ After all wiki changes, execute this checklist top to bottom. Do NOT report "don
 - [ ] **5b. Mark source compiled:** Add `compiled: true` and `compiled-date: YYYY-MM-DD` to raw source frontmatter.
 - [ ] **5c. Wiki subfolder indexes:** Add/update rows in each affected `wiki/*/index.md`.
 - [ ] **5d. Master index:** Update `wiki/index.md` entry counts if any new pages were created.
-- [ ] **5e. Append to wiki/log.md:**
+- [ ] **5e. Append to wiki/log.md via helper:**
 
-```markdown
-## [YYYY-MM-DD HH:MM] compile | [Source Title]
-- Source: raw/[type]/[filename]
-- Updated: [list of wiki pages updated]
-- Created: [list of wiki pages created]
-- Indexes: [list of index.md files updated]
+```bash
+scripts/wiki-log-append.sh /compile "<raw-source-path>" "updated: <comma-list> | created: <comma-list>"
 ```
+
+Helper is the only permitted writer for wiki/log.md. Do NOT `>>`-append directly.
 
 **Self-check before reporting done:** Mentally walk through 5a-5e. If you cannot confirm each one was executed, go back and fix it now.
 
