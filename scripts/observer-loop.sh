@@ -319,18 +319,30 @@ Analyze these observations and return your findings as JSON."
     log "Updated youtube-taste-profile.md ($signal_count signals, confidence: $confidence)"
   fi
 
-  # Append patterns to preference-signals.jsonl
+  # Append patterns to preference-signals.jsonl (each pattern gets a signal_id)
+  # signal_id = sha256(date + source + description + HH:MM:SS)[:8]. Time component
+  # prevents rerun collisions when the same pattern resurfaces in a later run.
+  # Uses macOS `shasum -a 256`, not Linux `sha256sum`.
   echo "$json_content" | jq -c '
     .patterns[]? |
     {
       date: (now | strftime("%Y-%m-%d")),
+      time: (now | strftime("%H:%M:%S")),
       source: "observer-loop",
       type: .type,
       description: .description,
       confidence: .confidence,
       skill: .skill
     }
-  ' 2>/dev/null >> "$SIGNALS_FILE" || true
+  ' 2>/dev/null | while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    d=$(printf '%s' "$line" | jq -r '.date')
+    t=$(printf '%s' "$line" | jq -r '.time')
+    s=$(printf '%s' "$line" | jq -r '.source')
+    desc=$(printf '%s' "$line" | jq -r '.description')
+    sigid=$(printf '%s%s%s%s' "$d" "$s" "$desc" "$t" | shasum -a 256 | cut -c1-8)
+    printf '%s' "$line" | jq -c --arg sigid "$sigid" '. + {signal_id: $sigid}' >> "$SIGNALS_FILE"
+  done || true
 
   # Archive processed observations
   mkdir -p "$OBS_ARCHIVE"
