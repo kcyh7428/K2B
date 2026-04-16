@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { resolve } from 'node:path'
 import { mkdirSync } from 'node:fs'
@@ -130,7 +131,50 @@ export function initDatabase(): void {
   // DROP IF EXISTS so this is safe on fresh installs and idempotent on rerun.
   db.exec('DROP TABLE IF EXISTS youtube_agent_state')
 
+  // Migration: add source_hash column for canonical-memory dedup
+  const memCols = db.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>
+  if (!memCols.some(c => c.name === 'source_hash')) {
+    db.exec("ALTER TABLE memories ADD COLUMN source_hash TEXT")
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_hash ON memories(source_hash) WHERE source_hash IS NOT NULL")
+
+    // Backfill existing rows so startup sync dedup works against migrated JSONL
+    const rows = db.prepare('SELECT id, content, created_at FROM memories WHERE source_hash IS NULL').all() as Array<{ id: number; content: string; created_at: number }>
+    const update = db.prepare('UPDATE memories SET source_hash = ? WHERE id = ?')
+    const backfill = db.transaction(() => {
+      for (const row of rows) {
+        const ts = new Date(row.created_at).toISOString()
+        const hash = createHash('sha256').update(row.content + ts + 'telegram').digest('hex').slice(0, 32)
+        update.run(hash, row.id)
+      }
+    })
+    backfill()
+    logger.info(`Migrated memories: added source_hash column + backfilled ${rows.length} rows`)
+  }
+
+  // KV table for sync state
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `)
+
   logger.info('Database initialized')
+}
+
+// --- KV helpers ---
+
+export function getKv(key: string): string | undefined {
+  const row = getDb()
+    .prepare('SELECT value FROM kv WHERE key = ?')
+    .get(key) as { value: string } | undefined
+  return row?.value
+}
+
+export function setKv(key: string, value: string): void {
+  getDb()
+    .prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?')
+    .run(key, value, value)
 }
 
 // --- Session CRUD ---
@@ -161,14 +205,26 @@ export function insertMemory(
   content: string,
   sector: 'semantic' | 'episodic',
   topicKey?: string,
-  salience = 1.0
-): void {
+  salience = 1.0,
+  sourceHash?: string
+): boolean {
   const now = Date.now()
-  getDb()
-    .prepare(
-      'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    )
-    .run(chatId, topicKey ?? null, content, sector, salience, now, now)
+  if (sourceHash) {
+    // Dedup: skip if this exact memory already exists
+    const result = getDb()
+      .prepare(
+        'INSERT OR IGNORE INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, source_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(chatId, topicKey ?? null, content, sector, salience, now, now, sourceHash)
+    return result.changes === 1
+  } else {
+    getDb()
+      .prepare(
+        'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(chatId, topicKey ?? null, content, sector, salience, now, now)
+    return true
+  }
 }
 
 export function searchMemoriesFts(

@@ -25,6 +25,9 @@ export const GROQ_API_KEY = env['GROQ_API_KEY'] ?? ''
 // Proxy (for System Proxy mode on Mac Mini -- check .env then process.env)
 export const HTTP_PROXY = env['HTTP_PROXY'] || env['HTTPS_PROXY'] || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || ''
 
+// Canonical memory
+export const MEMORIES_DIR = resolve(K2B_VAULT_PATH, 'wiki', 'context', 'memories')
+
 // Limits
 export const MAX_MESSAGE_LENGTH = 4096
 export const TYPING_REFRESH_MS = 4000

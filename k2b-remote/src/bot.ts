@@ -8,9 +8,9 @@ import {
   TYPING_REFRESH_MS,
   HTTP_PROXY,
 } from './config.js'
-import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount } from './db.js'
+import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount, getKv, setKv } from './db.js'
 import { runAgent } from './agent.js'
-import { buildMemoryContext, saveConversationTurn } from './memory.js'
+import { buildMemoryContext, saveConversationTurn, loadPreferenceProfile } from './memory.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
@@ -129,11 +129,22 @@ async function handleMessage(
   let typingInterval: ReturnType<typeof setInterval> | undefined
 
   try {
+    // Load preference profile and check for changes (hash persisted to KV for durability across restarts)
+    const { text: preferenceContext, hash: profileHash } = loadPreferenceProfile()
+    const kvKey = `profile_hash:${chatId}`
+    const prevHash = getKv(kvKey) ?? ''
+    if (prevHash && prevHash !== profileHash) {
+      // Profile changed (including removal) -- reset session to avoid stale context
+      clearSession(chatId)
+      logger.info({ chatId }, 'Preference profile changed, reset agent session')
+    }
+    if (profileHash !== prevHash) setKv(kvKey, profileHash)
+
     // Build memory context
     const memoryContext = await buildMemoryContext(chatId, rawText)
-    const fullMessage = memoryContext + rawText
+    const fullMessage = preferenceContext + memoryContext + rawText
 
-    // Get existing session
+    // Get existing session (may have been cleared above)
     const sessionId = getSession(chatId)
 
     // Start typing indicator

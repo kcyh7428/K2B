@@ -1,9 +1,9 @@
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { hostname } from 'node:os'
-import { STORE_DIR, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from './config.js'
+import { STORE_DIR, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, MEMORIES_DIR } from './config.js'
 import { initDatabase } from './db.js'
-import { runDecaySweep } from './memory.js'
+import { runDecaySweep, syncMemoriesFromVault } from './memory.js'
 import { cleanupOldUploads } from './media.js'
 import { createBot, sendTelegramMessage } from './bot.js'
 import { initScheduler, stopScheduler } from './scheduler.js'
@@ -66,6 +66,12 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase()
+
+  // Ensure canonical memory directory exists
+  mkdirSync(MEMORIES_DIR, { recursive: true })
+
+  // Sync memories from vault JSONL (catch up with Syncthing arrivals)
+  await syncMemoriesFromVault()
 
   // Run memory decay sweep + schedule daily
   runDecaySweep()
