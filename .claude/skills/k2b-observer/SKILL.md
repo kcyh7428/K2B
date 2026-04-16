@@ -50,13 +50,14 @@ Then check if this is the first run (no preference-profile.md exists). If so, ru
 
 ### 1a-filter. Filter out processed signals (APPEND-cutoff reader)
 
-Walk `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl` top-to-bottom. Track two things:
+Read `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl` in **two passes** (signal-processed lines appear after the original signal, so a single top-to-bottom pass would surface signals before seeing their processed marker):
 
-1. `past_cutoff` boolean, starting False. When a line with `type: "grandfather-cutoff"` is seen, set `past_cutoff = True`. All lines BEFORE the cutoff are implicitly grandfathered (treated as already processed, never surfaced). All lines AFTER the cutoff are subject to signal_id dedup.
-2. `processed_ids` set. For every line with `type: "signal-processed"` whose `action` is `confirmed` or `rejected`, add its `signal_id` to the set. `action: watching` is intentionally EXCLUDED from the filter set -- deferring a signal should resurface it next session, not silence it forever.
+**Pass 1 -- collect filter state:** Walk the entire file. Track:
+1. `cutoff_line` -- the line number of the `type: "grandfather-cutoff"` entry (0 if absent). All lines before it are grandfathered.
+2. `processed_ids` set -- for every `type: "signal-processed"` line whose `action` is `confirmed` or `rejected`, add its `signal_id`. `action: watching` is intentionally EXCLUDED -- deferring a signal should resurface it next session, not silence it forever.
 
-A signal is filtered out (not surfaced) when any of these is true:
-- It appears before the grandfather-cutoff line (`past_cutoff == False` when the signal is read).
+**Pass 2 -- collect candidates:** Walk the file again. A signal is filtered out when any of these is true:
+- It appears before `cutoff_line` (grandfathered).
 - Its `signal_id` is in `processed_ids`.
 - It has no `signal_id` field at all (pre-Fix #6 historical; grandfathered by the cutoff).
 

@@ -340,7 +340,9 @@ Analyze these observations and return your findings as JSON."
     t=$(printf '%s' "$line" | jq -r '.time')
     s=$(printf '%s' "$line" | jq -r '.source')
     desc=$(printf '%s' "$line" | jq -r '.description')
-    sigid=$(printf '%s%s%s%s' "$d" "$s" "$desc" "$t" | shasum -a 256 | cut -c1-8)
+    tp=$(printf '%s' "$line" | jq -r '.type // ""')
+    sk=$(printf '%s' "$line" | jq -r '.skill // ""')
+    sigid=$(printf '%s%s%s%s%s%s' "$d" "$s" "$desc" "$t" "$tp" "$sk" | shasum -a 256 | cut -c1-8)
     printf '%s' "$line" | jq -c --arg sigid "$sigid" '. + {signal_id: $sigid}' >> "$SIGNALS_FILE"
   done || true
 

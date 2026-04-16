@@ -78,7 +78,13 @@ LEARNING_BULLET_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 
-REJECTED_FM_RE = re.compile(r"^auto-promote-rejected:\s*true\s*$", re.MULTILINE | re.IGNORECASE)
+REJECTED_FM_RE = re.compile(
+    r"^\s*-?\s*\*?\*?auto-promote-rejected:?\*?\*?\s*true\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+AREA_RE = re.compile(
+    r"^\s*-\s*\*\*Area:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE
+)
 CAP_RE = re.compile(r"Cap:\s*(\d+)\s+rules", re.IGNORECASE)
 
 
@@ -143,6 +149,12 @@ def _is_rejected(entry_text):
     return bool(REJECTED_FM_RE.search(entry_text))
 
 
+def _extract_area(entry_text):
+    """Return the Area value (e.g. 'preferences', 'vault'), or None."""
+    m = AREA_RE.search(entry_text)
+    return m.group(1).strip() if m else None
+
+
 def _existing_rules(active_text):
     """Return set of L-IDs already cited in active_rules.md."""
     return set(LEARN_ID_RE.findall(active_text))
@@ -184,11 +196,13 @@ def main():
         if _is_rejected(body):
             continue
         distilled = _extract_distilled(body)
+        area = _extract_area(body)
         candidates.append(
             {
                 "learn_id": lid,
                 "count": count,
                 "distilled_rule": distilled,
+                "area": area,
                 "source_excerpt": body[:300].replace("\n", " ").strip(),
                 "already_in_active_rules": False,
                 "rejected": False,

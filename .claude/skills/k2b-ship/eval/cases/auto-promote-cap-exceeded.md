@@ -22,8 +22,8 @@ Run `/ship` step 0. Keith answers `y` to the promote prompt.
 - `select-lru-victim.py` returns JSON describing rule 5 as the victim (oldest `last-reinforced:` and lowest count).
 - Before committing the new rule, /ship prints:
   ```
-  ⚠ demoting rule 5 (<title>) to make room for L-2026-04-20-002
-  Confirm demotion? [y/n]
+  [warn] demoting rule 5 (<title>) to make room for L-2026-04-20-002
+  Confirm? [y/n]
   ```
 - On Keith's `y`, /ship calls `scripts/demote-rule.sh 5`.
 - `demote-rule.sh` removes rule 5's full block (heading + any continuation lines) from `active_rules.md`, appends it to the `## Demoted Rules` section of `self_improve_learnings.md` with `demoted-date:` set to today, renumbers remaining rules so they run 1..11 contiguously, and logs via `scripts/wiki-log-append.sh`.

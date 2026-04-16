@@ -40,7 +40,7 @@ Run:
 scripts/promote-learnings.py
 ```
 
-The scanner prints a JSON array of candidate learnings. Each candidate has: `learn_id`, `count`, `distilled_rule`, `source_excerpt`, `would_exceed_cap`, `current_active_count`, `cap`. If the array is empty, print `auto-promote: 0 candidates` and continue to step 0a.
+The scanner prints a JSON array of candidate learnings. Each candidate has: `learn_id`, `count`, `distilled_rule`, `area`, `source_excerpt`, `would_exceed_cap`, `current_active_count`, `cap`. If the array is empty, print `auto-promote: 0 candidates` and continue to step 0a.
 
 For each candidate, surface Keith inline:
 
@@ -59,7 +59,7 @@ Act on Keith's answer:
     ```bash
     scripts/select-lru-victim.py
     ```
-    The helper reads `active_rules.md`, parses `last-reinforced:` and reinforcement count, and prints the oldest rule as JSON (`{"rule_number": N, "title": "...", "l_id": "...", "last_reinforced": "..."}`). Surface the demotion to Keith as `[warn] demoting rule <N> (<title>) to make room for <new rule>` and wait for his confirmation. On `y`, call:
+    The helper reads `active_rules.md`, parses `last-reinforced:` and reinforcement count, and prints the oldest rule as JSON (`{"rule_number": N, "title": "...", "learn_id": "...", "last_reinforced": "..."}`). Surface the demotion to Keith as `[warn] demoting rule <N> (<title>) to make room for <new rule>` and wait for his confirmation. On `y`, call:
     ```bash
     scripts/demote-rule.sh <N>
     ```

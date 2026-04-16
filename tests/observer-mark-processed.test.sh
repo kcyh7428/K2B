@@ -21,10 +21,10 @@ LAST=$(tail -1 "$JSONL")
 echo "$LAST" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert d["signal_id"]=="a3f7b2c1" and d["action"]=="confirmed" and "learn_id" not in d' \
   || fail "line 1 schema mismatch: $LAST"
 
-# --- Test 2: happy path with learn_id ---
-"$HELPER" b4e8c3d2 rejected L-2026-04-15-003
+# --- Test 2: happy path with learn_id (confirmed path creates a learning) ---
+"$HELPER" b4e8c3d2 confirmed L-2026-04-15-003
 LAST=$(tail -1 "$JSONL")
-echo "$LAST" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert d["signal_id"]=="b4e8c3d2" and d["action"]=="rejected" and d["learn_id"]=="L-2026-04-15-003"' \
+echo "$LAST" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); assert d["signal_id"]=="b4e8c3d2" and d["action"]=="confirmed" and d["learn_id"]=="L-2026-04-15-003"' \
   || fail "line 2 schema mismatch: $LAST"
 
 # --- Test 3: invalid action rejected ---

@@ -48,7 +48,38 @@ if [ -z "$RULE_BLOCK" ]; then
   exit 1
 fi
 
-# Remove the block from active_rules.md (atomic via temp file).
+# Step 1: Write to learnings FIRST (if this fails, active_rules is untouched).
+if ! grep -q '^## Demoted Rules' "$LEARNINGS"; then
+  printf '\n## Demoted Rules\n\n' >> "$LEARNINGS"
+fi
+
+# Insert demoted rule inside the ## Demoted Rules section (before the next ## heading
+# or at EOF), not blindly at EOF.
+DEMOTED_BLOCK=$(printf '### Demoted %s (rule %s)\n\ndemoted-date: %s\n\n%s' "$TS" "$N" "$TS" "$RULE_BLOCK")
+TMP_L="$(mktemp)"
+python3 - <<'PY' "$LEARNINGS" "$DEMOTED_BLOCK" "$TMP_L"
+import sys
+path, block, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path).read()
+marker = "## Demoted Rules"
+idx = text.find(marker)
+if idx == -1:
+    open(out_path, "w").write(text)
+    sys.exit(0)
+after_heading = idx + len(marker)
+rest = text[after_heading:]
+import re
+m = re.search(r'\n## ', rest)
+if m:
+    insert_at = after_heading + m.start()
+    result = text[:insert_at] + "\n\n" + block + "\n" + text[insert_at:]
+else:
+    result = text.rstrip() + "\n\n" + block + "\n"
+open(out_path, "w").write(result)
+PY
+mv "$TMP_L" "$LEARNINGS"
+
+# Step 2: Remove the block from active_rules.md (only after learnings write succeeded).
 TMP="$(mktemp)"
 awk -v n="$N" '
   BEGIN { skip = 0 }
@@ -65,18 +96,7 @@ awk -v n="$N" '
 ' "$ACTIVE" > "$TMP"
 mv "$TMP" "$ACTIVE"
 
-# Append to "## Demoted Rules" section in learnings.
-if ! grep -q '^## Demoted Rules' "$LEARNINGS"; then
-  printf '\n## Demoted Rules\n\n' >> "$LEARNINGS"
-fi
-
-{
-  printf '\n### Demoted %s (rule %s)\n\n' "$TS" "$N"
-  printf 'demoted-date: %s\n\n' "$TS"
-  printf '%s\n' "$RULE_BLOCK"
-} >> "$LEARNINGS"
-
-# Renumber the remaining rules in active_rules.md so they stay contiguous.
+# Step 3: Renumber the remaining rules in active_rules.md so they stay contiguous.
 python3 - <<'PY' "$ACTIVE"
 import re, sys
 path = sys.argv[1]

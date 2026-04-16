@@ -22,10 +22,20 @@ SIG="${1:?observer-mark-processed: signal_id required}"
 ACTION="${2:?observer-mark-processed: action required}"
 LEARN="${3:-}"
 
+if ! printf '%s' "$SIG" | grep -qE '^[0-9a-f]{8}$'; then
+  echo "observer-mark-processed: signal_id must be 8 hex chars, got: $SIG" >&2
+  exit 2
+fi
+
 case "$ACTION" in
   confirmed|rejected|watching) ;;
   *) echo "observer-mark-processed: action must be one of confirmed|rejected|watching" >&2; exit 2 ;;
 esac
+
+if [ -n "$LEARN" ] && ! printf '%s' "$LEARN" | grep -qE '^L-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3}$'; then
+  echo "observer-mark-processed: learn_id must match L-YYYY-MM-DD-NNN, got: $LEARN" >&2
+  exit 2
+fi
 
 JSONL="${K2B_PREFERENCE_SIGNALS:-$HOME/Projects/K2B-Vault/wiki/context/preference-signals.jsonl}"
 LOCK="${K2B_PREFERENCE_SIGNALS_LOCK:-/tmp/k2b-preference-signals.lock}"
