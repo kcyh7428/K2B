@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-16 -- Session-End Capture: auto-extract behavioral signals from /ship
+
+**Commit:** `996acaf` feat: session-end capture
+
+**What shipped:** Every /ship call now extracts implicit behavioral signals from the conversation and writes a compact summary to raw/sessions/. The observer background loop on Mac Mini picks these up as a new input source (alongside observations, learnings, and YouTube data), inlines them into the MiniMax prompt, and feeds the patterns into preference-signals.jsonl and preference-profile.md. This closes the biggest capture gap: Keith's deepest Claude Code work sessions now automatically feed the preference learning loop without manual /learn or /tldr.
+
+**Codex review:** 6 findings (1 BLOCKER: empty-observations bail blocked session-only triggers, 2 BUG: sentinel touched on skip + archive moved unanalyzed files, 3 RISK: sed frontmatter stripping + mtime sentinel + hallucination grounding). All fixed before commit.
+
+**Feature status change:** feature_session-end-capture ideating -> shipped
+
+**Follow-ups:** Deploy observer changes to Mac Mini via /sync. First real test is this /ship session itself (step 13.5 runs below). Two features from the self-improvement architecture now shipped in one session (canonical-memory + session-end-capture). Next in the chain: feature_pipeline-hardening or feature_weighted-decay.
+
+**Key decisions:** Session summaries are written atomically (temp + rename) to handle Syncthing. Observer archives only files it actually inlined (tracked via PROCESSED_SESSION_FILES array) to prevent unanalyzed summaries from being lost. Frontmatter stripping uses awk (counts exactly 2 --- delimiters) instead of sed (which would strip horizontal rules too).
+
+---
+
 ## 2026-04-16 -- Canonical Memory: markdown as single source of truth for K2B memory
 
 **Commit:** `b5c77ce` feat: implement canonical memory
