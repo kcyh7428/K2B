@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-16 -- Canonical Memory: markdown as single source of truth for K2B memory
+
+**Commit:** `b5c77ce` feat: implement canonical memory
+
+**What shipped:** Full implementation of feature_canonical-memory. k2b-remote now reads preference-profile.md and injects it into every agent prompt (10-min cached, session reset on profile change). New conversation memories write-through to vault JSONL (canonical) and SQLite (live FTS projection). On startup, k2b-remote syncs any externally-arrived memories from vault JSONL (e.g. Claude Code session captures via Syncthing) using content-hash dedup to prevent duplicates. Migration script exports existing SQLite history to JSONL.
+
+**Codex review:** 6 findings (1 BLOCKER: source_hash backfill missing, 2 BUG: timestamp mismatch between vault/SQLite writes + non-durable profile hash, 2 RISK: lock contention drops canonical writes + full-file read on startup, 1 NITPICK: import count overstated). All fixed before commit.
+
+**Feature status change:** feature_canonical-memory ideating -> shipped
+
+**Follow-ups:** Run migration script on Mac Mini (`npx tsx scripts/migrate-memories.ts`), deploy via /sync. feature_session-end-capture is the natural next step (auto-captures Claude Code session memories into the same JSONL format).
+
+**Key decisions:** Write-through model (vault + SQLite on every save) instead of rebuild-only, per Codex review finding that rebuild-only breaks live retrieval until restart. Decay stays SQLite-only (projection concern). Access/reinforcement data intentionally resets on rebuild.
+
+---
+
 ## 2026-04-16 -- Git pre-commit + commit-msg hooks for status edit and log append guards (audit Fix #8)
 
 **Commit:** `881a5aa`
