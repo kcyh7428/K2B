@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Check 2: block direct >> wiki/log.md append.
+# Single writer is scripts/wiki-log-append.sh (audit Fix #1).
+# Override: K2B_ALLOW_LOG_APPEND=1
+
+set -euo pipefail
+
+LOG_DIRECT=$(git diff --cached | grep -E '^\+.*>>[[:space:]]*\S*wiki/log\.md' || true)
+if [ -n "$LOG_DIRECT" ]; then
+  if [ "${K2B_ALLOW_LOG_APPEND:-}" = "1" ]; then
+    echo "warning: direct >> wiki/log.md append, K2B_ALLOW_LOG_APPEND override acknowledged"
+    exit 0
+  fi
+  echo "error: direct >> append to wiki/log.md detected."
+  echo "Use scripts/wiki-log-append.sh (audit Fix #1) as the single writer."
+  echo ""
+  echo "Offending lines:"
+  echo "$LOG_DIRECT"
+  echo ""
+  echo "Override (rewriting the helper itself only): K2B_ALLOW_LOG_APPEND=1 git commit ..."
+  exit 1
+fi
+
+exit 0

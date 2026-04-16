@@ -182,6 +182,7 @@ Build a commit message from the categorized diff. Format:
 <optional body with bullet points of major changes>
 
 Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Shipped-By: k2b-ship
 ```
 
 Types: `feat`, `fix`, `refactor`, `docs`, `chore`, `infra`. **Never use em dashes** (K2B rule).
@@ -263,6 +264,7 @@ git commit -m "$(cat <<'EOF'
 docs: devlog for <short-sha>
 
 Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Shipped-By: k2b-ship
 EOF
 )"
 git push origin main
