@@ -81,13 +81,31 @@ check_cooldown() {
   return 1
 }
 
+SESSION_DIR="$VAULT/raw/sessions"
+SESSION_ARCHIVE="$SESSION_DIR/archive"
+
 check_observation_threshold() {
-  if [ ! -f "$OBS_FILE" ]; then
-    return 1
+  # Pass if enough observations OR unprocessed session summaries exist
+  local obs_ok=1
+  if [ -f "$OBS_FILE" ]; then
+    local count
+    count=$(wc -l < "$OBS_FILE" | tr -d ' ')
+    if [ "$count" -ge "$MIN_OBSERVATIONS" ]; then
+      obs_ok=0
+    fi
   fi
-  local count
-  count=$(wc -l < "$OBS_FILE" | tr -d ' ')
-  if [ "$count" -ge "$MIN_OBSERVATIONS" ]; then
+
+  # Any unarchived session summaries = unprocessed (processed ones are moved to archive/)
+  local session_ok=1
+  if [ -d "$SESSION_DIR" ]; then
+    local session_count
+    session_count=$(find "$SESSION_DIR" -maxdepth 1 -name '*_session-summary.md' -not -name '.tmp_*' 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$session_count" -gt 0 ]; then
+      session_ok=0
+    fi
+  fi
+
+  if [ "$obs_ok" -eq 0 ] || [ "$session_ok" -eq 0 ]; then
     return 0
   fi
   return 1
@@ -104,13 +122,11 @@ run_analysis() {
     return 0
   fi
 
-  # Tail observations
+  # Tail observations (may be empty if only session summaries triggered analysis)
   local observations
   observations=$(tail -n "$TAIL_COUNT" "$OBS_FILE" 2>/dev/null || true)
   if [ -z "$observations" ]; then
-    log "No observations to analyze."
-    rm -rf "$LOCKFILE"
-    return 0
+    observations="(no observations in this cycle)"
   fi
 
   # Load current profile (if exists)
@@ -150,6 +166,39 @@ run_analysis() {
     youtube_feedback=$(tail -n 200 "$YOUTUBE_FEEDBACK_FILE" 2>/dev/null || true)
   fi
 
+  # Load recent session summaries (cap at 2000 chars)
+  # Track which files were actually inlined so only those get archived later
+  local session_summaries=""
+  PROCESSED_SESSION_FILES=()  # module-level array, read by archive step
+  if [ -d "$SESSION_DIR" ]; then
+    local now_ts
+    now_ts=$(date +%s)
+    local summaries=""
+    local char_count=0
+    for f in $(ls -t "$SESSION_DIR"/*_session-summary.md 2>/dev/null | head -20); do
+      # Skip files modified < 30s ago (Syncthing stabilization)
+      local mtime
+      mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+      if [ $((now_ts - mtime)) -lt 30 ]; then
+        continue
+      fi
+      # Strip YAML frontmatter: remove lines from start until second --- line
+      local body
+      body=$(awk 'BEGIN{n=0} /^---$/{n++; if(n<=2) next} n>=2{print}' "$f" 2>/dev/null || true)
+      if [ -n "$body" ]; then
+        local body_len=${#body}
+        if [ $((char_count + body_len)) -gt 2000 ]; then
+          break  # stop before exceeding cap
+        fi
+        summaries="${summaries}${body}
+"
+        char_count=$((char_count + body_len))
+        PROCESSED_SESSION_FILES+=("$f")
+      fi
+    done
+    session_summaries="$summaries"
+  fi
+
   # Build user message
   local user_msg="## Recent Observations (JSONL)
 
@@ -170,6 +219,10 @@ ${youtube_recommended:-(no youtube recommendation data available)}
 ## YOUTUBE_FEEDBACK (JSONL)
 
 ${youtube_feedback:-(no youtube feedback signals available)}
+
+## SESSION_SUMMARIES (recent Claude Code sessions)
+
+${session_summaries:-(no session summaries available)}
 
 Analyze these observations and return your findings as JSON."
 
@@ -353,8 +406,21 @@ Analyze these observations and return your findings as JSON."
   : > "$OBS_FILE"  # Truncate (not delete, preserves inode)
   log "Archived observations to $archive_name"
 
+  # Archive only the session summaries that were actually inlined into the prompt
+  if [ "${#PROCESSED_SESSION_FILES[@]}" -gt 0 ]; then
+    mkdir -p "$SESSION_ARCHIVE"
+    for f in "${PROCESSED_SESSION_FILES[@]}"; do
+      if [ -f "$f" ]; then
+        mv "$f" "$SESSION_ARCHIVE/"
+      fi
+    done
+    touch "$SESSION_ARCHIVE/.last_processed"
+    log "Archived ${#PROCESSED_SESSION_FILES[@]} processed session summaries"
+  fi
+
   # Prune old archives (keep last 30 days)
   find "$OBS_ARCHIVE" -name "*.jsonl" -mtime +30 -delete 2>/dev/null || true
+  find "$SESSION_ARCHIVE" -name "*_session-summary.md" -mtime +30 -delete 2>/dev/null || true
 
   # Update last run timestamp
   date +%s > "$LAST_RUN_FILE"

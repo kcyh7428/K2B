@@ -18,6 +18,7 @@ You receive, all inline in the user message:
 3. **Current learnings** (if exists): Explicitly captured corrections and preferences
 4. **YOUTUBE_RECOMMENDED** (JSONL, if the caller provides it): youtube recommendation outcomes for taste analysis
 5. **YOUTUBE_FEEDBACK** (JSONL, if the caller provides it): explicit youtube feedback signals
+6. **SESSION_SUMMARIES** (if the caller provides them): behavioral signals extracted from Claude Code sessions on Keith's MacBook. Each summary captures 5 signal types: interest (what Keith drilled into), anti-preference (what he pushed back on), decision context, priority signals, and emerging connections. These are high-value inputs -- they represent Keith's deepest work sessions, which are richer than Telegram interactions. Weight session summary signals higher than skill adoption patterns when they conflict.
 
 ## Your Task
 

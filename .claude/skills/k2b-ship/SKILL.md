@@ -371,6 +371,58 @@ Do NOT auto-sync without asking. Per Active Rule L-2026-03-29-002, never run man
 echo -e "$(date +%Y-%m-%d)\tk2b-ship\t$(echo $RANDOM | md5sum | head -c 8)\tshipped FEATURE_SLUG SHORT_SHA" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
 ```
 
+### 13.5. Session summary capture
+
+Extract implicit behavioral signals from this session and write a compact summary to the vault. The observer picks these up asynchronously and feeds them into the preference pipeline. This step runs on ALL /ship variants (including `--no-feature` and `--skip-codex`).
+
+**Signal extraction:** Scan the conversation for up to 10 signals across 5 types:
+- **[interest]** -- topics Keith drilled into vs skipped
+- **[anti-pref]** -- things Keith redirected or pushed back on
+- **[decision]** -- choices made and the reasoning behind them
+- **[priority]** -- what Keith focused on when time was limited
+- **[connection]** -- links Keith made that K2B didn't anticipate
+
+**Best-effort:** If the conversation is too short or heavily compacted, emit what's available. If no signals are found, log "session-capture: no signals detected, skipping" and move on. Do not write an empty file.
+
+**Grounding rule:** Every signal must cite a specific moment from the conversation. Do not invent timings, counts, or motives not directly evidenced. "Keith spent time on X" requires X to be visible in the conversation. If unsure whether something happened, omit it.
+
+**Write the summary** (atomic, via temp + rename):
+
+```bash
+SESSIONS_DIR="$HOME/Projects/K2B-Vault/raw/sessions"
+mkdir -p "$SESSIONS_DIR"
+FILENAME="$(date +%Y-%m-%d_%H%M%S)_session-summary.md"
+TMPFILE="$SESSIONS_DIR/.tmp_${FILENAME}"
+# Write frontmatter + body to TMPFILE, then:
+mv "$TMPFILE" "$SESSIONS_DIR/$FILENAME"
+```
+
+**Frontmatter:**
+```yaml
+---
+tags: [raw, session-summary]
+date: YYYY-MM-DD
+type: session-summary
+origin: k2b-extract
+commit: <short-sha from step 5>
+feature: <feature-slug or "infrastructure">
+up: "[[index]]"
+---
+```
+
+**Body:** One bullet per signal, max 10 lines. Example:
+```
+- [interest] Keith spent 40 min on source-hash dedup design, skipped decay model
+- [anti-pref] Keith rejected MVP-only approach, wanted full 4-phase implementation
+- [decision] Write-through model chosen over rebuild-only after Codex flagged gap
+- [priority] All 6 Codex findings fixed before commit, no deferral
+- [connection] Canonical memory completes the observer->profile->k2b-remote chain
+```
+
+**First-run setup** (only if `raw/sessions/index.md` does not exist):
+1. Create `raw/sessions/index.md` with standard raw subfolder index format
+2. Add a sessions row to `raw/index.md` if not already listed
+
 ## Error Handling
 
 - **Pre-commit hook fails** -> fix the underlying issue (per Active Rule 8, never `--no-verify`), re-stage, create a NEW commit (never `--amend`).
@@ -383,7 +435,7 @@ echo -e "$(date +%Y-%m-%d)\tk2b-ship\t$(echo $RANDOM | md5sum | head -c 8)\tship
 ## What /ship Does NOT Do
 
 - Auto-sync to Mac Mini (Keith must run `/sync` explicitly)
-- Edit vault files other than the feature note, `wiki/concepts/index.md`, `wiki/log.md`, `DEVLOG.md`, and the skill-usage-log
+- Edit vault files other than the feature note, `wiki/concepts/index.md`, `wiki/log.md`, `DEVLOG.md`, the skill-usage-log, and `raw/sessions/`
 - Overwrite `store/` (production SQLite on Mac Mini)
 - Touch `.env` files
 - Force-push, amend existing commits, rebase, or use any destructive git operation
