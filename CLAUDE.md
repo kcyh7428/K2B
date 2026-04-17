@@ -171,6 +171,22 @@ Background observer runs on Mac Mini via pm2 (`k2b-observer-loop`), logging vaul
 
 When Keith reacts to a video in a Telegram conversation, act on it without asking for confirmation. The procedure (match the reaction to a pick, edit the YAML block under flock, run the playlist move, append to `video-preferences.md` atomically, reply in Telegram) lives in the **k2b-review** skill body under "Video Feedback from Telegram (run-level)". Do not reproduce the procedure here.
 
+## Active Motivations
+
+Keith can add to his active learning questions during any conversation. Triggers: "add X to my active questions", "track X", "I want to learn about X", "add X to my motivations". Routing only -- the procedure (atomic write, flock, file location, dedup) lives in `scripts/motivations-helper.sh` per the ownership matrix:
+
+- Add: invoke `scripts/motivations-helper.sh add-question "X"`. Do NOT edit `active-questions.md` directly.
+- Remove: "remove X from my questions" → `scripts/motivations-helper.sh remove-question "X"`. Or Keith edits the file directly in Obsidian.
+- Promotion from Emerging (Ship 2+): "promote [topic]" → `add-question "[topic]"`, then `touch ~/Projects/K2B-Vault/wiki/context/.motivations-promoted` so the next observer cycle removes the Emerging entry.
+
+The Building section of `active-motivations.md` is rebuilt by `motivations-helper.sh sync-building` from `wiki/concepts/index.md` (In Progress + Next Up). Never edit Building manually.
+
+## Project Resume Handles
+
+Long-running projects own their own Resume Card in the project's index note. CLAUDE.md only routes the trigger phrase -- the card owns the procedure (current state, priority read order, next action, session-end protocol). Ownership matrix compliant.
+
+- **"continue k2b investment" / "resume invest"** -> read `K2B-Vault/wiki/projects/k2b-investment/index.md` Resume Card section, follow its priority read order, pick up from the stated next action. Card is updated at session end per its session-end protocol.
+
 ## Email Safety
 
 Gmail operations ship through the **k2b-email** skill, which owns non-negotiable safety rules (never send, never delete, always confirm before drafting). Do not reproduce them here.
