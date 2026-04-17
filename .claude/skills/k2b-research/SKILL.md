@@ -384,9 +384,44 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    PREF_TAIL=$(tail -n 30 ~/Projects/K2B-Vault/wiki/context/video-preferences.md | sed 's/"/\\"/g')
    ```
 
-5. **Ask NotebookLM for content descriptions only -- NotebookLM is the reader, K2B is the judge.** The baked Keith framing and the preference tail are NOT passed to Gemini; K2B holds them for Step 6. Gemini must not rank, filter, or judge suitability. Ask:
+5. **Ask NotebookLM for content descriptions only -- NotebookLM is the reader, K2B is the judge.** The baked Keith framing and the preference tail are NOT passed to Gemini; K2B holds them for Step 6. Gemini must not rank, filter, or judge suitability, even when viewer context is provided (see below).
+
+   Load Keith's active motivations (gated by the `K2B_MOTIVATIONS_ENABLED` rollback toggle, default `true`). When empty, the prompt reverts byte-for-byte to its pre-feature form:
    ```bash
-   notebooklm ask "$(cat <<'EOF'
+   MOTIVATIONS=""
+   if [[ "${K2B_MOTIVATIONS_ENABLED:-true}" == "true" ]]; then
+     MOTIVATIONS=$(~/Projects/K2B/scripts/motivations-helper.sh read 2>/dev/null || true)
+   fi
+
+   if [ -n "$MOTIVATIONS" ]; then
+     MOT_BLOCK=$(cat <<EOF
+
+   Viewer context (use for EXTRACTION GUIDANCE only, not ranking):
+   ${MOTIVATIONS}
+
+   For every video, maintain the baseline description quality defined above
+   (2-3 sentences in what_it_covers, all schema fields populated).
+
+   Additionally, when a video's content touches any viewer context area,
+   add these fields to that video's entry:
+   - "motivation_overlap": ["short phrase from context that connects"]
+   - "motivation_detail": "2-3 sentences describing specifically how the video
+     addresses the matching motivation (which timestamps, which examples, which claims)"
+
+   Do NOT remove detail from videos that don't match viewer context. Do NOT use
+   this context to judge, rank, filter, or downgrade any video. Extraction is
+   equal for all videos; overlap videos get ADDITIONAL fields, never reduced
+   ones.
+   EOF
+   )
+   else
+     MOT_BLOCK=""
+   fi
+   ```
+
+   Then compose and send the prompt:
+   ```bash
+   PROMPT=$(cat <<EOF
    Each source in this notebook is a YouTube video. For each one, return an objective content description.
 
    Return JSON: [
@@ -402,11 +437,17 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
        "key_speakers_or_companies": ["..."]
      }
    ]
+   ${MOT_BLOCK}
 
    Do NOT judge whether a video is good, suitable, relevant, or recommended. Do NOT rank or sort. Describe what the video contains and stop. Return ONLY the JSON array, no prose before or after.
    EOF
-   )" -n "$NB_ID"
+   )
+
+   notebooklm ask "$PROMPT" -n "$NB_ID"
    ```
+
+   `motivation_overlap` / `motivation_detail` are additive; they appear only on videos whose content touches the viewer context. Non-overlap videos retain the full baseline schema. `scripts/parse-nblm.py` preserves unknown fields through its `dict(nblm_entry)` copy (line 165), so these fields survive parse into Step 6.
+
    Capture the raw answer into a variable `NBLM_RAW`.
 
 6. **K2B-as-judge -- Claude reasoning inline (NOT a bash invocation).** This step is the Claude session running the skill applying judgment to the NBLM descriptions and writing `$SUITABLE_JSON`. Execute the following substeps explicitly:
@@ -470,15 +511,23 @@ PYEOF
 
    b. **Load Keith's framing from the skill header, explicitly.** Read the block at the "### Baked Keith framing (do not edit per query)" callout above (lines 262-264 of this SKILL.md). The Claude session reads that block directly from the skill file -- single source of truth, explicit load, no implicit "scroll up and remember". Do NOT re-inline the framing text into the Step 5 NBLM prompt; Gemini does not get taste context.
 
-   c. **Load the preference tail** (point-in-time snapshot):
+   c. **Load the preference tail AND reload active motivations** (point-in-time snapshots, both re-read fresh here because Step 6 runs in Claude reasoning, not in the Step 5 shell):
    ```bash
    PREF_TAIL=$(tail -n 30 ~/Projects/K2B-Vault/wiki/context/video-preferences.md)
+   MOTIVATIONS=""
+   if [[ "${K2B_MOTIVATIONS_ENABLED:-true}" == "true" ]]; then
+     MOTIVATIONS=$(~/Projects/K2B/scripts/motivations-helper.sh read 2>/dev/null || true)
+   fi
    ```
+
+   `$MOTIVATIONS` here must be reloaded even though Step 5 also loaded it -- Step 5's bash scope does not survive into the Claude-side judgment. When non-empty, it represents Keith's current active projects (Building section) and self-added learning questions, available to K2B-the-judge for the match-bonus rule in (d). When empty (rollback toggle off or helper returns nothing), the judgment rubric below runs identically to the pre-feature flow. Step 5 and Step 6 must use the SAME motivations text for a given run; do not re-run the helper between them in a way that could produce different output (the helper is deterministic given unchanged vault state, so back-to-back reads are safe).
 
    d. **Apply the judgment rubric** to each parsed NBLM entry:
    - A candidate is a **pick** only if K2B can name a *specific* reason Keith will finish it through one of these lenses: concrete-examples, 90-day-deployable, senior-TA-in-traditional-corporate.
    - Any line in the preference tail that contradicts a candidate (disliked channel, disliked style, level mismatch) is a **veto** -- it goes into `rejects`.
    - **Recency veto.** If the topic moves fast (new model capabilities, tool releases, market news, "what's new in X") AND `real_published` is more than 6 months older than the run date (i.e. `today - real_published > 180 days`), the candidate goes into `rejects` with `reason: "outdated: published <date>, topic moves faster than that"`. Evergreen topics (mindset, frameworks, interview patterns, management principles) are NOT subject to this veto. K2B decides per candidate whether the topic is fast-moving. The run date anchor is always "today" at run time, never hardcoded, so the veto window drifts with the calendar.
+   - **Motivation match bonus.** When a candidate's `motivation_overlap` (populated by NBLM in Step 5) intersects a Building item or Active Question in `$MOTIVATIONS`, treat that as ADDITIONAL evidence toward pick. This bonus DOES NOT bypass the quality bar -- candidates must still satisfy the concrete-examples / 90-day-deployable / senior-TA-in-traditional-corporate lenses to be picked. Motivation alignment alone is not enough.
+   - **`why_k2b` enrichment.** When a pick has a non-empty `motivation_overlap` array, `why_k2b` MUST include a motivation-aware sentence of the form: "Connects to [Building item or Active Question]: [how, referencing motivation_detail when present]". When `motivation_overlap` is empty or absent, `why_k2b` stays as-is (no mention of motivations; do not fabricate a connection).
    - Fewer than 5 clear winners → pick fewer. **Pad-to-target is forbidden.**
    - **Zero picks is allowed and explicit.** If nothing clears the bar, emit `picks: []`.
    - **Cap is 5.** Even if 10 candidates look good, pick the top 5 by confidence.

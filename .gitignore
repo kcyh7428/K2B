@@ -40,6 +40,10 @@ scripts/generate-org-chart.py
 # Scheduler runtime lock (orphaned if a scheduler session dies uncleanly)
 .claude/scheduled_tasks.lock
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+
 # OS files
 .DS_Store
 k2b-dashboard/.env
