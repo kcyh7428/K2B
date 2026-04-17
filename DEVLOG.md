@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-04-17 -- Active Motivations Ship 1: motivation-aware NBLM extraction
+
+**Commit:** `76a8b34` feat: active motivations ship 1 -- motivation-aware NBLM extraction
+
+**What shipped:** The `/research videos` pipeline now injects Keith's active projects (Building section from `wiki/concepts/index.md` In Progress + Next Up lanes) and self-added Active Questions into the Step 5 NotebookLM prompt as an additive "viewer context" block. Gemini is explicitly forbidden from using that context to rank or filter -- it only adds `motivation_overlap` and `motivation_detail` fields to entries whose content touches a motivation. Step 6 Claude-side judgment reloads the same motivations (via `scripts/motivations-helper.sh read`) and applies a motivation-match bonus that DOES NOT bypass the quality bar, plus a `why_k2b` enrichment requirement when `motivation_overlap` is populated. Everything is gated by `K2B_MOTIVATIONS_ENABLED` (default true); disabling it produces a byte-identical pre-feature prompt. `scripts/motivations-helper.sh` is the single writer for both `active-motivations.md` (observer-owned) and `active-questions.md` (Keith-owned) with atomic tmp+mv + flock, matching the K2B memory ownership matrix. `.gitignore` now excludes `__pycache__/` + `*.pyc`.
+
+**Codex review:** 1 P2 surfaced and fixed before commit. Codex spotted that Step 6's Claude-side judgment referred to `$MOTIVATIONS` -- but that variable was only live inside the Step 5 bash block, so during a real `/research videos` run Claude-the-judge would have had no motivation context. Patched inline by adding an explicit helper re-read at Step 6c; the fix re-reads via the same deterministic helper call, so Step 5 and Step 6 get identical input. No other findings.
+
+**Bias test:** Structural coverage-diff test (`/tmp/bias_test_step5.sh`, 11/11 PASS). Dry-runs the Step 5 prompt-building bash with `K2B_MOTIVATIONS_ENABLED=true` and `false`, diffs the outputs. Disabled prompt has zero motivation markers; enabled prompt adds the viewer-context block with all six anti-ranking guards present; the diff is purely additive (0 removals, 20 additions); after stripping MOT_BLOCK the enabled prompt matches disabled. Live coverage-diff run (measuring `what_it_covers` length across overlap vs non-overlap entries from an actual NBLM response) deferred to the first in-measurement `/research videos` call.
+
+**Feature status change:** feature_active-motivations Ship 1 `in-flight` -> `in-measurement`. Gate 2026-04-30 (14-day window). Stays in `In Progress` lane (multi-ship feature; Ships 2 and 3 remain).
+
+**Follow-ups:**
+- Ship 2 prerequisite: extend `observer-runs.jsonl` line ~265 to log `user_msg` alongside `prompt` + `response`.
+- Ship 2: wire `motivations-helper.sh sync-building` into `observer-loop.sh` as a pre-analysis step.
+- Live coverage-diff test on next `/research videos` run: capture `$NBLM_RAW`, compare `what_it_covers` byte length for overlap vs non-overlap, assert non-overlap mean >= 150 chars.
+- Monitor first Keith-initiated `add X to my active questions` end-to-end (helper -> Syncthing -> Obsidian).
+- Needs `/sync` to deploy to Mac Mini.
+
+**Key decisions:**
+- Step 6c explicitly reloads motivations via the helper rather than trying to persist a variable from Step 5. The helper is deterministic given unchanged vault state, so back-to-back reads produce identical output; this keeps the Step 5 / Step 6 prompt and judgment in lockstep while respecting the Claude-reasoning vs shell-scope boundary.
+- Structural bias test chosen over live-run bias test for this ship. Structural test is instant, zero API cost, and proves the prompt-level invariant (non-overlap videos cannot be treated differently). Live test is a better detector of Gemini actually biasing extraction despite the guards, but it costs ~20 min + NBLM budget per run; deferred to first in-measurement `/research videos` invocation where it runs as a free side effect of normal usage.
+- `plans/2026-04-15_k2b-remote-clash-stall-investigation.md` was left uncommitted -- predates this session per `/ship` rule on unrelated prior-session artifacts.
+
+---
+
 ## 2026-04-17 -- K2B-Investment Resume Handle + Active Motivations CLAUDE.md routing
 
 **Commit:** `0654bc7` docs: wire up K2B-Investment resume handle + Active Motivations routing
