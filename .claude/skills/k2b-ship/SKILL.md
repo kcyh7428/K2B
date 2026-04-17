@@ -132,17 +132,38 @@ For multi-ship features (e.g. `feature_mission-control-v3`), read the feature no
 
 **Mandatory unless `--skip-codex <reason>` is passed.** This is **Checkpoint 2** of the two K2B adversarial review checkpoints. (Checkpoint 1 is **plan review** -- see below -- and runs earlier, before implementation. `/ship` only owns Checkpoint 2.)
 
-```
-/codex:review
+Run Codex review on the uncommitted diff using the **background + poll** pattern, not a synchronous foreground slash invocation:
+
+```bash
+CODEX_PLUGIN="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex"
+if [ ! -f "$CODEX_PLUGIN/scripts/codex-companion.mjs" ]; then
+  echo "Codex plugin not found at $CODEX_PLUGIN. Run /codex:setup or re-run with /ship --skip-codex <reason>." >&2
+  exit 2
+fi
+
+# Launch via Bash tool with run_in_background: true. This gives the assistant
+# a task_id + output file to tail, and prevents the review from blocking the
+# session turn when Codex's backend does a cold-start reconnect storm
+# (observed: 5 silent reconnect attempts ~= 10+ minutes before any output).
+CLAUDE_PLUGIN_ROOT="$CODEX_PLUGIN" \
+  node "$CODEX_PLUGIN/scripts/codex-companion.mjs" \
+  review --wait --scope working-tree 2>&1
 ```
 
-on the uncommitted diff. Capture findings.
+**Polling protocol while the background task runs:**
+
+1. Read the task's output file every ~90 seconds (first poll at 90s is enough to catch fast completions, subsequent polls every 90-120s until `[codex] Turn completed.` or a terminal `# Codex Review` section appears).
+2. Surface progress to Keith at each poll: file count read, reconnect status, current Codex action (`grep`, `sed`, `nl`). "Codex actively reading N files, not hung" beats silent spinner.
+3. If the output shows 5 reconnect attempts with no recovery for >= 3 minutes after the last reconnect line, assume Codex CLI is wedged: stop the background task (`TaskStop`), report to Keith, and offer `--skip-codex codex-cli-wedged` as the recorded reason.
+4. When the review finishes, parse the output verbatim and present findings to Keith. Do NOT paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) stays intact.
+
+Why this pattern instead of a foreground `/codex:review` slash call: the slash wrapper runs the companion script synchronously via Bash and echoes stdout when it finally returns. On a Codex cold-start the companion script silently retries its WebSocket connection up to 5 times before surfacing anything, during which the session appears hung with no visible progress. The background + poll pattern eliminates that failure mode -- the output file is always tailable, so "still working" is observable, not guessed.
 
 - Present findings neutrally to Keith. Do not argue with Codex. Let Keith decide.
-- Keith decides: fix now, defer, or accept. If he fixes, re-run /codex:review on the new diff.
+- Keith decides: fix now, defer, or accept. If he fixes, re-run the same background + poll pattern on the new diff.
 - Log the gate result: `reviewed / skipped:<reason>`, number of findings, fix verdict.
 
-If Codex plugin is not configured: fail loudly with "Run `/codex:setup` or re-run with `/ship --skip-codex <reason>`."
+If `codex-companion.mjs` is missing entirely (plugin not installed): fail loudly with "Run `/codex:setup` or re-run with `/ship --skip-codex <reason>`."
 
 ### Codex Adversarial Review -- the two checkpoints
 
@@ -156,7 +177,7 @@ K2B uses OpenAI Codex (via the `/codex:` plugin) as a second-model reviewer to c
 
 This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit.
 
-**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs `/codex:review` on the uncommitted diff (step 3 above). Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs Codex review on the uncommitted diff via the background + poll pattern documented in step 3 above -- not via a synchronous `/codex:review` slash call, because that can silently hang the session on a Codex cold-start reconnect storm. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
 
 **When Codex review can be skipped:**
 
