@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-17 -- K2B-Investment Resume Handle + Active Motivations CLAUDE.md routing
+
+**Commit:** `0654bc7` docs: wire up K2B-Investment resume handle + Active Motivations routing
+
+**What shipped:** Two routing additions to CLAUDE.md (pure pointers, no procedure). (1) Project Resume Handles section routes "continue k2b investment" / "resume invest" -> Resume Card in K2B-Vault/wiki/projects/k2b-investment/index.md. Lets any new Claude Code session pick up K2B-Investment Phase 1 work in under 60s. (2) Active Motivations section routes "add X to my active questions" -> scripts/motivations-helper.sh (paired with the in-flight feature_active-motivations Ship 1 from a parallel session). Both sections follow the ownership matrix: CLAUDE.md routes, the target owns the procedure. Also created feature_k2b-investment-phase1-scaffold.md in Next Up lane and added Resume Card block to k2b-investment/index.md (vault-only, synced via Syncthing).
+
+**Codex review:** skipped (k2b-ship config-tweaks exception -- 16 lines of routing additions with no logic or procedure).
+
+**Feature status change:** feature_k2b-investment-phase1-scaffold (created) status -> next. No lane move for feature_active-motivations (Ship 1 still in-flight in parallel session).
+
+**Follow-ups:** Parallel active-motivations session should skip re-committing CLAUDE.md (its Active Motivations hunk landed under this commit). Phase 1 kickoff is next: in a future session Keith says "continue k2b investment" and we execute the 8 exit-criteria items. Drift audit deferred (5 rules, 26 offenders -- all expected: memory files, planning docs, archived observations).
+
+**Key decisions:** Shipped both CLAUDE.md hunks together (instead of surgical hunk stage) because both are final, routing-only, and merging avoids race with the parallel session. Feature note status set to `next` not `in-progress` because Phase 1 build hasn't actually started yet -- only the resume-handle infrastructure did.
+
+---
+
 ## 2026-04-16 -- Session-End Capture: auto-extract behavioral signals from /ship
 
 **Commit:** `996acaf` feat: session-end capture
