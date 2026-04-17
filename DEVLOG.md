@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-17 -- k2b-ship Codex review: background + poll pattern
+
+**Commit:** `985a299` fix(k2b-ship): use background+poll pattern for Codex pre-commit review
+
+**What shipped:** Step 3 of the `k2b-ship` skill no longer runs Codex via a synchronous `/codex:review` slash invocation. It now launches `codex-companion.mjs review --wait --scope working-tree` directly through Bash with `run_in_background: true`, captures the task output file, and polls it every ~90s to surface progress (reconnect count, current Codex action, file count read) to Keith. If Codex shows 5 reconnect attempts with no recovery for 3+ minutes, the assistant escalates to `--skip-codex codex-cli-wedged`. Checkpoint 2 documentation updated to point at the new pattern.
+
+**Codex review:** skipped (documentation-only change in a single SKILL.md, no runtime logic; also: reviewing the Codex review procedure with Codex risks exactly the failure mode we just fixed).
+
+**Feature status change:** none. k2b-ship skill update, not feature-bound.
+
+**Follow-ups:** Next `/ship` session will dogfood the new pattern. If Codex still stalls despite the background path, root-cause the WebSocket reconnect storm in `codex-companion.mjs` upstream.
+
+**Key decisions:** Kept foreground option available in the skill prose (for tiny diffs where sync is acceptable), but the default path is background + poll. Hardcoded reconnect-storm escalation threshold at "5 reconnects + 3 min no recovery" based on the single observed incident -- tighten later if we see more data.
+
+---
+
 ## 2026-04-17 -- Active Motivations Ship 1: motivation-aware NBLM extraction
 
 **Commit:** `76a8b34` feat: active motivations ship 1 -- motivation-aware NBLM extraction
