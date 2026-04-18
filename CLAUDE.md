@@ -202,7 +202,19 @@ When Keith asks K2B to "propose X to K2Bi" or "draft a K2Bi PR", handle ad-hoc v
 Gmail operations ship through the **k2b-email** skill. Two rules live HERE (always loaded) because the skill body is only in context when the Skill tool is invoked, and on 2026-04-18 the Mac Mini Telegram agent sent an email without invoking k2b-email at all -- bypassing every in-skill rule.
 
 1. **Send authorization requires an ID tied to a body-preview.** `gws gmail users drafts send` may only run when the user's most recent message contains the exact draft ID from a prior preview that showed the draft's **body** (not just the subject). Bare "send", "send it", "yes", "ok", "go", "proceed" never send. A preview that shows only `Subject + Draft ID` is not authorization -- a user cannot authorize content they did not read.
-2. **Draft preview must include the send-command as a tap-to-copy code block.** When you show a draft preview, include the exact `send draft <id>` string in its own fenced code block (``` ``` ```) so mobile Telegram users can tap-to-copy. Example at the end of your preview reply: `` `send draft r2141559649518241617` `` in its own block. The body goes in a separate block above.
+2. **Draft preview must include the send-command as a tap-to-copy code block in its OWN Telegram message.** When you show a draft preview, end the preview segment, then emit the literal sentinel `__TELEGRAM_MESSAGE_BREAK__` on its own line, then output the send-command in a fenced code block. The bot's `splitMessage` function splits the reply on that sentinel into separate Telegram messages, so the send-command arrives as its own short message with exactly one code block -- easy to tap-copy on mobile. Example reply shape:
+
+    ```
+    Draft created.
+
+    <preview with To/Subject/body in a code block>
+
+    Draft ID: r-12345abc
+    __TELEGRAM_MESSAGE_BREAK__
+    To send, reply with:
+
+    ```send draft r-12345abc```
+    ```
 3. **Never delete emails.** Keith's inbox is not K2B's to prune.
 
 `+send`, `+reply`, `+reply-all`, `+forward` remain blocked -- they skip the draft step entirely. Only `gws gmail users drafts send` on a pre-approved draft ID is authorized.

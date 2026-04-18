@@ -83,33 +83,50 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
+// Sentinel the agent can emit to force a Telegram message break. Splits the
+// outgoing reply into multiple Telegram messages at that point, regardless of
+// length. Use when a chunk (e.g. a tap-to-copy send command) should arrive as
+// its own Telegram message for easier mobile interaction.
+export const TELEGRAM_MESSAGE_BREAK = '__TELEGRAM_MESSAGE_BREAK__'
+
 export function splitMessage(text: string, limit = MAX_MESSAGE_LENGTH): string[] {
-  if (text.length <= limit) return [text]
+  // First, honor explicit agent-requested breaks. Each segment is then further
+  // split by length if it exceeds the Telegram limit.
+  const segments = text
+    .split(TELEGRAM_MESSAGE_BREAK)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
 
   const chunks: string[] = []
-  let remaining = text
-
-  while (remaining.length > 0) {
-    if (remaining.length <= limit) {
-      chunks.push(remaining)
-      break
+  for (const segment of segments) {
+    if (segment.length <= limit) {
+      chunks.push(segment)
+      continue
     }
 
-    // Find last newline before limit
-    let splitAt = remaining.lastIndexOf('\n', limit)
-    if (splitAt <= 0) {
-      // Find last space
-      splitAt = remaining.lastIndexOf(' ', limit)
-    }
-    if (splitAt <= 0) {
-      splitAt = limit
-    }
+    let remaining = segment
+    while (remaining.length > 0) {
+      if (remaining.length <= limit) {
+        chunks.push(remaining)
+        break
+      }
 
-    chunks.push(remaining.slice(0, splitAt))
-    remaining = remaining.slice(splitAt).trimStart()
+      // Find last newline before limit
+      let splitAt = remaining.lastIndexOf('\n', limit)
+      if (splitAt <= 0) {
+        // Find last space
+        splitAt = remaining.lastIndexOf(' ', limit)
+      }
+      if (splitAt <= 0) {
+        splitAt = limit
+      }
+
+      chunks.push(remaining.slice(0, splitAt))
+      remaining = remaining.slice(splitAt).trimStart()
+    }
   }
 
-  return chunks
+  return chunks.length > 0 ? chunks : [text]
 }
 
 function isAuthorised(chatId: number): boolean {
