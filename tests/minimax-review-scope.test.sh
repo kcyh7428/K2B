@@ -275,3 +275,106 @@ fi
 grep -q 'skipping directory: subdir' "$TMP6/stderr.log" || \
   fail "test6: expected stderr warning for subdir"
 echo "ok test6: file-list warns + skips directories"
+
+# --- Test 7: plan-scoped resolves [[wikilinks]], abs paths, rel paths ---
+TMP7="$(mktmp)"
+build_fixture_repo "$TMP7"
+mkdir -p "$TMP7/wiki/concepts" "$TMP7/scripts" "$TMP7/tests" "$TMP7/docs"
+printf 'def foo():\n    pass\n' > "$TMP7/scripts/foo.py"
+printf 'echo bar\n' > "$TMP7/tests/bar.test.sh"
+printf '# concept x\n' > "$TMP7/wiki/concepts/concept_x.md"
+printf '# top-level readme\n' > "$TMP7/README.md"
+printf '# nested doc\n' > "$TMP7/docs/notes.md"
+# Absolute-path target lives outside the fixture repo
+ABS_DIR="$(mktmp)"
+ABS_FIXTURE="$ABS_DIR/abs_target.py"
+printf 'def abs_func():\n    return "abs"\n' > "$ABS_FIXTURE"
+
+cat > "$TMP7/plan.md" <<EOF
+# Plan: example
+
+References:
+- [[concept_x]]
+- scripts/foo.py
+- tests/bar.test.sh
+- README.md
+- docs/notes.md
+- $ABS_FIXTURE
+EOF
+
+ctx=$(call_gatherer gather_plan_context "$TMP7" '"plan.md"' 2>/dev/null)
+
+echo "$ctx" | grep -q 'plan.md' || fail "test7: plan.md missing from output"
+echo "$ctx" | grep -q 'wiki/concepts/concept_x.md' || \
+  fail "test7: [[concept_x]] did not resolve via wiki/ search"
+echo "$ctx" | grep -q 'scripts/foo.py' || \
+  fail "test7: nested relative path scripts/foo.py not in output"
+echo "$ctx" | grep -q 'tests/bar.test.sh' || \
+  fail "test7: nested relative path tests/bar.test.sh not in output"
+echo "$ctx" | grep -q 'README.md' || \
+  fail "test7: top-level relative path README.md not in output"
+echo "$ctx" | grep -q 'docs/notes.md' || \
+  fail "test7: nested relative path docs/notes.md not in output"
+echo "$ctx" | grep -q "$ABS_FIXTURE" || \
+  fail "test7: absolute path $ABS_FIXTURE not in output"
+echo "$ctx" | grep -qE '^\s*1\s+def foo' || \
+  fail "test7: scripts/foo.py content not line-numbered"
+echo "$ctx" | grep -qE '^\s*1\s+def abs_func' || \
+  fail "test7: absolute-path file content not line-numbered"
+echo "ok test7: plan-scoped resolves wikilinks + abs + top-level + nested rel paths"
+
+# --- Test 8: plan-scoped with unresolvable wikilink -- warn + skip ---
+TMP8="$(mktmp)"
+build_fixture_repo "$TMP8"
+cat > "$TMP8/plan.md" <<'EOF'
+# Plan: example
+References:
+- [[does-not-exist]]
+EOF
+
+stderr_log="$TMP8/stderr.log"
+ctx=$(call_gatherer gather_plan_context "$TMP8" '"plan.md"' 2>"$stderr_log")
+
+echo "$ctx" | grep -q 'plan.md' || fail "test8: plan.md missing from output"
+grep -q 'unresolvable wikilink: \[\[does-not-exist\]\]' "$stderr_log" || \
+  fail "test8: expected stderr warning for unresolvable wikilink"
+# We can't mark what we couldn't identify -- the unresolvable wikilink should
+# NOT appear as a "Referenced files" section header. (It WILL appear in the
+# plan body output because the gatherer echoes the plan text verbatim.)
+if echo "$ctx" | grep -q '^#### does-not-exist'; then
+  fail "test8: unresolvable wikilink leaked as a referenced-file section header"
+fi
+if echo "$ctx" | grep -q '### Referenced files'; then
+  fail "test8: plan with only an unresolvable wikilink should not produce a 'Referenced files' section"
+fi
+echo "ok test8: plan-scoped warns on unresolvable wikilinks"
+
+# --- Test 9: plan-scoped path-ref to missing file -- MARK in output ---
+TMP9="$(mktmp)"
+build_fixture_repo "$TMP9"
+mkdir -p "$TMP9/scripts"
+printf 'def real():\n    pass\n' > "$TMP9/scripts/real.py"
+
+cat > "$TMP9/plan.md" <<'EOF'
+# Plan: example
+References:
+- scripts/real.py
+- scripts/missing.py
+- /absolute/that/does/not/exist.py
+EOF
+
+ctx=$(call_gatherer gather_plan_context "$TMP9" '"plan.md"' 2>/dev/null)
+
+# Real file appears with content
+echo "$ctx" | grep -q 'scripts/real.py' || fail "test9: scripts/real.py missing"
+echo "$ctx" | grep -qE '^\s*1\s+def real' || \
+  fail "test9: scripts/real.py content not line-numbered"
+# Missing relative path appears with marker
+echo "$ctx" | grep -q 'scripts/missing.py' || \
+  fail "test9: scripts/missing.py should be MARKED in output, not dropped"
+echo "$ctx" | grep -q '_(file missing)_' || \
+  fail "test9: missing-file marker not present"
+# Missing absolute path also appears with marker
+echo "$ctx" | grep -q '/absolute/that/does/not/exist.py' || \
+  fail "test9: absolute missing path should be MARKED in output, not dropped"
+echo "ok test9: plan-scoped marks missing path-refs (does not silently drop)"

@@ -239,6 +239,156 @@ def gather_file_list_context(
     return "\n\n".join(sections), included
 
 
+WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]")
+
+# Path references: any token containing '/' (any depth, abs or rel) OR any
+# top-level token ending in a known file extension (README.md, foo.sh).
+# Anchored on left by start-of-line / whitespace / ` / ( / [ / < / , / ;
+# Anchored on right by end / whitespace / ` / ) / ] / > / .,;:!? terminator.
+# `K2B-Vault/...` shorthand is NOT specially handled -- callers wanting vault
+# files use absolute paths (K2B-Vault is a sibling of the repo, not a subdir).
+_PATH_EXT = "py|sh|md|json|ya?ml|toml|js|ts|tsx|jsx|html|css|sql|txt|env"
+PATH_REF_RE = re.compile(
+    r"(?:^|[\s`(\[<,;])"
+    r"(/?(?:[\w.\-]+/)+[\w.\-]+|[\w][\w.\-]*\.(?:" + _PATH_EXT + "))"
+    r"(?=[\s`)\]>.,;:!?]|$)",
+    re.MULTILINE,
+)
+
+
+def _resolve_wikilink(token: str, root: Path) -> Path | None:
+    """Resolve a bare [[wikilink]] target by searching wiki/ then raw/.
+
+    Returns the first matching .md file, or repo-root-relative <token>.md as
+    a final fallback. None means we couldn't identify any file.
+    """
+    for subdir in ("wiki", "raw"):
+        base = root / subdir
+        if not base.is_dir():
+            continue
+        for ext in (".md", ""):
+            for match in base.rglob(f"{token}{ext}"):
+                if match.is_file():
+                    return match
+    candidate = root / f"{token}.md"
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _resolve_path_ref(token: str, root: Path) -> Path:
+    """Resolve a path token (abs or rel) to a Path.
+
+    Returns the candidate Path (whether or not it exists). Caller checks
+    `.is_file()` -- missing files are marked in the output, never silently
+    dropped (per the Phase A 'mark, don't drop' rule).
+    """
+    if Path(token).is_absolute():
+        return Path(token)
+    return root / token
+
+
+def gather_plan_context(
+    plan_path: str,
+    repo_root: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Return (context_text, file_list) for a plan file and its references.
+
+    Parses [[wikilinks]] (resolved via wiki/ then raw/ search), inline path
+    references (any token containing '/' or ending in a known file extension),
+    and absolute paths.
+
+    Failure modes (intentionally distinct):
+      - Unparseable wikilink (no file matches the search) -> warn to stderr,
+        skip. We can't mark what we couldn't identify.
+      - Path ref that resolves to a missing file -> include `### <token>`
+        section with `_(file missing)_` marker. Caller knows exactly which
+        file was meant; reviewer needs to see the gap.
+    """
+    root = repo_root or REPO_ROOT
+    plan_full = (
+        Path(plan_path) if Path(plan_path).is_absolute() else (root / plan_path)
+    )
+    if not plan_full.is_file():
+        raise FileNotFoundError(f"plan not found: {plan_full}")
+
+    plan_text = plan_full.read_text(errors="replace")
+
+    found_refs: list[tuple[str, Path]] = []  # (display_name, real_path)
+    missing_refs: list[str] = []  # display_name only
+    seen: set[str] = set()
+
+    def _track(display: str, real: Path | None) -> None:
+        if display in seen or display == plan_path:
+            return
+        seen.add(display)
+        if real is not None and real.is_file():
+            found_refs.append((display, real))
+        else:
+            missing_refs.append(display)
+
+    for match in WIKILINK_RE.finditer(plan_text):
+        token = match.group(1).strip()
+        resolved = _resolve_wikilink(token, root)
+        if resolved is None:
+            print(
+                f"[minimax-review] warning: unresolvable wikilink: [[{token}]]",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            display = str(resolved.relative_to(root))
+        except ValueError:
+            display = str(resolved)
+        _track(display, resolved)
+
+    for match in PATH_REF_RE.finditer(plan_text):
+        token = match.group(1).strip()
+        resolved = _resolve_path_ref(token, root)
+        try:
+            display = str(resolved.relative_to(root))
+        except ValueError:
+            display = token  # absolute path or out-of-tree
+        _track(display, resolved if resolved.is_file() else None)
+
+    sections: list[str] = []
+    sections.append("## plan-scoped review")
+    sections.append(f"### {plan_path} (plan)")
+    numbered_plan = "\n".join(
+        f"{i + 1:5d}  {line}" for i, line in enumerate(plan_text.splitlines())
+    )
+    sections.append(f"```\n{numbered_plan}\n```")
+
+    if found_refs or missing_refs:
+        sections.append("### Referenced files")
+        for display, real in found_refs:
+            if is_binary(real):
+                sections.append(f"#### {display}\n_(binary, skipped)_")
+                continue
+            try:
+                data = real.read_bytes()
+            except OSError as e:
+                sections.append(f"#### {display}\n_(unreadable: {e})_")
+                continue
+            truncated_note = ""
+            if len(data) > MAX_FILE_BYTES:
+                data = data[:MAX_FILE_BYTES]
+                truncated_note = f"\n_(truncated to {MAX_FILE_BYTES} bytes)_"
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                text = data.decode("utf-8", errors="replace")
+            numbered = "\n".join(
+                f"{i + 1:5d}  {line}" for i, line in enumerate(text.splitlines())
+            )
+            sections.append(f"#### {display}{truncated_note}\n```\n{numbered}\n```")
+        for display in missing_refs:
+            sections.append(f"#### {display}\n_(file missing)_")
+
+    file_list = [plan_path] + [d for d, _ in found_refs] + missing_refs
+    return "\n\n".join(sections), file_list
+
+
 def build_prompt(target_label: str, focus: str, content: str, schema_text: str) -> str:
     template = PROMPT_PATH.read_text()
     return (
