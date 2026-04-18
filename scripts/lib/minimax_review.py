@@ -531,8 +531,23 @@ def main() -> int:
     parser.add_argument(
         "--scope",
         default="working-tree",
-        choices=["working-tree"],
-        help="(Phase A: working-tree only)",
+        choices=["working-tree", "diff", "plan", "files"],
+        help=(
+            "Context gatherer: 'working-tree' (default, Phase A behavior), "
+            "'diff' (only --files paths + their diffs), "
+            "'plan' (--plan path + files it references), "
+            "'files' (just --files paths, no git context)"
+        ),
+    )
+    parser.add_argument(
+        "--plan",
+        default=None,
+        help="Plan file path (required when --scope plan)",
+    )
+    parser.add_argument(
+        "--files",
+        default=None,
+        help="Comma-separated list of paths (required when --scope diff or files)",
     )
     parser.add_argument(
         "--model",
@@ -570,19 +585,72 @@ def main() -> int:
     schema_text = SCHEMA_PATH.read_text()
 
     print(f"[minimax-review] gathering {args.scope} context...", file=sys.stderr)
-    context, changed = gather_working_tree_context()
-    if not changed:
-        print("[minimax-review] no working-tree changes; nothing to review.", file=sys.stderr)
-        return 0
+    if args.scope == "working-tree":
+        context, changed = gather_working_tree_context()
+        if not changed:
+            print(
+                "[minimax-review] no working-tree changes; nothing to review.",
+                file=sys.stderr,
+            )
+            return 0
+    elif args.scope == "diff":
+        if not args.files:
+            print("[minimax-review] --scope diff requires --files", file=sys.stderr)
+            return 1
+        file_list = [p.strip() for p in args.files.split(",") if p.strip()]
+        if not file_list:
+            print(
+                "[minimax-review] --scope diff: --files parsed to empty list",
+                file=sys.stderr,
+            )
+            return 1
+        context, changed = gather_diff_scoped_context(file_list)
+    elif args.scope == "plan":
+        if not args.plan:
+            print("[minimax-review] --scope plan requires --plan", file=sys.stderr)
+            return 1
+        try:
+            context, changed = gather_plan_context(args.plan)
+        except FileNotFoundError as e:
+            print(f"[minimax-review] {e}", file=sys.stderr)
+            return 1
+    elif args.scope == "files":
+        if not args.files:
+            print("[minimax-review] --scope files requires --files", file=sys.stderr)
+            return 1
+        file_list = [p.strip() for p in args.files.split(",") if p.strip()]
+        if not file_list:
+            print(
+                "[minimax-review] --scope files: --files parsed to empty list",
+                file=sys.stderr,
+            )
+            return 1
+        context, changed = gather_file_list_context(file_list)
+    else:
+        print(f"[minimax-review] unknown scope: {args.scope}", file=sys.stderr)
+        return 1
     print(
         f"[minimax-review] {len(changed)} changed files, "
         f"{len(context)} chars of context",
         file=sys.stderr,
     )
 
-    target_label = (
-        f"working tree of {REPO_ROOT.name} ({len(changed)} files changed)"
-    )
+    if args.scope == "working-tree":
+        # Phase A wording preserved verbatim -- byte-for-byte back-compat for
+        # the prompt MiniMax sees. Do not alter.
+        target_label = (
+            f"working tree of {REPO_ROOT.name} ({len(changed)} files changed)"
+        )
+    elif args.scope == "diff":
+        target_label = (
+            f"diff-scoped review of {REPO_ROOT.name} ({len(changed)} files)"
+        )
+    elif args.scope == "plan":
+        target_label = f"plan {args.plan} ({len(changed)} files referenced)"
+    else:  # files
+        target_label = (
+            f"explicit file list ({len(changed)} files, repo {REPO_ROOT.name})"
+        )
     prompt = build_prompt(target_label, args.focus, context, schema_text)
 
     print(
