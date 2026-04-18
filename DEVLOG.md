@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-04-18 -- k2b-ship/k2b-sync portability for sibling repos + K2Bi rename cleanup
+
+**Commit:** `69c4489` refactor(skills): k2b-ship/k2b-sync portability + K2Bi rename cleanup
+
+**What shipped:** K2B-side prep work to support K2Bi Phase 1 Session 3 `/ship` smoke test from inside the new repo. (1) `k2b-ship` now skips gracefully when sibling-repo scripts are absent (`promote-learnings.py`, `audit-ownership.sh`, `deploy-to-mini.sh`), tightens its push guard to match exact `origin` remote name (a remote called `upstream` would have false-passed the previous `git remote | grep -q .` check then failed at push time), derives the `.pending-sync/` mailbox directory from `git rev-parse --show-toplevel`, and resolves the `now` deploy fallback path from the current repo root instead of hardcoding `~/Projects/K2B/scripts/deploy-to-mini.sh`. (2) `k2b-sync` step 0 now derives its mailbox path from git repo root to match the `/ship` producer, with an explicit "fork-friendly, not auto-portable" disclaimer noting that the rsync targets and deploy invocations later in the skill are still hardcoded to `~/Projects/K2B/` and require swap at fork time. (3) Doc cleanups: `k2b-compile/SKILL.md` and `scripts/compile-index-update.py` rename example paths from `k2b-investment` to `k2bi`; `CLAUDE.md` Project Resume Handles section renames the routing handle from "continue k2b investment" to "continue k2bi" to match the K2Bi rename that landed earlier; DEVLOG retroactively renames K2B-Investment to K2Bi in 3 historical entries with a clarifying note.
+
+**Codex review:** 2 rounds via background + poll (the new pattern from `985a299` worked correctly -- no stalls). Round 1 returned 2 findings: P1 ("deferred-sync mailbox in path that `/sync` actually consumes" -- `k2b-sync/SKILL.md` step 0 and `scripts/hooks/session-start.sh` still hardcoded `~/Projects/K2B/.pending-sync/`) and P2 ("avoid hardcoding K2B's deploy script in the repo-agnostic `/sync now` path" -- step 12 fallback hardcoded `~/Projects/K2B/scripts/deploy-to-mini.sh`). Both fixed inline (`session-start.sh` left alone since it's K2B's hook with `$K2B` variable already at file top -- K2Bi will fork it). Round 2 returned 2 P2 regressions from the round-1 fix: the new push guard checked "any remote" but still pushed to `origin` (fix: `grep -qx 'origin'`), and `k2b-sync` step 0 description now claimed sibling-repo support while the rest of the skill kept K2B-hardcoded rsync paths (fix: walk back the framing to "fork-friendly, not auto-portable" with explicit note about the fork-time swap requirement). Both fixed inline. No round 3 needed -- fixes were surgical edits to the exact lines Codex flagged.
+
+**Feature status change:** none. K2B-side infrastructure prep for `feature_k2bi-phase1-scaffold` Session 3. The K2Bi feature note remains in In Progress as `partial-shipped (Session 1 of 2)` and is updated by Session 3's own `/ship` from inside K2Bi, not this commit.
+
+**Follow-ups:** K2Bi Phase 1 Session 3 will dogfood these portability fixes when it forks `k2b-sync` and runs `/ship` from inside `~/Projects/K2Bi/`. The fork-time swap note in `k2b-sync` step 0 documents the rsync-paths gap that Session 3 must close. Ownership drift audit deferred (5 rules, 26 offenders -- all expected: canonical homes in `active_rules.md`, watchlist self-reference, K2Bi planning notes documenting rules in context).
+
+**Key decisions:** Treated as `--no-feature` infrastructure rather than mapping to `feature_k2bi-phase1-scaffold` because (a) the changes touch K2B repo not K2Bi, (b) they don't complete any tracked ship gate, (c) the portability work is genuinely cross-cutting infra that would benefit any future sibling repo too. Skipped 3rd Codex round despite both prior rounds returning findings, because the round-2 fixes were surgical edits to the exact flagged lines (push-guard regex tightening + walking back overpromise framing) with no new behavior introduced. Trusted the verification pattern over the cycle count.
+
+---
+
 ## 2026-04-17 -- k2b-ship Codex review: background + poll pattern
 
 **Commit:** `985a299` fix(k2b-ship): use background+poll pattern for Codex pre-commit review
