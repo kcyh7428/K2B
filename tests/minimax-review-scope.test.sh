@@ -378,3 +378,78 @@ echo "$ctx" | grep -q '_(file missing)_' || \
 echo "$ctx" | grep -q '/absolute/that/does/not/exist.py' || \
   fail "test9: absolute missing path should be MARKED in output, not dropped"
 echo "ok test9: plan-scoped marks missing path-refs (does not silently drop)"
+
+# --- Test 10: --scope files with empty parsed --files exits 1 --------
+TMP10="$(mktmp)"
+build_fixture_repo "$TMP10"
+
+# Empty --files (just whitespace + commas)
+set +e
+out=$(cd "$TMP10" && python3 "$SCRIPT" --scope files --files ",, ," --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" = "1" ] || fail "test10: empty --files for --scope files should exit 1, got $rc"
+echo "$out" | grep -q 'parsed to empty list' || \
+  fail "test10: missing 'parsed to empty list' message"
+
+# Same for --scope diff
+set +e
+out=$(cd "$TMP10" && python3 "$SCRIPT" --scope diff --files ",, ," --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" = "1" ] || fail "test10: empty --files for --scope diff should exit 1, got $rc"
+
+echo "ok test10: empty parsed --files exits 1"
+
+# --- Test 11: CLI rejects --scope plan without --plan ----------------
+set +e
+out=$(python3 "$SCRIPT" --scope plan --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" = "1" ] || fail "test11: --scope plan without --plan should exit 1, got $rc"
+echo "$out" | grep -q 'requires --plan' || \
+  fail "test11: missing 'requires --plan' message"
+echo "ok test11: --scope plan requires --plan"
+
+# --- Test 12: CLI rejects --scope diff without --files ---------------
+set +e
+out=$(python3 "$SCRIPT" --scope diff --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" = "1" ] || fail "test12: --scope diff without --files should exit 1, got $rc"
+echo "$out" | grep -q 'requires --files' || \
+  fail "test12: missing 'requires --files' message"
+echo "ok test12: --scope diff requires --files"
+
+# --- Test 13: CLI rejects --scope files without --files --------------
+set +e
+out=$(python3 "$SCRIPT" --scope files --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" = "1" ] || fail "test13: --scope files without --files should exit 1, got $rc"
+echo "ok test13: --scope files requires --files"
+
+# --- Test 14: argparse rejects bogus --scope value -------------------
+set +e
+out=$(python3 "$SCRIPT" --scope bogus --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne "0" ] || fail "test14: --scope bogus should fail, got rc=$rc"
+echo "ok test14: argparse rejects invalid --scope"
+
+# --- Test 15: working-tree default kicks in when no --scope flag -----
+TMP15="$(mktmp)"
+build_fixture_repo "$TMP15"
+# A clean fixture means working-tree gather returns empty -> exit 0 with
+# 'no working-tree changes' message BEFORE any API call.
+rm "$TMP15/extra.py"  # eliminate untracked file
+set +e
+out=$(cd "$TMP15" && python3 "$SCRIPT" --no-archive 2>&1)
+rc=$?
+set -e
+[ "$rc" = "0" ] || fail "test15: clean working tree should exit 0 (no changes), got $rc"
+echo "$out" | grep -q 'no working-tree changes' || \
+  fail "test15: missing 'no working-tree changes' message"
+echo "$out" | grep -q 'gathering working-tree context' || \
+  fail "test15: missing 'gathering working-tree context' (default scope)"
+echo "ok test15: working-tree default scope unchanged"
