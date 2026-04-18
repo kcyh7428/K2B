@@ -185,14 +185,25 @@ The Building section of `active-motivations.md` is rebuilt by `motivations-helpe
 
 Long-running projects own their own Resume Card in the project's index note. CLAUDE.md only routes the trigger phrase -- the card owns the procedure (current state, priority read order, next action, session-end protocol). Ownership matrix compliant.
 
-- **"continue k2bi" / "resume k2bi"** -> read `K2B-Vault/wiki/projects/k2bi/index.md` Resume Card section, follow its priority read order, pick up from the stated next action. Card is updated at session end per its session-end protocol.
+- **"continue k2bi" / "resume k2bi"** -> read `K2Bi-Vault/wiki/planning/index.md` Resume Card section, follow its priority read order, pick up from the stated next action. Card is updated at session end per its session-end protocol.
+
+## Subprojects
+
+K2Bi (trading/investment) at `~/Projects/K2Bi/` with GitHub repo `https://github.com/kcyh7428/K2Bi`. Standalone project with its own CLAUDE.md, skills, scripts, memory, and vault. Operates independently.
+
+K2B retains an **architect** role for K2Bi: proposes planning updates, pattern improvements, autoresearch-driven skill improvements, phase-gate strategic reviews, Phase 6 Routines migration plans, and design reviews. Contributions go in via GitHub pull requests against K2Bi's repo. No direct commits to K2Bi from K2B.
+
+Authoritative planning docs live at `K2Bi-Vault/wiki/planning/`. The original planning workspace at `K2B-Vault/wiki/projects/k2bi/` is a frozen historical archive; do not update it.
+
+When Keith asks K2B to "propose X to K2Bi" or "draft a K2Bi PR", handle ad-hoc via the `gh` CLI. Once 2-3 real PRs have established the pattern, formalize as a `k2b-cross-project-pr` skill (tracked in `self_improve_requests.md`).
 
 ## Email Safety
 
 Gmail operations ship through the **k2b-email** skill. Two rules live HERE (always loaded) because the skill body is only in context when the Skill tool is invoked, and on 2026-04-18 the Mac Mini Telegram agent sent an email without invoking k2b-email at all -- bypassing every in-skill rule.
 
 1. **Send authorization requires an ID tied to a body-preview.** `gws gmail users drafts send` may only run when the user's most recent message contains the exact draft ID from a prior preview that showed the draft's **body** (not just the subject). Bare "send", "send it", "yes", "ok", "go", "proceed" never send. A preview that shows only `Subject + Draft ID` is not authorization -- a user cannot authorize content they did not read.
-2. **Never delete emails.** Keith's inbox is not K2B's to prune.
+2. **Draft preview must include the send-command as a tap-to-copy code block.** When you show a draft preview, include the exact `send draft <id>` string in its own fenced code block (``` ``` ```) so mobile Telegram users can tap-to-copy. Example at the end of your preview reply: `` `send draft r2141559649518241617` `` in its own block. The body goes in a separate block above.
+3. **Never delete emails.** Keith's inbox is not K2B's to prune.
 
 `+send`, `+reply`, `+reply-all`, `+forward` remain blocked -- they skip the draft step entirely. Only `gws gmail users drafts send` on a pre-approved draft ID is authorized.
 

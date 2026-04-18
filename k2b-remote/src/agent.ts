@@ -1,6 +1,22 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { K2B_PROJECT_ROOT, TYPING_REFRESH_MS, HTTP_PROXY } from './config.js'
 import { logger } from './logger.js'
+
+// Read CLAUDE.md fresh on each run. ~25KB, local FS; cheap and guarantees
+// rules edited on MacBook + synced via /sync pick up immediately. Without an
+// explicit append, the Agent SDK's default systemPrompt does NOT include
+// CLAUDE.md. This caused the 2026-04-18 email send-gate bypass (Mini agent
+// sent on bare "Send it" because the "always-loaded" rule was never loaded).
+function readClaudeMd(): string {
+  try {
+    return readFileSync(resolve(K2B_PROJECT_ROOT, 'CLAUDE.md'), 'utf-8')
+  } catch (err) {
+    logger.error({ err }, 'Failed to read CLAUDE.md -- agent running without project rules')
+    return ''
+  }
+}
 
 export async function runAgent(
   message: string,
@@ -17,12 +33,16 @@ export async function runAgent(
   }
 
   try {
+    const claudeMd = readClaudeMd()
     const options: Parameters<typeof query>[0] = {
       prompt: message,
       options: {
         cwd: K2B_PROJECT_ROOT,
         permissionMode: 'bypassPermissions' as const,
         settingSources: ['project', 'user'] as const,
+        systemPrompt: claudeMd
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: claudeMd }
+          : { type: 'preset' as const, preset: 'claude_code' as const },
         ...(sessionId ? { resume: sessionId } : {}),
         ...(HTTP_PROXY ? {
           env: {
