@@ -2,6 +2,49 @@
 
 ---
 
+## 2026-04-19 -- Item 1 of memory-architecture plan: importance-weighted rule promotion
+
+**Commit:** `31d6c6d` feat(memory): importance-weighted rule promotion
+
+**What shipped:** Ship 3 (and final) of the 2026-04-19 memory-architecture improvements -- the big one. Gemini's 36-source research flagged K2B's LRU-by-age eviction on `active_rules.md` as the blunt tool: rules that are architecturally important and cited every session but rarely re-affirmed by `/learn` get evicted in favor of fresher-but-weaker rules. Solution: blended `(reinforcement_count * max(1, access_count)) / max(1, age_in_days)` score driving both promotion candidate ordering AND eviction victim selection. New standalone `K2B-Vault/System/memory/access_counts.tsv` tracks citation counts per L-ID, sole writer `scripts/increment-access-count.py` called from `/ship` step 13.5 after writing the session summary. New `scripts/lib/importance.py` holds the shared formula + TSV loader. `scripts/promote-learnings.py` now sorts candidates DESC by score (adds `access_count` + `importance_score` fields to the JSON output, preserves every existing field for backward compat). `scripts/select-lru-victim.py` now SKIPS non-L rules entirely (foundation rules Keith wrote manually are PINNED) and sorts ASC by score with the existing tiebreaker chain as secondary. `k2b-ship` SKILL.md step 13.5 documents the tightened citation-detection contract (three explicit patterns: L-ID token, verbatim distilled-rule text, "per rule N" reference; ambiguous paraphrases SKIPPED -- under-count preferred over over-count for a ranking signal) and is fail-open on helper crashes. `active_rules.md` header prose updated to describe the new eviction rule.
+
+**Adversarial review (Codex, two checkpoints, both mandatory per the 2026-04-19 research plan for M-effort items):**
+
+Checkpoint 1 (plan review, 351s duration) returned GO-WITH-FIXES with 7 P1 + 2 P2 findings. ALL folded into v2 plan before any code landed:
+- P1 #1 age anchor: PROMOTE uses `Date:`, EVICT uses `last-reinforced:` (no new schema on learnings).
+- P1 #2 non-L rules: pinned exempt, skipped in LRU sort.
+- P1 #3 rules missing reinforcement metadata: default to 1, documented.
+- P1 #4 single-writer violation (the biggest pivot): access counts moved from the learnings file to a standalone TSV so `/learn` stays the sole writer of `self_improve_learnings.md`.
+- P1 #5 citation contract: tightened to three explicit patterns.
+- P1 #6 prose drift: `active_rules.md` prose updated in this ship.
+- P1 #7 test coverage: four test files covering missing metadata, non-L rules, boundary dates.
+- P2 #8 access_count semantics: raw count (default 0), formula floors to 1.
+- P2 #9 failure path: fail-open with warning.
+
+Checkpoint 2 (pre-commit, 216s) also returned GO-WITH-FIXES: 1 P1 (parent-dir fsync after `os.replace` for crash durability) fixed inline before commit, 2 P2 + 1 P3 deferred as documented follow-ups (strict TSV column count, multi-line `Reinforced:` parse tolerance, doc consistency between `active_rules.md` prose and `/ship` step 0 confirmation flow -- latter reconciled inline).
+
+**33 tests across 4 new suites:**
+- `tests/sort-key.test.sh`: 12 cases covering the formula (boundaries, leap years, future dates, overflow).
+- `tests/increment-access-count.test.sh`: 10 cases (default 0, dedup argv, atomic write, TSV header preservation, unknown-L-ID handling).
+- `tests/promote-learnings-importance.test.sh`: 5 cases (reinforced<3 skipped, access boost reorders, missing Date: flooring, JSON schema).
+- `tests/select-lru-victim-importance.test.sh`: 6 cases (non-L pinning, access lift, default reinforcement, all-pinned exit-1, schema).
+
+Smoke run on real corpus: zero crashes, zero candidates promoted (current learnings have no Reinforced>=3 entries absent from `active_rules.md`), eviction victim chosen with `importance_score` field now in output.
+
+**Feature status change:** `feature_importance-weighted-rule-promotion` designed -> shipped. Moved from `wiki/concepts/` to `wiki/concepts/Shipped/`. `wiki/concepts/index.md` Shipped table has the new row at the top.
+
+**Follow-ups (deferred from Checkpoint 2):**
+- P2a: strict 3-field TSV validation in `load_access_counts` / `_read_rows` (current code accepts 2+). Low-risk spec drift; pick up on next touch.
+- P2b: multi-line `Reinforced:` parsing in `promote-learnings.py`. Current regex requires same-line format; wrapped bullets silently default to 1. Add a tolerant regex + fixture next time.
+- Dedicated unit tests for `load_access_counts()` (deferred from plan; currently covered indirectly via promote/select-lru tests).
+
+**Key decisions (divergent from claude.ai project specs):**
+- v1 plan had access_count as a bullet in `self_improve_learnings.md`. Codex P1 #4 flagged the single-writer violation -- `/ship` as a second writer would race with `/learn`. Pivoted v2 to a standalone TSV file. Cleaner discipline, lossless behavior under concurrency.
+- Age anchor differs by caller context: PROMOTE uses `Date:` (entry creation) because promotion ordering wants "this learning is fresh enough to promote"; EVICT uses `last-reinforced:` (last affirmation) because eviction wants "this rule hasn't been touched in a while". Same scoring formula, caller-chosen anchor -- simpler than a single unified field.
+- Citation detection is Claude-side judgment, not regex-side. The tightened contract (three explicit patterns) + "under-count is safer than over-count" guidance trades some false negatives for zero systematic false positives. A rule that's genuinely cited but missed this session will get caught next session.
+
+---
+
 ## 2026-04-19 -- Item 3 of memory-architecture plan: /lint memory integrity pass (Check #13)
 
 **Commit:** `a8f4544` feat(lint): memory integrity audit (Check #13)
