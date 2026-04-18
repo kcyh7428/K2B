@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-04-19 -- /research notebook expand: Gemini source discovery on top of K2B-curated corpus
+
+**Commit:** `73984d3` feat(research): /research notebook expand for Gemini source discovery
+
+**What shipped:** Keith asked whether the NBLM plugin could support native "discover sources" so Gemini does source gathering instead of K2B. The CLI already wraps it as `notebooklm source add-research`. Rather than swap out the manual Phase 1 (yt-search + perplexity + vault grep), which carries Keith's recency + preference-tail + prior-work taste filter Gemini can't reproduce, added an `expand` subcommand that layers Discover Sources on top of an existing named notebook. Preview-then-approve flow: `source add-research "<refinement>" --mode deep --no-wait` -> `research wait --json` -> urllib.parse dedupe (strip fragment, collapse default ports, lowercase host) vs existing notebook URLs -> show Keith numbered candidates with domain tags (`arxiv|github|youtube|web`) -> parse selection grammar (`all` / `none` / `1,3,5-8` / `keep 1-4` / `drop 7,9`) in Python -> import approved subset via `source add`, parallel-wait for indexing with per-URL add-failure tracking separate from indexing-failure tracking -> registry `--sources N --touch` using canonical post-wait ready-count (not approved-count) -> Phase F audit log append to `raw/research/expand-log.md`. Flags: `--mode fast|deep` (default deep), `--auto-import` (skip Keith's review step). Single-exit contract: once `NB_ID` resolves, every terminal state routes through Phase F before `exit` -- log-then-exit, never exit-then-log.
+
+Before building expand, recreated the `memory-architecture` notebook whose NBLM notebook got deleted. Expanded the source count from the original 14 (per `raw/research/2026-04-18_research_memory-architecture-patterns.md`) to 21 by adding the hot 2026 memory systems Keith surfaced from community discussion: `getzep/graphiti` (20K+ stars, temporal knowledge graph), `topoteretes/cognee`, `thedotmack/claude-mem` (46K stars, Claude Code plugin), `langchain-ai/langmem`, plus comparison articles from mem0.ai, Milvus, and Atlan. Registry at `wiki/context/notebooklm-registry.md` now carries `memory-architecture -> 880c1d36-33ea-437a-bc19-47b401403198`. Then smoke-tested expand against that notebook with refinement `"temporal memory graphs episodic vs semantic 2026"`: fast-mode returned 10 academic candidates (arxiv, IJCAI, OpenReview, biorxiv), dedupe confirmed zero overlap with the existing 21, preview rendered cleanly. Candidates not imported per Keith's hold.
+
+**Adversarial review (Codex, 2 passes -- Codex fully working this time after yesterday's quota + stall):**
+
+- Pass 1: 6 findings -- 1 HIGH (`source list --json` shape drift: expand assumed object-with-`.sources` when sibling `create`/`add-source` jq snippets assume top-level array; `/research videos` already handles both defensively), 3 MEDIUM (early exits on research-wait-fail and zero-candidates bypassed Phase F audit log, per-URL `source add` failures untracked separate from indexing failures, malformed `research wait` JSON would crash the Python heredoc), 2 LOW (URL normalization only lowercase + trailing-slash-strip, missed fragments + default ports; Phase D didn't explicitly require safe `while IFS= read -r URL` iteration for Gemini-returned URLs). All 6 fixed in one edit: defensive `_normalize_sources()` helper, JSON pre-validation gate on RESULT and EXISTING, urllib.parse normalization, per-URL failure tracking in `FAILED_ADD_URLS[]`, single-exit contract with `STATUS` variable routing all terminal states through Phase F.
+- Pass 2: 3 follow-ups -- MEDIUM (pre-Phase-F `exit 4` on unknown notebook contradicted "Phase F is single exit point" contract), 2 LOW (env-var `exec(os.environ["HELPER"])` was code-in-data pattern; `REGISTRY_UPDATE_FAILED` lacked initial value for the false case). All 3 fixed: contract language explicitly documents the pre-phase exit-4 as the one exception because there's no notebook scope to audit-log against; helper inlined directly into each Python heredoc; variable initialized to `false` with the other state variables.
+
+Review artifacts: two Codex background-agent transcripts in `.claude/tasks/` (agent IDs `aeffb72e2b7d0d57b` and `a7ce94a304962055a`). Codex's default `--cached` scope caught the first pass returning empty because the change was unstaged; second invocation explicitly used `git diff` (working tree vs HEAD) and found the real issues.
+
+**Feature status change:** `feature_nblm-notebook-library` stays shipped, Updates section appended with a second ship entry for 2026-04-19. `wiki/concepts/index.md` Shipped row updated to show both commits `6e1c274, 73984d3` and note the expand subcommand inline.
+
+**Follow-ups:**
+- The 10 temporal-memory candidates surfaced by expand's smoke test remain in NBLM's `research status` cache for this session. Keith can `notebooklm source add` individual ones later if any become relevant to K2B's memory architecture work. No auto-import.
+- First real-world use of `expand` will exercise Phase C selection grammar parser, Phase D per-URL failure handling, and the expand-log.md audit format. None of those are production-tested yet.
+- `raw/research/expand-log.md` doesn't exist yet -- first real `expand` run will create it.
+- Session produced 3 uncommitted vault edits as part of /ship (feature note Updates, index.md row + timestamp, registry already landed earlier). Syncthing handles propagation.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Did NOT swap Phase 1 of `/research notebook create` to use `source add-research` even though it's "free" (Gemini, not K2B tokens). Keith's taste filter (recency window, preference tail, prior-work context) is a feature of the manual path, not overhead. Expand is layered ON TOP, not replacing. What NOT to do section in the skill body explicitly documents this.
+- Shipped as a follow-up to `feature_nblm-notebook-library` (already in Shipped/) rather than creating a new feature note. The expand subcommand is a natural addition to the same feature umbrella; creating a second feature note for a 224-line skill addition would fragment the spec.
+- Codex's HIGH finding (JSON shape drift) is a real inconsistency in the skill file -- sibling `create` and `add-source` snippets use jq patterns that would break if the current CLI returned the object shape we observed in this session. Did NOT fix those in this ship; `expand` adds defensive handling while the sibling subcommands stay as-is. Scoping expand's responsibility to expand's code keeps this ship focused; a separate cleanup can unify the sibling subcommands later.
+
+---
+
 ## 2026-04-18 -- /research notebook: persistent named NotebookLM notebooks
 
 **Commit:** `6e1c274` feat(research): /research notebook for persistent NotebookLM notebooks
