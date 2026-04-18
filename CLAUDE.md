@@ -185,7 +185,7 @@ The Building section of `active-motivations.md` is rebuilt by `motivations-helpe
 
 Long-running projects own their own Resume Card in the project's index note. CLAUDE.md only routes the trigger phrase -- the card owns the procedure (current state, priority read order, next action, session-end protocol). Ownership matrix compliant.
 
-- **"continue k2b investment" / "resume invest"** -> read `K2B-Vault/wiki/projects/k2b-investment/index.md` Resume Card section, follow its priority read order, pick up from the stated next action. Card is updated at session end per its session-end protocol.
+- **"continue k2bi" / "resume k2bi"** -> read `K2B-Vault/wiki/projects/k2bi/index.md` Resume Card section, follow its priority read order, pick up from the stated next action. Card is updated at session end per its session-end protocol.
 
 ## Email Safety
 

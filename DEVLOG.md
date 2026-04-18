@@ -44,19 +44,21 @@
 
 ---
 
-## 2026-04-17 -- K2B-Investment Resume Handle + Active Motivations CLAUDE.md routing
+## 2026-04-17 -- K2Bi Resume Handle + Active Motivations CLAUDE.md routing
 
-**Commit:** `0654bc7` docs: wire up K2B-Investment resume handle + Active Motivations routing
+**Commit:** `0654bc7` docs: wire up K2Bi resume handle + Active Motivations routing
 
-**What shipped:** Two routing additions to CLAUDE.md (pure pointers, no procedure). (1) Project Resume Handles section routes "continue k2b investment" / "resume invest" -> Resume Card in K2B-Vault/wiki/projects/k2b-investment/index.md. Lets any new Claude Code session pick up K2B-Investment Phase 1 work in under 60s. (2) Active Motivations section routes "add X to my active questions" -> scripts/motivations-helper.sh (paired with the in-flight feature_active-motivations Ship 1 from a parallel session). Both sections follow the ownership matrix: CLAUDE.md routes, the target owns the procedure. Also created feature_k2b-investment-phase1-scaffold.md in Next Up lane and added Resume Card block to k2b-investment/index.md (vault-only, synced via Syncthing).
+**What shipped:** Two routing additions to CLAUDE.md (pure pointers, no procedure). (1) Project Resume Handles section routes "continue k2bi" / "resume k2bi" -> Resume Card in K2B-Vault/wiki/projects/k2bi/index.md. Lets any new Claude Code session pick up K2Bi Phase 1 work in under 60s. (2) Active Motivations section routes "add X to my active questions" -> scripts/motivations-helper.sh (paired with the in-flight feature_active-motivations Ship 1 from a parallel session). Both sections follow the ownership matrix: CLAUDE.md routes, the target owns the procedure. Also created feature_k2bi-phase1-scaffold.md in Next Up lane and added Resume Card block to k2bi/index.md (vault-only, synced via Syncthing).
 
 **Codex review:** skipped (k2b-ship config-tweaks exception -- 16 lines of routing additions with no logic or procedure).
 
-**Feature status change:** feature_k2b-investment-phase1-scaffold (created) status -> next. No lane move for feature_active-motivations (Ship 1 still in-flight in parallel session).
+**Feature status change:** feature_k2bi-phase1-scaffold (created) status -> next. No lane move for feature_active-motivations (Ship 1 still in-flight in parallel session).
 
-**Follow-ups:** Parallel active-motivations session should skip re-committing CLAUDE.md (its Active Motivations hunk landed under this commit). Phase 1 kickoff is next: in a future session Keith says "continue k2b investment" and we execute the 8 exit-criteria items. Drift audit deferred (5 rules, 26 offenders -- all expected: memory files, planning docs, archived observations).
+**Follow-ups:** Parallel active-motivations session should skip re-committing CLAUDE.md (its Active Motivations hunk landed under this commit). Phase 1 kickoff is next: in a future session Keith says "continue k2bi" and we execute the 8 exit-criteria items. Drift audit deferred (5 rules, 26 offenders -- all expected: memory files, planning docs, archived observations).
 
 **Key decisions:** Shipped both CLAUDE.md hunks together (instead of surgical hunk stage) because both are final, routing-only, and merging avoids race with the parallel session. Feature note status set to `next` not `in-progress` because Phase 1 build hasn't actually started yet -- only the resume-handle infrastructure did.
+
+(Note: project was subsequently renamed from K2B-Investment to K2Bi; references above updated retroactively.)
 
 ---
 
@@ -109,7 +111,7 @@ Also fixed: added `Bash(node *codex-companion.mjs *)` permission to `~/.claude/s
 
 Codex adversarial review: two advisory findings (trailer is forgeable, hooks are opt-in per clone) -- both valid for team repos but N/A for single-developer K2B.
 
-**8 of 8 audit fixes now shipped.** Phase 0 of K2B-Investment roadmap is ready-gated.
+**8 of 8 audit fixes now shipped.** Phase 0 of K2Bi roadmap is ready-gated.
 
 ---
 
@@ -117,7 +119,7 @@ Codex adversarial review: two advisory findings (trailer is forgeable, hooks are
 
 **Commit:** `972665f` refactor(CLAUDE.md): strip procedural content into skill bodies (audit Fix #4)
 
-**What shipped:** First execution of the K2B-Investment audit's Axis 4 "Clogged" recommendations. CLAUDE.md shrinks from 287 to 219 lines (24% reduction) by moving procedural how-to content into the correct skill bodies, enforcing the ownership rule: CLAUDE.md owns identity, taxonomy, and soft rules; skill bodies own procedures. Copy-in phase added new sections to three skills, each faithfully preserving the procedural detail CLAUDE.md used to carry: (1) `k2b-review/SKILL.md` gained "Video Feedback from Telegram (run-level)" with the reaction-match rule (URL -> title -> channel -> pick ordinal), flock-and-atomic-rewrite recipe, zero-match reply text, ambiguity prompt, and all three Liam Ottley forbidden rules (never direct-append to video-preferences.md, never hardcode playlist IDs, never skip the flock). (2) `k2b-ship/SKILL.md` gained "Codex Adversarial Review -- the two checkpoints" with Checkpoint 1 (plan review) spelled out, the three skip conditions (vault-only, config tweaks, emergency hotfixes), the "never skip both" rule, and the presentation rules (neutral reporting, no pre-filtering). (3) `k2b-observer/SKILL.md` gained "Session-Start Inline Confirmation" with the HIGH/MEDIUM 3-option recipe, the exact rejection JSONL format preserved verbatim, and an idempotency note for cross-session deduplication. Strip phase then deleted seven CLAUDE.md sections (A: Video Feedback via Telegram 40 lines, B: Email Safety 4 lines, C: Codex Adversarial Review 28 lines, D: Session Discipline manual fallback 7 lines, E: Inline Observer Confirmation 20 lines, plus Codex-recommended extras: the duplicate /ship block inside "Roadmap & Feature Notes" and the procedural lines inside "Obsidian Cross-Linking"), replacing each with a 1-paragraph pointer naming the target skill. Kept intact: File Conventions, Slash Commands index, Rules list, /ship top-level mandate, session-start hook summary.
+**What shipped:** First execution of the K2Bi audit's Axis 4 "Clogged" recommendations. CLAUDE.md shrinks from 287 to 219 lines (24% reduction) by moving procedural how-to content into the correct skill bodies, enforcing the ownership rule: CLAUDE.md owns identity, taxonomy, and soft rules; skill bodies own procedures. Copy-in phase added new sections to three skills, each faithfully preserving the procedural detail CLAUDE.md used to carry: (1) `k2b-review/SKILL.md` gained "Video Feedback from Telegram (run-level)" with the reaction-match rule (URL -> title -> channel -> pick ordinal), flock-and-atomic-rewrite recipe, zero-match reply text, ambiguity prompt, and all three Liam Ottley forbidden rules (never direct-append to video-preferences.md, never hardcode playlist IDs, never skip the flock). (2) `k2b-ship/SKILL.md` gained "Codex Adversarial Review -- the two checkpoints" with Checkpoint 1 (plan review) spelled out, the three skip conditions (vault-only, config tweaks, emergency hotfixes), the "never skip both" rule, and the presentation rules (neutral reporting, no pre-filtering). (3) `k2b-observer/SKILL.md` gained "Session-Start Inline Confirmation" with the HIGH/MEDIUM 3-option recipe, the exact rejection JSONL format preserved verbatim, and an idempotency note for cross-session deduplication. Strip phase then deleted seven CLAUDE.md sections (A: Video Feedback via Telegram 40 lines, B: Email Safety 4 lines, C: Codex Adversarial Review 28 lines, D: Session Discipline manual fallback 7 lines, E: Inline Observer Confirmation 20 lines, plus Codex-recommended extras: the duplicate /ship block inside "Roadmap & Feature Notes" and the procedural lines inside "Obsidian Cross-Linking"), replacing each with a 1-paragraph pointer naming the target skill. Kept intact: File Conventions, Slash Commands index, Rules list, /ship top-level mandate, session-start hook summary.
 
 **Codex review:** 2 rounds. Round 1 (plan review) challenged the proposed strip set and flagged that strip A (not just C and E) also needed copy-first -- k2b-review had the file-locking mechanics but not the Telegram reaction-match/reply logic. Also surfaced two extras beyond the original 7-row plan: the duplicate /ship block at CLAUDE.md:246-249, and procedural lines inside "Obsidian Cross-Linking" (the latter verified to be already covered in k2b-vault-writer). Plan adjusted to copy-first A + C + E before stripping. Round 2 (pre-commit) returned APPROVE with zero findings -- content preservation verified at specific line numbers for all three copy-ins, no dangling pointers, no em dashes, no accidental deletions, 4 expected files only.
 

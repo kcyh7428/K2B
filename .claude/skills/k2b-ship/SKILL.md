@@ -34,13 +34,17 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 Before anything else, scan for learnings that have crossed the promotion threshold (reinforced 3x) and surface them to Keith for inline y/n/skip confirmation. This step runs on every `/ship` call, including `--no-feature` and `--defer` variants. It is read-only until Keith answers `y`.
 
-Run:
+Run (skip gracefully if the script is absent -- sibling repos like K2Bi do not carry the active-rules pipeline yet, so absence is normal, not an error):
 
 ```bash
-scripts/promote-learnings.py
+if [ -x scripts/promote-learnings.py ]; then
+  scripts/promote-learnings.py
+else
+  echo "auto-promote: skipped (no scripts/promote-learnings.py in $(pwd))"
+fi
 ```
 
-The scanner prints a JSON array of candidate learnings. Each candidate has: `learn_id`, `count`, `distilled_rule`, `area`, `source_excerpt`, `would_exceed_cap`, `current_active_count`, `cap`. If the array is empty, print `auto-promote: 0 candidates` and continue to step 0a.
+If the script is absent, skip the rest of step 0 entirely (no candidate surfacing, no wiki-log-append at end of section) and proceed to step 0a. When the script IS present, the scanner prints a JSON array of candidate learnings. Each candidate has: `learn_id`, `count`, `distilled_rule`, `area`, `source_excerpt`, `would_exceed_cap`, `current_active_count`, `cap`. If the array is empty, print `auto-promote: 0 candidates` and continue to step 0a.
 
 For each candidate, surface Keith inline:
 
@@ -77,13 +81,17 @@ Then continue to step 0a.
 
 ### 0a. Ownership drift check (advisory)
 
-Run:
+Run (skip gracefully if absent -- sibling repos like K2Bi may not carry this script):
 
 ```bash
-scripts/audit-ownership.sh || true
+if [ -x scripts/audit-ownership.sh ]; then
+  scripts/audit-ownership.sh || true
+else
+  echo "ownership-drift: skipped (no scripts/audit-ownership.sh in $(pwd))"
+fi
 ```
 
-The script exits non-zero when it finds known rule phrases outside their canonical home (see `scripts/ownership-watchlist.yml`). This step is **advisory**. Drift does not block `/ship`. Surface the offenders to Keith inline:
+When the script IS present, it exits non-zero when it finds known rule phrases outside their canonical home (see `scripts/ownership-watchlist.yml`). This step is **advisory**. Drift does not block `/ship`. Surface the offenders to Keith inline:
 
 ```
 [warn] ownership drift: rule=<id> phrase=<phrase>
@@ -221,7 +229,16 @@ git commit -m "$(cat <<'EOF'
 <message from step 4>
 EOF
 )"
-git push origin main
+
+# Push only if an `origin` remote is configured. Sibling repos like K2Bi may
+# not have one yet (Phase 1), which is expected, not an error. Match by exact
+# name -- a remote called `upstream` would otherwise pass `git remote | grep -q .`
+# and then fail at push time when we still target `origin`.
+if git remote | grep -qx 'origin'; then
+  git push origin main
+else
+  echo "push: skipped (no 'origin' remote configured in $(pwd))"
+fi
 ```
 
 Never pass `--no-verify`. Never pass `--amend` unless Keith explicitly asked. If pre-commit hooks fail, fix the underlying issue and create a NEW commit.
@@ -288,7 +305,13 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 Co-Shipped-By: k2b-ship
 EOF
 )"
-git push origin main
+
+# Same remote-guard as step 5 -- match by exact name `origin`, not "any remote".
+if git remote | grep -qx 'origin'; then
+  git push origin main
+else
+  echo "push: skipped (no 'origin' remote configured in $(pwd))"
+fi
 ```
 
 Never `--amend` the step-5 commit to include DEVLOG.md -- amends rewrite history and can drop signed state. Always create a new commit.
@@ -324,6 +347,19 @@ If the just-shipped feature was removed from In Progress (leaving In Progress em
 
 ### 12. Deployment handoff -- explicit sync-now or defer
 
+**Pre-check: does this repo even have a deploy target?** Before prompting sync-now / defer, verify the current repo has a deploy script:
+
+```bash
+if [ ! -x scripts/deploy-to-mini.sh ]; then
+  echo "deploy-handoff: skipped (no scripts/deploy-to-mini.sh in $(pwd) -- repo has no Mac Mini deploy target yet)"
+  # Skip the rest of step 12 entirely. Do not write to .pending-sync/.
+fi
+```
+
+For K2B, the script exists -- flow continues as normal. For K2Bi (Phase 1 through Phase 3), no Mini provisioning exists yet, so the sync question is meaningless and the mailbox entry would be a dead letter. Once K2Bi gets its own `deploy-to-mini.sh` in Phase 4, this check starts passing and the rest of step 12 engages automatically.
+
+If the deploy script exists, continue:
+
 If any files in categories `skills`, `code`, `dashboard`, or `scripts` were in the commits, the Mac Mini is now out of date with the pushed code. (`scripts/hooks/**` rolls up into `scripts` -- do not write a separate `hooks` category into mailbox entries, `/sync` has no deploy target for it and would silently drop the change.) A soft reminder is not enough because it can be missed and leaves no recovery signal. Ask Keith an explicit question:
 
 > Project files changed (list the categories + files). Run `/sync` now, or defer to a later session?
@@ -331,18 +367,22 @@ If any files in categories `skills`, `code`, `dashboard`, or `scripts` were in t
 > - **defer** -- drop a new entry in the `.pending-sync/` mailbox so the next session (or the next `/sync`) catches up
 
 **If Keith picks `now`:**
-1. Invoke the `k2b-sync` skill via the Skill tool (or run `~/Projects/K2B/scripts/deploy-to-mini.sh auto` if skill invocation is unavailable in the current harness).
+1. Invoke the `k2b-sync` skill via the Skill tool (or run `"$(git rev-parse --show-toplevel)"/scripts/deploy-to-mini.sh auto` if skill invocation is unavailable in the current harness -- the path resolves to the current repo's deploy script, not hardcoded to K2B, so a sibling repo with its own `scripts/deploy-to-mini.sh` deploys its own tree).
 2. Report what was synced.
 3. **Do NOT touch the `.pending-sync/` mailbox.** `/sync` is the sole owner of the mailbox lifecycle. It consumes and deletes its own entries on success. Any cleanup `/ship` did after-the-fact would race with a concurrent `/ship --defer` in another session and could silently destroy a newer deferred entry. Leave the mailbox alone.
 
 **If Keith picks `defer`:**
 
-1. Write a **new unique entry** in the `~/Projects/K2B/.pending-sync/` mailbox directory. Each defer creates its own file -- we never rewrite an existing file -- so concurrent defers from other sessions cannot race. Write via temp-file + `os.replace()` so a crash mid-write cannot leave partial JSON that downstream readers would flag as UNREADABLE:
+1. Write a **new unique entry** in the **current repo's** `.pending-sync/` mailbox directory -- that is, the `.pending-sync/` folder at the root of whichever git repo `/ship` is running from. For K2B sessions this resolves to `~/Projects/K2B/.pending-sync/`; for sibling repos like K2Bi it resolves to the sibling's own `.pending-sync/` (each repo has its own mailbox and its own `/sync` consumer). Each defer creates its own file -- we never rewrite an existing file -- so concurrent defers from other sessions cannot race. Write via temp-file + `os.replace()` so a crash mid-write cannot leave partial JSON that downstream readers would flag as UNREADABLE:
 
    ```bash
    python3 <<PYEOF
-   import json, os, datetime, tempfile, uuid
-   dir_ = os.path.expanduser("~/Projects/K2B/.pending-sync")
+   import json, os, datetime, tempfile, uuid, subprocess
+   # Derive mailbox dir from git repo root, NOT hardcoded to K2B
+   repo_root = subprocess.check_output(
+     ["git", "rev-parse", "--show-toplevel"], text=True
+   ).strip()
+   dir_ = os.path.join(repo_root, ".pending-sync")
    os.makedirs(dir_, exist_ok=True)
 
    now = datetime.datetime.now(datetime.timezone.utc)

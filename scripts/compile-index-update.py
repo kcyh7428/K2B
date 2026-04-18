@@ -77,7 +77,7 @@ MASTER_TABLE_HEADER = "| Folder | Purpose | Entries |"
 
 # Master table data row:
 #   g1 = display text, e.g. "people/"
-#   g2 = link href, e.g. "people/index.md" or "projects/k2b-investment/index.md"
+#   g2 = link href, e.g. "people/index.md" or "projects/k2bi/index.md"
 #   g3 = purpose text (between second and third pipes)
 #   g4 = old count
 MASTER_ROW_RE = re.compile(

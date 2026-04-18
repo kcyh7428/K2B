@@ -133,7 +133,7 @@ Call the atomic 4-index helper. This is the ONLY permitted way to update any ind
 ```
 
 The helper:
-- Resolves each wiki page to its deepest containing subfolder (nested-aware, so `wiki/projects/k2b-investment/foo.md` maps to `projects/k2b-investment`, not `projects`).
+- Resolves each wiki page to its deepest containing subfolder (nested-aware, so `wiki/projects/k2bi/foo.md` maps to `projects/k2bi`, not `projects`).
 - Groups mixed-subfolder updates and touches every affected subfolder index exactly once.
 - Parses the existing `Last updated: ... | Entries: N` header and the master 3-column table in place; never rewrites shape.
 - Validates every target index; exits 1 if any shape is unrecognized (nothing mutated).

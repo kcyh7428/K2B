@@ -42,7 +42,9 @@ Do NOT auto-sync without Keith's confirmation. Always ask first.
 
 ### 0. Consume the pending-sync mailbox
 
-Before detecting changes in the current session, check the `~/Projects/K2B/.pending-sync/` mailbox directory for entries deferred by `/ship --defer` in this or a previous session. Each entry is a single JSON file written atomically; multiple entries accumulate if Keith defers several ships before running `/sync`. `/sync` is the sole consumer: it reads entries, folds them into the sync scope, runs the deploy, and deletes each entry it successfully processed -- **by filename**, never by a rewrite-compare pattern. This makes the protocol race-free without locks.
+Before detecting changes in the current session, check the **current repo's** `.pending-sync/` mailbox directory (resolved from `git rev-parse --show-toplevel`, not hardcoded) for entries deferred by `/ship --defer` in this or a previous session. For K2B sessions this resolves to `~/Projects/K2B/.pending-sync/`. Each entry is a single JSON file written atomically; multiple entries accumulate if Keith defers several ships before running `/sync`. `/sync` is the sole consumer: it reads entries, folds them into the sync scope, runs the deploy, and deletes each entry it successfully processed -- **by filename**, never by a rewrite-compare pattern. This makes the protocol race-free without locks.
+
+> **Fork-friendly, not auto-portable.** The mailbox path is derived per-repo so this skill body doesn't have to be edited at fork time, but the rsync targets and deploy-script invocations later in this skill (lines starting around "Detect Changes" and "Deployment") are still hardcoded to `~/Projects/K2B/`. A sibling repo that forks this skill MUST also swap those paths to its own targets, otherwise `/sync` would consume a sibling-repo mailbox entry and then rsync the K2B tree -- silently syncing the wrong files. K2Bi's Phase 1 Session 3 plan covers this fork-time swap.
 
 **Parse failures must be loud, not silent.** A malformed entry is *worse* than no entry -- it means the durable recovery signal is broken, and silently skipping it would re-create the lost-recovery problem the mailbox was added to prevent. If an entry file cannot be parsed, stop and report to Keith so they can inspect, fix, or delete it manually.
 
@@ -51,7 +53,9 @@ Before detecting changes in the current session, check the `~/Projects/K2B/.pend
 **Scan step.** List the mailbox and classify each entry:
 
 ```bash
-MAILBOX="$HOME/Projects/K2B/.pending-sync"
+# Derive mailbox dir from current repo root, not hardcoded -- so a forked sync
+# skill in a sibling repo (e.g. K2Bi) reads from its own .pending-sync/, not K2B's.
+MAILBOX="$(git rev-parse --show-toplevel)/.pending-sync"
 mailbox_state=$(python3 <<PYEOF
 import json, os, sys, time
 
@@ -141,7 +145,7 @@ PYEOF
 
 1. **`mailbox_state == "EMPTY"`**: no deferred entries. Proceed with normal conversation-context detection in step 1.
 2. **`mailbox_state` starts with `VALID|`**: parse the JSON list that follows the pipe. Each element is `[filename, payload]`. Fold all payloads into a single sync scope: union of `files`, union of `categories`. Report to Keith: "Consuming N mailbox entries: list the `entry_id`s." Save the list of filenames -- those are the exact files you will delete after the sync succeeds.
-3. **`mailbox_state` starts with `UNREADABLE|`**: STOP. Do not proceed to detection or sync. Report loudly to Keith with the list of bad entries: "Mailbox entries at `~/Projects/K2B/.pending-sync/` are unreadable: {list}. The durable deferred-sync signal is broken. Inspect, fix, or delete the bad files and re-run /sync." Never auto-delete corrupted entries -- they may be useful evidence. If there's a mixed `VALID|` line as well, show it too but still require Keith to acknowledge the broken state before proceeding.
+3. **`mailbox_state` starts with `UNREADABLE|`**: STOP. Do not proceed to detection or sync. Report loudly to Keith with the list of bad entries: "Mailbox entries at `<repo-root>/.pending-sync/` are unreadable: {list}. The durable deferred-sync signal is broken. Inspect, fix, or delete the bad files and re-run /sync." (For K2B sessions, `<repo-root>` is `~/Projects/K2B`.) Never auto-delete corrupted entries -- they may be useful evidence. If there's a mixed `VALID|` line as well, show it too but still require Keith to acknowledge the broken state before proceeding.
 
 **After a successful sync:**
 
@@ -149,8 +153,13 @@ Delete only the specific filenames that were in the `VALID|` list at the start o
 
 ```bash
 python3 <<PYEOF
-import os
-MAILBOX = os.path.expanduser("~/Projects/K2B/.pending-sync")
+import os, subprocess
+# Same per-repo derivation as the scan step -- a forked sync skill in a sibling
+# repo deletes from its own mailbox, not K2B's.
+repo_root = subprocess.check_output(
+  ["git", "rev-parse", "--show-toplevel"], text=True
+).strip()
+MAILBOX = os.path.join(repo_root, ".pending-sync")
 PROCESSED = $PROCESSED_FILENAMES_JSON  # list of filenames captured from VALID| line at start
 for name in PROCESSED:
     path = os.path.join(MAILBOX, name)
