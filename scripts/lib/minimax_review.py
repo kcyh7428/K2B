@@ -184,6 +184,61 @@ def gather_diff_scoped_context(
     return "\n\n".join(sections), files_sorted
 
 
+def gather_file_list_context(
+    paths: list[str],
+    repo_root: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Return (context_text, file_list) for an explicit list of file paths.
+
+    No git context. Missing files and directories are skipped with a
+    stderr warning -- never crash. Useful for ad-hoc "review these files"
+    runs not tied to a diff or a plan.
+    """
+    root = repo_root or REPO_ROOT
+    if not paths:
+        return "", []
+    sections: list[str] = []
+    sections.append("## file-list review (no git context)")
+    included: list[str] = []
+    for rel in paths:
+        path = (root / rel) if not Path(rel).is_absolute() else Path(rel)
+        if not path.exists():
+            print(
+                f"[minimax-review] warning: skipping missing file: {rel}",
+                file=sys.stderr,
+            )
+            continue
+        if path.is_dir():
+            print(
+                f"[minimax-review] warning: skipping directory: {rel}",
+                file=sys.stderr,
+            )
+            continue
+        if is_binary(path):
+            sections.append(f"### {rel}\n_(binary, skipped)_")
+            included.append(rel)
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            sections.append(f"### {rel}\n_(unreadable: {e})_")
+            continue
+        truncated_note = ""
+        if len(data) > MAX_FILE_BYTES:
+            data = data[:MAX_FILE_BYTES]
+            truncated_note = f"\n_(truncated to {MAX_FILE_BYTES} bytes)_"
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("utf-8", errors="replace")
+        numbered = "\n".join(
+            f"{i + 1:5d}  {line}" for i, line in enumerate(text.splitlines())
+        )
+        sections.append(f"### {rel}{truncated_note}\n```\n{numbered}\n```")
+        included.append(rel)
+    return "\n\n".join(sections), included
+
+
 def build_prompt(target_label: str, focus: str, content: str, schema_text: str) -> str:
     template = PROMPT_PATH.read_text()
     return (

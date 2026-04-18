@@ -221,3 +221,57 @@ echo "$ctx" | grep -q 'return 99' || \
 echo "$ctx" | grep -q '```diff' || \
   fail "test3: missing diff section for file_a.py"
 echo "ok test3: diff-scoped excludes unrelated dirty files"
+
+# --- Test 4: file-list happy path -- two files, both in output -------
+TMP4="$(mktmp)"
+build_fixture_repo "$TMP4"
+
+ctx=$(call_gatherer gather_file_list_context "$TMP4" '["file_a.py", "file_b.py"]')
+
+echo "$ctx" | grep -q 'file_a.py' || fail "test4: missing file_a.py"
+echo "$ctx" | grep -q 'file_b.py' || fail "test4: missing file_b.py"
+echo "$ctx" | grep -qE '^\s*1\s+def a' || \
+  fail "test4: missing line numbers on file_a"
+echo "$ctx" | grep -qE '^\s*1\s+def b' || \
+  fail "test4: missing line numbers on file_b"
+# No git context expected
+if echo "$ctx" | grep -q '## git status'; then
+  fail "test4: file-list scope leaked git status"
+fi
+if echo "$ctx" | grep -q '```diff'; then
+  fail "test4: file-list scope leaked git diff"
+fi
+echo "ok test4: file-list happy path"
+
+# --- Test 5: file-list with one missing path -- warn + skip ----------
+TMP5="$(mktmp)"
+build_fixture_repo "$TMP5"
+
+ctx=$(call_gatherer gather_file_list_context "$TMP5" '["file_a.py", "missing.py"]' 2>"$TMP5/stderr.log")
+
+echo "$ctx" | grep -q 'file_a.py' || fail "test5: file_a.py missing from output"
+if echo "$ctx" | grep -q 'missing.py'; then
+  fail "test5: missing.py should NOT appear in the context output"
+fi
+grep -q 'skipping missing file: missing.py' "$TMP5/stderr.log" || \
+  fail "test5: expected stderr warning for missing.py"
+echo "ok test5: file-list warns + skips missing files"
+
+# --- Test 6: file-list with a directory entry -- warn + skip ---------
+TMP6="$(mktmp)"
+build_fixture_repo "$TMP6"
+mkdir -p "$TMP6/subdir"
+printf 'inside\n' > "$TMP6/subdir/inner.py"
+
+ctx=$(call_gatherer gather_file_list_context "$TMP6" '["file_a.py", "subdir"]' 2>"$TMP6/stderr.log")
+
+echo "$ctx" | grep -q 'file_a.py' || fail "test6: file_a.py missing"
+if echo "$ctx" | grep -q '### subdir'; then
+  fail "test6: subdir should not be in the context output"
+fi
+if echo "$ctx" | grep -q 'inner.py'; then
+  fail "test6: inner.py (inside subdir) leaked -- gatherer should not recurse"
+fi
+grep -q 'skipping directory: subdir' "$TMP6/stderr.log" || \
+  fail "test6: expected stderr warning for subdir"
+echo "ok test6: file-list warns + skips directories"
