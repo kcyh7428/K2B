@@ -14,6 +14,8 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 - `/research <url>` -- Deep dive on a specific URL (YouTube, GitHub, article)
 - `/research deep <topic>` -- Multi-source deep research via NotebookLM (see below)
 - `/research deep <topic> --sources <url1> <url2> ...` -- Deep research with specific sources
+- `/research notebook <subcommand>` -- Persistent named NotebookLM notebooks for multi-angle research (see "Named notebook library" section)
+- `/research videos "<query>"` -- On-demand YouTube discovery + NotebookLM filter (one-shot, notebook auto-deleted after the run)
 
 > For internal vault health and system auditing, use `/improve vault` instead.
 
@@ -682,7 +684,7 @@ PYEOF
 
    ### 1. <real_title>
 
-   <why_k2b prose — this is what Keith reads>
+   <why_k2b prose -- this is what Keith reads>
 
    - **url:** <real_url>
    - **channel:** <real_channel>  ·  **duration:** <real_duration>  ·  **published:** <real_published>
@@ -711,7 +713,7 @@ PYEOF
 
    ## Candidates K2B rejected (<N_rejected>)
 
-   - <real_title> · <real_channel> — <reason>
+   - <real_title> · <real_channel> -- <reason>
    - ...
    ````
 
@@ -786,6 +788,167 @@ All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the ca
 - Do NOT re-inline the baked Keith framing into the Step 5 NBLM prompt. Gemini must not see Keith's taste. Only K2B (Step 6) sees framing + preference tail.
 - Do NOT hardcode playlist IDs. Always `jq`-lookup from `scripts/k2b-playlists.json`.
 - Do NOT pad picks to 5 when fewer clearly deserve it. Zero is a valid outcome.
+
+## Named notebook library (`/research notebook`) -- added 2026-04-18
+
+Persistent NotebookLM notebooks that survive across sessions. Use this when Keith wants to ask multiple angles against the same source corpus over time (days or weeks) without paying the 2-5 minute re-indexing cost for every new question.
+
+**When to use which NBLM path:**
+
+| Path | Notebook lifecycle | Use case |
+|---|---|---|
+| `/research videos "<query>"` | **Deleted after one run.** Fresh candidates every run, so re-indexing is unavoidable anyway. | One-shot YouTube filter. |
+| `/research deep <topic>` | Persists **unnamed** -- notebook ID only appears in the `raw/research/` note frontmatter. Practical reuse requires digging that ID back out. | One-time multi-source synthesis on a topic Keith won't revisit. |
+| `/research notebook <name>` | Persists **named.** Registered in `wiki/context/notebooklm-registry.md` via `scripts/nblm-registry-helper.sh`. Reusable by name from any future session. | Multi-angle research on a topic Keith expects to revisit. |
+
+**Registry ownership** per the K2B memory ownership matrix: `scripts/nblm-registry-helper.sh` is the single writer. Never hand-edit the registry markdown. Never `sed`/`awk` it from other scripts. Other skills read via `nblm-registry-helper.sh get <name>` and then invoke the `notebooklm` CLI directly with the returned ID.
+
+### Subcommands
+
+Every subcommand uses kebab-case names (a-z, 0-9, dash, 1-48 chars). The helper rejects anything else.
+
+#### `/research notebook create <name> "<topic>"`
+
+Create a fresh notebook, gather sources, add them, wait for indexing, register in the library, and report back. Mirrors the Phase 1-2 flow of `/research deep` but with naming upfront.
+
+```bash
+# Phase 1: source gathering (same as /research deep Phase 1 -- yt-search + perplexity + vault grep)
+# Keith reviews + approves the list.
+
+# Phase 2a: create notebook with a human-readable title AND register it.
+NB_TITLE="K2B Library: $NAME"   # e.g. "K2B Library: investment-sba"
+NB_ID=$(notebooklm create "$NB_TITLE" --json | jq -r '.notebook.id')
+scripts/nblm-registry-helper.sh add "$NAME" "$NB_ID" "$DESCRIPTION"
+
+# Phase 2b: add each approved source. After all sources indexed, update the
+# registry row with the real source count so /research notebook list shows it.
+for URL in "${SOURCES[@]}"; do
+  notebooklm source add "$URL" -n "$NB_ID"
+done
+# Wait for indexing (reuse the same parallel-wait + canonical-reconcile pattern
+# from /research videos Step 3 if source count > 5).
+READY_COUNT=$(notebooklm source list -n "$NB_ID" --json | jq '[.[] | select(.status=="ready")] | length')
+scripts/nblm-registry-helper.sh update "$NAME" --sources "$READY_COUNT" --touch
+```
+
+Also supports `--sources <url1> <url2> ...` to skip the discovery phase and use explicit URLs (same semantics as `/research deep --sources`).
+
+#### `/research notebook ask <name> "<question>"`
+
+Ask a new question against an existing named notebook. No source-gathering, no re-indexing. Answers land in `raw/research/YYYY-MM-DD_notebook-ask_<name>_<slug>.md` with citations if `notebooklm ask --json` is used.
+
+```bash
+NB_ID=$(scripts/nblm-registry-helper.sh get "$NAME")    # exits 4 if name not found
+[ -z "$NB_ID" ] && exit 4
+notebooklm ask "$QUESTION" -n "$NB_ID"                  # or --json for citations
+scripts/nblm-registry-helper.sh update "$NAME" --touch  # bump last-used
+```
+
+Write the Q+A to `raw/research/` in a lightweight format (not the full Deep Research Output Format -- ask answers are follow-ups, not fresh briefings):
+
+```markdown
+---
+tags: [research, notebook-ask, {name}]
+date: YYYY-MM-DD
+type: notebook-ask
+origin: k2b-extract
+notebook-name: {name}
+notebook-id: {nb-id}
+up: "[[Home]]"
+---
+
+# Notebook Ask: {name}
+
+**Question:** {question}
+
+## Answer
+
+{notebooklm ask output, verbatim}
+
+## K2B framing (optional, Opus-added)
+
+{1-3 sentences if Opus has an identity-aware take; otherwise omit this section.}
+```
+
+#### `/research notebook add-source <name> <url>`
+
+Add a source to an existing named notebook. Useful when Keith finds a new article / paper / YouTube video that should join an ongoing research corpus.
+
+```bash
+NB_ID=$(scripts/nblm-registry-helper.sh get "$NAME")
+notebooklm source add "$URL" -n "$NB_ID"
+notebooklm source wait -n "$NB_ID" --timeout 300   # wait for the new source only
+NEW_COUNT=$(notebooklm source list -n "$NB_ID" --json | jq '[.[] | select(.status=="ready")] | length')
+scripts/nblm-registry-helper.sh update "$NAME" --sources "$NEW_COUNT" --touch
+```
+
+#### `/research notebook list`
+
+Print the registry table. Useful on its own, and used by other skills to discover what's available.
+
+```bash
+scripts/nblm-registry-helper.sh list
+```
+
+#### `/research notebook remove <name>`
+
+Delete the NotebookLM notebook AND the registry entry. The helper does NOT call `notebooklm delete` itself (separation of concerns: the helper manages the registry file, the skill orchestrates NBLM operations). The skill must call both, IN ORDER, and ABORT if the NBLM-side delete fails -- otherwise the registry entry disappears while the notebook is still alive (quota-consuming orphan, invisible to the library).
+
+```bash
+NB_ID=$(scripts/nblm-registry-helper.sh get "$NAME")
+if ! notebooklm delete -n "$NB_ID" -y; then
+  echo "notebooklm delete failed for $NAME ($NB_ID) -- registry entry NOT removed" >&2
+  echo "Try again later, or manually verify via 'notebooklm list' whether the notebook still exists." >&2
+  exit 1
+fi
+scripts/nblm-registry-helper.sh remove "$NAME"
+```
+
+If `notebooklm delete` succeeds but the helper `remove` then fails (disk full, lock contention past 10s, permission error): the notebook is gone but the registry row remains. Surface the error to Keith so he can manually re-run the helper remove or edit the row out of the next ship. The state is recoverable (run `remove` again once the underlying issue is fixed).
+
+### Advanced NBLM operations on named notebooks
+
+The `notebooklm` CLI exposes much more than `ask`: audio overviews, mind maps, infographics, slide decks, video, reports, persistent notes, sharing, source refresh, fulltext retrieval. K2B does NOT wrap every command. Keith (or the skill) looks up the ID and invokes `notebooklm` directly:
+
+```bash
+NB_ID=$(scripts/nblm-registry-helper.sh get investment-sba)
+
+# Audio overview
+notebooklm generate audio "Focus on risk frameworks" -n "$NB_ID" --json
+notebooklm artifact wait <artifact_id> --timeout 1200
+notebooklm download audio ~/Projects/K2B-Vault/Assets/audio/2026-04-20_investment-sba_risk.mp3
+
+# Mind map
+notebooklm generate mind-map -n "$NB_ID"
+notebooklm download mind-map ~/Projects/K2B-Vault/Assets/2026-04-20_investment-sba_mindmap.json
+
+# Save the current conversation as a persistent NotebookLM note
+notebooklm history --save "Risk framework Q&A 2026-04-20" -n "$NB_ID"
+
+# Source hygiene: check which sources went stale (articles updated upstream)
+notebooklm source stale -n "$NB_ID" --json
+notebooklm source refresh <source_id> -n "$NB_ID"
+
+# Generate a full NotebookLM report artifact
+notebooklm generate report "Executive summary across all sources" -n "$NB_ID"
+notebooklm artifact wait <artifact_id> --timeout 600
+notebooklm download report ~/Projects/K2B-Vault/raw/research/2026-04-20_investment-sba_report.md
+
+# Suggest follow-up prompts based on the corpus
+notebooklm artifact suggestions -n "$NB_ID"
+
+# Share read-only
+notebooklm share public -n "$NB_ID" --view-level viewer
+```
+
+The `notebooklm` skill at `~/.claude/skills/notebooklm/` has full command documentation.
+
+### What NOT to do
+
+- Do NOT hand-edit `wiki/context/notebooklm-registry.md`. The block between the `REGISTRY-TABLE-START` / `REGISTRY-TABLE-END` markers is rewritten atomically on every helper call, and your manual edits inside that block WILL be overwritten. Prose above and below the markers is preserved.
+- Do NOT reuse a named notebook for `/research videos`. That flow uses one-shot notebooks with 25 YouTube candidates that change every run; there is no reuse case.
+- Do NOT skip the `--touch` / `--sources` update calls after `ask` or `add-source`. The registry's "Last Used" and "Sources" columns are how Keith (and `/improve`) know which notebooks are still live.
+- Do NOT attempt to rename a notebook in place by editing the registry. Use `remove` + `create` (registered names are the K2B-side handle, not the NBLM-side title -- `notebooklm rename` changes the latter and is a separate concern).
 
 ## MiniMax extraction offload (added 2026-04-10)
 
