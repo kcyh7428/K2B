@@ -1,6 +1,6 @@
 ---
 name: k2b-ship
-description: End-of-session shipping workflow -- runs Codex pre-commit review, commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and reminds Keith to /sync. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
+description: End-of-session shipping workflow -- runs adversarial pre-commit review (Codex primary, MiniMax-M2.7 fallback), commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and reminds Keith to /sync. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
 ---
 
 # K2B Ship
@@ -13,7 +13,7 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 **Proactive prompt:** At the natural end of any session where K2B modified code in `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
 
-**Do NOT auto-ship.** Always confirm the commit message and the Codex findings before committing.
+**Do NOT auto-ship.** Always confirm the commit message and the reviewer findings before committing.
 
 ## When NOT to Use
 
@@ -23,8 +23,8 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 ## Commands
 
-- `/ship` -- full workflow with Codex review + feature note updates + roadmap updates
-- `/ship --skip-codex <reason>` -- skip Codex review with a recorded reason (must provide reason)
+- `/ship` -- full workflow with adversarial review (Codex primary, MiniMax fallback) + feature note updates + roadmap updates
+- `/ship --skip-codex <reason>` -- skip the Codex reviewer specifically (NOT skip review entirely). MiniMax fallback still runs unless also unavailable. Reason is required (e.g. `codex-quota-depleted`, `codex-cli-wedged`, `codex-plugin-missing`).
 - `/ship --no-feature` -- ship code without touching feature notes or the roadmap (e.g. typo fix, config tweak)
 - `/ship status` -- show what would ship without actually shipping
 
@@ -136,26 +136,40 @@ Read `K2B-Vault/wiki/concepts/index.md`, find the **In Progress** lane.
 
 For multi-ship features (e.g. `feature_mission-control-v3`), read the feature note's Shipping Status table. Identify the current ship row (`in-flight` / `in progress`). Ask Keith to confirm which ship this commit completes.
 
-### 3. Codex pre-commit review gate
+### 3. Adversarial pre-commit review gate
 
-**Mandatory unless `--skip-codex <reason>` is passed.** This is **Checkpoint 2** of the two K2B adversarial review checkpoints. (Checkpoint 1 is **plan review** -- see below -- and runs earlier, before implementation. `/ship` only owns Checkpoint 2.)
+**Mandatory unless `--skip-codex <reason>` is passed AND no fallback reviewer is run.** This is **Checkpoint 2** of the two K2B adversarial review checkpoints. (Checkpoint 1 is **plan review** -- see below -- and runs earlier, before implementation. `/ship` only owns Checkpoint 2.)
+
+Two reviewers can fill this gate. Codex is primary; MiniMax-M2.7 via `scripts/minimax-review.sh` is the documented fallback when Codex quota is depleted (see [[wiki/concepts/Shipped/feature_minimax-adversarial-reviewer]] for the spec). Decision tree before invoking:
+
+1. **Try Codex first.** Run the background + poll pattern below.
+2. **If Codex fails with "usage depleted" / quota error / unreachable:** stop the Codex task, switch to MiniMax. Invoke `scripts/minimax-review.sh` (fast, ~30 seconds, working-tree scope). Treat its output the same way as Codex output -- present findings neutrally to Keith, let Keith decide. If MiniMax returns NEEDS-ATTENTION, fix the real findings inline and re-run; the second pass is cheap. Record the gate result as `reviewed-by: minimax (codex skipped: <reason>)` plus the artifact paths under `.minimax-reviews/`.
+3. **If BOTH reviewers fail:** stop. Surface to Keith. Only proceed with `/ship --skip-codex <reason>` if Keith explicitly overrides AND Checkpoint 1 (plan review) ran earlier in the session.
 
 Run Codex review on the uncommitted diff using the **background + poll** pattern, not a synchronous foreground slash invocation:
 
 ```bash
 CODEX_PLUGIN="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex"
 if [ ! -f "$CODEX_PLUGIN/scripts/codex-companion.mjs" ]; then
-  echo "Codex plugin not found at $CODEX_PLUGIN. Run /codex:setup or re-run with /ship --skip-codex <reason>." >&2
-  exit 2
+  # Decision tree branch (3) explicitly says: if plugin missing, try MiniMax fallback first --
+  # do NOT exit here. Surface to Keith and route to MiniMax. The "both unavailable" loud-failure
+  # path lives inside the MiniMax fallback block, NOT here -- here Codex-missing is just one
+  # of the documented routes-to-fallback conditions.
+  echo "Codex plugin not found at $CODEX_PLUGIN -- routing to MiniMax fallback (see 'MiniMax fallback invocation pattern' below)." >&2
+  echo "If MiniMax also fails, /ship will refuse to proceed and instruct Keith to run /codex:setup or override via /ship --skip-codex <reason>." >&2
+  # IMPORTANT: do NOT `exit` here. Skip the Codex launch block below, jump straight to
+  # the MiniMax fallback invocation pattern. The skill's Bash-tool execution model treats
+  # this as "fall through to the next code block in the skill body" -- the MiniMax block
+  # owns the loud-failure exit code if MiniMax is also unavailable.
+else
+  # Launch via Bash tool with run_in_background: true. This gives the assistant
+  # a task_id + output file to tail, and prevents the review from blocking the
+  # session turn when Codex's backend does a cold-start reconnect storm
+  # (observed: 5 silent reconnect attempts ~= 10+ minutes before any output).
+  CLAUDE_PLUGIN_ROOT="$CODEX_PLUGIN" \
+    node "$CODEX_PLUGIN/scripts/codex-companion.mjs" \
+    review --wait --scope working-tree 2>&1
 fi
-
-# Launch via Bash tool with run_in_background: true. This gives the assistant
-# a task_id + output file to tail, and prevents the review from blocking the
-# session turn when Codex's backend does a cold-start reconnect storm
-# (observed: 5 silent reconnect attempts ~= 10+ minutes before any output).
-CLAUDE_PLUGIN_ROOT="$CODEX_PLUGIN" \
-  node "$CODEX_PLUGIN/scripts/codex-companion.mjs" \
-  review --wait --scope working-tree 2>&1
 ```
 
 **Polling protocol while the background task runs:**
@@ -171,35 +185,69 @@ Why this pattern instead of a foreground `/codex:review` slash call: the slash w
 - Keith decides: fix now, defer, or accept. If he fixes, re-run the same background + poll pattern on the new diff.
 - Log the gate result: `reviewed / skipped:<reason>`, number of findings, fix verdict.
 
-If `codex-companion.mjs` is missing entirely (plugin not installed): fail loudly with "Run `/codex:setup` or re-run with `/ship --skip-codex <reason>`."
+If `codex-companion.mjs` is missing entirely (plugin not installed): try the MiniMax fallback first via `scripts/minimax-review.sh`. If MiniMax also unavailable (no `MINIMAX_API_KEY`, network down), then fail loudly with "Both reviewers unavailable. Run `/codex:setup`, configure `MINIMAX_API_KEY`, or re-run with `/ship --skip-codex <reason>` after explicit Keith override."
 
-### Codex Adversarial Review -- the two checkpoints
+#### MiniMax fallback invocation pattern
 
-K2B uses OpenAI Codex (via the `/codex:` plugin) as a second-model reviewer to catch blind spots Claude cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
+When Codex quota is depleted or the plugin is unreachable, run MiniMax-M2.7 instead. Foreground call (no background polling needed -- it returns in ~30 seconds):
+
+```bash
+if ! scripts/minimax-review.sh --focus "<one-paragraph context: what changed, what to look for>"; then
+  echo "MiniMax fallback ALSO failed (script missing, MINIMAX_API_KEY unset, network down, or non-zero exit)." >&2
+  echo "BOTH reviewers unavailable. /ship cannot proceed without an adversarial pass." >&2
+  echo "Surface to Keith: 'Both Codex and MiniMax are unreachable. Options: (1) fix the underlying problem and re-run, (2) explicit override via /ship --skip-codex <reason> -- only valid if Checkpoint 1 plan review ran earlier in the session.'" >&2
+  exit 3
+fi
+```
+
+The error guard is mandatory. A silent fall-through to the Codex shell block below would re-attempt the already-failed primary, double-failing without surfacing the "both unavailable" state to Keith.
+
+Surface the MiniMax output verbatim to Keith. Treat NEEDS-ATTENTION findings the same as Codex findings -- triage real-vs-false-positive (MiniMax can't see files outside the git working tree, so "file not verified" findings are usually false positives that need a quick `grep` to confirm). Fix real findings inline and re-run; iterative second passes are cheap. Record the gate result as:
+
+```
+reviewed-by: minimax (codex skipped: <quota-depleted | plugin-missing | wedged>)
+findings: <count>
+artifacts: .minimax-reviews/<timestamp>_working-tree.json
+```
+
+Both reviewers' archived JSON outputs are durable evidence of the gate -- Codex via its session log, MiniMax via `.minimax-reviews/`.
+
+**MiniMax invocation contract.** The script exits 0 on success (any verdict including NEEDS-ATTENTION counts as success -- the verdict is review output, not script status), non-zero on failure (missing API key, network error, malformed MiniMax response, JSON Schema validation failure). Empty stdout from a 0-exit run is impossible by design (the formatter always emits a verdict). If you observe empty output with exit 0, treat it as failure mode and route to the both-fail branch above -- silent emptiness is worse than a loud error.
+
+### Adversarial Review -- the two checkpoints
+
+K2B uses a second-model reviewer (Codex primary, MiniMax-M2.7 fallback) to catch blind spots Claude cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
 
 **Checkpoint 1: Plan Review.** Before implementing any new feature, skill, or significant refactor, after the plan is written but before code is touched:
 
-- Run `/codex:adversarial-review challenge the plan` with the plan file path
+- **Codex (primary)**: `/codex:adversarial-review challenge the plan` with the plan file path. Codex has Read tool access, so it can fetch any plan file from any path -- the typical locations (`~/.claude/plans/`, `<repo>/plans/`) are both reachable.
+- **MiniMax fallback** when Codex unavailable: MiniMax CANNOT see files outside the git working tree, and plan files live at `~/.claude/plans/` (Claude Code plans, outside any repo) or `<repo>/plans/` (gitignored or untracked) -- `minimax-review.sh` gathers context from `git status` / `git diff` only, so a bare invocation would produce a generic review with no plan content. Workarounds:
+  - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/minimax-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` MiniMax M2.7 has a generous prompt window so even multi-thousand-line plans fit.
+  - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .minimax-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
+  - **(c) Skip Plan Review entirely and rely on Checkpoint 2 being mandatory** when Checkpoint 1 was skipped. Acceptable for small plans where adversarial review at pre-commit time catches the same issues; not acceptable for large architectural plans where catching the issue early matters.
 - Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
 - Adjust the plan based on findings BEFORE writing code
 
-This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit.
+This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If neither Codex nor MiniMax was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped via `--skip-codex`.
 
-**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs Codex review on the uncommitted diff via the background + poll pattern documented in step 3 above -- not via a synchronous `/codex:review` slash call, because that can silently hang the session on a Codex cold-start reconnect storm. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the decision tree at the top of step 3 above (Codex first, MiniMax fallback). Codex uses the background + poll pattern -- not a synchronous `/codex:review` slash call, because that can silently hang the session on a Codex cold-start reconnect storm. MiniMax uses a foreground call to `scripts/minimax-review.sh` (returns in ~30 seconds, no polling needed). Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
 
-**When Codex review can be skipped:**
+**When pre-commit review can be skipped (gate-not-applicable cases):**
 
 - Vault-only changes (daily notes, review processing, content drafts)
 - Config tweaks, typo fixes, one-line changes
 - Emergency hotfixes where the bug-fix speed matters more than review (review after the fact)
 
-**Never skip both checkpoints.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if Checkpoint 2 is skipped via `/ship --skip-codex <reason>`, Checkpoint 1 must have run earlier in the session -- otherwise the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
+**`--skip-codex` does NOT mean "skip review."** It means "skip the Codex reviewer specifically -- usually because Codex is unavailable." The MiniMax fallback should still run unless the change is in the gate-not-applicable list above. Use `--skip-codex codex-quota-depleted` plus a manual `scripts/minimax-review.sh` invocation; record both in the ship audit trail.
 
-**Rules for presenting Codex findings to Keith:**
+**Never skip both reviewers.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if Codex AND MiniMax are both unavailable, the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
 
-- Report findings neutrally. Do not argue with Codex.
+**Rules for presenting reviewer findings to Keith:**
+
+- Report findings neutrally. Do not argue with the reviewer.
 - Do not pre-filter findings by "importance" before Keith sees them.
 - Let Keith decide which to fix, defer, or accept.
+- For MiniMax findings specifically: the reviewer cannot see files outside the git working tree, so "file not verified" / "consumer not visible" findings often dissolve under a quick direct `grep`. Triage real-vs-false-positive before triggering a fix.
 
 ### 4. Generate commit message
 
@@ -488,7 +536,9 @@ up: "[[index]]"
 
 - **Pre-commit hook fails** -> fix the underlying issue (per Active Rule 8, never `--no-verify`), re-stage, create a NEW commit (never `--amend`).
 - **Push fails (not a force-push scenario)** -> investigate. Fetch, check if the branch diverged, ask Keith how to reconcile.
-- **Codex plugin missing** -> loud failure with next-step instruction; do not silently skip.
+- **Codex plugin missing OR Codex quota depleted** -> step 3 decision tree routes to MiniMax fallback (`scripts/minimax-review.sh`). Do NOT silently skip review.
+- **MiniMax fallback fails** (script missing, `MINIMAX_API_KEY` unset, network error, non-zero exit, empty stdout despite 0 exit) -> escalate to "both reviewers unavailable" surface message in step 3. Require explicit Keith override via `/ship --skip-codex <reason>` AND confirmation that Checkpoint 1 plan review ran earlier in the session, before /ship may proceed.
+- **Both Codex AND MiniMax unavailable, no Checkpoint 1 ran either** -> /ship REFUSES to proceed. The build has had zero adversarial review. Fix the underlying reviewer problem first.
 - **Feature note not found** -> ask Keith which feature this belongs to, or offer to ship as `--no-feature`.
 - **`wiki/concepts/index.md` parse failure** -> fail loudly, point Keith at the file, do not guess the lane structure.
 - **DEVLOG.md / wiki/log.md append failure** -> commit has already landed, so degrade gracefully: print the entry Keith should add manually, continue with the rest of the workflow.

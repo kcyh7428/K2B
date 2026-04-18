@@ -284,9 +284,14 @@ For multi-ship features, include a Shipping Status table and adopt the phase gat
 
 The legacy `MOC_K2B-Roadmap.md` at vault root is now a redirect pointer kept only for backlink compatibility.
 
-## Codex Adversarial Review
+## Adversarial Review
 
-K2B uses OpenAI Codex (via the `/codex:` plugin) as a mandatory second-model reviewer at two checkpoints: **plan review** before implementation, and **pre-commit review** before committing. Both are non-negotiable; if one is skipped, the other is mandatory. Procedures, skip conditions, and presentation rules live in the **k2b-ship** skill body and the `/codex:*` plugin commands.
+K2B requires a second-model adversarial review at two checkpoints: **plan review** before implementation, and **pre-commit review** before committing. Both are non-negotiable; if one is skipped, the other is mandatory. Two reviewers are available:
+
+- **Codex** (primary, via the `/codex:` plugin) -- preferred when quota is available. Better at deep-context analysis (it can read referenced files, walk imports). Procedures, skip conditions, and presentation rules live in the **k2b-ship** skill body and the `/codex:*` plugin commands.
+- **MiniMax-M2.7** (fallback, via `scripts/minimax-review.sh`) -- when Codex daily quota is depleted OR for fast iterative passes during a single commit. Working-tree scope only; ~30 seconds per pass; same `MINIMAX_API_KEY` quota as the rest of K2B's MiniMax stack. Spec: [[wiki/concepts/Shipped/feature_minimax-adversarial-reviewer]]. Invoke with `/ship --skip-codex codex-quota-depleted` plus a manual `scripts/minimax-review.sh` run on the diff.
+
+**Never skip both reviewers.** Every commit needs at least one adversarial pass. If Codex is unavailable, MiniMax IS the gate -- not "skip review and ship." `/ship` should refuse to proceed without Keith's explicit override only if BOTH reviewers are unreachable.
 
 ## Session Discipline
 
