@@ -2,6 +2,30 @@
 
 ---
 
+## 2026-04-19 -- Item 3 of memory-architecture plan: /lint memory integrity pass (Check #13)
+
+**Commit:** `a8f4544` feat(lint): memory integrity audit (Check #13)
+
+**What shipped:** Ship 2 of the 2026-04-19 memory-architecture improvements. Gemini's Item 3 gap: K2B's `/lint` audits the vault but does NOT audit the memory files, so `MEMORY.md` pointers can rot silently (renaming or deleting a memory file without updating the index) and `MEMORY.md` / `active_rules.md` can grow past Anthropic's ~200-line auto-memory truncation cap without warning. New `scripts/lint-memory.sh` runs three read-only sub-checks: pointer resolution via a Python heredoc regex scan (every `[text](path)` in MEMORY.md must resolve relative to the memory dir, supporting absolute paths and traversal like `../../etc/policy-ledger.jsonl`), plus line-count caps at 190 for both files (10-line margin before truncation). Script prefixes findings with `[memory]`, exits 0 always (advisory), and accepts a `K2B_MEMORY_DIR` env override for testing. `k2b-lint` SKILL.md gains Check #13, two counters in the structured-artifact frontmatter (`memory-missing-pointers`, `memory-line-cap-warnings`), and scheduled-execution inclusion so weekly runs catch drift. `tests/lint-memory.test.sh` covers 14 cases including regression guards from the Codex review.
+
+**Adversarial review (Codex, via Agent + subagent_type=codex:codex-rescue):** 2 P2 + 1 P3, all fixed inline before commit.
+- P2 #1: `wc -l` counts newline bytes, not logical lines. A 191-line MEMORY.md without a trailing `\n` reports 190 and silently skips the cap warning. Fix: switched both line-count calls to `awk 'END {print NR}'`, which counts the final line even without terminator. Regression test 12a creates a 191-line file with `perl -i -pe 'chomp if eof'` stripping the final newline and asserts the 191-line warning still fires.
+- P2 #2: Python heredoc could fail on non-UTF-8 bytes in MEMORY.md; the advisory-no-`set -e` wrapper would let the script exit 0 with no `[memory]` output, masking a broken audit. Fix: wrapped the heredoc in `if ! python3 - ... <<PYEOF; then echo "[memory] audit crashed"; fi` AND added `errors='replace'` to the file open so normal pointer resolution still runs. Regression test 12b writes `\xff` into MEMORY.md and asserts at least one `[memory]` line appears.
+- P3: SKILL.md inline summary updated to "Checks run: 13" but the YAML artifact example still said `checks-run: 12`. Fix: YAML example synced to 13.
+
+**Feature status change:** no feature note (micro-ship under existing `k2b-lint` skill, per research plan's S-effort framing). `wiki/concepts/index.md` untouched.
+
+**Follow-ups:**
+- Plan file for Item 1 (importance-weighted rule promotion) landed as `plans/2026-04-19_importance-weighted-rule-promotion.md` in the working tree this session but is not in Item 3's commit; Item 1 ships next with its own feature note + Codex plan review (Checkpoint 1).
+- Smoke run of `lint-memory.sh` against the real memory dir returned zero findings (MEMORY.md=33 lines, active_rules.md=40 lines, all pointers resolve). Clean baseline.
+- Ownership-drift audit continues to flag 5 pre-existing rule drifts across 28 files; advisory only, still deferred.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Both line-count checks use `awk` not `wc -l` after Codex's P2 finding. Converts a theoretical "file doesn't end in newline" edge case into a certainty. One-byte change in the source, much clearer in the intent.
+- Python heredoc now uses `errors='replace'` rather than failing on bad bytes. Rationale: pointer resolution should be robust to mixed-encoding content (vault files occasionally carry smart quotes, emoji, non-Latin glyphs in person names). The replacement character won't match any valid pointer regex, so graceful degradation is harmless.
+
+---
+
 ## 2026-04-19 -- Item 2 of memory-architecture plan: date normalization in /learn
 
 **Commit:** `7cd1f6c` feat(feedback): normalize relative dates in /learn before write
