@@ -31,11 +31,15 @@ rules:
 
   - id: shipped-file-location
     phrase: "wiki/concepts/Shipped/"
+    # NOTE: the self_improve_learnings.md entry below depends on L-2026-04-14-001
+    # remaining in that file. If a future /learn session prunes that entry, the
+    # watchlist must be updated in the same change or audit-ownership.sh will
+    # false-positive on every other occurrence of the phrase.
     canonical_home:
       - ".claude/skills/k2b-ship/SKILL.md"
       - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
       - "CLAUDE.md"
-      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/feedback_shipped_feature_file_location.md"
+      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/self_improve_learnings.md"
     severity: warn
 
   - id: wiki-log-direct-append

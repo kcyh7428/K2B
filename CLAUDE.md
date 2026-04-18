@@ -79,17 +79,21 @@ Every fact has exactly one home. When a rule or procedure lives in more than one
 | Hard rules (rsync, feature-status edits) | Code -- pre-sync script + pre-commit hook | enforced, not loaded |
 | Domain conventions (file naming, frontmatter, taxonomy) | `CLAUDE.md` File Conventions section | yes |
 | Skill how-tos (flock patterns, atomic rename, multi-step procedures) | The skill's `SKILL.md` body | yes (on skill invoke) |
-| Auto-promoted learned preferences | `active_rules.md` (cap 12, LRU) | yes |
-| Raw learnings history | `self_improve_learnings.md` | no -- reference only |
-| Raw errors history | `self_improve_errors.md` | no -- reference only |
+| Auto-promoted learned preferences | `active_rules.md` (cap 12, LRU; promoted from learnings on Reinforced ≥ 6) | yes |
+| /learn-style facts (corrections, preferences, best-practices) -- raw learnings history | `self_improve_learnings.md` (canonical `/learn` write target; NEVER write parallel `feedback_*.md` files for the same fact) | no -- reference only |
+| Raw errors history | `self_improve_errors.md` (canonical `/error` write target) | no -- reference only |
+| Executable guards | `policy-ledger.jsonl` (canonical `/learn` guard-append target; read by bash scripts at runtime) | enforced by bash scripts, not loaded |
 | Memory index (pointers only) | `MEMORY.md` | yes |
 | Index/log mutations | Single helper function (one flock holder each) | enforced |
+
+**Note on Claude Code auto-memory `feedback_*.md` files.** Claude Code's auto-memory system instructs Claude to write `feedback_*.md` files when it learns something. K2B routes these through `/learn` (which writes to `self_improve_learnings.md` plus optionally appends a guard to `policy-ledger.jsonl`) instead, because the K2B system has reinforcement counts, distilled-rule promotion, and executable guard projection that auto-memory does not. `feedback_*.md` files in the auto-memory dir should ONLY exist for novel operational notes that genuinely have no L-ID equivalent (e.g., "subagent vs main session", "decide-don't-ask"). When in doubt, use `/learn` -- it is the canonical path. Researched 2026-04-18 against Anthropic official docs + Ian Paterson reference implementation; full analysis in `K2B-Vault/raw/research/2026-04-18_research_memory-architecture-patterns.md`.
 
 Day-one consequences:
 
 1. **No procedural content in CLAUDE.md.** "How to do X" lives in the skill that does X. CLAUDE.md points to the skill.
 2. **Hard rules ship as code, not prose.** If a rule cannot be violated without human override, it belongs in a pre-commit hook or a wrapper script, not in a markdown bullet.
 3. **Single-writer hubs.** `wiki/log.md` and the 4 compile indexes have exactly one writer script each; no skill `>>`-appends directly.
+4. **One canonical home per fact (Paterson Rule 6).** When the same fact lives in two memory files, the copies drift. Detected duplicates: delete the copy, keep the canonical source -- per the auto-memory routing note above.
 
 Ownership drift is checked advisory-only by `/ship` via `scripts/audit-ownership.sh`. Repeated drift is a promotion signal: fold it into one of the homes above or make it enforceable code.
 

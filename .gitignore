@@ -34,6 +34,9 @@ docs/superpowers/specs/2026-03-30-allhands-presentation-design.md
 # Side scripts (not K2B)
 scripts/generate-org-chart.py
 
+# MiniMax adversarial review artifacts (per-machine, not committed)
+.minimax-reviews/
+
 # Claude Code plan artifacts
 .claude/plans/
 
