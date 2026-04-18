@@ -81,6 +81,8 @@ distilled-rule: "one-sentence active-voice rule"
 
 Both forms (the `distilled-rule:` line and the `- **Distilled rule:**` bullet) should be written on every new entry. The scanner prefers the frontmatter line. The bullet is there so a human skimming the file sees the rule text without decoding frontmatter.
 
+**Access count lives elsewhere.** Since 2026-04-19 the importance-weighted rule promotion feature tracks citation counts in a separate `K2B-Vault/System/memory/access_counts.tsv` file, written ONLY by `scripts/increment-access-count.py` from `/ship` step 13.5. Do NOT add `- **Access count:**` bullets to `self_improve_learnings.md` entries here. `/learn` remains the sole writer of the learnings file. Promote-learnings and select-lru-victim look up counts from the TSV at scoring time.
+
 **Reinforcement handling:** If a new `/learn` call cites an existing L-ID or matches an existing `distilled-rule:` (case-insensitive substring), increment the existing entry's `- **Reinforced:**` count (keeping the `Reinforced` field name as-is) and append a note to its body with the new date and context. Do not create a duplicate entry. The `distilled-rule:` line is never rewritten on reinforcement; only the first capture sets it.
 
 ID format: `L-YYYY-MM-DD-NNN` where NNN auto-increments based on existing entries for that date.

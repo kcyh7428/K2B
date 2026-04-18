@@ -28,11 +28,16 @@ Exit codes:
 """
 
 import json
+import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
-ACTIVE_RULES = (
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from importance import importance_score, load_access_counts  # noqa: E402
+
+DEFAULT_ACTIVE_RULES = (
     Path.home()
     / ".claude"
     / "projects"
@@ -40,6 +45,16 @@ ACTIVE_RULES = (
     / "memory"
     / "active_rules.md"
 )
+
+
+def _resolve(env_var, default):
+    raw = os.environ.get(env_var)
+    return Path(raw) if raw else default
+
+
+ACTIVE_RULES = _resolve("K2B_ACTIVE_RULES_FILE", DEFAULT_ACTIVE_RULES)
+ACCESS_COUNTS_TSV = _resolve("K2B_ACCESS_COUNTS_TSV", None)
+TODAY = os.environ.get("K2B_TODAY") or date.today().isoformat()
 
 # Match flush-left rule line: "N. **Title.** body text (L-ID, ..., last-reinforced: YYYY-MM-DD)"
 RULE_LINE_RE = re.compile(r"^(\d+)\.\s+\*\*(.+?)\*\*\s*(.*)$", re.MULTILINE)
@@ -103,15 +118,38 @@ def main():
         print("select-lru-victim: no rules parsed", file=sys.stderr)
         sys.exit(1)
 
-    # Sort by (last_reinforced asc, reinforcement_count asc, learn_id asc).
-    rules.sort(
+    # Non-L rules are PINNED (P1 #2 of Codex plan review): they never appear
+    # as eviction candidates. Foundation rules Keith wrote manually stay in
+    # the active set until he demotes them by hand.
+    l_linked = [r for r in rules if r.get("learn_id")]
+    if not l_linked:
+        print(
+            "select-lru-victim: no L-linked rules; all rules are pinned",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    access_counts = load_access_counts(ACCESS_COUNTS_TSV)
+    for r in l_linked:
+        r["access_count"] = access_counts.get(r["learn_id"], 0)
+        r["importance_score"] = importance_score(
+            r["reinforcement_count"],
+            r["access_count"],
+            r["last_reinforced"],
+            TODAY,
+        )
+
+    # Sort by (importance_score asc, last_reinforced asc, reinforcement_count
+    # asc, learn_id asc) -- score is primary, existing chain is tiebreaker.
+    l_linked.sort(
         key=lambda r: (
+            r["importance_score"],
             r["last_reinforced"],
             r["reinforcement_count"],
             r["learn_id"],
         )
     )
-    victim = rules[0]
+    victim = l_linked[0]
     print(
         json.dumps(
             {
@@ -119,6 +157,8 @@ def main():
                 "title": victim["title"],
                 "last_reinforced": victim["last_reinforced"],
                 "reinforcement_count": victim["reinforcement_count"],
+                "access_count": victim["access_count"],
+                "importance_score": round(victim["importance_score"], 6),
                 "learn_id": victim["learn_id"],
             },
             indent=2,

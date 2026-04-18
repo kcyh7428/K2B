@@ -515,6 +515,7 @@ type: session-summary
 origin: k2b-extract
 commit: <short-sha from step 5>
 feature: <feature-slug or "infrastructure">
+cited-rules: []  # [L-id1, L-id2] if any active rules met the citation contract below
 up: "[[index]]"
 ---
 ```
@@ -531,6 +532,29 @@ up: "[[index]]"
 **First-run setup** (only if `raw/sessions/index.md` does not exist):
 1. Create `raw/sessions/index.md` with standard raw subfolder index format
 2. Add a sessions row to `raw/index.md` if not already listed
+
+**Access-count bump (Item 1 of 2026-04-19 memory-architecture plan):**
+
+After the session summary has been written, bump the citation count for every active rule that was cited or applied during this session. Citation-detection contract (tightened per Codex plan review P1 #5 -- under-count is preferred to over-count because access counts drive promotion/eviction ranking):
+
+A rule counts as cited ONLY if the session conversation matches one of these three patterns:
+1. Explicit L-ID token appears (e.g. the exact string `L-2026-04-01-001`).
+2. The rule's distilled-rule text appears verbatim as a quoted substring.
+3. Claude explicitly writes "applying rule N" or "per rule N" referencing the rule by its number or title.
+
+Ambiguous paraphrases, vibes, or "might have applied" cases are SKIPPED. If you're not sure, don't count it.
+
+Collect the unique L-IDs that passed the contract. Add them to the summary frontmatter as `cited-rules: [L-id1, L-id2]`. Then pass them to the increment helper:
+
+```bash
+if [ -n "$CITED_L_IDS" ]; then
+  if ! /Users/keithmbpm2/Projects/K2B/scripts/increment-access-count.py $CITED_L_IDS 2>&1; then
+    echo "[warn] access-count bump failed for session $(date +%Y-%m-%d_%H%M%S); session summary was written, subsequent ships do not retry past bumps" >&2
+  fi
+fi
+```
+
+Fail-open: helper crashes do NOT fail the ship. The summary file is already on disk before the bump runs, so the observer loop still picks it up.
 
 ## Error Handling
 

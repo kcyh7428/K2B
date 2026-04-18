@@ -43,13 +43,18 @@ Exit codes:
 """
 
 import json
+import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from importance import importance_score, load_access_counts  # noqa: E402
+
 VAULT = Path.home() / "Projects" / "K2B-Vault"
-LEARNINGS = VAULT / "System" / "memory" / "self_improve_learnings.md"
-ACTIVE_RULES = (
+DEFAULT_LEARNINGS = VAULT / "System" / "memory" / "self_improve_learnings.md"
+DEFAULT_ACTIVE_RULES = (
     Path.home()
     / ".claude"
     / "projects"
@@ -57,6 +62,17 @@ ACTIVE_RULES = (
     / "memory"
     / "active_rules.md"
 )
+
+
+def _resolve(env_var, default):
+    raw = os.environ.get(env_var)
+    return Path(raw) if raw else default
+
+
+LEARNINGS = _resolve("K2B_LEARNINGS_FILE", DEFAULT_LEARNINGS)
+ACTIVE_RULES = _resolve("K2B_ACTIVE_RULES_FILE", DEFAULT_ACTIVE_RULES)
+ACCESS_COUNTS_TSV = _resolve("K2B_ACCESS_COUNTS_TSV", None)
+TODAY = os.environ.get("K2B_TODAY") or date.today().isoformat()
 
 LEARN_ID_RE = re.compile(r"\bL-\d{4}-\d{2}-\d{2}-\d{3}\b")
 
@@ -86,6 +102,9 @@ AREA_RE = re.compile(
     r"^\s*-\s*\*\*Area:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE
 )
 CAP_RE = re.compile(r"Cap:\s*(\d+)\s+rules", re.IGNORECASE)
+DATE_BULLET_RE = re.compile(
+    r"^\s*-\s*\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE
+)
 
 
 def _split_entries(text):
@@ -170,6 +189,12 @@ def _cap(active_text):
     return int(m.group(1)) if m else 12
 
 
+def _extract_date(entry_text):
+    """Return the entry's Date: bullet ISO string, or empty string."""
+    m = DATE_BULLET_RE.search(entry_text)
+    return m.group(1) if m else ""
+
+
 def main():
     if not LEARNINGS.exists():
         print(f"promote-learnings: {LEARNINGS} not found", file=sys.stderr)
@@ -185,6 +210,7 @@ def main():
     existing = _existing_rules(active_text)
     active_count = _active_rule_count(active_text)
     cap = _cap(active_text)
+    access_counts = load_access_counts(ACCESS_COUNTS_TSV)
 
     candidates = []
     for lid, body in entries.items():
@@ -197,20 +223,29 @@ def main():
             continue
         distilled = _extract_distilled(body)
         area = _extract_area(body)
+        entry_date = _extract_date(body)
+        access = access_counts.get(lid, 0)
+        score = importance_score(count, access, entry_date, TODAY)
         candidates.append(
             {
                 "learn_id": lid,
                 "count": count,
+                "access_count": access,
+                "importance_score": round(score, 6),
                 "distilled_rule": distilled,
                 "area": area,
                 "source_excerpt": body[:300].replace("\n", " ").strip(),
                 "already_in_active_rules": False,
                 "rejected": False,
-                "would_exceed_cap": (active_count + 1 + len(candidates)) > cap,
+                "would_exceed_cap": False,  # recomputed after sort
                 "current_active_count": active_count,
                 "cap": cap,
             }
         )
+
+    candidates.sort(key=lambda c: c["importance_score"], reverse=True)
+    for idx, c in enumerate(candidates):
+        c["would_exceed_cap"] = (active_count + 1 + idx) > cap
 
     print(json.dumps(candidates, indent=2))
 
