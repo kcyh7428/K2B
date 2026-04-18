@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-04-18 -- /research notebook: persistent named NotebookLM notebooks
+
+**Commit:** `6e1c274` feat(research): /research notebook for persistent NotebookLM notebooks
+
+**What shipped:** Keith asked why `/research` always deletes NotebookLM notebooks after use, since re-indexing a 20-source corpus costs 2-5 minutes and he may want to ask multiple angles. Triaged: `/research videos` stays delete-after-run (fresh 25 YouTube candidates every run, nothing to reuse), but `/research deep` leaves notebooks alive yet anonymous so practical reuse requires digging the ID back out of `raw/research/` frontmatter. Shipped a name-to-ID registry + `/research notebook` subcommand so Keith can create / ask / add-source / list / remove named notebooks that survive across sessions. `scripts/nblm-registry-helper.sh` (~420 lines) is the single writer with flock+mkdir fallback, atomic tmp+mv, kebab-case name validation, and HTML-entity escaping on descriptions. `.claude/skills/k2b-research/SKILL.md` gained a ~150-line section documenting the five subcommands plus a "direct CLI pattern" telling future sessions to look up the ID via the helper and invoke `notebooklm` directly for advanced ops (audio / mind-map / report / share / source stale+refresh / note save) instead of wrapping every NBLM command. Also updated `wiki/projects/project_minimax-offload.md` to document `minimax-review.sh` as the 5th documented MiniMax worker in the footprint watermark, plus a new Updates entry describing how the adversarial reviewer extends the offload pattern.
+
+**Adversarial review:** MiniMax-M2.7 only. Codex failed twice: (a) quota depleted earlier today at `75307e5`, (b) when Keith confirmed it was back mid-ship, the `codex:codex-rescue` background agent stalled for 3 minutes on a `git diff --no-index` edge case. Killed per the "codex-cli-wedged" escape hatch. MiniMax's first two attempts timed out at the HTTPS read layer (~120s default in `minimax-common.py` vs a 106KB prompt); third attempt succeeded in ~30 seconds and returned NEEDS-ATTENTION with 4 findings: 1 HIGH false positive on `mktemp` filesystem semantics (MiniMax can't run `mktemp` to verify that a full-path template co-locates the temp file with the target), 3 valid MEDIUM/LOW fixes applied inline (unconditional EXIT trap in `acquire_lock`, `remove` subcommand error-handling order in SKILL.md so the registry entry isn't removed when `notebooklm delete` fails, full HTML entity escaping in `escape_cell` covering `&`/`<`/`>`/`|`). Second MiniMax pass intentionally skipped given today's three prior MiniMax latency events; regression harness verified the fixes and the first-pass JSON at `.minimax-reviews/2026-04-18T15-12-05Z_working-tree.json` is the durable audit trail.
+
+**Feature status change:** feature_nblm-notebook-library in-progress (same-session created) -> shipped. Moved to `wiki/concepts/Shipped/feature_nblm-notebook-library.md`. `wiki/concepts/index.md` Shipped lane adds the new row at top, evicts oldest (`feature_k2b-weave` 2026-04-12) from the inline table per the 10-row cap (file stays in `Shipped/` folder, just not in the inline index).
+
+**Follow-ups:**
+- `scripts/lib/minimax_common.py` `chat_completion()` has a hard-coded `urlopen` timeout. Bumping default from 120s to 300s + adding retry-with-backoff would have prevented today's 3-attempt review cycle. Route to `self_improve_requests.md`, not blocking.
+- First real-world test: `/research notebook create <name> "<topic>"` on an actual research topic Keith expects to revisit (e.g., investment second brain architecture, AI recruiting tools).
+- When `/lint` next runs, consider adding an orphan-detection pass: `notebooklm list --json` vs `nblm-registry-helper.sh list` to surface notebooks that exist one side but not the other.
+
+**Key decisions (divergent from spec):** None. Spec matched implementation exactly.
+
+---
+
 ## 2026-04-18 -- MiniMax-M2.7 adversarial reviewer surfaced as documented Codex fallback in CLAUDE.md + k2b-ship
 
 **Commit:** `cf3d874` docs(adversarial-review): surface MiniMax-M2.7 as documented Codex fallback
