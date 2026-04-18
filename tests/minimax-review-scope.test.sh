@@ -181,3 +181,43 @@ printf '%s\n' "$out_newonly" | grep -q '## Full file contents' || \
   fail "test1h: untracked-only case missing 'Full file contents' header"
 
 echo "ok test1: working-tree gatherer regression (1a-1h)"
+
+# --- Test 2: diff-scoped on a clean tree (no diffs to show) ----------
+TMP2="$(mktmp)"
+build_fixture_repo "$TMP2"
+# No mutations; tree is clean for tracked files.
+
+ctx=$(call_gatherer gather_diff_scoped_context "$TMP2" '["file_a.py"]')
+
+echo "$ctx" | grep -q 'file_a.py' || \
+  fail "test2: missing file_a.py content"
+echo "$ctx" | grep -qE '^\s*1\s+def a' || \
+  fail "test2: missing line-numbered content"
+# file_b.py was NOT in the request -- must not appear
+if echo "$ctx" | grep -q 'file_b.py'; then
+  fail "test2: file_b.py leaked into diff-scoped output (only file_a.py was requested)"
+fi
+echo "ok test2: diff-scoped clean tree"
+
+# --- Test 3: diff-scoped on a dirty tree -- unrelated dirty files excluded
+TMP3="$(mktmp)"
+build_fixture_repo "$TMP3"
+printf 'def a():\n    return 99\n' > "$TMP3/file_a.py"  # in scope, modified
+printf 'def b():\n    return 99\n' > "$TMP3/file_b.py"  # NOT in scope, modified
+# extra.py untracked, NOT in scope
+
+ctx=$(call_gatherer gather_diff_scoped_context "$TMP3" '["file_a.py"]')
+
+echo "$ctx" | grep -q 'file_a.py' || \
+  fail "test3: missing file_a.py (in scope)"
+if echo "$ctx" | grep -q 'file_b.py'; then
+  fail "test3: file_b.py leaked into output (unrelated dirty file)"
+fi
+if echo "$ctx" | grep -q 'extra.py'; then
+  fail "test3: extra.py leaked into output (unrelated untracked file)"
+fi
+echo "$ctx" | grep -q 'return 99' || \
+  fail "test3: missing modified content of file_a.py"
+echo "$ctx" | grep -q '```diff' || \
+  fail "test3: missing diff section for file_a.py"
+echo "ok test3: diff-scoped excludes unrelated dirty files"

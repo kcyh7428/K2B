@@ -122,6 +122,68 @@ def gather_working_tree_context(
     return "\n\n".join(sections), sorted(set(changed_files))
 
 
+def gather_diff_scoped_context(
+    files: list[str],
+    repo_root: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Return (context_text, file_list) restricted to the given files.
+
+    Includes per-file `git diff HEAD <file>` and per-file `git status -- <file>`,
+    plus full content of each file. Other dirty files in the working tree
+    are NOT included -- this is the "review only what I asked for" gatherer.
+    """
+    root = repo_root or REPO_ROOT
+    if not files:
+        return "", []
+    files_sorted = sorted(set(files))
+    sections: list[str] = []
+    sections.append("## diff-scoped review (explicit file list)")
+    for rel in files_sorted:
+        path = root / rel if not Path(rel).is_absolute() else Path(rel)
+        try:
+            status = run_git("status", "--short", "--", rel, cwd=root).rstrip()
+        except subprocess.CalledProcessError:
+            status = ""
+        try:
+            diff = run_git("diff", "HEAD", "--", rel, cwd=root).rstrip()
+        except subprocess.CalledProcessError:
+            diff = ""
+        sections.append(f"### {rel}")
+        if status:
+            sections.append("```\n" + status + "\n```")
+        else:
+            sections.append("_(no working-tree change vs HEAD)_")
+        if diff:
+            sections.append("```diff\n" + diff + "\n```")
+        if not path.exists():
+            sections.append("_(file missing from working tree)_")
+            continue
+        if path.is_dir():
+            sections.append("_(directory, skipped)_")
+            continue
+        if is_binary(path):
+            sections.append("_(binary, skipped)_")
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            sections.append(f"_(unreadable: {e})_")
+            continue
+        truncated_note = ""
+        if len(data) > MAX_FILE_BYTES:
+            data = data[:MAX_FILE_BYTES]
+            truncated_note = f"\n_(truncated to {MAX_FILE_BYTES} bytes)_"
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("utf-8", errors="replace")
+        numbered = "\n".join(
+            f"{i + 1:5d}  {line}" for i, line in enumerate(text.splitlines())
+        )
+        sections.append(f"```\n{numbered}\n```{truncated_note}")
+    return "\n\n".join(sections), files_sorted
+
+
 def build_prompt(target_label: str, focus: str, content: str, schema_text: str) -> str:
     template = PROMPT_PATH.read_text()
     return (
