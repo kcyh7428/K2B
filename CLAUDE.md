@@ -189,7 +189,14 @@ Long-running projects own their own Resume Card in the project's index note. CLA
 
 ## Email Safety
 
-Gmail operations ship through the **k2b-email** skill, which owns non-negotiable safety rules (never send, never delete, always confirm before drafting). Do not reproduce them here.
+Gmail operations ship through the **k2b-email** skill. Two rules live HERE (always loaded) because the skill body is only in context when the Skill tool is invoked, and on 2026-04-18 the Mac Mini Telegram agent sent an email without invoking k2b-email at all -- bypassing every in-skill rule.
+
+1. **Send authorization requires an ID tied to a body-preview.** `gws gmail users drafts send` may only run when the user's most recent message contains the exact draft ID from a prior preview that showed the draft's **body** (not just the subject). Bare "send", "send it", "yes", "ok", "go", "proceed" never send. A preview that shows only `Subject + Draft ID` is not authorization -- a user cannot authorize content they did not read.
+2. **Never delete emails.** Keith's inbox is not K2B's to prune.
+
+`+send`, `+reply`, `+reply-all`, `+forward` remain blocked -- they skip the draft step entirely. Only `gws gmail users drafts send` on a pre-approved draft ID is authorized.
+
+Everything else about Gmail usage (command syntax, draft creation flow, triage patterns) lives in the k2b-email SKILL.md body.
 
 ## Obsidian Cross-Linking
 
