@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-04-18 -- k2b-email authorized send via draft + explicit confirmation
+
+**Commit:** `35e1654` feat(k2b-email): authorized send via draft + explicit confirmation
+
+**What shipped:** Relaxed the absolute `NEVER send` rule on `k2b-email` to allow Gmail drafts to be sent through a tightly constrained two-turn confirmation flow. Draft-first stays the default; sending requires a separate confirmation turn with an exact `send draft <id>` phrase. Send path: Keith says "draft an email to X" -> K2B creates draft via existing MIME upload, replies with a full preview including `From` / `To` / `Cc` / `Bcc` / `Reply-To` / `Subject` / attachments (filenames + sizes) / **full body verbatim** / draft ID -> Keith replies in a SEPARATE turn with exactly `send draft <id>` -> K2B re-fetches via `drafts get`, byte-compares every outbound-impacting field plus inner `message.id`, calls `gws gmail users drafts send` only if identical, reports `Sent. Message ID: <id>`. All `+send` / `+reply` / `+reply-all` / `+forward` helpers stay blocked; only `users drafts send` on a pre-approved draft ID is authorized. Works over Telegram bot with zero bot-code changes (each Telegram message is a separate turn by definition). Refuses the send path when the full body exceeds the preview channel limit (Telegram 4096) rather than authorizing a truncated preview.
+
+**Codex review:** 4 rounds of adversarial-review via background + poll pattern (dogfooding `985a299`). Round 1 (`bl03bcl9k`): flagged bare `send`/`send it` ambiguity, ambiguity guard scoped too narrowly to fresh-only drafts, and TOCTOU hand-waving in the revalidation step. Round 2 (`b0711obs7`): flagged field-coverage hole (`Cc` / `Bcc` / attachments / `Reply-To` / full body missing from compare set) + TOCTOU framing inaccuracy. Round 3 (`be2afsp8i`): flagged body-truncation hole (preview showed first ~500 chars, so body tail went unsanctioned) + missing `From` / sender identity from the compare set. Round 4 (`btdjad337`): **APPROVE**, no material findings. Each round's fixes were surgical edits to the specific flagged rules/tables; no scope creep.
+
+**Feature status change:** created `Shipped/feature_k2b-email-send.md`; added to Shipped lane in `wiki/concepts/index.md`; oldest inline Shipped row (`feature_vault-housekeeping-agent` 2026-04-07) trimmed to maintain the "recent 10" cap.
+
+**Follow-ups:** First production-use will exercise the flow end-to-end via Telegram. If the confirmation friction bugs Keith, we can add a trusted-recipient whitelist later (deliberately out-of-scope for MVP). Needs `/sync skills` to Mac Mini (done at ship-time, completed 2026-04-18).
+
+**Key decisions (if divergent from claude.ai project specs):**
+- Exact `send draft <id>` vocabulary only, NOT bare `send` / `yes` / `go`. The ID-bound requirement was Codex's round-1 strong recommendation and defends against state drift with concurrent/stale drafts that bare-send heuristics can't disambiguate.
+- Sender identity pinned to `keith.cheung@signhub.io` (Rule 13). Send-as alias drift is rejected rather than auto-approved. Hardens against Gmail's send-as alias feature silently switching From identity post-preview.
+- Body must fit in preview channel (Rule 14). A truncated preview is never authorization for the untruncated body. If the email is too long for Telegram's 4096 limit, the skill tells Keith to send from Gmail directly instead of finding a workaround.
+- TOCTOU honestly scoped (Rule 11): Gmail drafts API has no if-match / etag on `drafts.send`. `message.id` inner-ID check narrows the race window to the millisecond gap between `get` and `send` call, acceptable for Keith's single-user Mac + Telegram setup. Documented explicitly rather than claimed as an atomic guard.
+- Voice messages never count as send confirmation (Rule 12). Transcription mishears could fabricate a "send it" from harmless speech. Text-only.
+
+---
+
+## 2026-04-18 -- k2b-remote defends against silent Clash long-poll stalls (Option B)
+
+**Commit:** `7bb7d72` fix(k2b-remote): defend against silent Clash long-poll stalls
+
+**What shipped:** Application-layer hardening for the recurring "k2b-remote goes silent for hours, no error, no recovery" failure mode first logged 2026-04-15 (see `plans/2026-04-15_k2b-remote-clash-stall-investigation.md` Option B). The failure mode is Clash Verge (the mandatory proxy because Telegram is geo-blocked at the Mini location) silently dropping the long-poll TCP connection during a quiet stretch; grammY's default 500s client timeout combined with zero TCP keepalive meant a wedged socket could hang `getUpdates` indefinitely. Concretely: (1) `HttpsProxyAgent` now configured with `keepAlive: true`, `keepAliveMsecs: 30000`, `timeout: 60000` -- dead sockets get detected in ~60s instead of forever. (2) grammY `client.timeoutSeconds: 55` sets the real application-layer abort deadline (was 500s by default). (3) `bot.start({ timeout: 50 })` sets the Telegram long-poll server wait just below the client abort so normal polls complete cleanly. (4) New grammY transformer logs `getUpdates` lifecycle: `poll start` / `poll end` at debug, `poll slow` (>52s) and `poll error` at warn so future stalls are visible at the default log level instead of silent. Timeout ladder stacks cleanly: Telegram 50s -> grammY client 55s -> socket idle 60s -> keepalive probes every 30s.
+
+**Codex review:** 2 rounds of adversarial-review via background + poll pattern. Round 1 (`bc4kugqo2`): verdict `needs-attention`. Flagged that `bot.start({ timeout: 50 })` only sets Telegram's server-side long-poll parameter, not grammY's HTTP request deadline which still defaulted to 500s -- so a proxy blackhole could still hang `getUpdates` for 8 minutes. Also flagged that my debug-level poll logging would be invisible at the production log level (pino defaults to info). Round 2 (`b9cm3rh3j`): **APPROVE** after adding `client.timeoutSeconds: 55` to both proxy and no-proxy branches of bot construction, promoting `poll error` from debug to warn, and adding a `poll slow` threshold at 52s to catch near-misses before they turn into aborts. Final suggestion (lower threshold below client timeout) applied inline; 55000 -> 52000.
+
+**Feature status change:** none. Infrastructure / reliability bugfix; no feature note created. Index.md "Last updated" line references "k2b-remote Clash stall defense shipped as infra" so the roadmap acknowledges the work without creating a feature row.
+
+**Follow-ups:** Monitor the Mini's `k2b-out.log` for `poll slow` / `poll error` entries. If the pattern recurs despite keepalive + timeouts, the next lever is Clash Verge config (Option A in the original plan: increase outbound-node idle timeout, or switch to a node with better long-connection behavior). The plan file `plans/2026-04-15_k2b-remote-clash-stall-investigation.md` stays in the worktree as historical context but was not staged this session per `/ship` predates-session rule.
+
+**Key decisions (if divergent from claude.ai project specs):**
+- Did NOT touch `NO_PROXY` or unset `HTTP_PROXY` (called out in the plan as "do NOT propose these" -- Telegram is geo-blocked at the Mini, Clash is mandatory not optional).
+- Did NOT add a `bot.api.getMe()` heartbeat (ruled out in the plan file -- getMe may run on a different socket and can't unstick an in-flight getUpdates).
+- Kept `+timeout 50s` on `bot.start()` even though TCP keepalive alone would arguably be sufficient -- defense in depth at the application layer costs nothing and makes the timeout ladder self-documenting.
+- Used a grammY API transformer (`bot.api.config.use`) for the logging diagnostic rather than patching individual API call sites -- idiomatic, narrow (only logs `getUpdates`, not every API call), zero impact on non-polling call paths.
+
+---
+
 ## 2026-04-18 -- k2b-ship/k2b-sync portability for sibling repos + K2Bi rename cleanup
 
 **Commit:** `69c4489` refactor(skills): k2b-ship/k2b-sync portability + K2Bi rename cleanup
