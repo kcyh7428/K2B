@@ -216,14 +216,52 @@ export function createBot(): Bot {
     throw new Error('TELEGRAM_BOT_TOKEN not set. Run: npm run setup')
   }
 
+  // Stall-defense timeout ladder (innermost to outermost):
+  //   Telegram long-poll     50s   (bot.start timeout, server-side wait)
+  //   grammY HTTP client     55s   (client.timeoutSeconds, aborts request on hang)
+  //   HttpsProxyAgent socket 60s   (timeout, OS idle-socket cleanup)
+  //   TCP keepalive probes   30s   (detect dead-but-held connections)
+  // Each layer is slightly looser than the one inside it, so the tightest
+  // applicable deadline fires first and the others act as fallbacks.
   const bot = new Bot(TELEGRAM_BOT_TOKEN, HTTP_PROXY ? {
     client: {
+      timeoutSeconds: 55,
       baseFetchConfig: {
-        agent: new HttpsProxyAgent(HTTP_PROXY),
+        agent: new HttpsProxyAgent(HTTP_PROXY, {
+          keepAlive: true,
+          keepAliveMsecs: 30000,
+          timeout: 60000,
+        }),
         compress: true,
       },
     },
-  } : {})
+  } : {
+    client: { timeoutSeconds: 55 },
+  })
+
+  // Diagnostic: log getUpdates lifecycle so a future stall is visible in logs.
+  // Fired for every Telegram API call; we only emit on getUpdates to keep volume low.
+  // Errors and abnormally long polls go at warn so they surface at default log level.
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    if (method !== 'getUpdates') return prev(method, payload, signal)
+    const start = Date.now()
+    logger.debug({ method }, 'poll start')
+    try {
+      const result = await prev(method, payload, signal)
+      const durationMs = Date.now() - start
+      if (durationMs > 52000) {
+        // Above Telegram's 50s long-poll but below our 55s client abort --
+        // a near-miss signal that something upstream is slow.
+        logger.warn({ method, durationMs }, 'poll slow')
+      } else {
+        logger.debug({ method, durationMs }, 'poll end')
+      }
+      return result
+    } catch (err) {
+      logger.warn({ method, durationMs: Date.now() - start, err }, 'poll error')
+      throw err
+    }
+  })
 
   // Auth middleware
   bot.use(async (ctx, next) => {

@@ -114,6 +114,10 @@ async function main(): Promise<void> {
   // Start the bot
   try {
     await bot.start({
+      // getUpdates long-poll timeout (seconds). Kept just below the 60s socket
+      // idle timeout on HttpsProxyAgent so normal polls return first; the socket
+      // timeout handles the case where Clash silently drops the connection.
+      timeout: 50,
       onStart: async (botInfo) => {
         logger.info({ username: botInfo.username }, 'K2B Remote is running')
         if (ALLOWED_CHAT_ID) {
