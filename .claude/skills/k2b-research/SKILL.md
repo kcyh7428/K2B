@@ -882,6 +882,229 @@ NEW_COUNT=$(notebooklm source list -n "$NB_ID" --json | jq '[.[] | select(.statu
 scripts/nblm-registry-helper.sh update "$NAME" --sources "$NEW_COUNT" --touch
 ```
 
+#### `/research notebook expand <name> "<refinement-angle>"` -- added 2026-04-18
+
+Layer NotebookLM's native Discover Sources on top of the manually curated corpus. Useful when Keith wants Gemini to fill coverage gaps **without replacing** the K2B-curated base (which carries the yt-search / perplexity / vault-grep judgement calls that Gemini can't reproduce). Runs `source add-research` against an existing named notebook, previews candidates, dedupes against existing sources, imports Keith's approved subset.
+
+**Why this is additive, not a replacement for the manual path:**
+
+The `/research notebook create` Phase 1 flow is deliberately K2B-curated -- yt-search applies Keith's 6-month recency window and preference-tail taste, Perplexity pulls GitHub / Reddit / X discussions with K2B's lens, vault grep surfaces prior Keith work. `expand` adds what those miss: arxiv papers, niche academic sources, Drive documents, cross-language content, items NotebookLM's own search infrastructure finds relevant that K2B's three channels won't produce. Use `expand` for the **gap-fill** pass, never the **primary** pass.
+
+**Flags:**
+- `--mode fast|deep` (default `deep`). Fast returns ~5-10 candidates in 30-60s. Deep returns ~10-25 candidates in 2-5 min with broader academic / long-tail coverage.
+- `--auto-import` -- skip the review step and import all candidates that survive dedup. Use sparingly; Gemini's discovery is well-indexed but not K2B-taste-aware, so deep-mode results on unfamiliar topics will occasionally include SEO spam or thematic misses that a manual glance would catch.
+
+**Contract the skill MUST preserve:**
+
+- Once `NB_ID` has been resolved from the registry, every terminal state flows through the **Phase F audit log append** before `exit`. Log-then-exit, never exit-then-log. Set a `STATUS` variable as phases proceed, then a single finalization block at the end appends to `expand-log.md` and exits accordingly. The only exception is the upstream "notebook not in registry" check before any state is touched -- there is nothing to audit-log against an unknown notebook, so that path exits 4 directly with no Phase F entry. Once we cross into the expansion flow itself, Phase F is mandatory.
+- `notebooklm source list --json` can return **either** a top-level array of source objects **or** an object with a `.sources` key depending on CLI version. The `/research videos` canonical reconcile at SKILL.md lines 354-362 handles both shapes; `expand` MUST use the same defensive accessor in BOTH the Phase B dedup and the Phase E `NEW_COUNT` snippet. The helper `_normalize_sources(data)` inlined in both Python heredocs below is the canonical form.
+- Per-URL `source add` failures in Phase D are tracked separately from indexing failures in `source wait`. A URL that never got a source-id back must NOT appear in the wait pool and must NOT count toward `NEW_COUNT`. The registry `--sources N` update must reflect post-wait canonical truth, not "URLs Keith approved."
+- URL normalization for dedup uses `urllib.parse` -- strip fragment, collapse default ports, lowercase host -- not just `.lower().rstrip("/")`.
+- Helper code lives inline in each Python heredoc, never passed through `os.environ` and `exec()`. Inlining is verbose but transparent; env-passed exec is a code-in-data pattern that is harder to review, harder to audit, and a net loss even when the risk is theoretical.
+
+**Flow:**
+
+```bash
+NAME="$1"
+REFINEMENT="$2"
+MODE="${MODE:-deep}"
+AUTO_IMPORT="${AUTO_IMPORT:-false}"
+NB_ID=$(scripts/nblm-registry-helper.sh get "$NAME")
+# Pre-Phase-F exit (documented exception in the Contract above): unknown
+# notebook has no audit-log scope to land in.
+[ -z "$NB_ID" ] && { echo "notebook '$NAME' not in registry" >&2; exit 4; }
+
+STATUS="unknown"
+REASON=""
+IMPORTED_URLS=()
+SKIPPED_URLS=()
+FAILED_ADD_URLS=()
+CANDIDATES_SHOWN=0
+REGISTRY_UPDATE_FAILED=false   # set true only if Phase E helper call errors
+
+RESULT=$(mktemp -t k2b-expand.XXXXXX.json)
+EXISTING=$(mktemp -t k2b-expand-existing.XXXXXX.json)
+CANDIDATES=$(mktemp -t k2b-expand-cand.XXXXXX.json)
+trap 'rm -f "$RESULT" "$EXISTING" "$CANDIDATES"' EXIT
+
+# Helper (inlined into each Python heredoc that needs it, below).
+# Definition, for reference:
+#
+#   def _normalize_sources(data):
+#       """Accept both top-level-array and object-with-.sources CLI shapes."""
+#       if isinstance(data, list):
+#           return [s for s in data if isinstance(s, dict)]
+#       if isinstance(data, dict):
+#           inner = data.get("sources")
+#           if isinstance(inner, list):
+#               return [s for s in inner if isinstance(s, dict)]
+#       return []
+
+# ---- Phase A: discovery -----------------------------------------------------
+if ! notebooklm source add-research "$REFINEMENT" --mode "$MODE" --no-wait -n "$NB_ID" 2>/dev/null; then
+  STATUS="failed"; REASON="add-research-rejected"
+elif ! notebooklm research wait -n "$NB_ID" --timeout 600 --json > "$RESULT" 2>/dev/null; then
+  STATUS="timeout"; REASON="research-wait-timeout-or-error"
+elif ! python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$RESULT" 2>/dev/null; then
+  STATUS="failed"; REASON="research-wait-malformed-json"
+fi
+
+# ---- Phase B: dedup ---------------------------------------------------------
+if [[ "$STATUS" == "unknown" ]]; then
+  notebooklm source list -n "$NB_ID" --json > "$EXISTING" 2>/dev/null || true
+  if ! python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$EXISTING" 2>/dev/null; then
+    STATUS="failed"; REASON="source-list-malformed-json"
+  else
+    RESULT="$RESULT" EXISTING="$EXISTING" \
+      python3 > "$CANDIDATES" <<'PY'
+import json, os
+from urllib.parse import urlparse, urlunparse
+
+def _normalize_sources(data):
+    """Accept both top-level-array and object-with-.sources CLI shapes."""
+    if isinstance(data, list):
+        return [s for s in data if isinstance(s, dict)]
+    if isinstance(data, dict):
+        inner = data.get("sources")
+        if isinstance(inner, list):
+            return [s for s in inner if isinstance(s, dict)]
+    return []
+
+DEFAULT_PORTS = {"http": 80, "https": 443, "ftp": 21}
+
+def normalize(url):
+    if not url:
+        return ""
+    p = urlparse(url.strip())
+    host = (p.hostname or "").lower()
+    port = p.port
+    if port is not None and DEFAULT_PORTS.get(p.scheme) == port:
+        port = None
+    netloc = host + (f":{port}" if port else "")
+    path = (p.path or "").rstrip("/")
+    # drop fragment; keep query (two URLs differing only by tracking params
+    # are not worth deduping -- false positives risk dropping real sources).
+    return urlunparse((p.scheme.lower(), netloc, path, p.params, p.query, ""))
+
+result   = json.load(open(os.environ["RESULT"]))
+existing = json.load(open(os.environ["EXISTING"]))
+existing_urls = { normalize(s.get("url") or "") for s in _normalize_sources(existing) }
+existing_urls.discard("")
+candidates_raw = _normalize_sources(result)
+kept = [s for s in candidates_raw if normalize(s.get("url") or "") and normalize(s.get("url") or "") not in existing_urls]
+print(json.dumps({"kept": kept, "raw_count": len(candidates_raw)}))
+PY
+    RAW_COUNT=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["raw_count"])' "$CANDIDATES")
+    COUNT=$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["kept"]))' "$CANDIDATES")
+    CANDIDATES_SHOWN="$COUNT"
+    if (( RAW_COUNT == 0 )); then
+      STATUS="no-candidates"; REASON="gemini-returned-empty"
+    elif (( COUNT == 0 )); then
+      STATUS="no-new-sources"; REASON="all-duplicates-of-existing-corpus"
+    fi
+  fi
+fi
+
+# ---- Phase C: review (if candidates remain) ---------------------------------
+# [Claude reasoning step, not bash.] Show Keith numbered candidates with
+# title + URL + domain tag. Parse selection in Python per the grammar below.
+# On double-ambiguous input, set STATUS="skipped"; REASON="unparseable-selection".
+# On "none", set STATUS="skipped-by-user"; REASON="keith-selected-none".
+# Otherwise populate an APPROVED_URLS array from the selection.
+
+# ---- Phase D: import + index ------------------------------------------------
+# For each APPROVED_URL, call `source add -n "$NB_ID" --json` inside a safe
+# `while IFS= read -r URL` loop (never `for URL in $(...)`, which word-splits
+# on whitespace in Gemini-returned URLs). Capture the returned source-id via
+# python3 --json parse. URLs that return a valid source-id get queued into
+# the wait set; URLs that fail go into FAILED_ADD_URLS[] and do NOT enter
+# the wait set. Mirror /research videos Step 3 for the parallel wait:
+# per-child PID + one retry + 2s backoff + canonical reconcile against
+# `source list --json` afterwards (using _normalize_sources above).
+# Partial indexing failures warn but do not abort -- expand is additive.
+
+# ---- Phase E: registry update ----------------------------------------------
+# NEW_COUNT reflects canonical ready-count, NOT count of approved URLs.
+NEW_COUNT=$(notebooklm source list -n "$NB_ID" --json 2>/dev/null \
+  | python3 -c '
+import json, sys
+
+def _normalize_sources(data):
+    """Accept both top-level-array and object-with-.sources CLI shapes."""
+    if isinstance(data, list):
+        return [s for s in data if isinstance(s, dict)]
+    if isinstance(data, dict):
+        inner = data.get("sources")
+        if isinstance(inner, list):
+            return [s for s in inner if isinstance(s, dict)]
+    return []
+
+data = json.load(sys.stdin)
+print(sum(1 for s in _normalize_sources(data) if s.get("status") == "ready"))
+')
+if ! scripts/nblm-registry-helper.sh update "$NAME" --sources "$NEW_COUNT" --touch 2>/dev/null; then
+  # Not fatal: imports already landed, registry drift is recoverable via manual re-run.
+  REGISTRY_UPDATE_FAILED=true
+fi
+
+if [[ "$STATUS" == "unknown" ]]; then
+  STATUS="imported"; REASON="ok"
+fi
+
+# ---- Phase F: audit log (the single exit point) -----------------------------
+# Always runs, regardless of STATUS. Appends one YAML-fronted block to
+# ~/Projects/K2B-Vault/raw/research/expand-log.md via atomic tmp+mv, recording:
+# date, notebook, refinement, mode, status, reason, candidates_shown,
+# imported[], skipped[], failed_add[], registry_update_failed flag.
+# After the append, exit with:
+#   0 on STATUS in {imported, no-new-sources, no-candidates, skipped-by-user}
+#   1 on STATUS in {failed, timeout, skipped}   (genuine error / abort)
+#   4 on the upstream "notebook not in registry" path (handled at the very top)
+```
+
+**Phase C selection grammar.** Accept one of:
+- `"all"` -- import every surviving candidate
+- `"none"` -- skip this expansion entirely (status `skipped-by-user`)
+- `"1,3,5-8"` -- comma-separated indices and dash-ranges
+- `"keep 1-4"` / `"drop 7,9"` -- whitelist or blacklist phrasing
+
+Parse in Python, not bash. Ranges and the "drop" grammar are fragile in pure shell. On ambiguous input, re-prompt once; on second ambiguous input, set `STATUS="skipped"; REASON="unparseable-selection"` and fall through to Phase F (do not exit mid-flow).
+
+**Phase F audit log format.** One block per run in `K2B-Vault/raw/research/expand-log.md`:
+
+```yaml
+---
+date: YYYY-MM-DD
+notebook: <name>
+refinement: "<refinement>"
+mode: fast|deep
+status: imported | no-new-sources | no-candidates | skipped-by-user | skipped | timeout | failed
+reason: <short machine-readable reason>
+candidates_shown: N
+imported: ["url1", "url2", ...]
+skipped: ["url3", ...]
+failed_add: ["url4", ...]
+registry_update_failed: false|true
+---
+```
+
+This is the durable trail distinguishing Gemini-discovered sources from manually-curated ones across the corpus, and lets `/improve` spot patterns (e.g. "Gemini adds 80% arxiv for this notebook, so the topic leans academic").
+
+**Failure-mode reference (all route through Phase F):**
+
+| Trigger | STATUS | REASON | Notebook state |
+|---|---|---|---|
+| `source add-research` rejects the request | `failed` | `add-research-rejected` | Unchanged |
+| `research wait` timeout / non-zero exit | `timeout` | `research-wait-timeout-or-error` | Unchanged |
+| `research wait` returns malformed JSON | `failed` | `research-wait-malformed-json` | Unchanged |
+| `source list --json` returns malformed JSON | `failed` | `source-list-malformed-json` | Unchanged |
+| Gemini returned zero candidates | `no-candidates` | `gemini-returned-empty` | Unchanged |
+| All candidates deduped | `no-new-sources` | `all-duplicates-of-existing-corpus` | Unchanged |
+| Keith typed `"none"` | `skipped-by-user` | `keith-selected-none` | Unchanged |
+| Selection grammar ambiguous twice | `skipped` | `unparseable-selection` | Unchanged |
+| Phase D partial: some `source add` calls fail | `imported` | `ok` (with `failed_add[]` populated) | Partial -- successful adds persist |
+| Phase E registry update fails | `imported` | `ok` (with `registry_update_failed: true`) | Sources landed, registry stale -- re-run `update` manually |
+
 #### `/research notebook list`
 
 Print the registry table. Useful on its own, and used by other skills to discover what's available.
@@ -947,6 +1170,7 @@ The `notebooklm` skill at `~/.claude/skills/notebooklm/` has full command docume
 
 - Do NOT hand-edit `wiki/context/notebooklm-registry.md`. The block between the `REGISTRY-TABLE-START` / `REGISTRY-TABLE-END` markers is rewritten atomically on every helper call, and your manual edits inside that block WILL be overwritten. Prose above and below the markers is preserved.
 - Do NOT reuse a named notebook for `/research videos`. That flow uses one-shot notebooks with 25 YouTube candidates that change every run; there is no reuse case.
+- Do NOT use `/research notebook expand` as a replacement for `/research notebook create` Phase 1. Expand is additive gap-fill on top of a K2B-curated base. Skipping the manual yt-search + perplexity + vault-grep base loses Keith's taste filter (recency window, preference tail, prior-work context) -- those channels are features, not overhead.
 - Do NOT skip the `--touch` / `--sources` update calls after `ask` or `add-source`. The registry's "Last Used" and "Sources" columns are how Keith (and `/improve`) know which notebooks are still live.
 - Do NOT attempt to rename a notebook in place by editing the registry. Use `remove` + `create` (registered names are the K2B-side handle, not the NBLM-side title -- `notebooklm rename` changes the latter and is a separate concern).
 
