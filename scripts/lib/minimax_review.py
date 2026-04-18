@@ -34,9 +34,9 @@ MAX_FILE_BYTES = 256 * 1024  # skip large files; M2.7 has 200K context but stay 
 BINARY_SNIFF_BYTES = 4096
 
 
-def run_git(*args: str) -> str:
+def run_git(*args: str, cwd: Path | None = None) -> str:
     return subprocess.check_output(
-        ["git", *args], cwd=REPO_ROOT, text=True, errors="replace"
+        ["git", *args], cwd=cwd or REPO_ROOT, text=True, errors="replace"
     )
 
 
@@ -50,7 +50,9 @@ def is_binary(path: Path) -> bool:
     return False
 
 
-def gather_working_tree_context() -> tuple[str, list[str]]:
+def gather_working_tree_context(
+    repo_root: Path | None = None,
+) -> tuple[str, list[str]]:
     """Return (context_text, changed_file_list) for working-tree scope.
 
     Includes:
@@ -59,7 +61,8 @@ def gather_working_tree_context() -> tuple[str, list[str]]:
       - diff vs HEAD for tracked changes
       - full content of each changed/untracked file (truncated if huge)
     """
-    status = run_git("status", "--short")
+    root = repo_root or REPO_ROOT
+    status = run_git("status", "--short", cwd=root)
     changed_files: list[str] = []
     for line in status.splitlines():
         if not line.strip():
@@ -73,8 +76,8 @@ def gather_working_tree_context() -> tuple[str, list[str]]:
     if not changed_files:
         return "", []
 
-    diffstat = run_git("diff", "HEAD", "--stat")
-    diff = run_git("diff", "HEAD")
+    diffstat = run_git("diff", "HEAD", "--stat", cwd=root)
+    diff = run_git("diff", "HEAD", cwd=root)
 
     sections: list[str] = []
     sections.append("## git status --short\n```\n" + status.rstrip() + "\n```")
@@ -85,7 +88,7 @@ def gather_working_tree_context() -> tuple[str, list[str]]:
 
     sections.append("## Full file contents (changed and untracked)")
     for rel in sorted(set(changed_files)):
-        path = REPO_ROOT / rel
+        path = root / rel
         if not path.exists():
             sections.append(f"### {rel}\n_(deleted)_")
             continue
@@ -116,7 +119,7 @@ def gather_working_tree_context() -> tuple[str, list[str]]:
             f"### {rel}{truncated_note}\n```\n{numbered}\n```"
         )
 
-    return "\n\n".join(sections), changed_files
+    return "\n\n".join(sections), sorted(set(changed_files))
 
 
 def build_prompt(target_label: str, focus: str, content: str, schema_text: str) -> str:
