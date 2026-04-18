@@ -36,6 +36,12 @@ When Keith says `/feedback` without specifying type, read the conversation conte
 Capture a correction, preference, or best practice.
 
 1. If description provided, use it. If not, infer the learning from the current conversation context.
+1a. **Normalize relative dates first.** Before using the description anywhere (Learning body, Context body, any prose that lands in `self_improve_learnings.md`), pipe it through `scripts/normalize-dates.py` so "yesterday" / "3 days ago" / "last Monday" / "last week" get rewritten to ISO `YYYY-MM-DD`:
+   ```bash
+   ANCHOR="$(date +%Y-%m-%d)"
+   DESCRIPTION_NORMALIZED="$(printf '%s' "$DESCRIPTION" | /Users/keithmbpm2/Projects/K2B/scripts/normalize-dates.py "$ANCHOR")"
+   ```
+   The anchor is today's date. Within a single `/learn` call, `date +%Y-%m-%d` returns the same value throughout, so relative phrases Keith types right now resolve consistently; the only edge case is a session that crosses midnight, where "yesterday" typed before midnight vs after midnight resolves to different calendar days -- acceptable for K2B's usage pattern. Use `$DESCRIPTION_NORMALIZED` for every downstream write in steps 2-6. Context strings passed in by Keith (the "Context:" field) go through the same pipe.
 2. Read `self_improve_learnings.md`.
 3. Check if a similar learning already exists (match on topic/area). If yes, increment `Reinforced` count and update the entry with any new context. If no, append a new entry.
 4. Write the updated file.
