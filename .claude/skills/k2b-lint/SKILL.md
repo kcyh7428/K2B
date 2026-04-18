@@ -144,6 +144,30 @@ MiniMax M2.7-powered semantic check -- only runs when explicitly requested (`/li
 - If omitted, scans all wiki pages (excluding context/)
 - Note: only run on-demand, not weekly.
 
+### 13. Memory Integrity (Paterson consistency, Item 3 of 2026-04-19 memory plan)
+
+Audits `MEMORY.md` and `active_rules.md` in the symlinked memory dir (`K2B-Vault/System/memory/`). Catches two silent failure modes:
+
+- An `.md` pointer in `MEMORY.md` resolving to a missing file (common after renaming or deleting a memory file without updating the index).
+- `MEMORY.md` or `active_rules.md` growing past Anthropic's ~200-line auto-memory truncation. Content past that point is invisible to Claude without warning.
+
+Run (invoked by both manual `/lint` and the weekly schedule):
+
+```bash
+~/Projects/K2B/scripts/lint-memory.sh
+```
+
+The helper is read-only, exits 0 regardless, and prints one `[memory]` line per finding. No auto-fix -- Keith decides whether a missing pointer is a typo, a deletion that should propagate, or a file waiting to be created; he also decides whether to consolidate or prune when line counts approach the cap.
+
+Emit findings into:
+- the inline report's `## Needs Review` section
+- the structured artifact's `## Needs Review` aggregator
+- the structured artifact's new `## Memory Integrity (Check #13)` section
+
+Add two counters to the structured artifact frontmatter:
+- `memory-missing-pointers: N` (count of unresolved `[text](path)` links)
+- `memory-line-cap-warnings: N` (0, 1, or 2 depending on which files overflowed)
+
 ## Output Format
 
 Every lint run produces two artifacts:
@@ -156,7 +180,7 @@ Every lint run produces two artifacts:
 # Vault Lint Report -- YYYY-MM-DD
 
 ## Summary
-- Checks run: 12
+- Checks run: 13
 - Auto-fixed: N issues
 - Needs review: N items
 - Clean: N checks passed
@@ -185,7 +209,7 @@ Frontmatter carries the summary counts and per-check roll-up. Body groups findin
 type: lint-report
 date: 2026-04-11
 run-mode: manual  # or weekly, deep
-checks-run: 12
+checks-run: 13
 auto-fixed: 3
 needs-review: 5
 clean: 4
@@ -199,6 +223,8 @@ vault-broken-links: 1
 review-stale-items: 4
 uncompiled-raw: 7
 sparse-wiki-pages: 3
+memory-missing-pointers: 0
+memory-line-cap-warnings: 0
 up: "[[index]]"
 ---
 
@@ -228,13 +254,13 @@ This structured file is the source of truth for `/improve` Sections 1b and 3 -- 
 ## Scheduled Execution
 
 When run via weekly schedule:
-1. Run all checks (1-11; check 12 is skipped in weekly runs)
+1. Run checks 1-11 + 13 (check 12 is skipped in weekly runs)
 2. Auto-fix what's safe
 3. Write structured report to `wiki/context/lint-report.md` (overwrite)
 4. Append lint summary via `scripts/wiki-log-append.sh /lint <lint-run-id> "<summary>"`
 5. If any "needs review" items: leave report in vault for Keith
 
-Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules staleness) run as part of the weekly schedule.
+Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules staleness) and check 13 (memory integrity) run as part of the weekly schedule.
 Check 12 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
 
 When run manually (`/lint`):
