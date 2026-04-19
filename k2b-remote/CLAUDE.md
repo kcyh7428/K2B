@@ -107,13 +107,23 @@ Use a list:
 
 ## Sending Images/Files to Telegram
 
-When you want to send an image, audio, video, or any file to Keith via Telegram, write an outbox manifest:
+When you want to send an image, audio, video, or any file to Keith via Telegram, use the outbox helper. It writes a guaranteed-valid JSON manifest atomically (temp file + rename) so the bot's outbox scanner never sees a partial or malformed write:
 
 ```bash
-echo '{"type":"photo","path":"/absolute/path/to/file.png","caption":"optional description"}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
+~/Projects/K2B/scripts/telegram-outbox-write.sh <type> <absolute-path> [caption]
+```
+
+Example (this exact invocation round-trips clean through emoji + `!` + apostrophes):
+
+```bash
+~/Projects/K2B/scripts/telegram-outbox-write.sh photo \
+  "/Users/fastshower/Projects/K2B-Vault/Assets/image_0_muddy_pig.jpg" \
+  "🐷 One muddy pig, as requested!"
 ```
 
 Types: `photo` (png/jpg/gif/webp), `audio` (mp3/wav/ogg), `video` (mp4), `document` (any other file).
+
+**DO NOT hand-roll the manifest with shell `echo '{...}' >`.** On 2026-04-19 an agent did that with an emoji + `!"` caption; the outbox scanner's JSON.parse threw `Bad escaped character`, its catch block silently unlinked the invalid file, Keith got a "Done. One muddy pig coming your way via Telegram" reply and no image. The helper exists so this can't happen again -- it uses python3 `json.dump` which handles every escape/Unicode case correctly.
 
 The bot picks up manifests after your response finishes and sends the file to Keith automatically. Always write the manifest AND mention the file in your text response so Keith gets both the image and your explanation.
 
