@@ -200,11 +200,22 @@ TIER_0_PREFIXES = (
 )
 TIER_0_EXACT = ("DEVLOG.md",)
 
+TIER_1_DOC_PREFIXES = (".claude/skills/", "wiki/")
+TIER_1_DOC_EXACT = ("CLAUDE.md", "README.md")
+
 
 def _is_tier_0_path(path: str) -> bool:
     if path in TIER_0_EXACT:
         return True
     return any(path.startswith(p) for p in TIER_0_PREFIXES)
+
+
+def _is_tier_1_doc(path: str) -> bool:
+    if not path.endswith(".md"):
+        return False
+    if path in TIER_1_DOC_EXACT:
+        return True
+    return any(path.startswith(p) for p in TIER_1_DOC_PREFIXES)
 
 
 def classify_tier(
@@ -228,5 +239,14 @@ def classify_tier(
         if hit:
             return 3, f"tier-3: allowlist match '{hit}' for path {f}"
 
+    # Rule 3: Tier 1 -- all docs under skills/wiki/CLAUDE.md/README.md
+    # IMPORTANT: must fire BEFORE the scale rule so large pure-docs commits
+    # don't get Tier-3-scaled. See Codex Checkpoint 1 MEDIUM #3.
+    if all(_is_tier_1_doc(f) for f in files):
+        return 1, (
+            f"tier-1: {len(files)} file(s), all .md docs under "
+            "skills/wiki/CLAUDE/README"
+        )
+
     # All other rules not yet implemented -- fall through to Tier 2 default
-    return 2, "tier-2: default (rules 3-5 pending)"
+    return 2, "tier-2: default (rules 4-5 pending)"

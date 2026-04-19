@@ -276,4 +276,101 @@ test_tier_3_allowlist_glob_does_not_overmatch
 test_error_missing_config_at_explicit_path
 test_no_config_argument_means_no_allowlist
 
+test_tier_1_skill_docs_only() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.claude/skills/k2b-test"
+  (cd "$repo" && printf '# test\n' > .claude/skills/k2b-test/SKILL.md)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:1" || fail "skill docs should be tier 1; got: $out"
+  echo "PASS: test_tier_1_skill_docs_only"
+}
+
+test_tier_1_claude_md() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf '# updated\n' > CLAUDE.md)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:1" || fail "CLAUDE.md should be tier 1; got: $out"
+  echo "PASS: test_tier_1_claude_md"
+}
+
+test_tier_1_wiki_docs() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/wiki/concepts"
+  (cd "$repo" && printf '# concept\n' > wiki/concepts/thing.md)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:1" || fail "wiki docs should be tier 1; got: $out"
+  echo "PASS: test_tier_1_wiki_docs"
+}
+
+test_tier_1_big_docs_still_tier_1_not_scale_tier_3() {
+  # Codex MEDIUM #3 regression: 250-line pure-docs commit must NOT fall
+  # through to Tier 3 scale. Docs rule fires before scale rule.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.claude/skills/k2b-big"
+  (cd "$repo" && python3 -c "print('\n'.join(['line ' + str(i) for i in range(250)]))" > .claude/skills/k2b-big/SKILL.md)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:1" || fail "big docs-only commit should still be tier 1 (docs before scale); got: $out"
+  echo "PASS: test_tier_1_big_docs_still_tier_1_not_scale_tier_3"
+}
+
+test_tier_1_mixed_docs_and_code_is_NOT_tier_1() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'docs\n' > doc.md)
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:2" || fail "mixed docs+code should be tier 2; got: $out"
+  echo "PASS: test_tier_1_mixed_docs_and_code_is_NOT_tier_1"
+}
+
+test_tier_1_skill_docs_only
+test_tier_1_claude_md
+test_tier_1_wiki_docs
+test_tier_1_big_docs_still_tier_1_not_scale_tier_3
+test_tier_1_mixed_docs_and_code_is_NOT_tier_1
+
 echo "all tests passed"
