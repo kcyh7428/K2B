@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-04-19 -- MiniMax adversarial reviewer Phase B: --scope flag (diff/plan/files gatherers)
+
+**Commit:** `12cbc29..76db249` (11 commits) -- final commit `76db249 fix(minimax-review): tighten PATH_REF_RE to require extension on relative paths`
+
+**What shipped:** Phase B of [[wiki/concepts/Shipped/feature_minimax-adversarial-reviewer]]. Lifted Phase A's hardcoded "working-tree only" scope by adding three new context gatherers in `scripts/lib/minimax_review.py`: `gather_diff_scoped_context(files)` (only listed paths + per-file diffs), `gather_plan_context(plan_path)` (a plan + every file it references via `[[wikilinks]]` / abs / rel paths), `gather_file_list_context(paths)` (explicit file list, no git context). New `--scope working-tree|diff|plan|files` CLI dispatcher in `main()` -- default stays `working-tree` for byte-for-byte back-compat. Triggered by 2026-04-19 `/ship` of `7cd1f6c` (importance-weighted rule promotion) where MiniMax tripped on a 196K-character context after `gather_working_tree_context()` swept up an unrelated 905-line K2Bi plans file. The fix was always meant to be in the wrapper, not the model -- MiniMax-M2.7 has 200K context and the prompt template takes any blob.
+
+**Adversarial review (Codex Checkpoint 1 + MiniMax Checkpoint 2):**
+
+Codex Checkpoint 1 (plan review): REWORK -> 3 P1 + 4 P2 + 1 P3, all folded into v2 plan before any code. Critical fix: v1's regression test only checked substrings (would have passed even if section ordering, deleted-file markers, or returned file order drifted) AND v1's CLI changed the prompt's `target_label` string MiniMax sees from "working tree of..." to "scope of...". Both issues silently broke "byte-for-byte back-compat". v2 rewrote Task 2 as a determinism + structural-shape pinning test (8 sub-assertions) and pinned the `target_label` string verbatim on the working-tree branch. Other P1 fixes: PATH_REF_RE broadened to support absolute + top-level relative paths (was prefix-allowlist), plan-scope path-refs to missing files now MARKED with `_(file missing)_` (was silently dropped). P2 fixes: empty parsed `--files` exits 1, doc updates added to file map (`scripts/minimax-review.sh` + `CLAUDE.md`), CLI dispatch tests added, scaffold uses `TMP_DIRS` array + single EXIT trap (per-test traps would chain-overwrite).
+
+Codex Checkpoint 2 (pre-push): Codex CLI wedged mid-investigation -- broker process exited cleanly without emitting a final verdict, after confirming both the regex permissiveness and "one concrete behavior change in the refactor path" the truncated previews showed. Per `k2b-ship` decision tree, fell back to MiniMax-M2.7 -- specifically via `--scope files` against the very files this ship just shipped. The feature reviewing itself. MiniMax NEEDS-ATTENTION returned 2 HIGH + 1 MEDIUM + 1 LOW. HIGH-1 (`PATH_REF_RE` matched prose like `gather/run_git`/`abs/rel` because the "or contains '/'" branch had no extension requirement -- false-positive `_(file missing)_` markers overwhelmed the signal in plan-scope output): fixed inline (`76db249`) by requiring rel paths to also end in a known extension. HIGH-2 (`_resolve_wikilink` rglobs wiki/+raw/ per call with no caching, O(N*F) for N wikilinks across F vault files): real but latent (plan-scope is opt-in, not auto-invoked by /ship), deferred. MEDIUM-3 false positive (the code DOES return sorted) but the test gap was real -- added Test 9c. LOW-4 cosmetic, deferred.
+
+**17 tests in `tests/minimax-review-scope.test.sh`:**
+- Test 1 (1a-1h): working-tree regression -- determinism + section ordering + deleted-file marker + untracked inclusion + line-numbering + sorted file list + clean-tree empty + diff-section-omitted-when-empty
+- Tests 2-3: diff-scope clean tree + dirty tree exclusion (the literal 2026-04-19 incident fix)
+- Tests 4-6: file-list happy / missing-file warn+skip / directory warn+skip
+- Tests 7-9: plan-scope wikilink + abs + rel paths / unresolvable wikilink warn+skip / missing path-ref MARK in output
+- Tests 9b-9c: prose-noise ignored / diff-scope sorted return (added in MiniMax fix-forward)
+- Tests 10-15: CLI dispatch (empty --files exit 1, missing --plan/--files exit 1, bogus --scope, default scope unchanged)
+
+**Feature status change:** `feature_minimax-scope-phase-b` designed -> shipped. Moved from `wiki/concepts/` to `wiki/concepts/Shipped/`. `wiki/concepts/index.md` Shipped table has the new row at the top; oldest visible row (`feature_k2b-ship`) dropped from the inline-10 to make room.
+
+**Follow-ups (deferred from Checkpoint 2):**
+- HIGH-2: Wikilink-resolver caching. Build a basename->path index once per gather call instead of per-wikilink rglob. Cheap fix; do it before the next plan-scope-heavy review run.
+- LOW-4: binary files in file-list returned-list -- minor cosmetic, document in docstring.
+- Next ship: `feature_adversarial-review-tiering` -- auto-classify diffs at /ship step 3 (small change -> diff scope, plan review -> plan scope) and route to the right reviewer at the right intensity. Phase B is the necessary precondition; tiering is the consumer.
+
+**K2Bi follow-up:** PR in `kcyh7428/K2Bi` to port the same `scripts/lib/minimax_review.py` changes (K2Bi has identical Phase A; tests differ -- K2Bi uses Python `unittest`, will translate the bash test suite). NOT including the tiering feature -- that comes in a separate PR after it stabilizes here.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Did NOT special-case `K2B-Vault/...` shorthand in plan-scope path resolution. K2B-Vault is a sibling of the repo, not a subdirectory; baking the layout into a generic gatherer was rejected. Callers wanting vault paths use absolute paths.
+- HIGH-2 wikilink rglob cost was triaged as "ship now, fix later" rather than block. Plan-scope is opt-in (no auto-routing yet), so the latency hit is bounded to manual `--scope plan` invocations. Tiering ship is the natural moment to add caching since it'll start exercising plan-scope automatically.
+- Used the new `--scope files` capability to run MiniMax Checkpoint 2 on the very files just shipped. The feature reviewing itself. Worked end-to-end -- prompt size dropped from a hypothetical full working-tree dump to 56K chars (well under any timeout) and the review caught a real bug.
+
+---
+
 ## 2026-04-19 -- Item 1 of memory-architecture plan: importance-weighted rule promotion
 
 **Commit:** `31d6c6d` feat(memory): importance-weighted rule promotion
