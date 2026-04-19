@@ -3,6 +3,27 @@
 ---
 
 
+
+## 2026-04-19 -- claude-minimaxi symlink-aware SCRIPT_DIR
+
+**Commit:** `6f07496` fix(claude-minimaxi): resolve symlink before sourcing minimax-common.sh
+
+**What shipped:** First version-controlled check-in of `scripts/claude-minimaxi.sh` (authored prior session, left untracked). Replaces `SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)` with a BSD-compatible readlink loop that walks symlinks, so invocations via `~/.local/bin/claude-minimaxi` find the sibling `minimax-common.sh` in the real `scripts/` dir, not the symlink's dir. Adds a 20-hop cycle guard to bail on cyclic/deep chains.
+
+**Review:** Tier 1 MiniMax `--scope files` single pass. NEEDS-ATTENTION -> 3 HIGH + 1 MED + 1 LOW. Triaged: 4 of 5 findings (cycle-as-code-execution path, adversarial relative symlink traversal, readlink-fail empty-SOURCE corruption, set-u unbound var mask) are adversarial-context only -- this wrapper runs on Keith's single-user Mac, not a shared server. 1 finding (cycle detection -> infinite loop) is operationally real. Added the 20-hop guard inline. Rest accepted. Archive: `.minimax-reviews/2026-04-19T*_files.json`.
+
+**Feature status change:** none -- `--no-feature` ship (wrapper-script bug fix, no feature attached).
+
+**Follow-ups:** None. Keith reported the bug with repro + fix pattern; verification ran end-to-end (`echo "what is 2+2" | claude-minimaxi -> 4`, positional form also returns `4`) before commit.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Committed the whole 111-line file as "new" rather than splitting add-wrapper and fix-wrapper into two commits, because the file had no prior git history -- splitting would have been a synthetic no-op first commit immediately followed by a one-line fix commit.
+- Shipped from `main` directly (not the `claude/recursing-payne-496c17` worktree) because the file lives in the main repo's untracked tree, outside the worktree's view. Worktree's own `scripts/` dir has no `claude-minimaxi.sh`.
+- Skipped auto-promote of `L-2026-04-19-002` (plain-English rule) -- already handled by CLAUDE.md Rules section per yesterday's devlog, and `auto-promote-rejected: true` was supposed to land on the learning. The rescan surfaced it again because the rejection marker may not have been written. Re-surface next `/ship`; re-confirm rejection there.
+
+
+---
+
 ## 2026-04-19 -- Plain-English communication rule in CLAUDE.md
 
 **Commit:** `14e442c` docs(claude): add plain-english communication rule
