@@ -3,6 +3,27 @@
 ---
 
 
+## 2026-04-19 -- Plain-English communication rule in CLAUDE.md
+
+**Commit:** `14e442c` docs(claude): add plain-english communication rule
+
+**What shipped:** One line added to `CLAUDE.md` Rules section codifying the plain-English communication rule. Keith speaks English as a second language; skip jargon (dogfood, end-to-end, split-brain, canonical, etc.), explain technical terms right after, prefer short sentences and concrete examples, rewrite simpler not louder when Keith says "I don't understand". Same rule added in parallel to `~/Projects/K2Bi/CLAUDE.md` for cross-project consistency -- K2Bi edit sits uncommitted in its own repo for separate commit there.
+
+**Review:** Tier 3 classifier (triggered by 4 pre-existing untracked files inflating file count). MiniMax fallback on actual 1-file diff: APPROVE, 0 findings. Archive: `.minimax-reviews/2026-04-19T09-58-16Z_diff.json`. Codex not invoked (single-line tone rule, Keith's call to skip the background-poll overhead for a docs-only change).
+
+**Feature status change:** none -- `--no-feature` ship. Matches pattern of other cross-cutting tone rules in CLAUDE.md Rules section (em-dashes, AI-cliche avoidance, no sycophancy).
+
+**Also this session (vault-only, no commit):**
+- Captured the review-wrapper fork from K2Bi `e5b90c7` as a parked concept: `K2B-Vault/wiki/concepts/feature_review-wrapper.md` + Parked lane entry in `wiki/concepts/index.md`. Reason: K2B's tier system routes ~80% of ships through Tier 0/1 where the wrapper adds no value, Tier 1's `--json` capture loop would not wrap cleanly, and the underlying 180s MiniMax urllib timeout is the real bug (belongs in `scripts/minimax-review.sh`, not in a wrapper above it). Revisit if a K2B Tier 2/3 ship hangs on Codex reconnect-storm or MiniMax silent inference.
+- Rejected auto-promotion of `L-2026-04-19-002` to `active_rules.md` -- canonical home for tone rules is CLAUDE.md Rules section per ownership matrix, and a copy in `active_rules.md` would duplicate. Appended `auto-promote-rejected: true` to the learning entry so the scanner stops surfacing it.
+
+**Follow-ups:** Commit the K2Bi CLAUDE.md edit in a K2Bi session (one-line addition, mirrors this K2B commit). 5 ownership-drift offenders flagged advisory (pre-existing, mostly self-reference in `ownership-watchlist.yml` + archived observation logs) -- not blocking, deferred.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Tier classifier over-counted due to 4 untracked files unrelated to this ship (skill-topology spec + plan, tiering-ship-2-handoff plan, minimax-json-job helper). Ship 2 of tiering feature (due 2026-04-26) will add `/ship --tier N` override to handle this case; for now Keith's call + MiniMax-only review was the pragmatic path.
+- Edited K2Bi CLAUDE.md directly despite the cross-project-PR rule because this is a personal communication preference (tone), not code/feature work. Tone rules are cross-cutting and apply identically across Keith's projects.
+
+
 ## 2026-04-19 -- YouTube-agent retirement cruft cleanup + K2B system infographic/reference
 
 **Commit:** `5efc7ed` chore: retire YouTube-agent cruft, add K2B system infographic + reference
