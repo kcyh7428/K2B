@@ -132,4 +132,49 @@ test_gather_tree_state_on_clean_tree
 test_gather_tree_state_with_modified_and_untracked
 test_gather_tree_state_handles_paths_with_spaces
 
+test_tier_0_vault_only() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/K2B-Vault/raw/tldrs"
+  (cd "$repo" && printf 'tldr\n' > K2B-Vault/raw/tldrs/today.md)
+  (cd "$repo" && printf 'devlog\n' > DEVLOG.md)
+
+  local out
+  out=$(call_classifier "$repo")
+  echo "$out" | grep -q "tier:0" || fail "vault+devlog should be tier 0; got: $out"
+  echo "PASS: test_tier_0_vault_only"
+}
+
+test_tier_0_plans_dot_claude() {
+  # Codex omission: .claude/plans/ consistency with plans/.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.claude/plans"
+  (cd "$repo" && printf 'plan\n' > .claude/plans/2026-04-19_thing.md)
+
+  local out
+  out=$(call_classifier "$repo")
+  echo "$out" | grep -q "tier:0" || fail ".claude/plans should be tier 0; got: $out"
+  echo "PASS: test_tier_0_plans_dot_claude"
+}
+
+test_tier_0_plans_toplevel() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/plans"
+  (cd "$repo" && printf 'plan\n' > plans/2026-04-19_other.md)
+
+  local out
+  out=$(call_classifier "$repo")
+  echo "$out" | grep -q "tier:0" || fail "plans/ should be tier 0; got: $out"
+  echo "PASS: test_tier_0_plans_toplevel"
+}
+
+test_tier_0_vault_only
+test_tier_0_plans_dot_claude
+test_tier_0_plans_toplevel
+
 echo "all tests passed"

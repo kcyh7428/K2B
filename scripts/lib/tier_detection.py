@@ -50,9 +50,11 @@ def gather_tree_state(repo_root: str | Path) -> dict:
     files: list[str] = []
     statuses: dict[str, str] = {}
 
-    # -z prints NUL-separated records; each record is "XY path" where XY are
-    # two status chars. Rename records are two NUL-separated tokens: the
-    # "R  new" record is followed by a bare "old" token.
+    # Porcelain collapses untracked directories to their name (e.g. `.claude/`)
+    # in default mode. `git status -uall` would expand them but is banned by
+    # CLAUDE.md (memory issues on large repos). Instead we parse porcelain for
+    # tracked changes and use `git ls-files --others --exclude-standard -z`
+    # to enumerate every untracked FILE individually below.
     records = porcelain.split("\x00")
     i = 0
     while i < len(records):
@@ -70,7 +72,10 @@ def gather_tree_state(repo_root: str | Path) -> dict:
             status = "R"
             i += 1  # consume the old-path token that follows
         elif idx == "?" and wt == "?":
-            status = "A"  # untracked == added for classification
+            # Skip untracked records from porcelain -- they collapse
+            # directories. Re-emit individual files via ls-files below.
+            i += 1
+            continue
         elif "A" in (idx, wt):
             status = "A"
         elif "D" in (idx, wt):
@@ -82,6 +87,19 @@ def gather_tree_state(repo_root: str | Path) -> dict:
         files.append(path)
         statuses[path] = status
         i += 1
+
+    # Enumerate untracked files individually (porcelain collapsed them above).
+    try:
+        untracked_z = _run_git(
+            "ls-files", "--others", "--exclude-standard", "-z", cwd=root
+        )
+    except subprocess.CalledProcessError:
+        untracked_z = ""
+    for path in untracked_z.split("\x00"):
+        if not path:
+            continue
+        files.append(path)
+        statuses[path] = "A"
 
     # LOC: combine unstaged + staged numstat. Untracked files are not in
     # either; count them separately by reading line count.
@@ -121,9 +139,33 @@ def gather_tree_state(repo_root: str | Path) -> dict:
     return {"files": files, "statuses": statuses, "total_loc": total_loc}
 
 
+TIER_0_PREFIXES = (
+    "K2B-Vault/",   # fork/mono-repo portability (dead code in primary K2B)
+    "plans/",
+    ".claude/plans/",
+)
+TIER_0_EXACT = ("DEVLOG.md",)
+
+
+def _is_tier_0_path(path: str) -> bool:
+    if path in TIER_0_EXACT:
+        return True
+    return any(path.startswith(p) for p in TIER_0_PREFIXES)
+
+
 def classify_tier(
     repo_root: str | Path,
     tier3_config_path: str | Path | None = None,
 ) -> tuple[int, str]:
-    """Stub -- raises NotImplementedError until Task 2."""
-    raise NotImplementedError("classify_tier stub -- see Task 2")
+    state = gather_tree_state(repo_root)
+    files = state["files"]
+
+    if not files:
+        return 2, "no changes (classifier should not run here -- /ship step 1 handles this)"
+
+    # Rule 1: Tier 0 -- all files vault/devlog/plans only
+    if all(_is_tier_0_path(f) for f in files):
+        return 0, f"tier-0: {len(files)} file(s), all vault/devlog/plans"
+
+    # All other rules not yet implemented -- fall through to Tier 2 default
+    return 2, "tier-2: default (rules 2-5 pending)"
