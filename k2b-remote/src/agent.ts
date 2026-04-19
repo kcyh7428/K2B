@@ -9,13 +9,26 @@ import { logger } from './logger.js'
 // explicit append, the Agent SDK's default systemPrompt does NOT include
 // CLAUDE.md. This caused the 2026-04-18 email send-gate bypass (Mini agent
 // sent on bare "Send it" because the "always-loaded" rule was never loaded).
+//
+// Also appends k2b-remote/CLAUDE.md -- the channel-specific rules (outbox
+// manifest pattern for sending files, "you are on the Mini" identity, Telegram
+// formatting). Without this, the 2026-04-19 photo-request failure occurred:
+// the agent fell back to scripts/send-telegram.sh (text-only) and hallucinated
+// that it was "in a MacBook session without the bot token".
 function readClaudeMd(): string {
+  const parts: string[] = []
   try {
-    return readFileSync(resolve(K2B_PROJECT_ROOT, 'CLAUDE.md'), 'utf-8')
+    parts.push(readFileSync(resolve(K2B_PROJECT_ROOT, 'CLAUDE.md'), 'utf-8'))
   } catch (err) {
-    logger.error({ err }, 'Failed to read CLAUDE.md -- agent running without project rules')
-    return ''
+    logger.error({ err }, 'Failed to read parent CLAUDE.md -- agent running without project rules')
   }
+  try {
+    const remoteMd = readFileSync(resolve(K2B_PROJECT_ROOT, 'k2b-remote', 'CLAUDE.md'), 'utf-8')
+    parts.push('\n\n---\n\n' + remoteMd)
+  } catch (err) {
+    logger.error({ err }, 'Failed to read k2b-remote/CLAUDE.md -- agent running without Telegram-channel rules')
+  }
+  return parts.join('')
 }
 
 export async function runAgent(
