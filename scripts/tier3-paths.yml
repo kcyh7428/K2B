@@ -1,0 +1,50 @@
+# scripts/tier3-paths.yml
+# Adversarial review Tier 3 allowlist.
+#
+# Files matching any of these glob patterns are classified as Tier 3
+# (iterate-until-clean Codex review) regardless of LOC or file count.
+#
+# Rationale: each path is a blast-radius path where a latent bug lands
+# in production state that cannot be rolled back by reverting the commit.
+# New paths added here effectively declare "this file deserves Tier 3
+# scrutiny" -- prefer adding over removing.
+#
+# Glob semantics (Ship 1):
+#   - Literal path match: "scripts/foo.py"
+#   - Recursive prefix match: "scripts/hooks/**" matches any path whose
+#     string starts with "scripts/hooks/". Mid-** (e.g. "a/**/b") is NOT
+#     supported in Ship 1.
+#
+# Missing this file is a classifier error, not silent empty allowlist.
+# See feature_adversarial-review-tiering.md for the full contract.
+
+paths:
+  # Memory persistence + active rules (bug here corrupts learnings history)
+  - "scripts/promote-learnings.py"
+  - "scripts/select-lru-victim.py"
+  - "scripts/increment-access-count.py"
+  - "scripts/demote-rule.sh"
+  - "scripts/lib/importance.py"
+
+  # Adversarial review infrastructure (bug here blinds every future review)
+  - "scripts/lib/minimax_review.py"
+  - "scripts/lib/adversarial-review.md"
+  - "scripts/minimax-review.sh"
+
+  # Single-writer mutation helpers (bug here corrupts shared logs/indexes)
+  - "scripts/wiki-log-append.sh"
+  - "scripts/compile-index-update.py"
+
+  # This classifier itself (bug here mis-tiers every future review)
+  - "scripts/lib/tier_detection.py"
+  - "scripts/ship-detect-tier.py"
+  - "scripts/tier3-paths.yml"
+
+  # Deployment + git hooks (bug here wedges every machine)
+  - "scripts/deploy-to-mini.sh"
+  - ".githooks/**"
+  - "scripts/hooks/**"
+
+  # Production services (bug here pages Keith at 3am)
+  - "k2b-remote/src/**"
+  - "k2b-dashboard/src/**"
