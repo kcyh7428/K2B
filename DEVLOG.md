@@ -1712,3 +1712,24 @@ Built a full web dashboard for K2B -- single-page dark theme mission control tha
 - Chose `---` as the separator. It's a markdown horizontal rule, reads as a section break in whatever the agent sees, and doesn't collide with any YAML frontmatter inside either file (frontmatter blocks are opened by `---` at file start, never mid-content).
 - Used `parts.join('')` (not `\n` join). Both files have trailing newlines and the separator already carries its own `\n\n---\n\n`, so a join-on-newline would add an extra blank line mid-document.
 - Earlier in the same session, I hand-sent the infographic to Telegram via MacBook -> Mini SSH -> curl through Clash proxy on port 7897. It worked but bypassed the outbox hardening (size limits, photo->document fallback, atomic cleanup). Keith's "you spent quite some effort to make it work; need to learn a better way" flagged the pattern; L-2026-04-19-001 captures the rule.
+
+
+## 2026-04-19 -- MiniMax MCP base_path per-machine + deploy-script `.mcp.json` coverage
+
+**Commit:** `f886cd1` fix(mcp+deploy): MiniMax MCP base_path now resolves per-machine; deploy script covers .mcp.json
+
+**What shipped:** `.mcp.json` replaces the hardcoded `/Users/keithmbpm2/Projects/K2B-Vault/Assets` path with `${HOME}/Projects/K2B-Vault/Assets` so the MiniMax MCP server resolves to the correct vault location on both the MacBook (`keithmbpm2`) and the Mac Mini (`fastshower`). `scripts/deploy-to-mini.sh` gains two protections so this drift can't silently recur: (a) `.mcp.json` is added to the top-level-docs rsync loop in `sync_skills`, and (b) `categorize()` regex is extended to match `^\.mcp\.json$` so `auto` mode routes `.mcp.json`-only changes through the skills sync. Surfaced because Keith asked the bot for a pig joke with generated image via Telegram 14:18-14:20; `mcp__minimax__text_to_image` errored on `Cannot create output directory: /Users/keithmbpm2/Projects/K2B-Vault/Assets` (the MacBook path on a Mini where the dir does not exist), agent fell back to curl, guessed wrong endpoints, gave up.
+
+**Codex review:** Pass 1 Codex Tier 3 raised one P1 -- `categorize()` wouldn't trigger skills-mode when only `.mcp.json` changed, so the new rsync entry would be unreachable in `auto` mode. Fixed by extending the regex. Pass 2 Codex companion session-locked on retry; escalated to MiniMax-M2.7 fallback which returned NEEDS-ATTENTION with 3 findings -- (1) false positive (self-contradictory between findings 1 and 2); (2) legitimate but only verifiable end-to-end, Keith retests via Telegram; (3) regex alternation dead code, simplified inline.
+
+**Feature status change:** none -- `--no-feature` infrastructure bug fix. Direct sibling of `330e794` from earlier the same session which fixed `readClaudeMd()` to load `k2b-remote/CLAUDE.md`; together they unblock the end-to-end research/MiniMax -> outbox -> Telegram image delivery chain.
+
+**Follow-ups:**
+- Keith to test: ask the Mini bot for an image via Telegram, verify `mcp__minimax__text_to_image` succeeds AND the agent writes an outbox manifest to send it. If `${HOME}` expansion is inert (MiniMax Finding 2 confirmed), swap to a shell wrapper that expands before `npx`.
+- Live state: `.mcp.json` direct-rsynced to Mini before commit; `pm2 restart k2b-remote --update-env` done. `scripts/deploy-to-mini.sh` now also rsynced to Mini so future edits flow through `auto`.
+- Bigger question surfaced: this class of silent drift (Mac-only path checked into a shared config) probably has other offenders. `scripts/audit-ownership.sh` catches rule phrases but not hardcoded-path drift. Not scoped for this commit.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Chose `${HOME}` over `~` in the JSON value. Tilde expansion is a shell feature, not an env-var-substitution feature; JSON would have passed literal `~` to the MCP process which could never resolve. `${HOME}` uses the same `${VAR}` syntax as the already-working `${MINIMAX_API_KEY}` in the same file, and HOME is guaranteed populated by every login shell and every pm2 child process.
+- Chose to keep `.mcp.json` in the skills-category rather than creating a new "config" category. The file is one line per env-var, ships via rsync as-is, and doesn't need build/restart on its own (MCP server re-reads on every agent invocation). Keeping it in skills means `/sync skills` and `/sync auto` both cover it without introducing new modes.
+- Did NOT add a startup health check that verifies the resolved MCP path exists (MiniMax Finding 2 recommendation). Good idea but out of scope for a one-line-env fix. Tracked as a follow-up in the commit body.
