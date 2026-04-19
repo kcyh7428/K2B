@@ -719,4 +719,82 @@ test_cli_wrapper_missing_default_config_exits_1
 test_cli_wrapper_outside_git_repo_fails
 test_cli_wrapper_explicit_config_flag
 
+test_is_tier_1_doc_unit_cases() {
+  # MiniMax Checkpoint 2 MEDIUM-2: direct unit tests for _is_tier_1_doc
+  # edge cases (previously only tested end-to-end via call_classifier).
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import _is_tier_1_doc
+cases = [
+    ('.claude/skills/foo/SKILL.md', True),
+    ('wiki/concepts/thing.md', True),
+    ('CLAUDE.md', True),
+    ('README.md', True),
+    ('foo.md', False),             # .md at root, not CLAUDE/README exact
+    ('foo.md.bak', False),         # not ending in .md
+    ('readme.md', False),          # lowercase, not exact README.md
+    ('.claude/skills/foo/helper.py', False),  # not .md
+    ('wiki/concepts/thing.txt', False),        # not .md
+]
+for path, expected in cases:
+    got = _is_tier_1_doc(path)
+    assert got == expected, f'FAIL: {path!r} expected {expected}, got {got}'
+print('ok')
+")
+  [ "$out" = "ok" ] || fail "_is_tier_1_doc unit cases failed: $out"
+  echo "PASS: test_is_tier_1_doc_unit_cases"
+}
+
+test_is_tier_0_path_unit_cases() {
+  # Symmetry: direct unit tests for _is_tier_0_path edge cases.
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import _is_tier_0_path
+cases = [
+    ('K2B-Vault/raw/foo.md', True),
+    ('plans/2026-04-19_thing.md', True),
+    ('.claude/plans/foo.md', True),
+    ('DEVLOG.md', True),
+    ('devlog.md', False),          # lowercase, not exact DEVLOG.md
+    ('plans-archive/foo.md', False),  # not under plans/
+    ('.claude/skills/foo/SKILL.md', False),  # .claude/skills/ is Tier 1
+]
+for path, expected in cases:
+    got = _is_tier_0_path(path)
+    assert got == expected, f'FAIL: {path!r} expected {expected}, got {got}'
+print('ok')
+")
+  [ "$out" = "ok" ] || fail "_is_tier_0_path unit cases failed: $out"
+  echo "PASS: test_is_tier_0_path_unit_cases"
+}
+
+test_rule_ordering_tier_3_allowlist_wins_over_docs() {
+  # Invariant: allowlist (rule 2) fires before docs rule (rule 3).
+  # A path that is BOTH a tier-3 allowlist hit AND a tier-1 doc should
+  # be Tier 3 (allowlist wins).
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf '# allowlisted doc\n' > CLAUDE.md)  # normally Tier 1
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths:
+  - "CLAUDE.md"
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:3" || fail "allowlist CLAUDE.md should be tier 3 (allowlist wins over docs); got: $out"
+  echo "PASS: test_rule_ordering_tier_3_allowlist_wins_over_docs"
+}
+
+test_is_tier_1_doc_unit_cases
+test_is_tier_0_path_unit_cases
+test_rule_ordering_tier_3_allowlist_wins_over_docs
+
 echo "all tests passed"

@@ -235,6 +235,16 @@ v = data.get('verdict', '') or ''
 print(v.strip().lower())
 ")
 
+    # Treat empty/parse-error verdict as MiniMax failure (malformed response
+    # with exit 0 otherwise slips past exit-code-only escalation gate and
+    # silently advances the pass counter, which masks a broken reviewer).
+    # Per MiniMax Checkpoint 2 HIGH-1.
+    if [ -z "$VERDICT" ] || [ "$VERDICT" = "parse-error" ]; then
+      echo "[tier-1] MiniMax returned malformed response (verdict empty/unparseable) on pass $TIER_1_PASS -- treating as failure." >&2
+      TIER_1_MINIMAX_FAILED=yes
+      break
+    fi
+
     if [ "$VERDICT" = "approve" ]; then
       echo "[tier-1] APPROVED on pass $TIER_1_PASS"
       TIER_1_APPROVED=yes
