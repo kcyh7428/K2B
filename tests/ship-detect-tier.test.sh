@@ -447,4 +447,136 @@ test_tier_3_scale_loc_over_200
 test_tier_2_scale_just_under_200
 test_tier_2_scale_three_small_files
 
+# Evidence-case regressions (the four commits from feature spec Problem section)
+
+test_evidence_k2b_73984d3_skill_md_81_lines() {
+  # K2B 73984d3: 81 lines of .md inside .claude/skills/, no other files.
+  # Expected tier: 1 (pure docs under skills/, scale-under threshold).
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.claude/skills/k2b-research"
+  (cd "$repo" && python3 -c "print('\n'.join(['line ' + str(i) for i in range(81)]))" > .claude/skills/k2b-research/SKILL.md)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:1" || fail "evidence 73984d3 should be tier 1; got: $out"
+  echo "PASS: test_evidence_k2b_73984d3_skill_md_81_lines"
+}
+
+test_evidence_k2b_7cd1f6c_calibration_neutral_path() {
+  # Calibration fixture: 155 LOC across neutral paths (no allowlist hit).
+  # Expected tier: 2 (scale rule does not fire at 200 threshold).
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 80))" > neutral_code.py)
+  mkdir -p "$repo/tests"
+  (cd "$repo" && python3 -c "print('\n'.join(['# test'] * 75))" > tests/neutral.test.sh)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:2" || fail "calibration 155 LOC/2 files should be tier 2; got: $out"
+  echo "PASS: test_evidence_k2b_7cd1f6c_calibration_neutral_path"
+}
+
+test_evidence_k2b_7cd1f6c_production_shape_allowlist_wins() {
+  # Production shape: real 7cd1f6c touched scripts/promote-learnings.py
+  # which IS in the Tier 3 allowlist (memory persistence). Allowlist wins.
+  # Per Codex MEDIUM #2: split from the calibration test.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/scripts"
+  (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 80))" > scripts/promote-learnings.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths:
+  - "scripts/promote-learnings.py"
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:3" || fail "production promote-learnings.py should be tier 3 via allowlist; got: $out"
+  echo "PASS: test_evidence_k2b_7cd1f6c_production_shape_allowlist_wins"
+}
+
+test_evidence_k2bi_befc26b_multi_file_runtime() {
+  # K2Bi befc26b: multi-file runtime feature. 4 files AND 320 LOC -> Tier 3.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/src/approval"
+  (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 80))" > src/approval/gate.py)
+  (cd "$repo" && python3 -c "print('\n'.join(['y=2'] * 80))" > src/approval/queue.py)
+  (cd "$repo" && python3 -c "print('\n'.join(['z=3'] * 80))" > src/approval/dispatcher.py)
+  (cd "$repo" && python3 -c "print('\n'.join(['w=4'] * 80))" > src/approval/runner.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:3" || fail "befc26b should be tier 3; got: $out"
+  echo "PASS: test_evidence_k2bi_befc26b_multi_file_runtime"
+}
+
+test_evidence_k2bi_530eb81_trading_path_allowlist() {
+  # K2Bi 530eb81: trading-order submit path. Small change, Tier 3 via allowlist.
+  # K2Bi fork of tier3-paths.yml would include src/orders/**.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/src/orders"
+  (cd "$repo" && printf 'def submit(): pass\n' > src/orders/submit.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths:
+  - "src/orders/**"
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:3" || fail "530eb81 should be tier 3 via allowlist; got: $out"
+  echo "PASS: test_evidence_k2bi_530eb81_trading_path_allowlist"
+}
+
+test_tier_2_default_small_code() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'x=1\n' > small.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:2" || fail "small code change should be tier 2; got: $out"
+  echo "PASS: test_tier_2_default_small_code"
+}
+
+test_evidence_k2b_73984d3_skill_md_81_lines
+test_evidence_k2b_7cd1f6c_calibration_neutral_path
+test_evidence_k2b_7cd1f6c_production_shape_allowlist_wins
+test_evidence_k2bi_befc26b_multi_file_runtime
+test_evidence_k2bi_530eb81_trading_path_allowlist
+test_tier_2_default_small_code
+
 echo "all tests passed"
