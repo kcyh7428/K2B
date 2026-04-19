@@ -16,9 +16,8 @@ You receive, all inline in the user message:
 1. **Recent observations** (JSONL): Each line records a K2B action -- skill invoked, files created/modified/promoted/archived, timestamps
 2. **Current preference profile** (if exists): Previously detected patterns and preferences
 3. **Current learnings** (if exists): Explicitly captured corrections and preferences
-4. **YOUTUBE_RECOMMENDED** (JSONL, if the caller provides it): youtube recommendation outcomes for taste analysis
-5. **YOUTUBE_FEEDBACK** (JSONL, if the caller provides it): explicit youtube feedback signals
-6. **SESSION_SUMMARIES** (if the caller provides them): behavioral signals extracted from Claude Code sessions on Keith's MacBook. Each summary captures 5 signal types: interest (what Keith drilled into), anti-preference (what he pushed back on), decision context, priority signals, and emerging connections. These are high-value inputs -- they represent Keith's deepest work sessions, which are richer than Telegram interactions. Weight session summary signals higher than skill adoption patterns when they conflict.
+4. **VIDEO_PREFERENCES** (if the caller provides it): the distilled video-feedback tail in `wiki/context/video-preferences.md`. Format is `YYYY-MM-DD <action>: <channel or title> -- <distilled one-sentence reason>`, most recent at the bottom. Actions are `kept`, `dropped`, `neutral`, `disliked`. This file IS the NotebookLM filter tail and is the canonical video taste model post YouTube-agent retirement. Analyze it for recurring channels/topics that Keith keeps dropping or consistently keeps, and surface patterns as candidate_learnings when 3+ confirmations exist.
+5. **SESSION_SUMMARIES** (if the caller provides them): behavioral signals extracted from Claude Code sessions on Keith's MacBook. Each summary captures 5 signal types: interest (what Keith drilled into), anti-preference (what he pushed back on), decision context, priority signals, and emerging connections. These are high-value inputs -- they represent Keith's deepest work sessions, which are richer than Telegram interactions. Weight session summary signals higher than skill adoption patterns when they conflict.
 
 ## Your Task
 
@@ -43,41 +42,6 @@ Analyze the observations to detect:
 - Do any existing learnings get additional evidence from these observations?
 - Should any learning's confidence increase or decrease?
 
-### YouTube Behavior Patterns
-The youtube recommendation data is provided inline in this prompt as the YOUTUBE_RECOMMENDED section. Analyze it for:
-- Watch rate by playlist: which playlists have highest watched/total ratio?
-- Watch rate by channel: which channels does Keith consistently watch vs skip?
-- Promotion rate: what percentage of watched/highlighted videos get promoted?
-- Promotion type by playlist: do K2B Claude videos become features while K2B Recruit becomes content ideas?
-- Highlight vs full watch: does Keith prefer quick highlights or watching the video?
-- Skip rate by playlist/channel: consistently skipped sources should be flagged
-- Time to action: how quickly does Keith respond to nudges? (nudge_date vs outcome timestamp)
-- Expiry rate: high expiry rate means recommendations aren't relevant enough
-
-### YouTube Taste Synthesis
-The youtube feedback signals are provided inline in this prompt as the YOUTUBE_FEEDBACK section. Analyze it for explicit feedback signals:
-- Aggregate skip reasons by channel and topic (e.g., "Channel X: 3x too-basic, 1x clickbait")
-- Aggregate value signals by channel and topic (e.g., "agentic-ai: 2x exactly-my-level, 1x gave-idea")
-- Calculate channel trust scores: (watched + valued) / total recommended per channel
-- Detect depth preference: ratio of "too basic" / "good but basic" vs "exactly my level"
-- When 10+ feedback signals exist, include a `youtube_taste` object in the output JSON:
-  ```json
-  "youtube_taste": {
-    "signal_count": 15,
-    "confidence": "low",
-    "channel_scores": { "Nate Herk": 1.5, "Cole Medin": -1.0 },
-    "topic_scores": { "agentic-ai": 1.0, "beginner-tutorials": -2.0 },
-    "depth_preference": "intermediate-to-advanced",
-    "anti_patterns": ["clickbait AI news roundups", "entry-level tutorials"]
-  }
-  ```
-- Confidence levels: low (< 20 signals, max adjustment +/- 1.0), medium (20-50, +/- 2.0), high (50+, +/- 3.0)
-- Do NOT hard-exclude anything. Scores are soft weights that adjust ranking, not filters
-- Parse `signal_text` fields for richer patterns than structured signals alone:
-  - Extract recurring phrases ("too basic" appearing 5x, "already know this" 3x)
-  - Detect positive topics ("the migration pattern was useful" -> topic: migration-patterns)
-  - Weight free-text signals higher than structured-only signals (richer data)
-
 ## Output Format
 
 Return valid JSON only, no markdown wrapping:
@@ -88,7 +52,7 @@ Return valid JSON only, no markdown wrapping:
   "observations_analyzed": 0,
   "patterns": [
     {
-      "type": "skill_adoption|revision|cross_skill|timing|youtube_behavior",
+      "type": "skill_adoption|revision|cross_skill|timing",
       "description": "Human-readable pattern description",
       "evidence_count": 0,
       "confidence": "low|medium|high",

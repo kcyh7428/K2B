@@ -2,7 +2,11 @@
 
 A personal AI operating system built on Claude Code + Obsidian. Captures work, surfaces patterns, drafts content, and gets smarter over time.
 
+![K2B system architecture](docs/images/k2b-system-infographic.png)
+
 Inspired by [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) and his [autoresearch](https://github.com/karpathy/autoresearch) self-improvement loop.
+
+See `wiki/context/context_k2b-system.md` in the vault for the comprehensive written reference, and `Assets/2026-04-19_k2b-system-mindmap.json` for the full hierarchical map.
 
 ## Inspiration & Credits
 
@@ -148,20 +152,16 @@ YouTube playlist (saved by Keith)
     |
 yt-playlist-poll.sh detects new videos
     |
-Transcript extracted (YouTube API or Whisper for Chinese/unavailable)
+Transcript extracted (YouTube API or Groq Whisper for Chinese/unavailable)
     |
 Playlist-specific analysis prompt generates raw/ capture
     |
 k2b-compile digests into wiki/ (updates people, concepts, reference pages)
-    |
-Recommendation engine suggests related unwatched videos
-    |
-Preference learning tracks: watch/skip/screen/expire/comment signals
-    |
-youtube-preference-profile.md guides future recommendations
 ```
 
-The recommendation engine learns from Keith's behavior -- which channels he trusts, which video lengths he prefers, which content pillars he engages with most. Videos that sit unwatched eventually expire. Screened videos (K2B Screen) get deeper analysis than bulk captures.
+Fresh-video discovery from search queries runs through `/research videos "<query>"` via NotebookLM, which reads `wiki/context/video-preferences.md` as its filter tail on every run. Feedback flows: `/research videos` drops per-video review notes in `review/`, `/review` (or the Telegram feedback path) distills Keith's verdicts into `video-preferences.md`, and the next run is naturally tuned.
+
+The old 6-hour YouTube conversational agent (taste model, channel affinity scoring, recommendation engine) was retired 2026-04-14. See the feature note for the full change.
 
 ## Self-Improvement System
 

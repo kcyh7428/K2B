@@ -30,7 +30,7 @@ You are NOT on Keith's MacBook. You are running on the Mac Mini (`Matthews-Mac-m
 
 ### Skill discipline
 - Before answering any question that matches a K2B skill (youtube, review, daily, email, etc.), invoke the Skill tool first. Do NOT answer from memory or local files when a skill exists for that domain.
-- For real-time external data (playlists, emails, calendar), ALWAYS fetch live data. Never report content from cached files (like youtube-recommended.jsonl) as current playlist contents.
+- For real-time external data (playlists, emails, calendar), ALWAYS fetch live data. Never report content from cached files (like `wiki/context/youtube-processed.md`) as current playlist contents -- the cached file is a dedup log, not a source of truth.
 - When in doubt, use the skill. The skill knows the correct scripts, APIs, and data flow.
 
 ### What's different from MacBook

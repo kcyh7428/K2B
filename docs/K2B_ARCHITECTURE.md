@@ -199,18 +199,19 @@ K2B-Vault/
 - Video generation (Hailuo 2.3) and music (Music 2.5+) ready in code, requires Max tier upgrade
 - Keith's subscription: Plus (98 RMB/mo). Max tier (198 RMB/mo) unlocks video + music.
 
-### Phase 7: YouTube Capture & Recommendations (Complete)
-**Goal**: Process YouTube videos from playlists with playlist-specific analysis. Auto-recommend content for Keith's commute.
-**What gets built**:
-- `k2b-youtube-capture` skill -- `/youtube` command for playlist polling, single URL processing, recommendations
-- 7 YouTube playlists: K2B (general), K2B Claude (enhancement ideas), K2B Invest (market insights), K2B Recruit (TA insights), K2B Content (content hooks), K2B Learn (learning paths), K2B Watch (outbound recommendations)
-- Playlist config in vault note (`Notes/Context/youtube-playlists.md`) -- editable in Obsidian
-- Transcript cascade: YouTube Transcript MCP (free) -> OpenAI Whisper (for Chinese/no-caption videos) -> metadata-only fallback
-- YouTube Data API v3 with OAuth for playlist writes (adding recommended videos)
-- Bash scripts: `yt-playlist-poll.sh`, `yt-search.sh`, `yt-playlist-add.sh`, `yt-auth.sh`
-- Processed video tracking in `Notes/Context/youtube-processed.md`
+### Phase 7: YouTube Capture (Complete, partially retired 2026-04-14)
+**Goal**: Process YouTube videos Keith saves to category playlists, with playlist-specific analysis.
+**What remains live**:
+- `k2b-youtube-capture` skill -- `/youtube` / `/youtube <playlist-name>` for batch playlist polling
+- 7 YouTube playlists: K2B (general), K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn, K2B Screen. K2B Watch is the destination for `/research videos` picks, not a capture source.
+- Playlist config in `wiki/context/youtube-playlists.md`
+- Transcript cascade: YouTube Transcript MCP (free) -> Groq Whisper (chunked for >4min) -> metadata-only fallback
+- YouTube Data API v3 with OAuth for playlist writes (add/remove)
+- Bash scripts: `yt-playlist-poll.sh`, `yt-playlist-add.sh`, `yt-playlist-remove.sh`, `yt-search.py`, `yt-auth.sh`
+- Processed video tracking in `wiki/context/youtube-processed.md`
 - Per-playlist `prompt_focus` drives different analysis for each playlist
-- Recommendation engine: searches YouTube based on Keith's interests, scores relevance, adds top picks to K2B Watch playlist
+
+**Retired 2026-04-14**: the YouTube conversational agent (6h background loop, taste model, channel affinity scoring, recommendation engine, `/youtube recommend`, `/youtube morning`, direct-URL screening, all 5 MCP tools, `youtube_agent_state` SQLite table) was deleted. Fresh-video discovery now runs through `/research videos "<query>"` via NotebookLM. See [[Shipped/2026-04-08_feature_youtube-agent]] and [[Shipped/feature_research-videos-notebooklm]].
 
 **Future additions**:
 - Voice cloning (upload Keith's voice sample for consistent narration)

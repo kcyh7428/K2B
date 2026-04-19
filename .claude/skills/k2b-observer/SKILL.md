@@ -1,6 +1,6 @@
 ---
 name: k2b-observer
-description: Harvest implicit preference signals from vault behavior and synthesize a preference profile that other skills reference. This skill should be used when Keith says /observe, "what have you noticed", "check preferences", "review feedback", or on session-start/scheduled runs. It reads observer-loop analysis, review queue outcomes, YouTube feedback, revision patterns, and adoption rates to learn what Keith actually wants without him having to say it explicitly.
+description: Harvest implicit preference signals from vault behavior and synthesize a preference profile that other skills reference. This skill should be used when Keith says /observe, "what have you noticed", "check preferences", "review feedback", or on session-start/scheduled runs. It reads observer-loop analysis, review queue outcomes, video feedback (video-preferences.md), revision patterns, and adoption rates to learn what Keith actually wants without him having to say it explicitly.
 ---
 
 # K2B Observer
@@ -12,9 +12,7 @@ Harvest implicit preference signals from Keith's vault behavior. Synthesize patt
 - Vault: `~/Projects/K2B-Vault`
 - Preference signals log: `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl`
 - Preference profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
-- YouTube preference profile: `~/Projects/K2B-Vault/wiki/context/youtube-preference-profile.md`
-- YouTube recommendations: `~/Projects/K2B-Vault/wiki/context/youtube-recommended.jsonl`
-- YouTube feedback signals: `~/Projects/K2B-Vault/wiki/context/youtube-feedback-signals.jsonl`
+- Video preferences (NotebookLM filter tail): `~/Projects/K2B-Vault/wiki/context/video-preferences.md`
 - Skills: `~/Projects/K2B/.claude/skills/`
 - Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
 
@@ -93,36 +91,9 @@ For content-specific tracking:
 - How many LinkedIn drafts were published as-is vs revised vs scrapped?
 - Which content pillars produce ideas Keith adopts?
 
-### 1e. YouTube Signal Harvesting
+### 1e. Video Feedback (from `/research videos`)
 
-Read `~/Projects/K2B-Vault/wiki/context/youtube-recommended.jsonl` and `~/Projects/K2B-Vault/wiki/context/youtube-feedback-signals.jsonl`.
-
-For each recommendation entry, extract:
-- **Action taken**: outcome field (watched, skipped, screened, expired, highlights)
-- **Channel**: for channel affinity tracking
-- **Duration**: for duration preference tracking
-- **Verdict accuracy**: compare `verdict_value` (HIGH/MEDIUM/LOW) against actual outcome:
-  - HIGH + watched/screened = accurate prediction
-  - HIGH + skipped = overestimated value
-  - LOW + watched = underestimated value
-  - Track accuracy percentage over time
-- **Pillar engagement**: which `pillars_matched` entries correlate with watch vs skip
-- **Comment content**: `comment_text` for topic interest signals and depth of engagement
-- **Time to action**: difference between `nudge_date` and when outcome was recorded
-
-From feedback signals file, extract:
-- Skip reasons by channel and topic (signal_type: skip_reason)
-- Value feedback categories (signal_type: value_feedback)
-- Comment themes and topics (signal_type: comment)
-- Screen requests (signal_type: screen) -- indicates Keith wants deeper evaluation
-
-Aggregate into per-channel stats:
-- Total recommendations, watch rate, skip rate, screen rate, expire rate
-- Average time to action per channel
-
-Aggregate into per-pillar stats:
-- Watch/screen rate by content pillar
-- Skip rate by content pillar
+Video preferences are captured inline in `wiki/context/video-preferences.md` by `/review` or the Telegram feedback path. That file IS the NotebookLM preference tail -- `/research videos` reads it directly on every run. The observer does not need to re-synthesize a separate YouTube profile; it can surface recurring themes from `video-preferences.md` as patterns (e.g., "Keith consistently drops managed-agent content").
 
 ## Phase 2: Detect Patterns
 
@@ -185,7 +156,7 @@ Based on: N feedback signals over N days
 
 ### k2b-youtube-capture
 - **Adopt rate**: X% overall
-  - By playlist: Claude Code Tips X%, AI News Daily X%, ...
+  - By playlist: K2B Claude X%, K2B Invest X%, ...
 - **Observed preferences**:
   - [patterns detected]
 - **Recommendation**: [actionable suggestion]
@@ -220,88 +191,6 @@ These patterns are strong enough to consider promoting to k2b-feedback:
 - Signals per skill: [breakdown]
 - Note: Patterns with <3 occurrences are excluded. More data improves accuracy.
 ```
-
-## Phase 3b: Synthesize YouTube Preference Profile
-
-Write to `~/Projects/K2B-Vault/wiki/context/youtube-preference-profile.md`. This is a SEPARATE file from preference-profile.md, specifically for the YouTube recommendation pipeline. The `/youtube recommend` workflow reads this directly for Pass 1 metadata filtering.
-
-```yaml
----
-tags: [k2b-system, youtube, preferences]
-date: YYYY-MM-DD
-type: reference
-origin: k2b-generate
-up: "[[MOC_K2B-System]]"
----
-```
-
-Body structure:
-
-```markdown
-# YouTube Preference Profile
-
-Last updated: YYYY-MM-DD
-Based on: N recommendations over N days
-Confidence: low | medium | high (low = <10 recs, medium = 10-30, high = 30+)
-
-## Channel Affinity
-
-### High Affinity (>70% watch/screen rate, min 3 recs)
-- **Channel Name**: N/N watched/screened, topics: [...]
-
-### Low Affinity (>70% skip rate, min 3 recs)
-- **Channel Name**: N/N skipped, common skip reasons: [...]
-
-### Neutral (insufficient data or mixed signals)
-- **Channel Name**: N recs, X% watch rate
-
-## Topic & Pillar Patterns
-
-### Most Engaged Pillars (by watch+screen rate)
-1. **Pillar Name**: X% engagement (N videos)
-
-### Least Engaged Pillars
-1. **Pillar Name**: X% engagement (N videos)
-
-## Duration Preferences
-
-- Average watched duration: X min
-- Average skipped duration: X min
-- Sweet spot: X-Y minutes
-- Cap: videos >Z min need high-affinity channel
-
-## Verdict Accuracy
-
-- Total verdicts: N
-- HIGH accurate: X% (predicted HIGH, actually watched/screened)
-- HIGH overestimated: X% (predicted HIGH, actually skipped)
-- LOW underestimated: X% (predicted LOW, actually watched)
-- Calibration note: [observer assessment]
-
-## Action Distribution
-
-- Watch: X% (N)
-- Screen: X% (N)
-- Skip: X% (N)
-- Comment: X% (N)
-- Expired (no response): X% (N)
-
-## Scoring Adjustments
-
-Machine-readable section for /youtube recommend Pass 1:
-
-- channel_boost: {"Channel A": +2, "Channel B": -3}
-- pillar_weights: {"workflow-automation": 1.3, "second-brain": 0.8}
-- duration_cap: 45
-- confidence: low | medium | high
-
-## Recent Comments
-
-Last 5 comments with context:
-- [date] [video title]: "comment text" (pillars: [...])
-```
-
-If youtube-recommended.jsonl has fewer than 5 entries, write a minimal profile with `confidence: low` and empty sections marked "Insufficient data". The profile improves as more feedback accumulates.
 
 ## Phase 4: Candidate Learnings Promotion
 
@@ -467,17 +356,13 @@ Other skills can read preference-profile.md before producing output (planned, no
     |
 k2b-improve reviews preference-profile.md alongside learnings/errors/requests
 
-YouTube Learning Loop:
+Video Feedback Loop:
     |
-youtube-recommended.jsonl + youtube-feedback-signals.jsonl
+/research videos filters via NotebookLM, drops per-video review notes in review/
     |
-    +--> k2b-observer Phase 1e harvests YouTube signals
-    +--> Phase 3b synthesizes youtube-preference-profile.md
+    +--> /review distills Keith's verdicts into wiki/context/video-preferences.md
     |
-/youtube recommend reads youtube-preference-profile.md
-    |
-    +--> Pass 1 metadata filter uses channel skip/watch rates
-    +--> Pass 2 verdict accuracy informs calibration
+/research videos reads video-preferences.md on every run as the preference tail
 ```
 
 ## Usage Logging

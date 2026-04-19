@@ -1,6 +1,6 @@
 ---
 name: k2b-youtube-capture
-description: Batch-process YouTube videos saved to K2B category playlists (K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn, K2B Screen) into raw/ vault notes with playlist-specific analysis. Use when Keith says /youtube, /youtube <playlist-name>, or wants to turn saved videos into notes. Direct YouTube URLs and Watch-list recommendations are handled by the Telegram bot's agent loop, NOT this skill.
+description: Batch-process YouTube videos saved to K2B category playlists (K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn, K2B Screen) into raw/ vault notes with playlist-specific analysis. Use when Keith says /youtube, /youtube <playlist-name>, or wants to turn saved videos into notes. Video discovery from fresh queries runs through `/research videos "<query>"` (NotebookLM), not this skill.
 ---
 
 # K2B YouTube Capture (Batch Playlist Processor)
@@ -9,7 +9,7 @@ Turn videos Keith saved to a K2B category playlist into `raw/youtube/` vault not
 
 ## Scope
 
-This skill is now a pure **batch processor**. Curation, discovery, Watch-list management, and direct URL screening all moved to the YouTube Agent (k2b-remote's `youtube-agent-loop.ts` + `handleDirectYouTubeUrl`). See `wiki/concepts/2026-04-08_feature_youtube-agent.md` for the full workflow split.
+This skill is a pure **batch processor** for videos Keith has manually saved to category playlists in YouTube. Discovery of fresh videos from search queries runs through `/research videos "<query>"` (see [[feature_research-videos-notebooklm]]). Per-video feedback flows into `wiki/context/video-preferences.md` via `/review` and the Telegram feedback path.
 
 ## Commands
 
@@ -31,7 +31,7 @@ Before running the per-playlist pipeline, determine the scope based on how the c
 ### `/youtube` (no args)
 
 1. Read `~/Projects/K2B-Vault/wiki/context/youtube-playlists.md`. Extract the YAML from the fenced code block.
-2. Filter the list: skip any playlist where `url` is `PLACEHOLDER` or where `type: outbound` (those are for the agent loop, not capture).
+2. Filter the list: skip any playlist where `url` is `PLACEHOLDER` or where `type: outbound` (K2B Watch is a destination for `/research videos` picks, not a capture source).
 3. Iterate through ALL remaining playlists and run the processing pipeline below for each.
 
 ### `/youtube <playlist-name>` (one-playlist mode)
@@ -39,7 +39,7 @@ Before running the per-playlist pipeline, determine the scope based on how the c
 1. Read `~/Projects/K2B-Vault/wiki/context/youtube-playlists.md` as above.
 2. Find the playlist whose `name` matches the argument case-insensitively. The argument can match the full name ("K2B Invest") or just the suffix ("invest", "Invest", "INVEST").
 3. If no match: tell Keith which names are available (list them from the config) and stop. Do not run the pipeline.
-4. If the match is an outbound playlist (K2B Watch): explain that outbound playlists are managed by the agent loop, not this skill, and stop.
+4. If the match is an outbound playlist (K2B Watch): explain that K2B Watch is the destination for `/research videos` picks, not a capture source, and stop.
 5. If the match is inbound: run the processing pipeline below for JUST that playlist.
 
 ## Workflow: Per-Playlist Processing Pipeline
@@ -240,15 +240,13 @@ After processing all videos in all polled playlists, show Keith a summary:
 
 ## What This Skill Does NOT Do
 
-These used to live in this skill and were retired when the YouTube Agent shipped:
+The following subcommands existed briefly and were all retired 2026-04-14 along with the YouTube conversational agent:
 
-- **`/youtube recommend`** -- the agent loop in `k2b-remote` now discovers and screens new content every 6 hours via its own search + taste-model pipeline
-- **`/youtube morning`** -- the agent loop checks in with Keith conversationally during its cycle instead of firing a scheduled nudge
-- **`/youtube <url>`** -- the Telegram bot detects YouTube URLs and runs `handleDirectYouTubeUrl` for instant screening + vault add
-- **`/youtube cleanup`** -- the agent loop's verify-playlist step automatically expires Watch list rows that don't match the actual K2B Watch playlist
-- **`/youtube status`** -- reporting removed; check `wiki/context/youtube-processed.md` or the taste model JSON directly if needed
+- **`/youtube recommend`** / **`/youtube morning`** / **`/youtube cleanup`** -- these belonged to the 6-hour agent loop in `k2b-remote`. The whole loop, the taste model, the channel affinity scoring, and the nudge pipeline were deleted. Fresh-video discovery is now `/research videos "<query>"` via NotebookLM.
+- **`/youtube <url>`** (direct URL screening) -- the Telegram bot's `handleDirectYouTubeUrl` path was deleted in the same cleanup. To add a single URL today, paste it into a K2B category playlist in YouTube and run `/youtube <playlist-name>`.
+- **`/youtube status`** -- check `wiki/context/youtube-processed.md` directly.
 
-If Keith asks for any of these commands, tell him the capability is in the YouTube Agent now and point him at either the Telegram bot or `wiki/concepts/2026-04-08_feature_youtube-agent.md`.
+If Keith asks for any of these commands, point him at `/research videos "<query>"` (for discovery) or the batch `/youtube` flow (for saved videos). The retired feature's spec is at [[Shipped/2026-04-08_feature_youtube-agent]].
 
 ## Error Handling
 

@@ -151,19 +151,13 @@ run_analysis() {
   local system_prompt
   system_prompt=$(cat "$PROMPT_FILE" 2>/dev/null || echo "Analyze the observations and return JSON with patterns, candidate_learnings, confidence_updates, and summary.")
 
-  # Load youtube recommendation + feedback data for inline provision to MiniMax.
-  # The observer-prompt.md tells MiniMax to analyze YOUTUBE_RECOMMENDED and
-  # YOUTUBE_FEEDBACK sections. MiniMax has no file tools, so we must inline these.
-  # Cap at 200 lines each to keep the user message bounded.
-  local YOUTUBE_RECOMMENDED_FILE="$CONTEXT_DIR/youtube-recommended.jsonl"
-  local YOUTUBE_FEEDBACK_FILE="$CONTEXT_DIR/youtube-feedback-signals.jsonl"
-  local youtube_recommended=""
-  local youtube_feedback=""
-  if [ -f "$YOUTUBE_RECOMMENDED_FILE" ]; then
-    youtube_recommended=$(tail -n 200 "$YOUTUBE_RECOMMENDED_FILE" 2>/dev/null || true)
-  fi
-  if [ -f "$YOUTUBE_FEEDBACK_FILE" ]; then
-    youtube_feedback=$(tail -n 200 "$YOUTUBE_FEEDBACK_FILE" 2>/dev/null || true)
+  # Load video-preferences.md (NotebookLM filter tail + /review distillations).
+  # This file IS the post-retirement video taste-model. MiniMax has no tools,
+  # so inline it directly. Cap at 200 lines to keep user message bounded.
+  local video_preferences=""
+  local VIDEO_PREFS_FILE="$CONTEXT_DIR/video-preferences.md"
+  if [ -f "$VIDEO_PREFS_FILE" ]; then
+    video_preferences=$(tail -n 200 "$VIDEO_PREFS_FILE" 2>/dev/null || true)
   fi
 
   # Load recent session summaries (cap at 2000 chars)
@@ -212,13 +206,9 @@ ${profile:-No preference profile exists yet.}
 
 ${learnings:-No learnings captured yet.}
 
-## YOUTUBE_RECOMMENDED (JSONL)
+## VIDEO_PREFERENCES (video-preferences.md -- distilled feedback tail)
 
-${youtube_recommended:-(no youtube recommendation data available)}
-
-## YOUTUBE_FEEDBACK (JSONL)
-
-${youtube_feedback:-(no youtube feedback signals available)}
+${video_preferences:-(no video preferences recorded yet)}
 
 ## SESSION_SUMMARIES (recent Claude Code sessions)
 
@@ -328,49 +318,6 @@ Analyze these observations and return your findings as JSON."
   } > "$CANDIDATES_FILE"
 
   log "Updated observer-candidates.md"
-
-  # Write youtube-taste-profile.md if analysis contains youtube_taste
-  local has_taste
-  has_taste=$(echo "$json_content" | jq -r '.youtube_taste // empty' 2>/dev/null)
-  if [ -n "$has_taste" ]; then
-    local taste_file="$CONTEXT_DIR/youtube-taste-profile.md"
-    local signal_count confidence
-    signal_count=$(echo "$json_content" | jq -r '.youtube_taste.signal_count // 0' 2>/dev/null)
-    confidence=$(echo "$json_content" | jq -r '.youtube_taste.confidence // "low"' 2>/dev/null)
-    {
-      echo "---"
-      echo "tags: [k2b-system, youtube, taste-profile]"
-      echo "date: $(date '+%Y-%m-%d')"
-      echo "type: reference"
-      echo "origin: k2b-observer"
-      echo "up: \"[[MOC_K2B-System]]\""
-      echo "---"
-      echo ""
-      echo "# YouTube Taste Profile"
-      echo ""
-      echo "Last updated: $(date '+%Y-%m-%d %H:%M') ($signal_count signals, confidence: $confidence)"
-      echo ""
-      echo "## Channel Scores"
-      echo "$json_content" | jq -r '.youtube_taste.channel_scores // {} | to_entries[] | "- **\(.key)**: \(.value)"' 2>/dev/null
-      echo ""
-      echo "## Topic Scores"
-      echo "$json_content" | jq -r '.youtube_taste.topic_scores // {} | to_entries[] | "- **\(.key)**: \(.value)"' 2>/dev/null
-      echo ""
-      echo "## Depth Preference"
-      echo "$json_content" | jq -r '.youtube_taste.depth_preference // "unknown"' 2>/dev/null
-      echo ""
-      echo "## Anti-Patterns"
-      echo "$json_content" | jq -r '.youtube_taste.anti_patterns[]? // empty | "- \(.)"' 2>/dev/null
-      echo ""
-      echo "## Scoring Adjustments"
-      echo "confidence_level: $confidence"
-      echo "channel_boost: $(echo "$json_content" | jq -c '[.youtube_taste.channel_scores // {} | to_entries[] | select(.value > 0)] | from_entries' 2>/dev/null)"
-      echo "channel_dampen: $(echo "$json_content" | jq -c '[.youtube_taste.channel_scores // {} | to_entries[] | select(.value < 0)] | from_entries' 2>/dev/null)"
-      echo "topic_boost: $(echo "$json_content" | jq -c '[.youtube_taste.topic_scores // {} | to_entries[] | select(.value > 0)] | from_entries' 2>/dev/null)"
-      echo "topic_dampen: $(echo "$json_content" | jq -c '[.youtube_taste.topic_scores // {} | to_entries[] | select(.value < 0)] | from_entries' 2>/dev/null)"
-    } > "$taste_file"
-    log "Updated youtube-taste-profile.md ($signal_count signals, confidence: $confidence)"
-  fi
 
   # Append patterns to preference-signals.jsonl (each pattern gets a signal_id)
   # signal_id = sha256(date + source + description + HH:MM:SS)[:8]. Time component
