@@ -373,4 +373,78 @@ test_tier_1_wiki_docs
 test_tier_1_big_docs_still_tier_1_not_scale_tier_3
 test_tier_1_mixed_docs_and_code_is_NOT_tier_1
 
+test_tier_3_scale_file_count() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && for i in 1 2 3 4; do printf 'tiny\n' > "file_$i.py"; done)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:3" || fail "4 files should be tier 3; got: $out"
+  echo "PASS: test_tier_3_scale_file_count"
+}
+
+test_tier_3_scale_loc_over_200() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && python3 -c "print('\n'.join(['x = 1'] * 250))" > big.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:3" || fail "250 LOC should be tier 3; got: $out"
+  echo "PASS: test_tier_3_scale_loc_over_200"
+}
+
+test_tier_2_scale_just_under_200() {
+  # 155 LOC (7cd1f6c-shape): must NOT trip scale rule at 200 threshold.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && python3 -c "print('\n'.join(['x = 1'] * 155))" > medium.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:2" || fail "155 LOC should be tier 2 (under 200); got: $out"
+  echo "PASS: test_tier_2_scale_just_under_200"
+}
+
+test_tier_2_scale_three_small_files() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'x=1\n' > a.py && printf 'x=2\n' > b.py && printf 'x=3\n' > c.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  echo "$out" | grep -q "tier:2" || fail "3 small files should be tier 2; got: $out"
+  echo "PASS: test_tier_2_scale_three_small_files"
+}
+
+test_tier_3_scale_file_count
+test_tier_3_scale_loc_over_200
+test_tier_2_scale_just_under_200
+test_tier_2_scale_three_small_files
+
 echo "all tests passed"

@@ -248,5 +248,16 @@ def classify_tier(
             "skills/wiki/CLAUDE/README"
         )
 
-    # All other rules not yet implemented -- fall through to Tier 2 default
-    return 2, "tier-2: default (rules 4-5 pending)"
+    # Rule 4: Tier 3 -- scale (>3 files or >200 LOC).
+    # Threshold chosen to keep 7cd1f6c-shape (155 LOC, 2 files) in Tier 2
+    # per Keith's "Tier 2 HEALTHY" classification. See Codex MEDIUM #1.
+    if len(files) > 3:
+        return 3, f"tier-3: {len(files)} files changed (>3)"
+    if state["total_loc"] > 200:
+        return 3, f"tier-3: {state['total_loc']} LOC changed (>200)"
+
+    # Rule 5: Tier 2 -- default
+    return 2, (
+        f"tier-2: default ({len(files)} file(s), {state['total_loc']} LOC, "
+        "no allowlist hit, not all docs)"
+    )
