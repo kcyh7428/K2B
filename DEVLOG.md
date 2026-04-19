@@ -2,6 +2,24 @@
 
 ---
 
+
+## 2026-04-19 -- YouTube-agent retirement cruft cleanup + K2B system infographic/reference
+
+**Commit:** `5efc7ed` chore: retire YouTube-agent cruft, add K2B system infographic + reference
+
+**What shipped:** Post-retirement sweep of infrastructure left behind when `feature_youtube-agent` was retired 2026-04-14. Code was deleted at retirement but the observer kept regenerating `youtube-taste-profile.md` every cycle, k2b-observer/k2b-youtube-capture skill bodies pointed at deleted paths and commands, `docs/K2B_ARCHITECTURE.md` described the retired recommendation engine as live, and `self_improve_requests.md` still tracked R-2026-04-12-001 targeting the deleted `taste-model.ts`. Observer pipeline rewired onto the current `video-preferences.md` source (NotebookLM filter tail). Plus comprehensive K2B system reference: `Assets/images/2026-04-19_k2b-system-infographic.png` (NBLM-generated, v2 after one corrections pass), `Assets/2026-04-19_k2b-system-mindmap.json`, `wiki/context/context_k2b-system.md` (hand-written with 7 mermaid diagrams), `wiki/context/context_k2b-system-briefing.md` (NBLM briefing). README.md and Welcome to K2B.md embed the infographic.
+
+**Codex review:** Tier 3, 2 passes. Pass 1 raised P2 (observer dropped YouTube inputs without adding `video-preferences.md` inlining that the skill body advertised) -- fixed inline in `scripts/observer-loop.sh` + `scripts/observer-prompt.md`. Pass 2 clean.
+
+**Feature status change:** none -- `--no-feature` infrastructure ship. Closes the open item on `feature_youtube-agent` (retired 2026-04-14, but the vault-side sweep this entry covers was never explicitly scheduled).
+
+**Follow-ups:** none scheduled. Three advisory ownership-drift offenders surfaced by `scripts/audit-ownership.sh` remain (all pre-existing, not introduced this session). Mini still needs `/sync` to pull the v2 README + infographic + observer Codex fix -- handled in step 12.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Chose `--no-feature` rather than re-opening `feature_youtube-agent` or creating a retroactive "retirement sweep" feature. The former would have contradicted the file's `status: retired` state; the latter would have added a feature note for work Keith explicitly said he did not want scheduled.
+- Left `preference-signals.jsonl` untouched -- pre-cutoff YouTube signals are already grandfathered by the existing `grandfather-cutoff` line (87), and only 1 post-cutoff signal existed (today's self-generated noise from me editing the file being deleted). Future cycles won't add new ones since the observer no longer analyzes YouTube data.
+- Hand-wrote the `context_k2b-system.md` overview with mermaid diagrams in parallel with the NBLM infographic run, rather than accepting NBLM's output as the single reference. NBLM's first infographic had factual errors (Gmail "auto-triaging", 4x rule threshold, fabricated "10-30 sources" number); v2 fixed them after explicit prompt corrections, but the hand-written note remains the machine-verifiable source of truth.
+
 ## 2026-04-19 -- Adversarial review tiering Ship 1: 4-tier classifier + /ship Step 3 routing
 
 **Commit:** `40f39c3..9c5db25` (12 commits) -- final commit `9c5db25 fix(tier-detection): close HIGH-1 tier-1 empty-verdict escalation gap`
