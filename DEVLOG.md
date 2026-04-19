@@ -2,6 +2,61 @@
 
 ---
 
+## 2026-04-19 -- Adversarial review tiering Ship 1: 4-tier classifier + /ship Step 3 routing
+
+**Commit:** `40f39c3..9c5db25` (12 commits) -- final commit `9c5db25 fix(tier-detection): close HIGH-1 tier-1 empty-verdict escalation gap`
+
+**What shipped:** Ship 1 of [[wiki/concepts/feature_adversarial-review-tiering]]. 4-tier classifier at `scripts/ship-detect-tier.py` (CLI) + `scripts/lib/tier_detection.py` (logic) that reads `git status --porcelain -z` + `git ls-files --others --exclude-standard -z` + merged staged/unstaged numstat, and applies first-match-wins rules: Tier 0 (vault/devlog/plans-only) -> Tier 3 (allowlist hit via `scripts/tier3-paths.yml`) -> Tier 1 (pure docs under skills/wiki/CLAUDE.md/README.md) -> Tier 3 (>3 files OR >200 LOC) -> Tier 2 (default). `scripts/tier3-paths.yml` ships 20 initial blast-radius paths (memory persistence, adversarial review infra, single-writer helpers, classifier self-reference, deployment, production services). `k2b-ship` SKILL.md Step 3 surgery: inserted 3a (tier detection, fail-safe to Tier 3 on classifier error), 3b (routing table + CHANGED_FILES via `-z`), 3b.0 (Tier 0 skip + log), 3b.1 (Tier 1 MiniMax loop: 2-pass cap, `--json` verdict parsing, empty/parse-error treated as failure, escalate to Tier 2 on MiniMax failure, REFUSE if `--skip-codex` blocks Codex too), 3b.2 (Tier 2 Codex single-pass or MiniMax-if-skip-codex), 3c (Tier 3 flow preserved verbatim from pre-tiering), 3d (record tier in ship audit trail). Motivated by observed cost mismatch: K2B `73984d3` (81 lines of .md docs) incurred 9 Codex findings over 2 passes vs. K2Bi `530eb81` (trading-order submit, 22 Codex rounds, R22 caught duplicate-submit P1) -- same gate, wrong calibration.
+
+**Adversarial review (Codex Checkpoint 1 + MiniMax Checkpoint 2):**
+
+Codex Checkpoint 1 (plan review): REWORK -> 5 HIGH + 5 MEDIUM + 3 LOW, all folded into v2 plan before any code. Key folds:
+- HIGH #1 (no parser for `/ship --tier N` at skill layer): override removed from Ship 1 entirely -- deferred to Ship 2 with explicit skill-level parsing contract.
+- HIGH #2 (Tier 1 MiniMax failure was `break`-then-commit, silent gate bypass): Tier 1 MiniMax non-zero exit now reassigns `TIER=2` and falls through; if `--skip-codex` also blocks Codex, REFUSE exactly like today's "both reviewers unavailable" path.
+- HIGH #3 (verdict parsing reads wrong key at wrong case): verified against `scripts/lib/minimax_review.py:442, :451` -- `parsed.verdict` nested, lowercase `"approve"`. v2 uses `--json` stdout + `verdict.lower() == "approve"`.
+- HIGH #4 (generic "new script under scripts/" rule over-broad): deleted entirely. Relying on allowlist + scale + future allowlist growth.
+- HIGH #5 (missing `tier3-paths.yml` silently empties allowlist): v2 treats missing default as classifier error -> Tier 3 fallback (fail-safe).
+- MEDIUM #1 (LOC threshold 100 wrong for evidence): raised to 200 to keep `7cd1f6c`-shape (155 LOC, 2 files = "Tier 2 HEALTHY" per Keith's own evidence) at Tier 2.
+- MEDIUM #2 (`7cd1f6c` test uses neutral path, hides production shape): split into calibration fixture (neutral paths isolate scale rule) + production-shape regression (real `scripts/promote-learnings.py` asserts allowlist-wins-over-scale).
+- MEDIUM #3 (scale-before-docs reintroduces doc clog): rules reordered -- Tier 1 docs rule fires BEFORE Tier 3 scale, so large pure-docs commits don't fall through to scale.
+- MEDIUM #4 (`awk '{print $NF}'` unsafe on spaces + renames): replaced with `git diff --name-only -z HEAD | tr '\0' ','`.
+- MEDIUM #5 (Codex `--cached` diagnostic open-ended): deferred to Ship 2 as a bounded investigation.
+- LOW #1-3: `**` glob semantics documented + tested (trailing prefix only, no mid-**); Task 14 smoke-expectation rewritten in repo-local terms; `K2B-Vault/` in Tier 0 documented as fork-portability dead code in primary K2B.
+- Omissions folded: rename/space-safe changed-file list, staged+unstaged LOC consistency, `--skip-codex` + Tier 1 fail = REFUSE, `.claude/plans/` = Tier 0 (tested), multi-ship tier-per-ship-row recording.
+
+MiniMax Checkpoint 2 (pre-push): Codex not invoked directly (ran MiniMax via `scripts/minimax-review.sh --scope files` on the 5 touched files). NEEDS-ATTENTION -> 1 HIGH + 1 MEDIUM, both fixed inline (`9c5db25`):
+- **HIGH-1 (tier-1 silent gate bypass on malformed-zero-exit MiniMax):** real. Empty/parse-error verdict would surface as "non-approve finding" and advance the pass counter instead of escalating. Fix: add guard that treats empty/parse-error VERDICT as `TIER_1_MINIMAX_FAILED=yes` + break, same path as exit-code-non-zero.
+- **MEDIUM-2 (no direct unit tests for `_is_tier_1_doc`):** valid. Added 3 tests covering `.md.bak` / lowercase / at-root negative cases for `_is_tier_1_doc`, parallel tests for `_is_tier_0_path`, and rule-ordering invariant (allowlist wins over docs).
+
+Archive: `.minimax-reviews/2026-04-19T01-36-58Z_files.json`.
+
+**32 tests in `tests/ship-detect-tier.test.sh`:**
+- `gather_tree_state` (clean tree / modified+untracked / paths with spaces via `-z`)
+- Tier 0 rule (vault / plans / .claude/plans)
+- Tier 3 allowlist (literal match / glob recursive match / glob does-not-overmatch / missing-config error / None-config empty-allowlist)
+- Tier 1 rule (skills / CLAUDE.md / wiki / big-docs-still-Tier-1 / mixed-docs-and-code-is-not-Tier-1)
+- Tier 3 scale (>3 files / >200 LOC / 155 LOC is Tier 2 / 3 small files is Tier 2)
+- Evidence-case regressions (K2B 73984d3 = Tier 1, K2B 7cd1f6c calibration = Tier 2, K2B 7cd1f6c production allowlist = Tier 3, K2Bi befc26b = Tier 3, K2Bi 530eb81 allowlist = Tier 3, small-code default = Tier 2)
+- Error handling (malformed YAML / missing paths key / paths-not-a-list)
+- CLI wrapper (default-config success / missing-default-config exits 1 / outside-git-repo fails / explicit-config flag)
+- Direct unit tests (`_is_tier_1_doc` edge cases / `_is_tier_0_path` edge cases / allowlist-wins-over-docs rule ordering)
+
+**Feature status change:** `feature_adversarial-review-tiering` designed -> Ship 1 shipped (in measurement). Multi-ship feature -- feature-level status stays NOT shipped (Ship 2 still pending). Shipping Status table updated. Moved onto `wiki/concepts/index.md` In Progress lane as `Ship 1-of-2 (in measurement, gate 2026-04-26)`.
+
+**Follow-ups (deferred to Ship 2, parked until 2026-04-26 gate):**
+- `/ship --tier N` manual override. Needs explicit skill-level parsing contract (not bash argparse).
+- Codex `--cached` vs `--working-tree` diagnostic/fix. Bounded investigation with testable success criterion.
+
+**K2Bi port:** deferred ~1 week post-Ship-2 ship. Let real K2B usage surface tier-boundary edge cases first. K2Bi's `scripts/tier3-paths.yml` fork will add trading paths (`src/trading/**`, `src/orders/**`, `store/`, etc.).
+
+**Key decisions (divergent from claude.ai project specs):**
+- Ship split 1/2 was Codex's call, not my original plan. Codex flagged HIGH #1 (no parser) as structural -- the override needed its own spec. Accepted. Ship 1 delivers 80% of the value (auto-classification + routing) without the 20% that needed more design work.
+- LOC threshold calibration (100 -> 200) deferred to Codex because Keith's evidence (`7cd1f6c` = 155 LOC "Tier 2 HEALTHY") was incompatible with v1's 100 threshold. Codex took position explicitly. Accepted.
+- Classifier self-allowlists its own files (`scripts/ship-detect-tier.py`, `scripts/lib/tier_detection.py`, `scripts/tier3-paths.yml`). Meta-correctness: any future edit to the classifier ships under Tier 3 iterate-until-clean review.
+- TDD commits during implementation passed individual pre-commit hooks but did NOT each run Codex. Checkpoint 2 review ran once against the cumulative 12-commit diff via MiniMax `--scope files`. Cleaner than 12 individual reviews.
+
+---
+
 ## 2026-04-19 -- MiniMax adversarial reviewer Phase B: --scope flag (diff/plan/files gatherers)
 
 **Commit:** `12cbc29..76db249` (11 commits) -- final commit `76db249 fix(minimax-review): tighten PATH_REF_RE to require extension on relative paths`
