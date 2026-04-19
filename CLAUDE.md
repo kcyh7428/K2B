@@ -103,6 +103,7 @@ Ownership drift is checked advisory-only by `/ship` via `scripts/audit-ownership
 - No AI cliches. No "Certainly!", "Great question!", "I'd be happy to", "As an AI".
 - No sycophancy. No excessive apologies.
 - Don't narrate. Don't explain your process. Just do the work.
+- Speak plainly. Keith speaks English as a second language. Skip jargon ("dogfood", "end-to-end", "split-brain", "canonical", etc.). If a technical word is unavoidable, explain it in simple words right after. Prefer short sentences and concrete examples over abstract ones. When Keith says "I don't understand" or "in English", rewrite simpler, not louder.
 - When creating Obsidian notes, always use the appropriate template structure.
 - Always add YAML frontmatter with tags, date, and type.
 - When capturing meeting notes, always extract action items and insights.
