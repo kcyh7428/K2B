@@ -24,6 +24,60 @@ import fnmatch
 import subprocess
 from pathlib import Path
 
+import yaml
+
+
+def _load_tier3_globs(config_path: str | Path | None) -> list[str]:
+    """Load the Tier 3 glob allowlist from YAML.
+
+    If config_path is None -> return []. This is the "no allowlist requested"
+    case (typically tests or forks without the file).
+
+    If config_path is a path that doesn't exist -> raise FileNotFoundError.
+    The caller (CLI wrapper) is responsible for deciding whether this is a
+    hard error (default-path missing in K2B) or soft (explicit --no-config
+    flag, which Ship 1 does not ship).
+
+    If config_path exists but is malformed -> raise ValueError.
+    """
+    if config_path is None:
+        return []
+    p = Path(config_path)
+    if not p.exists():
+        raise FileNotFoundError(f"tier3 config not found at {p}")
+    with p.open("r") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict) or "paths" not in data:
+        raise ValueError(
+            f"malformed tier3 config at {p}: expected dict with 'paths' key"
+        )
+    paths = data["paths"]
+    if not isinstance(paths, list):
+        raise ValueError(
+            f"malformed tier3 config at {p}: 'paths' must be a list"
+        )
+    return [str(pat) for pat in paths]
+
+
+def _matches_any_glob(path: str, patterns: list[str]) -> str | None:
+    """Return the first matching pattern, or None.
+
+    ** semantics (Ship 1): "<prefix>/**" matches any path whose first chars
+    match "<prefix>/" (any depth below). No support for "**" in the middle
+    of a pattern in Ship 1.
+    """
+    for pat in patterns:
+        if pat.endswith("/**"):
+            prefix = pat[:-2]  # "k2b-remote/src/**" -> "k2b-remote/src/"
+            if path.startswith(prefix):
+                return pat
+        elif "**" in pat:
+            # Mid-** not supported in Ship 1
+            continue
+        elif fnmatch.fnmatch(path, pat):
+            return pat
+    return None
+
 
 def _run_git(*args: str, cwd: Path) -> str:
     return subprocess.check_output(
@@ -167,5 +221,12 @@ def classify_tier(
     if all(_is_tier_0_path(f) for f in files):
         return 0, f"tier-0: {len(files)} file(s), all vault/devlog/plans"
 
+    # Rule 2: Tier 3 -- allowlist hit (blast-radius paths trump everything)
+    globs = _load_tier3_globs(tier3_config_path)
+    for f in files:
+        hit = _matches_any_glob(f, globs)
+        if hit:
+            return 3, f"tier-3: allowlist match '{hit}' for path {f}"
+
     # All other rules not yet implemented -- fall through to Tier 2 default
-    return 2, "tier-2: default (rules 2-5 pending)"
+    return 2, "tier-2: default (rules 3-5 pending)"
