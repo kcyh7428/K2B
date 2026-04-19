@@ -1733,3 +1733,25 @@ Built a full web dashboard for K2B -- single-page dark theme mission control tha
 - Chose `${HOME}` over `~` in the JSON value. Tilde expansion is a shell feature, not an env-var-substitution feature; JSON would have passed literal `~` to the MCP process which could never resolve. `${HOME}` uses the same `${VAR}` syntax as the already-working `${MINIMAX_API_KEY}` in the same file, and HOME is guaranteed populated by every login shell and every pm2 child process.
 - Chose to keep `.mcp.json` in the skills-category rather than creating a new "config" category. The file is one line per env-var, ships via rsync as-is, and doesn't need build/restart on its own (MCP server re-reads on every agent invocation). Keeping it in skills means `/sync skills` and `/sync auto` both cover it without introducing new modes.
 - Did NOT add a startup health check that verifies the resolved MCP path exists (MiniMax Finding 2 recommendation). Good idea but out of scope for a one-line-env fix. Tracked as a follow-up in the commit body.
+
+
+## 2026-04-19 -- Telegram outbox manifest helper (close out pig-send regression)
+
+**Commit:** `b5c64a3` feat(telegram-outbox): helper script for safe manifest writes
+
+**What shipped:** `scripts/telegram-outbox-write.sh` -- a small bash/python helper that writes Telegram outbox manifests via `json.dump` instead of shell `echo '{...}'`. Atomic write via `.tmp_` file + fsync + rename (scanner already skips `.tmp_` prefixes). `k2b-remote/CLAUDE.md` "Sending Images/Files to Telegram" section updated: example now shows the helper invocation, adds an anti-pattern warning with today's pig-incident as the cautionary tale so spawned agents on Mini don't regress back to raw echo. Usage: `scripts/telegram-outbox-write.sh <type> <abs-path> [caption]`. Types: photo|audio|video|document. Exit codes: 0 ok, 1 bad args, 2 file not found, 3 write failed.
+
+**Codex review:** Tier 3 first-pass approve. Verbatim: "The script writes valid JSON atomically, matches the current outbox scanner behavior, and the documented paths are consistent with the existing remote setup."
+
+**Feature status change:** none -- `--no-feature` bug-fix chain. Third and final commit of today's Telegram-stack repair: `330e794` (agent.ts reads both CLAUDE.md files), `f886cd1` (MiniMax MCP `${HOME}` + deploy coverage), `b5c64a3` (outbox helper). End-to-end chain now: bot-agent gets request -> `mcp__minimax__text_to_image` succeeds under the fixed BASE_PATH -> agent calls `scripts/telegram-outbox-write.sh photo <generated-path> "caption"` -> outbox scanner picks up valid JSON -> sendPhoto via Clash proxy -> Keith's phone.
+
+**Follow-ups:**
+- Keith to test: ask the bot for another image via Telegram. The generate + manifest + send chain should now work without a single hand-rolled string along the way.
+- Consider: similar helpers for `audio`/`video`/`document` are trivially covered by this same script (type is a positional arg). No extra work needed. If a future skill wants to programmatically send a file to Keith from outside the Mini bot-agent context, this helper is the entry point.
+- Pig-send L-2026-04-19-001 learning already covers the "never curl api.telegram.org directly, never pass `--file` to the text-only send-telegram.sh" rules; this helper is the positive-guidance counterpart. Policy-ledger guard `send_file_telegram` stays at its current wording -- the outbox pattern rule is the invariant; the helper is the recommended implementation.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Chose python3 `json.dump` over `jq -n --arg ...` for the JSON generation. Both would produce valid output; python is already everywhere in K2B scripts and has no extra dependency. The here-doc keeps the whole thing in one file, which matches `scripts/send-telegram.sh`'s pattern of embedded python for chunk splitting.
+- Chose `$(date +%s)_$RANDOM.json` for the filename over a UUID. 32K `$RANDOM` space + 1-second `date` resolution is sufficient for the actual usage pattern (one manifest per bot reply, sequential); UUID would be overkill and less readable in the outbox listing.
+- Chose to write the anti-pattern warning *in* `k2b-remote/CLAUDE.md` rather than only as a policy-ledger guard. The agent reads CLAUDE.md on every run (via the earlier `330e794` fix); a warning with the concrete incident story is more effective than an abstract rule.
+- Did NOT add a unit test harness for the helper -- K2B doesn't have one today and one inline smoke test (the adversarial caption with emoji + `!` + `'`) is sufficient for this commit. If a helper suite grows, a shared test runner is the right next investment.
