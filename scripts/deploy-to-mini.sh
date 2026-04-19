@@ -65,7 +65,7 @@ needs_scripts=false
 
 categorize() {
     local changes="$1"
-    if echo "$changes" | grep -qE '\.claude/|CLAUDE\.md|K2B_ARCHITECTURE\.md'; then
+    if echo "$changes" | grep -qE '\.claude/|CLAUDE\.md|K2B_ARCHITECTURE\.md|^\.mcp\.json$'; then
         needs_skills=true
     fi
     if echo "$changes" | grep -qE '^k2b-remote/'; then
@@ -86,7 +86,10 @@ sync_skills() {
 
     # Top-level docs: sync any that exist. K2B_ARCHITECTURE.md was removed 2026-04
     # but README.md is user-facing documentation worth keeping in sync.
-    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md; do
+    # .mcp.json added 2026-04-19 after silent drift let MiniMax MCP BASE_PATH
+    # diverge between machines (MacBook user `keithmbpm2` vs Mini user `fastshower`),
+    # breaking all bot-initiated image generation.
+    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json; do
         if [[ -f "$LOCAL_BASE/$doc" ]]; then
             rsync -av $rsync_flag "$LOCAL_BASE/$doc" "$MINI:$REMOTE_BASE/$doc"
         fi
@@ -239,7 +242,7 @@ $DRY_RUN && warn "DRY RUN -- no files will be changed"
 # Summary
 echo ""
 log "Sync plan:"
-$needs_skills && log "  - Skills + CLAUDE.md + K2B_ARCHITECTURE.md"
+$needs_skills && log "  - Skills + CLAUDE.md + README.md + K2B_ARCHITECTURE.md + .mcp.json"
 $needs_code && log "  - k2b-remote code (+ build + restart)"
 $needs_dashboard && log "  - k2b-dashboard code (+ build + restart)"
 $needs_scripts && log "  - scripts/"
