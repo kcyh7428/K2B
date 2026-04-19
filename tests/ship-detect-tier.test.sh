@@ -579,4 +579,59 @@ test_evidence_k2bi_befc26b_multi_file_runtime
 test_evidence_k2bi_530eb81_trading_path_allowlist
 test_tier_2_default_small_code
 
+test_error_malformed_yaml() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  printf 'not: yaml: {broken\n' > "$config"
+
+  if call_classifier "$repo" "$config" 2>/dev/null; then
+    fail "malformed YAML should raise an error"
+  fi
+  echo "PASS: test_error_malformed_yaml"
+}
+
+test_error_yaml_missing_paths_key() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+notpaths:
+  - "nope"
+YAML
+
+  if call_classifier "$repo" "$config" 2>/dev/null; then
+    fail "missing 'paths' key should raise an error"
+  fi
+  echo "PASS: test_error_yaml_missing_paths_key"
+}
+
+test_error_paths_not_a_list() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths:
+  foo: bar
+YAML
+
+  if call_classifier "$repo" "$config" 2>/dev/null; then
+    fail "'paths' as dict instead of list should raise an error"
+  fi
+  echo "PASS: test_error_paths_not_a_list"
+}
+
+test_error_malformed_yaml
+test_error_yaml_missing_paths_key
+test_error_paths_not_a_list
+
 echo "all tests passed"
