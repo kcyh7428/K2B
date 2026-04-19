@@ -634,4 +634,89 @@ test_error_malformed_yaml
 test_error_yaml_missing_paths_key
 test_error_paths_not_a_list
 
+test_cli_wrapper_success_with_default_config() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  # Install classifier into repo and commit it (so the only "change" below is code.py)
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  cat > "$repo/scripts/tier3-paths.yml" <<'YAML'
+paths: []
+YAML
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+  (cd "$repo" && git add scripts && git commit -q -m "install classifier")
+
+  # Now make the one change to be classified
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  local out
+  out=$(cd "$repo" && ./scripts/ship-detect-tier.py)
+  echo "$out" | grep -q "^tier: 2$" || fail "CLI should print 'tier: 2'; got: $out"
+  echo "$out" | grep -q "^reason:" || fail "CLI should print 'reason:' line; got: $out"
+  echo "PASS: test_cli_wrapper_success_with_default_config"
+}
+
+test_cli_wrapper_missing_default_config_exits_1() {
+  # Codex HIGH #5: missing default config is an error, not silent empty.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf 'x=1\n' > code.py)
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  # Intentionally NO tier3-paths.yml
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+
+  if (cd "$repo" && ./scripts/ship-detect-tier.py) 2>/dev/null; then
+    fail "CLI without default config should exit 1"
+  fi
+  echo "PASS: test_cli_wrapper_missing_default_config_exits_1"
+}
+
+test_cli_wrapper_outside_git_repo_fails() {
+  local notrepo
+  notrepo="$(mktmp)"
+  mkdir -p "$notrepo/scripts/lib"
+  cp "$SCRIPT" "$notrepo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$notrepo/scripts/lib/tier_detection.py"
+  chmod +x "$notrepo/scripts/ship-detect-tier.py"
+
+  if (cd "$notrepo" && ./scripts/ship-detect-tier.py) 2>/dev/null; then
+    fail "CLI outside git repo should exit 1"
+  fi
+  echo "PASS: test_cli_wrapper_outside_git_repo_fails"
+}
+
+test_cli_wrapper_explicit_config_flag() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+  (cd "$repo" && git add scripts && git commit -q -m "install classifier")
+
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  local altconfig="$(mktmp)/alt.yml"
+  cat > "$altconfig" <<'YAML'
+paths:
+  - "code.py"
+YAML
+
+  local out
+  out=$(cd "$repo" && ./scripts/ship-detect-tier.py --config "$altconfig")
+  echo "$out" | grep -q "^tier: 3$" || fail "--config override should land tier 3; got: $out"
+  echo "PASS: test_cli_wrapper_explicit_config_flag"
+}
+
+test_cli_wrapper_success_with_default_config
+test_cli_wrapper_missing_default_config_exits_1
+test_cli_wrapper_outside_git_repo_fails
+test_cli_wrapper_explicit_config_flag
+
 echo "all tests passed"
