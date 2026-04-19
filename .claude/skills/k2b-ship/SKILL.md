@@ -140,6 +140,156 @@ For multi-ship features (e.g. `feature_mission-control-v3`), read the feature no
 
 **Mandatory unless `--skip-codex <reason>` is passed AND no fallback reviewer is run.** This is **Checkpoint 2** of the two K2B adversarial review checkpoints. (Checkpoint 1 is **plan review** -- see below -- and runs earlier, before implementation. `/ship` only owns Checkpoint 2.)
 
+#### 3a. Tier detection
+
+Run `scripts/ship-detect-tier.py` first to classify the uncommitted diff into Tier 0, 1, 2, or 3 per [[wiki/concepts/feature_adversarial-review-tiering]]. Classifier errors (not in a git repo, missing/malformed `scripts/tier3-paths.yml`, etc.) are **fail-safe to Tier 3** -- never silently soften the gate.
+
+```bash
+set +e
+TIER_OUTPUT="$(scripts/ship-detect-tier.py 2>&1)"
+TIER_EXIT=$?
+set -e
+
+if [ "$TIER_EXIT" -ne 0 ]; then
+  echo "[warn] ship-detect-tier exited $TIER_EXIT -- falling back to Tier 3." >&2
+  echo "$TIER_OUTPUT" >&2
+  TIER=3
+  TIER_REASON="classifier-error: $TIER_OUTPUT"
+else
+  TIER=$(echo "$TIER_OUTPUT" | sed -n 's/^tier: //p')
+  TIER_REASON=$(echo "$TIER_OUTPUT" | sed -n 's/^reason: //p')
+  if [ -z "$TIER" ]; then
+    echo "[warn] ship-detect-tier produced no tier line -- falling back to Tier 3." >&2
+    TIER=3
+    TIER_REASON="classifier-output-malformed"
+  fi
+fi
+
+echo "tier: $TIER -- $TIER_REASON"
+```
+
+#### 3b. Tier routing
+
+| Tier | Routing |
+|---|---|
+| 0 | Skip review (log only). |
+| 1 | MiniMax `--scope diff` single-pass, cap at 2 iterations, escalate to Tier 2 on MiniMax failure. See Step 3b.1. |
+| 2 | Codex single-pass via today's background + poll pattern. `--skip-codex` routes to MiniMax `--scope diff` single-pass. Both-fail -> REFUSE (same as Tier 3). |
+| 3 | Today's iterate-until-clean flow, verbatim. See Step 3c. |
+
+**Get the safe changed-file list once** (used by Tier 1 and Tier 2 diff-scoped reviewer invocations; handles renames + spaces via `-z`):
+
+```bash
+CHANGED_FILES=$(git diff --name-only -z HEAD | tr '\0' ',' | sed 's/,$//')
+```
+
+##### 3b.0 Tier 0 flow
+
+```bash
+if [ "$TIER" = "0" ]; then
+  echo "review skipped (tier-0: vault/devlog/plans only, $TIER_REASON)"
+  REVIEW_RESULT="skipped-tier-0"
+  # proceed to step 4
+fi
+```
+
+##### 3b.1 Tier 1 flow
+
+MiniMax `--scope diff` with a 2-pass cap. On MiniMax failure, escalate to Tier 2 Codex. If `--skip-codex` blocks Codex too, REFUSE (both reviewers unavailable).
+
+```bash
+if [ "$TIER" = "1" ]; then
+  TIER_1_PASS=1
+  TIER_1_MAX=2
+  TIER_1_APPROVED=no
+  TIER_1_MINIMAX_FAILED=no
+
+  while [ "$TIER_1_PASS" -le "$TIER_1_MAX" ]; do
+    echo "[tier-1] pass $TIER_1_PASS of $TIER_1_MAX -- running MiniMax --scope diff..."
+    set +e
+    VERDICT_JSON=$(scripts/minimax-review.sh \
+      --scope diff \
+      --files "$CHANGED_FILES" \
+      --focus "tier-1 single-pass docs review (pass $TIER_1_PASS)" \
+      --json 2>/tmp/tier1_pass_${TIER_1_PASS}.err)
+    MINIMAX_EXIT=$?
+    set -e
+
+    if [ "$MINIMAX_EXIT" -ne 0 ]; then
+      echo "[tier-1] MiniMax FAILED on pass $TIER_1_PASS (exit $MINIMAX_EXIT):" >&2
+      cat /tmp/tier1_pass_${TIER_1_PASS}.err >&2
+      TIER_1_MINIMAX_FAILED=yes
+      break
+    fi
+
+    # Parse verdict: parsed.verdict (case-insensitive). minimax_review.py
+    # --json prints the parsed dict directly; verdict is lowercase "approve".
+    VERDICT=$(echo "$VERDICT_JSON" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except json.JSONDecodeError:
+    print('parse-error')
+    sys.exit(0)
+v = data.get('verdict', '') or ''
+print(v.strip().lower())
+")
+
+    if [ "$VERDICT" = "approve" ]; then
+      echo "[tier-1] APPROVED on pass $TIER_1_PASS"
+      TIER_1_APPROVED=yes
+      break
+    fi
+
+    # Non-approve verdict. Surface findings to Keith verbatim; Keith triages
+    # and decides whether to fix-and-repass, accept, or escalate.
+    echo "[tier-1] pass $TIER_1_PASS verdict=$VERDICT -- surfacing findings:"
+    echo "$VERDICT_JSON" | python3 -m json.tool
+    # Claude waits for Keith's reply here before advancing the loop.
+    TIER_1_PASS=$((TIER_1_PASS + 1))
+  done
+
+  if [ "$TIER_1_MINIMAX_FAILED" = "yes" ]; then
+    if [ -n "${SKIP_CODEX:-}" ]; then
+      echo "[FATAL] tier-1 MiniMax failed AND --skip-codex blocks Codex." >&2
+      echo "Both reviewers unavailable. REFUSE /ship." >&2
+      exit 3
+    fi
+    echo "[tier-1] escalating to tier-2 Codex single-pass (MiniMax failed)."
+    TIER=2
+    # Fall through to Tier 2 block below
+  elif [ "$TIER_1_APPROVED" = "no" ]; then
+    echo "[tier-1] 2 passes non-approve; auto-promoting to tier-2."
+    TIER=2
+    # Fall through to Tier 2 block
+  else
+    REVIEW_RESULT="tier-1-approve-pass-$TIER_1_PASS"
+  fi
+fi
+```
+
+##### 3b.2 Tier 2 flow
+
+Codex single-pass (today's background + poll block from Step 3c). Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior; escalate via future `/ship --tier 3` once Ship 2 lands).
+
+If `--skip-codex <reason>` is passed:
+
+```bash
+if [ "$TIER" = "2" ] && [ -n "${SKIP_CODEX:-}" ]; then
+  if ! scripts/minimax-review.sh --scope diff --files "$CHANGED_FILES" \
+      --focus "tier-2 single-pass review (--skip-codex: $SKIP_CODEX)"; then
+    echo "[FATAL] tier-2 MiniMax failed AND --skip-codex blocks Codex fallback." >&2
+    echo "Both reviewers unavailable. REFUSE /ship." >&2
+    exit 3
+  fi
+  REVIEW_RESULT="tier-2-minimax-$SKIP_CODEX"
+fi
+```
+
+If `--skip-codex` is NOT set, use the Codex background + poll pattern from Step 3c but stop at one pass. Record `REVIEW_RESULT="tier-2-codex-single-pass"`.
+
+#### 3c. Tier 3 flow (unchanged from pre-tiering)
+
 Two reviewers can fill this gate. Codex is primary; MiniMax-M2.7 via `scripts/minimax-review.sh` is the documented fallback when Codex quota is depleted (see [[wiki/concepts/Shipped/feature_minimax-adversarial-reviewer]] for the spec). Decision tree before invoking:
 
 1. **Try Codex first.** Run the background + poll pattern below.
@@ -213,6 +363,18 @@ artifacts: .minimax-reviews/<timestamp>_working-tree.json
 Both reviewers' archived JSON outputs are durable evidence of the gate -- Codex via its session log, MiniMax via `.minimax-reviews/`.
 
 **MiniMax invocation contract.** The script exits 0 on success (any verdict including NEEDS-ATTENTION counts as success -- the verdict is review output, not script status), non-zero on failure (missing API key, network error, malformed MiniMax response, JSON Schema validation failure). Empty stdout from a 0-exit run is impossible by design (the formatter always emits a verdict). If you observe empty output with exit 0, treat it as failure mode and route to the both-fail branch above -- silent emptiness is worse than a loud error.
+
+#### 3d. Record the tier used
+
+After the tier-specific flow finishes (any of 3b.0 Tier 0 skip, 3b.1 Tier 1, 3b.2 Tier 2, or 3c Tier 3), record the classification in the ship audit trail + DEVLOG entry + (for multi-ship features) the Shipping Status table row:
+
+```
+tier: <N> (<classifier | classifier-error-fallback | Ship-2-override>)
+tier-reason: <TIER_REASON>
+review-result: <skipped-tier-0 | tier-1-approve-pass-N | tier-1-auto-promoted-to-tier-2 | tier-2-codex-single-pass | tier-2-minimax-<reason> | tier-3-codex-multiround | tier-3-minimax-fallback>
+```
+
+For multi-ship features (Shipping Status table), append the tier + reason to the current ship row so future ships in the same feature can see the historical tier pattern.
 
 ### Adversarial Review -- the two checkpoints
 
