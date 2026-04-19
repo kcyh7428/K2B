@@ -241,16 +241,25 @@ def gather_file_list_context(
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]")
 
-# Path references: any token containing '/' (any depth, abs or rel) OR any
-# top-level token ending in a known file extension (README.md, foo.sh).
-# Anchored on left by start-of-line / whitespace / ` / ( / [ / < / , / ;
-# Anchored on right by end / whitespace / ` / ) / ] / > / .,;:!? terminator.
+# Path references: matched in three forms (anchored on common punctuation):
+#   1. Absolute path: starts with '/', any depth, no extension required
+#   2. Relative path with known extension: scripts/foo.py, docs/notes.md
+#   3. Top-level filename with known extension: README.md, foo.sh
+# Tokens containing '/' but NO known extension (e.g. prose like "gather/run_git",
+# "abs/rel") are intentionally NOT matched -- they generated false-positive
+# '_(file missing)_' noise on plans containing slash-separated identifiers.
 # `K2B-Vault/...` shorthand is NOT specially handled -- callers wanting vault
 # files use absolute paths (K2B-Vault is a sibling of the repo, not a subdir).
 _PATH_EXT = "py|sh|md|json|ya?ml|toml|js|ts|tsx|jsx|html|css|sql|txt|env"
 PATH_REF_RE = re.compile(
     r"(?:^|[\s`(\[<,;])"
-    r"(/?(?:[\w.\-]+/)+[\w.\-]+|[\w][\w.\-]*\.(?:" + _PATH_EXT + "))"
+    r"("
+    r"/(?:[\w.\-]+/)*[\w.\-]+"                                 # absolute path
+    r"|"
+    r"(?:[\w.\-]+/)+[\w.\-]+\.(?:" + _PATH_EXT + ")"            # rel path + ext
+    r"|"
+    r"[\w][\w.\-]*\.(?:" + _PATH_EXT + ")"                      # bare filename + ext
+    r")"
     r"(?=[\s`)\]>.,;:!?]|$)",
     re.MULTILINE,
 )

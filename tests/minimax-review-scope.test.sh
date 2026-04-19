@@ -379,6 +379,52 @@ echo "$ctx" | grep -q '/absolute/that/does/not/exist.py' || \
   fail "test9: absolute missing path should be MARKED in output, not dropped"
 echo "ok test9: plan-scoped marks missing path-refs (does not silently drop)"
 
+# --- Test 9b: plan-scope ignores prose with slashes but no extension ---
+# MiniMax Checkpoint 2 HIGH-1 fix: PATH_REF_RE used to match prose like
+# 'gather/run_git' and 'abs/rel' as paths and mark them _(file missing)_,
+# overwhelming the signal. Now requires either absolute path OR rel path
+# with known extension OR bare filename with extension.
+TMP9B="$(mktmp)"
+build_fixture_repo "$TMP9B"
+mkdir -p "$TMP9B/scripts"
+printf 'def real():\n    pass\n' > "$TMP9B/scripts/real.py"
+
+cat > "$TMP9B/plan.md" <<'EOF'
+# Plan: example
+The gatherer in `gather/run_git` does the heavy lifting.
+We support abs/rel paths via Path resolution.
+The 'unreadable/deleted' state is marked, not dropped.
+Real reference: scripts/real.py
+EOF
+
+ctx=$(call_gatherer gather_plan_context "$TMP9B" '"plan.md"' 2>/dev/null)
+
+# Real path-ref still resolves
+echo "$ctx" | grep -q 'scripts/real.py' || \
+  fail "test9b: real path scripts/real.py should still be matched"
+# Prose tokens must NOT appear as referenced-file sections
+if echo "$ctx" | grep -q '^#### gather/run_git'; then
+  fail "test9b: 'gather/run_git' (no extension) leaked as a referenced-file section"
+fi
+if echo "$ctx" | grep -q '^#### abs/rel'; then
+  fail "test9b: 'abs/rel' (no extension) leaked as a referenced-file section"
+fi
+if echo "$ctx" | grep -q '^#### unreadable/deleted'; then
+  fail "test9b: 'unreadable/deleted' (no extension) leaked as a referenced-file section"
+fi
+echo "ok test9b: plan-scope ignores prose with slashes but no extension"
+
+# --- Test 9c: gather_diff_scoped_context returns sorted file list -----
+# MiniMax Checkpoint 2 MEDIUM-3 gap-fill: diff-scope returns files_sorted
+# already, but no test asserted it. Pin the contract.
+TMP9C="$(mktmp)"
+build_fixture_repo "$TMP9C"
+files_out=$(call_gatherer_full gather_diff_scoped_context "$TMP9C" '["file_b.py", "file_a.py"]' | sed -n '/=== files ===/,$p' | tail -n +2)
+files_sorted=$(printf '%s\n' "$files_out" | sort)
+[ "$files_out" = "$files_sorted" ] || \
+  fail "test9c: diff-scope returned list not sorted (got: $(echo "$files_out" | tr '\n' ' '))"
+echo "ok test9c: diff-scope returns sorted file list"
+
 # --- Test 10: --scope files with empty parsed --files exits 1 --------
 TMP10="$(mktmp)"
 build_fixture_repo "$TMP10"
