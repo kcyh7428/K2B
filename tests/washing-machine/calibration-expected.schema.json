@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k2b.local/schemas/washing-machine/calibration-expected.schema.json",
+  "title": "Washing Machine Classifier Calibration Expected Outputs",
+  "description": "Schema for tests/washing-machine/calibration-expected.json -- the machine-readable contract of the classifier's expected outputs across the 25-row calibration corpus. Validated via `jsonschema` in Commit 0b's checkpoint gate.",
+  "type": "object",
+  "required": ["_meta", "rows"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "_meta": {
+      "type": "object",
+      "required": ["version", "corpus", "anchor_date"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "corpus": { "type": "string" },
+        "anchor_date": { "type": "string", "format": "date" },
+        "anchor_weekday": { "type": "string" },
+        "generated": { "type": "string", "format": "date" },
+        "notes": { "type": "string" }
+      }
+    },
+    "rows": {
+      "type": "object",
+      "description": "Exactly 25 rows keyed row_001..row_025. No more, no less. Drift is a bug.",
+      "patternProperties": {
+        "^row_[0-9]{3}$": {
+          "$ref": "#/$defs/row"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "row_001", "row_002", "row_003", "row_004", "row_005",
+        "row_006", "row_007", "row_008", "row_009", "row_010",
+        "row_011", "row_012", "row_013", "row_014", "row_015",
+        "row_016", "row_017", "row_018", "row_019", "row_020",
+        "row_021", "row_022", "row_023", "row_024", "row_025"
+      ]
+    }
+  },
+  "$defs": {
+    "row": {
+      "type": "object",
+      "required": ["input", "expected"],
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The exact user message fed to the classifier."
+        },
+        "expected": {
+          "$ref": "#/$defs/classifierOutput"
+        }
+      }
+    },
+    "classifierOutput": {
+      "type": "object",
+      "required": ["keep"],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "description": "keep=true rows must specify category and shelf (entities are not required since some keep=true rows defer entity extraction to the pending-confirmation flow -- see row 016)",
+          "properties": { "keep": { "const": true } },
+          "required": ["category", "shelf"]
+        },
+        {
+          "description": "keep=false rows must specify discard_reason and must NOT carry category/shelf/entities",
+          "properties": {
+            "keep": { "const": false },
+            "category": false,
+            "shelf": false,
+            "entities": false
+          },
+          "required": ["discard_reason"]
+        }
+      ],
+      "properties": {
+        "keep": {
+          "type": "boolean",
+          "description": "True = extract entities + write to shelf. False = discard."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["fact", "preference", "context", "decision"],
+          "description": "Only meaningful when keep=true."
+        },
+        "shelf": {
+          "type": "string",
+          "enum": ["semantic", "keyword", "insights", "recent", "team"],
+          "description": "Target shelf. Ship 1 MVP uses 'semantic' only; other shelves are stubs until Ship 3."
+        },
+        "discard_reason": {
+          "type": "string",
+          "enum": ["question", "command", "tool_echo", "too_short", "assistant_turn", "low_signal"],
+          "description": "Only present when keep=false. Structured reason, NOT free-form."
+        },
+        "entities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/entity" },
+          "description": "Extracted entities. Empty array or absent when keep=false."
+        },
+        "timestamp_iso": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp resolved from relative dates in the input, anchored to message-arrival time."
+        },
+        "date_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "0.7 is the pending-confirm threshold: below 0.7, classifier should flag needs_confirmation_reason."
+        },
+        "needs_confirmation_reason": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "date_mismatch",
+              "date_ambiguous",
+              "name_ambiguous",
+              "low_ocr_confidence",
+              "multiple_candidates"
+            ]
+          },
+          "description": "Structured reasons for pending-confirmation flow. Empty array means no confirmation needed."
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "required": ["type", "fields"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["contact", "person", "org", "appointment", "decision", "preference", "fact", "location"],
+          "description": "Entity kind. Pinning policy: contact/person/org/appointment/decision are auto-pinned."
+        },
+        "fields": {
+          "type": "object",
+          "description": "Entity fields. Schema is flexible per type; classifier must NOT invent missing fields (use null instead).",
+          "additionalProperties": true
+        },
+        "field_confidence": {
+          "type": "object",
+          "description": "Per-field confidence scores 0-1. Optional but recommended for OCR-derived entities.",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "evidence_spans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "start", "end"],
+            "properties": {
+              "field": { "type": "string" },
+              "start": { "type": "integer", "minimum": 0 },
+              "end": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "description": "Character offsets in the input that produced each extracted field. Optional but useful for debugging."
+        }
+      }
+    }
+  }
+}

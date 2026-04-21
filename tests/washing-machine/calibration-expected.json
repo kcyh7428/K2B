@@ -1,0 +1,383 @@
+{
+  "$schema": "./calibration-expected.schema.json",
+  "_meta": {
+    "version": "1.0",
+    "corpus": "calibration-corpus.md",
+    "anchor_date": "2026-04-01",
+    "anchor_weekday": "Wednesday",
+    "generated": "2026-04-21",
+    "notes": "Expected classifier outputs for the 25-row calibration corpus. Tests in Commit 3 (classify.test.sh) validate each row's classifier output against these expectations. Tune the prompt, not the expected outputs -- if a row's expected is wrong, update both the corpus.md and this file in the same commit."
+  },
+  "rows": {
+    "row_001": {
+      "input": "Andrew's new number is 9876 5432, works at Apex Capital.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "contact",
+            "fields": {
+              "name": "Andrew",
+              "phone": "9876 5432",
+              "org": "Apex Capital"
+            }
+          }
+        ],
+        "needs_confirmation_reason": []
+      }
+    },
+    "row_002": {
+      "input": "Just met Dr. Lisa Chen, pediatrician at HK Sanatorium. Very thorough.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "person",
+            "fields": {
+              "name": "Dr. Lisa Chen",
+              "role": "pediatrician",
+              "org": "HK Sanatorium"
+            }
+          }
+        ]
+      }
+    },
+    "row_003": {
+      "input": "My physiotherapist is 陳醫生 (Dr. Chan), tel 2567 1234, Central branch.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "contact",
+            "fields": {
+              "name_en": "Dr. Chan",
+              "name_zh": "陳醫生",
+              "role": "physiotherapist",
+              "phone": "2567 1234",
+              "location": "Central branch"
+            }
+          }
+        ]
+      }
+    },
+    "row_004": {
+      "input": "Add Jamie Liu to the vendor list: jamie@linearleads.com, sourcing contractor.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "contact",
+            "fields": {
+              "name": "Jamie Liu",
+              "email": "jamie@linearleads.com",
+              "role": "sourcing contractor"
+            }
+          }
+        ]
+      }
+    },
+    "row_005": {
+      "input": "We're using Peak Talent for the VP Sales search. Retainer signed last week.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "org",
+            "fields": {
+              "name": "Peak Talent",
+              "relationship": "recruiting vendor",
+              "context": "VP Sales search"
+            }
+          }
+        ]
+      }
+    },
+    "row_006": {
+      "input": "Decided to park the multi-agent hive mind spec. Too complex for current team; revisit Q3.",
+      "expected": {
+        "keep": true,
+        "category": "decision",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "decision",
+            "fields": {
+              "subject": "multi-agent hive mind",
+              "choice": "parked",
+              "reason": "too complex for current team; revisit Q3"
+            }
+          }
+        ]
+      }
+    },
+    "row_007": {
+      "input": "Going with MiniMax-VL over Opus for image OCR. Cost + same quota bucket wins.",
+      "expected": {
+        "keep": true,
+        "category": "decision",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "decision",
+            "fields": {
+              "subject": "image OCR provider",
+              "choice": "MiniMax-VL",
+              "reason": "cost + same quota bucket"
+            }
+          }
+        ]
+      }
+    },
+    "row_008": {
+      "input": "Offering Fiona the Head of People Ops role at HK$85k base + 12% target bonus.",
+      "expected": {
+        "keep": true,
+        "category": "decision",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "decision",
+            "fields": {
+              "subject": "Fiona hiring",
+              "choice": "offer Head of People Ops",
+              "compensation": "HK$85k base + 12% target bonus"
+            }
+          }
+        ]
+      }
+    },
+    "row_009": {
+      "input": "I prefer Codex over MiniMax for adversarial review when it's available.",
+      "expected": {
+        "keep": true,
+        "category": "preference",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "preference",
+            "fields": {
+              "trigger": "adversarial review",
+              "rule": "use Codex when available"
+            }
+          }
+        ]
+      }
+    },
+    "row_010": {
+      "input": "Don't send me emails after 10pm HK time -- I don't check them until morning anyway.",
+      "expected": {
+        "keep": true,
+        "category": "preference",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "preference",
+            "fields": {
+              "trigger": "outbound email",
+              "rule": "not after 22:00 HKT",
+              "reason": "not read until morning"
+            }
+          }
+        ]
+      }
+    },
+    "row_011": {
+      "input": "Always use the Telegram bot path for reminders, not the dashboard.",
+      "expected": {
+        "keep": true,
+        "category": "preference",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "preference",
+            "fields": {
+              "trigger": "reminder channel",
+              "rule": "use Telegram bot, not dashboard"
+            }
+          }
+        ]
+      }
+    },
+    "row_012": {
+      "input": "Reminder: annual physical tomorrow at 9am with Dr. Wong.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "timestamp_iso": "2026-04-02T09:00:00+08:00",
+        "date_confidence": 0.95,
+        "entities": [
+          {
+            "type": "appointment",
+            "fields": {
+              "subject": "annual physical",
+              "with": "Dr. Wong"
+            }
+          }
+        ]
+      }
+    },
+    "row_013": {
+      "input": "Next Friday I'm in Macau for the SJM board meeting. Block the day.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "timestamp_iso": "2026-04-03T00:00:00+08:00",
+        "date_confidence": 0.9,
+        "entities": [
+          {
+            "type": "appointment",
+            "fields": {
+              "subject": "SJM board meeting",
+              "location": "Macau"
+            }
+          }
+        ]
+      }
+    },
+    "row_014": {
+      "input": "Schedule SJM quarterly review for 2026-05-15, 2-4pm, Conference Room A.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "timestamp_iso": "2026-05-15T14:00:00+08:00",
+        "date_confidence": 1.0,
+        "entities": [
+          {
+            "type": "appointment",
+            "fields": {
+              "subject": "SJM quarterly review",
+              "location": "Conference Room A",
+              "duration": "2h"
+            }
+          }
+        ]
+      }
+    },
+    "row_015": {
+      "input": "[Image: business card for Andrew Lam, Tel 2345 6789, dated 2025-09-01]",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "date_confidence": 0.4,
+        "needs_confirmation_reason": ["date_mismatch"],
+        "entities": [
+          {
+            "type": "contact",
+            "fields": {
+              "name": "Andrew Lam",
+              "phone": "2345 6789"
+            }
+          }
+        ]
+      }
+    },
+    "row_016": {
+      "input": "Met with her earlier about the hiring freeze.",
+      "expected": {
+        "keep": true,
+        "category": "context",
+        "shelf": "semantic",
+        "date_confidence": 0.5,
+        "needs_confirmation_reason": ["date_ambiguous"]
+      }
+    },
+    "row_017": {
+      "input": "What's my doctor's phone number?",
+      "expected": {
+        "keep": false,
+        "discard_reason": "question"
+      }
+    },
+    "row_018": {
+      "input": "What time is the SJM board meeting?",
+      "expected": {
+        "keep": false,
+        "discard_reason": "question"
+      }
+    },
+    "row_019": {
+      "input": "How do I reach Andrew by WhatsApp again?",
+      "expected": {
+        "keep": false,
+        "discard_reason": "question"
+      }
+    },
+    "row_020": {
+      "input": "Any chance you remember my physiotherapist's name",
+      "expected": {
+        "keep": false,
+        "discard_reason": "question"
+      }
+    },
+    "row_021": {
+      "input": "/tldr",
+      "expected": {
+        "keep": false,
+        "discard_reason": "command"
+      }
+    },
+    "row_022": {
+      "input": "[Tool: obsidian_simple_search] Found 3 results for \"Dr Lo\": wiki/people/person_Dr-Lo-Hak-Keung.md, Daily/2025-04-11.md, wiki/concepts/feature_washing-machine-memory.md",
+      "expected": {
+        "keep": false,
+        "discard_reason": "tool_echo"
+      }
+    },
+    "row_023": {
+      "input": "Here's a summary of your meeting with Andrew today: (1) Decided on retainer model, (2) Keith to send the MSA draft by Friday, (3) Andrew to introduce Peak Talent to the finance team.",
+      "expected": {
+        "keep": false,
+        "discard_reason": "assistant_turn"
+      }
+    },
+    "row_024": {
+      "input": "ok",
+      "expected": {
+        "keep": false,
+        "discard_reason": "too_short"
+      }
+    },
+    "row_025": {
+      "input": "Saw Lisa Chen today (pediatrician at HK Sanatorium, tel 2522 9876) and she recommended Dr. Mike Ho for orthopedics at St. Paul's.",
+      "expected": {
+        "keep": true,
+        "category": "fact",
+        "shelf": "semantic",
+        "entities": [
+          {
+            "type": "contact",
+            "fields": {
+              "name": "Lisa Chen",
+              "role": "pediatrician",
+              "org": "HK Sanatorium",
+              "phone": "2522 9876"
+            }
+          },
+          {
+            "type": "contact",
+            "fields": {
+              "name": "Dr. Mike Ho",
+              "role": "orthopedics specialist",
+              "org": "St. Paul's",
+              "referral_source": "Lisa Chen"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
