@@ -1988,3 +1988,23 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 - Tier 3 loop: **removed** the `TIER_3_MAX_ITER=4 while` loop from the plan draft. Bash can't read reviewer verdicts from logs without embedded python; the plan's "Claude parses the verdict" comment was not executable. Single-pass-per-/ship matches pre-refactor flow and is correct.
 - Tier 1 untouched: keeps Tier 1 on direct `scripts/minimax-review.sh --json` to avoid the runner's verdict-exposure complication. Tier 1 migration is a future question.
 - Committed washing-machine files as-is rather than force-rewriting main: destructive history rewrites on shared main are worse than a wider-than-described commit. DEVLOG + feature note document the scope deviation for the audit trail.
+
+
+## 2026-04-22 -- Exhaustive-mode adversarial review + MiniMax transport hygiene
+
+**Commit:** `6617f53` feat(review): exhaustive-mode adversarial review + MiniMax transport hygiene
+
+**What shipped:** Two related improvements that share the MiniMax + Codex review pipeline. First, the adversarial review prompts (both Codex focus strings and MiniMax `calibration_rules`) now tell the reviewer to enumerate ALL material findings severity>=medium in one pass, ranked by severity+confidence, capped at ~15 to stay inside the JSON/token budget. Prior behavior surfaced one "top blocker" per pass, forcing 3-10 /ship re-runs on non-trivial diffs. Second, `scripts/lib/minimax_common.py` picks up the MiniMax v2 plan review's API hygiene items: `MM-API-Source: K2B` telemetry header (with `MM_API_SOURCE_DISABLE=1` escape hatch), `1002` rate-limit retry with jittered backoff on the same ladder as HTTP 529, `1008` fail-fast for insufficient-balance/quota (no retry recovers), and all retry diagnostics routed to stderr so `minimax-review.sh --json` stdout stays parseable under load. Nine new regression tests in `tests/test_minimax_common.py` cover every branch: success, 1002 retry-then-success, 1002 exhaustion, 1008 fail-fast, malformed JSON, HTTP 529 retry, URLError retry, stdout cleanliness across all three retry paths, MM-API-Source emission + disable flag.
+
+**Codex review:** 4 adversarial rounds, each in exhaustive mode (first real test of the new prompt). Round 1: HIGH token budget + MEDIUM missing tests -> fixed inline (budget cap phrase in prompts + test file). Round 2: HIGH stdout retry leak -> fixed (all three retry paths use `file=sys.stderr`; also wrote a test that captures both streams and asserts stdout is empty during retries). Round 3: MEDIUM x3 -- no jitter / URLError test gap / no header escape hatch -> fixed (jittered backoff, URLError stream-capture test, `MM_API_SOURCE_DISABLE` env flag + test). Round 4: MEDIUM 1008 message claimed "5h window" without contract evidence -> fixed (neutral message pointing operator at balance/quota check). Shipped with one deferred: Round-4 MEDIUM on deadline-aware 1002 retry budget (can burn up to ~85s before failing); runner deadlines cap total review time so this is hardening, not a bug.
+
+**Feature status change:** infrastructure (`--no-feature`); no lane changes in `wiki/concepts/index.md`.
+
+**Follow-ups:**
+- Deadline-aware 1002 retry budget or `Retry-After` honoring so sustained rate-limit degrades more gracefully than the full 85s ladder.
+- MEDIUM #2 from Round 1 was out-of-scope for this ship (bake window `--until="2026-04-26"` in `plans/2026-04-26_tiering-ship-2-handoff.md` excludes the last day). File is pre-existing untracked from a parallel session; flagged for whoever owns that plan.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Accepted the MiniMax "calibration_rules" prompt-edit as the primary lever for exhaustive mode (rather than restructuring `review_runner.py` to post-process findings). The prompt lives in one file and changes the reviewer's behavior the same way for every caller (ship, weave, lint-deep, observer, research). A runner-side filter would only help `/ship`.
+- Added regression tests in Python `unittest` style (new pattern for K2B -- existing tests are shell). Python tests are the right tool for mocking `urllib.request.urlopen` and capturing `sys.stdout` / `sys.stderr` streams; shell can't stub at that level.
+- Stopped review iteration after 4 rounds even though Round 4 returned NEEDS-ATTENTION. Trend: Round 1 had 1 HIGH, Round 2 had 1 HIGH, Round 3 had 0 HIGH, Round 4 had 0 HIGH. Remaining MEDIUMs were operational hardening, not shipping blockers. Accepted + documented in commit body + this DEVLOG entry -- the exhaustive prompt did its job (one round per fix-batch instead of ten).
