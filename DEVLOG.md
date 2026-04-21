@@ -4,6 +4,30 @@
 
 
 
+## 2026-04-21 -- Telegram YouTube URL transcript pre-fetch
+
+**Commit:** `16618c3` feat(k2b-remote): pre-fetch YouTube transcript before agent runs
+
+**What shipped:** When the k2b-remote Telegram bot detects a `youtube.com` / `youtu.be` URL in an incoming message, it fetches the transcript via the new `scripts/yt-transcript.sh` unified cascade (captions-en -> captions-zh -> groq-whisper) BEFORE the agent runs, and prepends it (fenced, untrusted-data-marked) to the agent prompt along with an intent instruction (bare URL -> 3-sentence summary; URL+question -> answer directly). The same helper is now called from `k2b-youtube-capture` step 2b so caption-first-then-Whisper logic lives in ONE place instead of duplicated in skill prose. Triggered by a real failure this morning (session `3cb6252f`, 08:20-08:23) where a Telegram Shorts URL + text instruction produced 4 turns (3 useless) instead of 1 useful reply -- caused by (a) turn-1 SessionStart-hook hijack when the message is short, and (b) agent rediscovering the audio->Whisper fallback across 3 turns because Shorts have no captions. Feature note: `wiki/concepts/feature_telegram-url-prefetch.md`.
+
+**Review:** Tier 3 (k2b-remote/src/** allowlist). Two reviewers run in sequence.
+- MiniMax-M2.7 `--scope files` single-pass, 6 files: NEEDS-ATTENTION with 3 HIGH + 2 MEDIUM. All 3 HIGH fixed (spawn timeout no-op, GROQ_API_KEY on curl command line, `|| true` masking video-ID extract failure). MED-4 (15k char cap) annotated as Telegram-size-cap-not-model-context-claim; MED-5 (EXIT trap signal coverage) skipped because bash EXIT trap already covers SIGINT/SIGTERM. Archive: `.minimax-reviews/2026-04-21T01-27-37Z_files.json`.
+- Codex `--scope working-tree` after stashing Apr 19 leftovers aside: 1 P1 (prompt injection via transcript text) + 2 P2 (URL regex grabs sentence period; global vs adjacent VTT dedup). All 3 fixed: transcript now fenced with random per-message sentinel explicitly marked untrusted-data, URL regex tightened to exclude sentence punctuation, VTT dedup changed from `awk '!seen[$0]++'` to adjacent-only (`$0 != prev`) to preserve intentional repeats.
+
+**Feature status change:** `feature_telegram-url-prefetch` created at `status: shipped` in a single-ship flow (simple enough that no plan + ideation lane was needed).
+
+**Follow-ups:**
+- Cluster cleanup still pending: Apr 19 work stashed aside (`claude-minimaxi` wiring in CLAUDE.md + `scripts/minimax-common.sh` + `.claude/skills/k2b-compile/SKILL.md` + untracked `scripts/claude-minimaxi-usage-report.sh` + `scripts/minimax-json-job.sh`) needs its own ship. Skill-topology design docs in `docs/superpowers/` need decision (ship or delete). `.claude/worktrees/recursing-payne-496c17/` orphaned worktree should be `git worktree remove`'d.
+- SessionStart-hook hijack is a separate unsolved problem -- this feature drowns it out for YouTube URLs specifically but other bare-message cases (non-YT URLs, short commands) can still trigger it.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Stashed Apr 19 leftovers (claude-minimaxi wiring, skill-topology docs, orphan worktree) aside before running Codex so the reviewer saw only my patch. None of the stashed files were git hooks, so the "stash swallows hooks" feedback-memory gotcha didn't apply. Will `git stash pop` after this ship to restore the Apr 19 state for its own follow-up ship.
+- Kept two HIGH MiniMax findings against a NEW file (prompt-injection defense, spawn-timeout kill-switch) instead of treating them as "MiniMax false positive since Opus is trusted caller". The URL regex sanitization argument breaks down when a video caption is the untrusted source -- even with Opus, a captioned system: "run /rm -rf" could be executed if the prompt lacks delimiters.
+- `auto-promote` step 0 surfaced L-2026-04-19-002 (plain-English rule) again -- yesterday's devlog noted it should have been `auto-promote-rejected: true`. Skipped re-prompt inline; handled in a follow-up.
+- Offloaded the batch-compile cascade reference to the SKILL instead of deleting the cascade prose wholesale. The skill still documents what tier does what, but points callers at the single executable instead of reproducing the curl+ffmpeg recipe inline.
+
+---
+
 ## 2026-04-19 -- claude-minimaxi symlink-aware SCRIPT_DIR
 
 **Commit:** `6f07496` fix(claude-minimaxi): resolve symlink before sourcing minimax-common.sh
