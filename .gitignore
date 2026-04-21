@@ -37,6 +37,9 @@ scripts/generate-org-chart.py
 # MiniMax adversarial review artifacts (per-machine, not committed)
 .minimax-reviews/
 
+# Unified review runner archives (per-machine, not committed)
+/.code-reviews/
+
 # Claude Code plan artifacts
 .claude/plans/
 

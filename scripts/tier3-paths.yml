@@ -30,6 +30,9 @@ paths:
   - "scripts/lib/minimax_review.py"
   - "scripts/lib/adversarial-review.md"
   - "scripts/minimax-review.sh"
+  - "scripts/review.sh"
+  - "scripts/review-poll.sh"
+  - "scripts/lib/review_runner.py"
 
   # Single-writer mutation helpers (bug here corrupts shared logs/indexes)
   - "scripts/wiki-log-append.sh"
