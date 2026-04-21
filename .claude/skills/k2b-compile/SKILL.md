@@ -153,8 +153,26 @@ Shows plan, waits for Keith's approval. Best for interactive sessions.
 Groups multiple uncompiled sources:
 1. Read all raw files where `compiled:` is missing or false
 2. Show combined summary: "5 sources, 12 wiki updates, 4 new pages"
-3. One approval for all
+3. One approval for all (approval gate STAYS on Opus -- see below)
 4. Process sequentially
+
+**claude-minimaxi offload for large batches.** When this runs on Opus (`[[ "${K2B_OFFLOADED:-0}" != "1" ]]`) AND there are **3 or more** uncompiled sources, offload the sequential processing loop (step 4) to `claude-minimaxi` after Keith approves the plan. Opus still owns steps 1-3 (discovery, plan summary, approval gate) because those need identity-aware synthesis; MiniMax handles the mechanical per-source loop.
+
+Dispatch shape:
+```bash
+# After Keith approves on Opus side, dispatch the execution:
+claude-minimaxi "/compile batch --approved" \
+  --add-dir ~/Projects/K2B \
+  --add-dir ~/Projects/K2B-Vault
+```
+
+The child session sees `K2B_OFFLOADED=1` set by the wrapper, reads the same raw sources, skips the re-dispatch check (no recursion), calls `minimax-compile.sh` per source, runs `compile-index-update.py`, and marks frontmatter. Then exits. Opus reads the return status and reports to Keith.
+
+**Why this specifically.** Per-source orchestration in batch mode is mechanical loop work -- for each source, build context, call MiniMax worker, parse JSON, apply changes, mark compiled. The only semantic judgment (classify-vs-enrich, voice alignment, cross-link decisions) happens once, at the approval gate, which stays on Opus. Dispatching the loop saves orchestration tokens and keeps the measurement pipeline (`minimax-jobs.jsonl` with `job: "claude-minimaxi-session"`) getting data.
+
+**Under 3 sources**: stay on Opus. Overhead of dispatch isn't worth it for 1-2 items.
+
+**If already offloaded (`K2B_OFFLOADED=1`)**: skip the re-dispatch, run the loop directly. Prevents infinite recursion.
 
 ### deep
 Manual trigger for deeper analysis:

@@ -22,6 +22,7 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - **Google Workspace CLI** (`gws`) -- Gmail, Calendar, Drive, Sheets, and more via `gws` commands. JSON output, works from bash.
 - MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image, speech, video, music generation)
 - **MiniMax API** (minimaxi.com) -- image generation, TTS, audio transcription, video, music, and text completion (MiniMax-M2.7, used by background observer, compile, lint deep, research extraction). API key in `MINIMAX_API_KEY` env var. Scripts in `scripts/minimax-*.sh`.
+- **`claude-minimaxi`** -- wrapper that runs Claude Code with MiniMax-M2.7 as the brain instead of Opus. Use for bulk/non-critical work; never for identity-heavy or durable-memory tasks. Decision rubric: `wiki/context/context_claude-minimaxi-routing.md`. Script at `scripts/claude-minimaxi.sh`, symlinked at `~/.local/bin/claude-minimaxi`.
 - Bash, file system, web search, all standard Claude Code tools
 
 ## Commander/Worker Architecture

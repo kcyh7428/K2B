@@ -5,6 +5,24 @@
 set -euo pipefail
 
 # --- Config ---
+# The shell that sources this file may be non-interactive (e.g. Claude Code's
+# Bash tool, a cron job, or a background pm2 process) and may not have sourced
+# ~/.zshrc. If MINIMAX_API_KEY isn't in env, fall back to sourcing .zshrc once.
+# This makes every minimax-*.sh script work from any shell without the caller
+# having to remember to source the profile first. Same pattern already used
+# by scripts/claude-minimaxi.sh and scripts/minimax-review.sh.
+#
+# Safety assumption: Keith's ~/.zshrc contains only PATH exports and API key
+# exports (no early-exit guards like `[[ $- != *i* ]] || return`, no
+# zsh-specific control flow). If that assumption ever stops holding, the
+# better fix is a dedicated ~/.minimax-env credentials-only file updated in
+# all three callers at once (MiniMax review note 2026-04-21).
+if [[ -z "${MINIMAX_API_KEY:-}" && -f "$HOME/.zshrc" ]]; then
+  set +u
+  source "$HOME/.zshrc" >/dev/null 2>&1 || true
+  set -u
+fi
+
 MINIMAX_API_KEY="${MINIMAX_API_KEY:?Set MINIMAX_API_KEY in your environment}"
 MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
 
