@@ -4,6 +4,32 @@
 
 
 
+## 2026-04-21 -- MiniMax offload rescope to v2 + Washing Machine handoff
+
+**Commit:** `828559e` docs: rescope minimax-offload to v2 consolidated handoff
+
+**What shipped:** One plan file in `plans/2026-04-21_minimax-offload-v2-consolidated.md` (373 lines) that rescopes `project_minimax-offload` from the original sequential 6-phase text-offload plan to a 4-track structure: **Track A (text)** keeps existing Phases 1-6 with the "cap at 2 offloads" rule retired; **Track B (vision)** is new, 150 calls/5h quota untapped, primary consumer is Washing Machine Memory Ship 1; **Track C (web search)** is new, 150 calls/5h quota untapped, primary consumer is `/research` Level 0 quick lookup; **Track D (TTS)** is new, 9000 chars/day quota near-zero use today, primary consumer is end-of-day audio daily digest in Telegram. The handoff also contains the confirmed REST contracts for `POST /v1/coding_plan/vlm` and `POST /v1/coding_plan/search` (payload shapes + error codes + MM-API-Source header convention) obtained by direct source read of `MiniMax-AI/MiniMax-Coding-Plan-MCP` server code, which resolves Open Item 1 of the Washing Machine Ship 1 plan without needing their Commit 0 preflight probe step. `claude-minimaxi` is retired for general interactive use (keeps the skill-level bake-ins like `k2b-compile batch mode`) because the wrapper never passed `--add-dir "$K2B_VAULT"` or loaded the Obsidian MCP config, so MiniMax-backed sessions literally couldn't see the vault when Keith tried them for vault search. `mmx-cli` (https://github.com/MiniMax-AI/cli) is adopted for NEW capabilities (vision/search/TTS/music/quota) while existing bash scripts (`minimax-json-job.sh`, `minimax-review.sh`, compile/observer/weave) stay in place because they own the observability contract that the CLI does not. Dead ends confirmed via full docs-catalog scan: no embeddings API, no ASR/STT, no fine-tuning, no batch API, no hosted RAG store, no webhooks. Files API is TTS-source-only. Hailuo video is Max-tier only on Keith's Plus-极速版 plan (confirmed on `platform.minimaxi.com/docs/token-plan/intro`). Related vault edits this session (Syncthing only, NOT in the K2B commit): Updates entry on `project_minimax-offload.md`; corrected GIF line + added confirmed endpoint details + added `mmx-cli` section to `2026-04-21_minimaxi-subscription-plan.md`; added deprecation section to `context_claude-minimaxi-routing.md`; updated `reference_minimax_api.md` with mmx-cli + handoff pointer.
+
+**Review:** Tier 0 (`ship-detect-tier.py` classified `3 file(s), all vault/devlog/plans` -- the plans/ file plus the pre-existing two untracked plans from earlier sessions). No adversarial pass. DEVLOG-only follow-up commit inherits the same Tier 0 scope.
+
+**Feature status change:** `project_minimax-offload` stays `in-progress`. Rescoped from sequential 6-phase text-offload to 4-track (text/vision/search/TTS). No lane move. In-Progress row in `wiki/concepts/index.md` updated to reflect the new shape + the 2026-04-21 date; feature note got an Updates entry documenting the rescope, the confirmed REST contracts, and the retire decision.
+
+**Follow-ups:**
+- WebSocket TTS voice-reply mode (`/v1/t2a_v2_ws`) -- park as a `/request` entry for future Track D ship D3. Shaves 1-3s perceived latency on long Telegram replies.
+- Washing Machine Ship 1 picks up the confirmed VLM endpoint inline (no further preflight probe). Can simplify their Commit 0 step 5 to "direct REST only."
+- Phase 2b (`/observe` data prep) stays queued until the 2026-04-24 Phase 1 gate passes.
+- After 2026-04-24 gate passes: start Track A Phase 2b + Track C first ship (`/research` Level 0 via `mmx search`).
+- Ownership drift across 5 rules / 34 files surfaced during step 0a is DEFERRED -- it is all pre-existing drift in vault notes and observation archives, not caused by this session.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Skipped M2.5-highspeed cost-optimization track -- Keith's call. M2.7 is latest; chasing a cache-read saving on a superseded model family is noise, not savings.
+- Skipped content-safety flag integration -- Keith's call. Free bits, but zero concrete signal that Keith's LinkedIn / Gmail drafts ever hit them. Add only when evidence shows it matters.
+- Did NOT rewrite existing bash scripts to use `mmx-cli` wholesale -- opportunistic migration only. Existing scripts own observability logging to `wiki/context/minimax-jobs.jsonl` + fence-stripping + strict `jq -e` validation + retry on 5xx/529; CLI has none of that.
+- Promoted `L-2026-04-19-002` (plain-English rule) to active_rules.md as rule #12 in a new "Communication" section. Rule has been reinforced 6x across three sessions and was re-surfaced in `/ship` step 0; Keith approved the promotion this session. The 2026-04-21 morning devlog entry had noted it should have been auto-promote-rejected, but the pattern has now crossed the count threshold again with genuine reinforcement, so it earns a seat.
+- The consolidated handoff is deliberately written to be SELF-CONTAINED so the in-flight Washing Machine Ship 1 session can consume it without also needing to read `project_minimax-offload.md` / the subscription reference / the routing note. Paying ~150 lines of duplication once beats asking that session to chase five wikilinks.
+
+---
+
 ## 2026-04-21 -- Apr 19 leftovers cleanup (claude-minimaxi wiring + skill-topology docs + orphan worktree)
 
 **Commits:** `83230c9` chore(claude-minimaxi): commit apr 19 wiring leftovers; `5ca659b` docs: commit apr 19 skill-topology plan + spec
