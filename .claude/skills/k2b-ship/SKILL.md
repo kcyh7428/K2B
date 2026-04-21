@@ -210,7 +210,7 @@ if [ "$TIER" = "1" ]; then
     VERDICT_JSON=$(scripts/minimax-review.sh \
       --scope diff \
       --files "$CHANGED_FILES" \
-      --focus "tier-1 single-pass docs review (pass $TIER_1_PASS)" \
+      --focus "tier-1 docs review (pass $TIER_1_PASS): enumerate ALL material findings severity>=medium with file:line, ranked by severity+confidence. Do not stop at top blocker -- Keith fixes top-down. Cap at ~15 findings max; if budget requires trimming, drop lowest severity first so the JSON stays parseable." \
       --json 2>/tmp/tier1_pass_${TIER_1_PASS}.err)
     MINIMAX_EXIT=$?
     set -e
@@ -291,7 +291,7 @@ Single-pass adversarial review via the unified runner `scripts/review.sh`. The r
 if [ "$TIER" = "2" ]; then
   RUNNER_PRIMARY=codex
   [ -n "${SKIP_CODEX:-}" ] && RUNNER_PRIMARY=minimax
-  FOCUS="tier-2 single-pass review"
+  FOCUS="tier-2 review: enumerate ALL material findings severity>=medium with file:line, ranked by severity+confidence. Do not stop at top blocker -- Keith fixes top-down in one sitting, so trailing issues cost another review pass. Cap at ~15 findings max; if budget requires trimming, drop lowest severity first so the JSON stays parseable."
   [ -n "${SKIP_CODEX:-}" ] && FOCUS="$FOCUS (--skip-codex: $SKIP_CODEX)"
 
   set +e
@@ -340,7 +340,7 @@ Single-pass reviewer invocation per `/ship` call via `scripts/review.sh`. The ru
 if [ "$TIER" = "3" ]; then
   RUNNER_PRIMARY=codex
   [ -n "${SKIP_CODEX:-}" ] && RUNNER_PRIMARY=minimax
-  FOCUS="tier-3 iterate-until-clean (single pass per /ship)"
+  FOCUS="tier-3 review (single pass per /ship, human-driven iteration): enumerate ALL material findings severity>=medium with file:line, ranked by severity+confidence. Do not stop at top blocker -- Keith fixes top-down, so trailing issues would cost another full /ship round. Cap at ~15 findings max; if budget requires trimming, drop lowest severity first so the JSON stays parseable."
   [ -n "${SKIP_CODEX:-}" ] && FOCUS="$FOCUS (--skip-codex: $SKIP_CODEX)"
 
   set +e

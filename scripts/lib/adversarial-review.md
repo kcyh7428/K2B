@@ -66,8 +66,9 @@ If a conclusion depends on an inference, state that explicitly in the finding bo
 </grounding_rules>
 
 <calibration_rules>
-Prefer one strong finding over several weak ones.
-Do not dilute serious issues with filler.
+Enumerate exhaustively. List every material finding you can defend from the provided context, ranked from highest severity and confidence to lowest. Do NOT limit the response to a single "top blocker" -- the caller fixes issues top-down in one sitting, so hidden trailing findings cost another full review pass (and another round of tokens).
+Do not dilute the list with low-value filler: style, naming, speculative concerns without evidence. The bar stays "material and defensible," not "every opinion."
+Output budget: keep the findings array to at most ~15 items. If more genuine material findings exist than that, drop the lowest-severity ones FIRST so the response stays inside the JSON/token budget. Truncated/malformed output is worse than an honest-but-capped list, because the caller's schema validator rejects it and the whole pass fails.
 If the change looks safe, say so directly and return no findings.
 </calibration_rules>
 
