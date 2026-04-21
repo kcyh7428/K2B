@@ -1940,3 +1940,51 @@ Archives: `.minimax-reviews/2026-04-21T13-*_diff.json` (pass 1 + pass 2).
 - Kept the existing `scripts/minimax-review.sh` as a separate entrypoint rather than collapsing it into `scripts/review.sh --primary minimax` (the handoff's default recommendation). Reasons: `minimax-review.sh` exposes `--json`, `--model`, `--max-tokens`, `--no-archive`, `--archive-dir` that `review.sh` doesn't have; `scripts/tests/minimax-review-scope.test.sh` tests the existing script's behavior directly; k2b-ship Tier 1 uses `--json` output. A "thin wrapper" rewrite would silently lose flag coverage or require re-grounding tests. Coexistence is the cleaner path.
 - Kept Tier 1 on the direct `scripts/minimax-review.sh` invocation, not migrated to the runner. Reasons: Tier 1's 2-pass loop requires parseable JSON verdict (`--json`) which the runner doesn't expose in its current form; Tier 1 is MiniMax-only, so the runner's Codex-fallback killer feature is wasted; the 300s timeout + retry fix already shipped in `minimax_common.py` covers the common 529 failure. Sustained-overload scenarios are a Ship 2 follow-up candidate, not Ship 1 scope.
 - Did NOT add a `--json` passthrough flag to the runner in Commit 1. The review-plan reviewer flagged this as a theoretical gap; K2Bi ships without it and handles Tier 1 needs outside the runner. Adding now would be premature optimization -- if Tier 1 migration becomes a priority, ship then.
+
+
+## 2026-04-21 -- Review runner port Commit 2 of 2: k2b-ship SKILL.md flip
+
+**Commit:** `85513a5` refactor(ship): route Tier 2/3 adversarial review through scripts/review.sh
+
+**What shipped:** k2b-ship SKILL.md Step 3 transport flip. Tier 2 + Tier 3 + Tier 1-to-Tier-2-escalation paths all now call `scripts/review.sh` (the unified runner from Commit 1 `41713b8`). Old inline Codex background+poll bash block deleted. Separate "MiniMax fallback invocation pattern" subsection deleted entirely (subsumed by the runner). Adversarial-Review-two-checkpoints prose and `--skip-codex` paragraph updated to match the runner's auto-fallback behavior.
+
+Behavioral summary:
+- **Tier 2:** `scripts/review.sh diff --primary {codex|minimax} --wait`. Runner handles Codex primary, MiniMax fallback, deadline, watchdog, quality gate. `--skip-codex` auto-switches `--primary` to minimax.
+- **Tier 3:** single-pass `scripts/review.sh` invocation per /ship. Iterate-until-clean is human-driven across /ship re-runs (matches pre-refactor behavior). Bash can't parse reviewer verdicts from logs without embedded-python gymnastics.
+- **Tier 1 -> Tier 2 escalation:** both paths now seed `REVIEW_RESULT` with defensive values before fall-through; Tier 2 success path overwrites.
+- **REVIEW_LOG extraction:** deterministic python3 JSON parse, guarded with `exit 3` on malformed output. Replaces racy `ls -t` pattern from the plan draft.
+
+Tier 0 skip and Tier 1 MiniMax loop are UNCHANGED.
+
+**Codex review:** skipped (`--skip-codex codex-eisdir-k2b-bootstrap`). EISDIR hazards still in Keith's working tree.
+
+**MiniMax pre-commit gate (self-review bootstrap):** this commit reviewed BY the new runner from Commit 1 -- "the runner reviews its own switchover diff" moment.
+
+Three MiniMax passes via `scripts/review.sh diff`:
+- **Pass 1 NEEDS-ATTENTION:** CRITICAL Tier 3 loop has no break on APPROVE (bash can't parse verdict from log); MEDIUM REVIEW_LOG has no error guard. Both real bugs. Fixed inline (removed the while loop entirely; added JSON parse guard with `exit 3`).
+- **Pass 2 NEEDS-ATTENTION:** HIGH Tier 1 -> Tier 2 escalation leaves `REVIEW_RESULT` undefined (pre-existing gap exposed by the refactor). Fixed inline with defensive `REVIEW_RESULT="tier-1-escalated-tier-2-<reason>"` at both escalation points.
+- **Pass 3 APPROVE:** "Fix verified. Defensive REVIEW_RESULT assignments correctly placed. No regressions."
+
+Runner self-review validates the port end-to-end: the new runner catches real bugs in its own caller's refactor diff. Bootstrap moment successful.
+
+Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z_18d209.log` (pass 2) + `T14-02-*.log` (pass 3).
+
+**Tier:** 3 (classifier: `>3 files changed`, inflated by Keith's pre-existing untracked files).
+
+**Review result:** `tier-3-runner-codex` (ran as runner-codex, auto-fell-back to MiniMax via EISDIR guard).
+
+**Feature status change:** `feature_adversarial-review-tiering` in-measurement (unchanged).
+
+**Commit-scope caveat:** `85513a5` accidentally bundled two files from a parallel Claude session (`plans/2026-04-21_washing-machine-ship-1.md` + `scripts/washing-machine/preflight.sh`). Root cause: parallel session had staged those files in git's index before terminating without committing; my `git add .claude/skills/k2b-ship/SKILL.md && git commit` picked them up because `git commit` commits all staged files. Net effect: those files are now committed with a commit message that doesn't describe them. No data loss, no regression, but scope is wider than intended. Cross-session git-index coordination gap -- worth flagging as a pattern. Tracked as future `/ship` hardening item.
+
+**Follow-ups:**
+- Mini smoke test: /sync Commit 2 to Mini, verify runner works, test Codex-broken -> MiniMax fallback, restore Codex.
+- Tier 3 latent `REVIEW_RESULT` defensive assignment before runner call (pass 3 reviewer flagged as non-blocking). Parallel to Tier 2's fix.
+- Tier 1 migration once `--json` passthrough lands on the runner.
+- Port `.claude/hooks/review-guard.sh` from K2Bi once always-use-review.sh discipline bakes in.
+- `/ship` Step 1 hardening: staged-set verification to catch cross-session index bleed (today's washing-machine accident).
+
+**Key decisions (divergent from claude.ai project specs):**
+- Tier 3 loop: **removed** the `TIER_3_MAX_ITER=4 while` loop from the plan draft. Bash can't read reviewer verdicts from logs without embedded python; the plan's "Claude parses the verdict" comment was not executable. Single-pass-per-/ship matches pre-refactor flow and is correct.
+- Tier 1 untouched: keeps Tier 1 on direct `scripts/minimax-review.sh --json` to avoid the runner's verdict-exposure complication. Tier 1 migration is a future question.
+- Committed washing-machine files as-is rather than force-rewriting main: destructive history rewrites on shared main are worse than a wider-than-described commit. DEVLOG + feature note document the scope deviation for the audit trail.
