@@ -14,19 +14,25 @@ if [[ "${1:-}" == "--extract-audio" ]]; then
   OUTPUT_DIR="$3"
   mkdir -p "$OUTPUT_DIR"
 
-  # Extract video ID from URL (avoid second yt-dlp call)
-  VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE '[?&]v=([^&]+)' | head -1 | cut -d= -f2)
+  # Extract video ID from URL (avoid second yt-dlp call).
+  # `|| true` protects against set -euo pipefail killing the script when grep
+  # finds no match on a given URL shape; fall through to the next pattern.
+  VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE '[?&]v=([^&]+)' | head -1 | cut -d= -f2 || true)
   if [[ -z "$VIDEO_ID" ]]; then
     # Fallback: try youtu.be format
-    VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE 'youtu\.be/([^?&]+)' | head -1 | cut -d/ -f2)
+    VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE 'youtu\.be/([^?&]+)' | head -1 | cut -d/ -f2 || true)
   fi
   if [[ -z "$VIDEO_ID" ]]; then
     # Fallback: try youtube.com/shorts/ format
-    VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE 'youtube\.com/shorts/([^?&]+)' | head -1 | sed 's|youtube\.com/shorts/||')
+    VIDEO_ID=$(echo "$VIDEO_URL" | grep -oE 'youtube\.com/shorts/([^?&]+)' | head -1 | sed 's|youtube\.com/shorts/||' || true)
   fi
   if [[ -z "$VIDEO_ID" ]]; then
+    # Exit code 2 = video ID extraction failed. Callers (yt-transcribe-whisper.sh,
+    # yt-transcript.sh) distinguish this from "audio download failed" (exit 1)
+    # so they can surface a useful error instead of the generic "no audio output"
+    # message that masks the real cause. MiniMax HIGH finding #2.
     echo "ERROR: Could not extract video ID from URL: ${VIDEO_URL}" >&2
-    exit 1
+    exit 2
   fi
 
   # Download and convert to mp3

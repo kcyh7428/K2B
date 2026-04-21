@@ -16,6 +16,7 @@ import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
 import { scanOutbox, sendMedia, consumeManifest } from './telegram-outbox.js'
+import { buildAgentInputWithYouTubeContext } from './url-prefetch.js'
 
 // --- Telegram formatting ---
 
@@ -159,12 +160,12 @@ async function handleMessage(
 
     // Build memory context
     const memoryContext = await buildMemoryContext(chatId, rawText)
-    const fullMessage = preferenceContext + memoryContext + rawText
 
     // Get existing session (may have been cleared above)
     const sessionId = getSession(chatId)
 
-    // Start typing indicator
+    // Start typing indicator -- fires before any slow pre-fetch so the user
+    // sees "typing..." while a YouTube transcript is being downloaded.
     const sendTyping = async () => {
       try {
         await ctx.api.sendChatAction(ctx.chat!.id, 'typing')
@@ -174,6 +175,20 @@ async function handleMessage(
     }
     await sendTyping()
     typingInterval = setInterval(sendTyping, TYPING_REFRESH_MS)
+
+    // Pre-fetch transcript for any YouTube URL in the user's message. On
+    // success, `agentInput` carries the transcript + a system instruction that
+    // tells the agent what to do (summary only vs. answer question). On
+    // failure or when no URL is present, it falls back to the raw text so
+    // the agent still sees what the user sent.
+    let agentInput = rawText
+    try {
+      agentInput = await buildAgentInputWithYouTubeContext(rawText)
+    } catch (err) {
+      logger.warn({ err: String(err) }, 'YouTube pre-fetch threw; continuing with raw text')
+    }
+
+    const fullMessage = preferenceContext + memoryContext + agentInput
 
     const obsMarker = markObservationStart()
     const outboxMark = Date.now()

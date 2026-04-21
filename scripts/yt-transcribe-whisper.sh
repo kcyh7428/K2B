@@ -60,9 +60,12 @@ mkdir -p "$TMPDIR_BASE"
 # Determine audio file path
 AUDIO_FILE=""
 if [[ "$INPUT" == http* ]]; then
-  # YouTube URL -- extract audio
+  # YouTube URL -- extract audio.
+  # Discard stdout from the sub-call (it echoes the MP3 path); keep stderr
+  # visible so yt-dlp download progress still surfaces. `find` picks up the
+  # written file directly, so we don't need the stdout path line.
   echo "Extracting audio from YouTube URL..." >&2
-  "$SCRIPT_DIR/yt-playlist-poll.sh" --extract-audio "$INPUT" "$TMPDIR_BASE"
+  "$SCRIPT_DIR/yt-playlist-poll.sh" --extract-audio "$INPUT" "$TMPDIR_BASE" >/dev/null
   AUDIO_FILE=$(find "$TMPDIR_BASE" -type f \( -name '*.m4a' -o -name '*.mp3' -o -name '*.wav' -o -name '*.opus' -o -name '*.webm' \) | head -1)
   if [[ -z "$AUDIO_FILE" ]]; then
     echo "ERROR: Audio extraction produced no output" >&2
@@ -90,9 +93,16 @@ transcribe_chunk() {
     lang_args=(-F "language=$LANGUAGE")
   fi
 
+  # Pass the bearer token via curl --config on stdin instead of -H on the
+  # command line so it does NOT appear in `ps aux` / /proc/<pid>/cmdline.
+  # MiniMax HIGH finding #3. `--config -` tells curl to read further options
+  # from stdin; `header = "Authorization: Bearer $TOKEN"` is quoted per curl's
+  # config file syntax (interior double quotes, no shell interpolation inside
+  # the file format -- we substitute before piping).
+  printf 'header = "Authorization: Bearer %s"\n' "$GROQ_KEY" | \
   curl -s --retry 2 --retry-delay 3 \
+    --config - \
     https://api.groq.com/openai/v1/audio/transcriptions \
-    -H "Authorization: Bearer $GROQ_KEY" \
     -F "file=@${chunk_file}" \
     -F "model=whisper-large-v3" \
     -F "response_format=text" \

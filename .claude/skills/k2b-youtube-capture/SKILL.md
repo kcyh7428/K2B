@@ -64,58 +64,35 @@ Use `mcp__YouTube_Transcript_MCP_Server__get_video_info` to get title, channel, 
 
 #### 2b. Get Transcript (Cascade)
 
-**Tier 1 -- YouTube Transcript MCP (free, fast):**
-Try `mcp__YouTube_Transcript_MCP_Server__get_transcript` with `lang: "en"`.
-If that fails, try with `lang: "zh"`.
-If either succeeds and returns meaningful text (>100 chars), use it. Set `transcript_method: youtube-api`.
+The cascade logic lives in `scripts/yt-transcript.sh` so the batch playlist flow (this skill) and the Telegram ad-hoc URL flow (k2b-remote) share one code path. Call it and read the method from stderr:
 
-**Tier 2 -- Groq Whisper (free, reliable):**
-If Tier 1 fails:
+```bash
+TRANSCRIPT=$(~/Projects/K2B/scripts/yt-transcript.sh "<video-url>" 2>/tmp/yt-transcript-err.txt)
+METHOD=$(grep "^METHOD:" /tmp/yt-transcript-err.txt | tail -1 | awk '{print $2}')
+```
 
-1. **Extract audio**: `scripts/yt-playlist-poll.sh --extract-audio "<video-url>" /tmp/k2b-yt-audio/`
+The helper tries these tiers in order:
 
-2. **Check duration and pre-split if needed:**
-   ```bash
-   DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "<audio-path>")
-   # If >240 seconds (4 min), split into chunks:
-   ffmpeg -i "<audio-path>" -f segment -segment_time 240 -c copy /tmp/k2b-yt-chunk_%02d.mp3 -y
-   ```
-   If under 4 minutes, convert to mp3 if needed and use directly.
+- **captions-en** -- `yt-dlp --write-auto-sub --sub-langs "en,en-.*"` (YouTube auto-captions)
+- **captions-zh** -- same but Chinese
+- **groq-whisper** -- downloads audio with `yt-playlist-poll.sh --extract-audio`, splits into 240s chunks if needed, sends each chunk to Groq Whisper `whisper-large-v3`
+- **failed** -- all tiers exhausted
 
-3. **Transcribe via Groq:**
-   ```bash
-   GROQ_KEY=$(grep GROQ_API_KEY ~/Projects/K2B/k2b-remote/.env | cut -d= -f2)
+Exit 0 means a transcript is on stdout. Exit 1 means `METHOD: failed` and no transcript -- create a minimal note with `transcript_method: failed` and the video metadata only, and flag it for manual review.
 
-   curl -s --retry 2 --retry-delay 3 \
-     https://api.groq.com/openai/v1/audio/transcriptions \
-     -H "Authorization: Bearer $GROQ_KEY" \
-     -F "file=@<chunk-or-file>" \
-     -F "model=whisper-large-v3" \
-     -F "response_format=text" \
-     -F "language=zh"
-   ```
-   - Use `language=zh` for Chinese videos, omit for English
-   - Concatenate chunk results in order
-   - Set `transcript_method: groq-whisper`
-
-4. Clean up: `rm <audio-path> /tmp/k2b-yt-chunk_*.mp3`
+Set `transcript_method:` in the note's frontmatter to the helper's reported method (`captions-en`, `captions-zh`, `groq-whisper`, or `failed`).
 
 **Tier 2b -- OpenAI Whisper (paid fallback, only if Groq fails):**
+
+The unified helper does not include OpenAI Whisper -- Groq has been reliable enough that the paid fallback hasn't been needed since 2026-04. If Groq starts failing, restore the fallback in `yt-transcript.sh` rather than duplicating it here:
+
 ```bash
 WHISPER_KEY=$(grep OPENAI_API_KEY ~/.zshrc 2>/dev/null | head -1 | sed "s/export OPENAI_API_KEY=//;s/'//g")
-
-curl -s --retry 1 \
-  https://api.openai.com/v1/audio/transcriptions \
+curl -s --retry 1 https://api.openai.com/v1/audio/transcriptions \
   -H "Authorization: Bearer $WHISPER_KEY" \
-  -F "file=@<chunk-or-file>" \
-  -F "model=whisper-1" \
-  -F "language=zh" \
-  -F "response_format=text"
+  -F "file=@<chunk-or-file>" -F "model=whisper-1" \
+  -F "language=zh" -F "response_format=text"
 ```
-Same pre-split logic applies. Set `transcript_method: openai-whisper`.
-
-**Tier 3 -- No transcript:**
-If all tiers fail, create a minimal note with `transcript_method: failed` and the video metadata only. Flag for manual review.
 
 #### 2c. Dedup Check
 
@@ -243,7 +220,9 @@ After processing all videos in all polled playlists, show Keith a summary:
 The following subcommands existed briefly and were all retired 2026-04-14 along with the YouTube conversational agent:
 
 - **`/youtube recommend`** / **`/youtube morning`** / **`/youtube cleanup`** -- these belonged to the 6-hour agent loop in `k2b-remote`. The whole loop, the taste model, the channel affinity scoring, and the nudge pipeline were deleted. Fresh-video discovery is now `/research videos "<query>"` via NotebookLM.
-- **`/youtube <url>`** (direct URL screening) -- the Telegram bot's `handleDirectYouTubeUrl` path was deleted in the same cleanup. To add a single URL today, paste it into a K2B category playlist in YouTube and run `/youtube <playlist-name>`.
+- **`/youtube <url>`** (direct URL screening) -- the Telegram bot's `handleDirectYouTubeUrl` path was deleted in the same cleanup. To capture a single URL to the vault today, paste it into a K2B category playlist in YouTube and run `/youtube <playlist-name>`.
+
+  For ad-hoc Q&A on a single URL (summarise, fact-check, explain), just send the URL to the Telegram bot directly. As of 2026-04-21 the bot pre-fetches the transcript via `scripts/yt-transcript.sh` before the agent runs, so the agent answers your question using the transcript without reinventing the fetch each time. See `wiki/concepts/feature_telegram-url-prefetch.md`. This path does NOT save to the vault -- it's disposable triage. For vault capture, still use the playlist flow.
 - **`/youtube status`** -- check `wiki/context/youtube-processed.md` directly.
 
 If Keith asks for any of these commands, point him at `/research videos "<query>"` (for discovery) or the batch `/youtube` flow (for saved videos). The retired feature's spec is at [[Shipped/2026-04-08_feature_youtube-agent]].
