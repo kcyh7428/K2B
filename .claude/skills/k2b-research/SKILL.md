@@ -640,6 +640,180 @@ PYEOF
    }
    ```
 
+6.5. **Per-pick deep-extract via second NBLM ask (enrichment, not gating).** Picks-only follow-up that returns rich per-pick detail Keith can use to triage long-form content (founder interviews, podcasts, talks where 2-3 sentences cannot answer "is this worth my hour"). Skips when picks are empty. Per-pick fallback to thin format on any extraction failure -- the run continues regardless. Notebook is still alive at this step (Step 11 deletes it later).
+
+   ```bash
+   PICK_DETAILS_JSON=$(mktemp -t k2b-pick-details.XXXXXX.json)
+   PICK_DETAILS_RAW_FILE=$(mktemp -t k2b-pick-details-raw.XXXXXX.txt)
+   PICK_DETAILS_ERR=$(mktemp -t k2b-pick-details-err.XXXXXX.log)
+   trap 'rm -f "$CANDIDATES" "$READY_LOG" "$CANONICAL_JSON" "$NBLM_RAW_FILE" "$PARSED_JSON" "$NBLM_PARSE_ERR" "$SUITABLE_JSON" "$PICK_DETAILS_JSON" "$PICK_DETAILS_RAW_FILE" "$PICK_DETAILS_ERR"' EXIT
+
+   PICKS_COUNT=$(jq '.picks | length' "$SUITABLE_JSON")
+   DEEPEXTRACT_STATUS="skipped-no-picks"   # default; reassigned below if picks > 0
+   echo "[]" > "$PICK_DETAILS_JSON"        # safe default so Step 8 lookups never fail on parse
+
+   if (( PICKS_COUNT > 0 )); then
+     PICK_URLS_JSON=$(jq -c '[.picks[] | {url: .real_url, title: .real_title, duration: .real_duration}]' "$SUITABLE_JSON")
+
+     DEEP_PROMPT=$(cat <<DEEP_PROMPT_EOF
+   For each video in this notebook listed below (matched by url), return a JSON object with the EXACT shape below. Do NOT judge, rank, or filter. Do NOT add or omit fields. Return ONLY a JSON array, no prose before or after.
+
+   Videos to extract (by url, title, duration):
+   ${PICK_URLS_JSON}
+
+   Schema per entry:
+   [
+     {
+       "url": "<verbatim from input>",
+       "summary_paragraph": "5-7 sentences describing the video's arc, main argument, and what kind of viewer would benefit. Plain English, no marketing language.",
+       "key_claims": [
+         {
+           "claim": "specific assertion in the speaker's voice (paraphrase ok)",
+           "evidence_or_example": "what they cite -- a number, a story, a demo, a comparison, a name. If the claim is asserted without backing, write the literal string 'asserted without evidence'",
+           "timestamp_approx": "MM:SS if NBLM has timing data; otherwise one of: 'early' | 'mid' | 'late'"
+         }
+       ],
+       "concrete_numbers": [
+         "verbatim numbers cited with WHAT they refer to and WHO claimed them, e.g. '\$1.5M ARR in 30 days, Polsia (Ben Cera)'"
+       ],
+       "named_entities": {
+         "people": ["full names with role if stated"],
+         "companies": ["company names"],
+         "tools": ["specific products / frameworks / platforms mentioned"]
+       },
+       "watch_priority": "skim_5min | watch_30min | watch_full",
+       "skim_pitch": "If you only have 5-10 minutes, watch [timestamp range or segment] for [specific reason]. If the video has no 5-min worth-watching segment, write the literal string 'skip -- substance distributed across full length, no single skim segment'",
+       "red_flags": [
+         "specific weakness in the content -- e.g. 'round-numbers framing without unit economics', 'cites investors but not customers', 'product demo only, no architecture'. Empty array means K2B sees no red flags worth flagging."
+       ]
+     }
+   ]
+
+   Return 5-12 key_claims per video depending on density. Empty arrays where genuinely empty. Return ONLY the JSON array.
+   DEEP_PROMPT_EOF
+   )
+
+     # NBLM ask. Capture raw output to file (not via $() to avoid $IFS truncation on long answers).
+     # One retry with 10s backoff on transient failures (rate limit / network / 503).
+     NBLM_ASK_OK=false
+     for ATTEMPT in 1 2; do
+       if notebooklm ask "$DEEP_PROMPT" -n "$NB_ID" >"$PICK_DETAILS_RAW_FILE" 2>"$PICK_DETAILS_ERR"; then
+         NBLM_ASK_OK=true
+         break
+       fi
+       if (( ATTEMPT == 1 )); then
+         echo "WARN: NBLM ask attempt 1 failed for pick deep-extract; retrying in 10s. See $PICK_DETAILS_ERR" >&2
+         sleep 10
+       fi
+     done
+     if [[ "$NBLM_ASK_OK" != "true" ]]; then
+       DEEPEXTRACT_STATUS="ask-failed"
+       echo "WARN: NBLM ask failed for pick deep-extract (2 attempts) -- falling back to thin format. See $PICK_DETAILS_ERR" >&2
+     fi
+
+     # Defensive parse: strip NBLM citation markers, repair literal-newlines inside string values, json.loads.
+     # Inline rather than reusing parse-nblm.py because that helper is hardcoded to Step 5's title-rejoin
+     # contract against $CANDIDATES which we don't need here.
+     if [[ "$DEEPEXTRACT_STATUS" == "skipped-no-picks" ]]; then   # not yet reassigned; ask succeeded
+       if PICK_DETAILS_RAW_FILE="$PICK_DETAILS_RAW_FILE" python3 - >"$PICK_DETAILS_JSON" 2>>"$PICK_DETAILS_ERR" <<'PYEOF'
+   import json, os, re, sys
+   raw = open(os.environ["PICK_DETAILS_RAW_FILE"]).read()
+   # Strip NBLM citation markers like [1], [1, 4], [1-4], [13-16, 17-20].
+   stripped = re.sub(r'\[\s*\d+(?:\s*[-,]\s*\d+)*(?:\s*,\s*\d+(?:\s*[-,]\s*\d+)*)*\s*\]', '', raw)
+   # Strip trailing commas before } and ] -- NBLM occasionally emits them and json.loads rejects.
+   stripped = re.sub(r',(\s*[}\]])', r'\1', stripped)
+   m = re.search(r'\[.*\]', stripped, re.DOTALL)
+   if not m:
+     print("[]"); sys.exit(0)
+   try:
+     data = json.loads(m.group(0))
+   except json.JSONDecodeError:
+     # Repair pass: literal \n inside JSON string literals trips json.loads.
+     candidate = m.group(0)
+     out, in_str, esc = [], False, False
+     for ch in candidate:
+       if esc:
+         out.append(ch); esc = False; continue
+       if ch == '\\':
+         out.append(ch); esc = True; continue
+       if ch == '"':
+         in_str = not in_str
+       if ch in ('\n', '\r') and in_str:
+         out.append('\\n' if ch == '\n' else '\\r'); continue
+       out.append(ch)
+     try:
+       data = json.loads(''.join(out))
+     except json.JSONDecodeError:
+       print("[]"); sys.exit(0)
+   if not isinstance(data, list):
+     print("[]"); sys.exit(0)
+   print(json.dumps(data))
+   PYEOF
+       then
+         PARSED_COUNT=$(jq 'length' "$PICK_DETAILS_JSON" 2>/dev/null || echo "0")
+         # Per-entry schema check: required strings non-empty, required arrays/object present.
+         GOOD_COUNT=$(jq '[.[] | select(
+           (.url | type == "string") and ((.url | length) > 0) and
+           (.summary_paragraph | type == "string") and ((.summary_paragraph | length) > 0) and
+           (.watch_priority | type == "string") and ((.watch_priority | length) > 0) and
+           ((.watch_priority == "skim_5min") or (.watch_priority == "watch_30min") or (.watch_priority == "watch_full")) and
+           (.skim_pitch | type == "string") and ((.skim_pitch | length) > 0) and
+           (.key_claims | type == "array") and
+           (.concrete_numbers | type == "array") and
+           (.red_flags | type == "array") and
+           (.named_entities | type == "object") and
+           ((.named_entities.people // []) | type == "array") and
+           ((.named_entities.companies // []) | type == "array") and
+           ((.named_entities.tools // []) | type == "array")
+         )] | length' "$PICK_DETAILS_JSON" 2>/dev/null || echo "0")
+
+         # URL-match check: NBLM is known (from Step 5 / parse-nblm.py history) to occasionally return
+         # synthetic v=<name> URLs instead of the real ones. If url keys don't match picks' real_url,
+         # every Step 8 lookup returns empty and the feature silently degrades to thin for all picks
+         # while DEEPEXTRACT_STATUS still reports "ok" (because parse + schema both passed). Detect
+         # this distinct mode so the run record + Telegram diagnostics show what happened.
+         URL_MATCH_COUNT=$(jq -r --slurpfile picks "$SUITABLE_JSON" '
+           [.[] | .url] as $detail_urls
+           | $picks[0].picks
+           | [.[] | select(.real_url as $u | $detail_urls | index($u))] | length
+         ' "$PICK_DETAILS_JSON" 2>/dev/null || echo "0")
+
+         if (( GOOD_COUNT == PICKS_COUNT && URL_MATCH_COUNT == PICKS_COUNT )); then
+           DEEPEXTRACT_STATUS="ok"
+         elif (( URL_MATCH_COUNT == 0 && GOOD_COUNT > 0 )); then
+           DEEPEXTRACT_STATUS="url-mismatch"
+           echo "WARN: NBLM returned $GOOD_COUNT schema-valid entries but ZERO URLs match picks' real_url. Synthetic-URL pattern likely. All picks rendered thin." >&2
+         elif (( URL_MATCH_COUNT < PICKS_COUNT )); then
+           DEEPEXTRACT_STATUS="partial-url-mismatch"
+           echo "WARN: $URL_MATCH_COUNT of $PICKS_COUNT picks have URL match in PICK_DETAILS_JSON; remaining picks render thin" >&2
+         elif (( GOOD_COUNT > 0 )); then
+           DEEPEXTRACT_STATUS="partial"
+           echo "WARN: pick deep-extract returned $GOOD_COUNT schema-valid entries for $PICKS_COUNT picks -- mixing rich + thin per pick" >&2
+         else
+           DEEPEXTRACT_STATUS="schema-failed"
+           echo "WARN: pick deep-extract returned 0 schema-valid entries -- falling back to thin format for all picks" >&2
+         fi
+       else
+         DEEPEXTRACT_STATUS="parse-failed"
+         echo "WARN: pick deep-extract parse failed -- falling back to thin format. See $PICK_DETAILS_ERR" >&2
+       fi
+     fi
+   fi
+
+   # Step 8 looks up each pick's url in $PICK_DETAILS_JSON. Per-pick fallback to thin when no match
+   # or when entry fails schema check. Step 9 records $DEEPEXTRACT_STATUS in the run record for audit.
+   ```
+
+   This step is enrichment. Step 7 onward proceeds regardless of `$DEEPEXTRACT_STATUS`. Status values:
+   - `ok` -- all picks have valid rich detail AND every entry's `url` matches a pick's `real_url`; Step 8 renders rich for all.
+   - `partial` -- some picks got valid rich detail (schema), others did not, but URL matches were complete for the schema-good entries; Step 8 renders rich where schema-good, thin otherwise.
+   - `partial-url-mismatch` -- schema all valid, but some entries' `url` failed to match any pick's `real_url` (likely synthetic-URL pattern from NBLM); Step 8 renders rich only for the URL-matched picks, thin for the rest.
+   - `url-mismatch` -- schema all valid, but ZERO entries' `url` matched any pick's `real_url`. NBLM returned synthetic URLs for the entire batch; Step 8 renders thin for all.
+   - `schema-failed`, `parse-failed`, `ask-failed` -- nothing usable; Step 8 renders thin for all.
+   - `skipped-no-picks` -- 0 picks; Step 8 still writes the empty-picks note.
+
+   The two URL-mismatch values are distinct from `schema-failed` so the run record + future `/observe` analysis can tell "NBLM gave us garbage" apart from "NBLM gave us good shapes but referenced things we can't match." If `url-mismatch` shows up repeatedly across runs, the fix is a title-rejoin pass on `$PICK_DETAILS_JSON` (mirrors what `parse-nblm.py` does for Step 5) -- not a retry on the ask.
+
 7. **For each `.picks[]` entry, add to K2B Watch.** Playlist ID comes from the canonical map, never hardcoded:
    ```bash
    K2B_WATCH_ID=$(jq -r '."K2B Watch"' ~/Projects/K2B/scripts/k2b-playlists.json)
@@ -662,27 +836,35 @@ PYEOF
    mv "$RUN_NOTE_TMP" "$RUN_NOTE"
    ```
 
-   **Template** (rendered from `.picks[]` and `.rejects[]`):
+   **Per-pick rich-detail lookup.** For each pick, look up its `real_url` in `$PICK_DETAILS_JSON` (populated by Step 6.5). When the lookup returns a non-empty entry that passes the per-entry schema check, render the **rich** template. Otherwise render the **thin** template. This works at any `$DEEPEXTRACT_STATUS` value: `ok` → all picks rich; `partial` → some rich some thin; `failed` / `skipped-no-picks` → all thin.
+
+   ```bash
+   # Per pick (inside the picks render loop):
+   PICK_DETAIL=$(jq --arg url "$REAL_URL" '.[] | select(.url == $url)' "$PICK_DETAILS_JSON" 2>/dev/null)
+   if [[ -n "$PICK_DETAIL" ]] && \
+      printf '%s' "$PICK_DETAIL" | jq -e '
+        (.summary_paragraph | type == "string") and ((.summary_paragraph | length) > 0) and
+        (.watch_priority | type == "string") and ((.watch_priority | length) > 0) and
+        ((.watch_priority == "skim_5min") or (.watch_priority == "watch_30min") or (.watch_priority == "watch_full")) and
+        (.skim_pitch | type == "string") and ((.skim_pitch | length) > 0) and
+        (.key_claims | type == "array") and
+        (.concrete_numbers | type == "array") and
+        (.red_flags | type == "array") and
+        (.named_entities | type == "object") and
+        ((.named_entities.people // []) | type == "array") and
+        ((.named_entities.companies // []) | type == "array") and
+        ((.named_entities.tools // []) | type == "array")
+      ' >/dev/null; then
+     RENDER_MODE="rich"
+   else
+     RENDER_MODE="thin"
+   fi
+   ```
+
+   **Thin template** (current behavior, unchanged):
 
    ````markdown
-   ---
-   type: video-run
-   review-action: pending
-   review-notes: ""
-   query: "<QUERY>"
-   run-date: <YYYY-MM-DD>
-   picks-count: <N>
-   watch-playlist: K2B Watch
-   up: "[[index]]"
-   ---
-
-   # Videos for: <QUERY>
-
-   **Run:** <YYYY-MM-DD> · **Candidates screened:** <CANDIDATES_SCREENED> · **K2B picked:** <N>
-
-   ## K2B's picks
-
-   ### 1. <real_title>
+   ### N. <real_title>
 
    <why_k2b prose -- this is what Keith reads>
 
@@ -690,7 +872,7 @@ PYEOF
    - **channel:** <real_channel>  ·  **duration:** <real_duration>  ·  **published:** <real_published>
 
    ```yaml
-   pick_id: 2026-04-14-<query-slug>-01
+   pick_id: 2026-04-14-<query-slug>-NN
    video_id: <video_id>
    real_url: <real_url>
    real_title: "<real_title>"
@@ -704,29 +886,102 @@ PYEOF
    processed_at: null
    notes: ""
    ```
+   ````
 
-   The `real_url`, `real_title`, `real_channel`, and `real_published` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the Telegram feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean. `real_published` is sourced from yt-search, never NBLM.
+   **Rich template** (when `$RENDER_MODE == "rich"`). Adds prose sections above the YAML fence and a `details:` subkey inside the YAML; existing fields unchanged so `/review` and the Telegram feedback parse contract still holds:
 
-   ### 2. <real_title>
+   ````markdown
+   ### N. <real_title>
 
-   ... same block ...
+   <why_k2b prose -- this is what Keith reads>
+
+   **Summary:** <summary_paragraph from $PICK_DETAIL>
+
+   **Key claims:**
+   - [<timestamp_approx>] <claim> -- <evidence_or_example>
+   - ... (5-12 bullets, one per key_claims entry)
+
+   **Specific numbers cited:** *(omit this section entirely when $PICK_DETAIL.concrete_numbers is empty)*
+   - <concrete_numbers item>
+   - ...
+
+   **People:** <comma-joined named_entities.people>  ·  **Companies:** <comma-joined named_entities.companies>  ·  **Tools:** <comma-joined named_entities.tools>
+
+   **Watch priority:** <watch_priority>  ·  **Skim pitch:** <skim_pitch>
+
+   **Red flags K2B noticed:** *(omit this section entirely when $PICK_DETAIL.red_flags is empty)*
+   - <flag>
+   - ...
+
+   - **url:** <real_url>
+   - **channel:** <real_channel>  ·  **duration:** <real_duration>  ·  **published:** <real_published>
+
+   ```yaml
+   pick_id: 2026-04-14-<query-slug>-NN
+   video_id: <video_id>
+   real_url: <real_url>
+   real_title: "<real_title>"
+   real_channel: "<real_channel>"
+   real_published: "<real_published>"
+   suggested_category: K2B Claude
+   category_override: ""
+   decision: pending          # keith: keep | drop | neutral
+   playlist_action: pending   # pending | done | failed
+   preference_logged: false
+   processed_at: null
+   notes: ""
+   details:
+     watch_priority: <watch_priority>
+   ```
+   ````
+
+   **YAML safety inside `details:`.** Only `watch_priority` lives in YAML, and ONLY when it matches one of the three known enum values (`skim_5min`, `watch_30min`, `watch_full`). NBLM-returned strings (`named_entities.*`, `summary_paragraph`, `skim_pitch`, individual `key_claims[].claim` text) all live in the **prose** above the YAML fence -- never in the YAML -- because they routinely contain colons, double-quotes, brackets, and literal newlines that break PyYAML parsing in `/review` and the Telegram feedback path. Validate `watch_priority` against the enum before writing; on miss, omit the `details:` subkey entirely and treat the pick as thin even though prose details are present. The YAML stays the sole machine-parsed surface; the prose carries the human-readable depth.
+
+   **Full template skeleton:**
+
+   ````markdown
+   ---
+   type: video-run
+   review-action: pending
+   review-notes: ""
+   query: "<QUERY>"
+   run-date: <YYYY-MM-DD>
+   picks-count: <N>
+   deepextract-status: <DEEPEXTRACT_STATUS>      # ok | partial | partial-url-mismatch | url-mismatch | schema-failed | parse-failed | ask-failed | skipped-no-picks
+   watch-playlist: K2B Watch
+   up: "[[index]]"
+   ---
+
+   # Videos for: <QUERY>
+
+   **Run:** <YYYY-MM-DD> · **Candidates screened:** <CANDIDATES_SCREENED> · **K2B picked:** <N>
+
+   ## K2B's picks
+
+   <one block per pick using rich or thin template per $RENDER_MODE>
 
    ## Candidates K2B rejected (<N_rejected>)
 
    - <real_title> · <real_channel> -- <reason>
-   - ...
+   - <real_title> · <real_channel> -- <reason>
+   - ... one bullet per rejected video, no exceptions
    ````
 
-   **Parsing contract.** The `/review` handler and the Telegram feedback path parse ONLY the fenced ` ```yaml ... ``` ` block after each `### N. ` heading (via PyYAML). The prose above the YAML fence is for Keith to read, never parsed. Keith edits only `decision:`, `category_override:`, and `notes:` -- everything else is K2B-managed state.
+   The `real_url`, `real_title`, `real_channel`, and `real_published` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the Telegram feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean. `real_published` is sourced from yt-search, never NBLM.
+
+   **Rejects MUST NOT be compressed.** Every reject from `$SUITABLE_JSON.rejects[]` gets its own bullet with its own one-line reason. Do NOT lump multiple rejects into meta-summaries like "15 Chinese drama videos · various channels -- entertainment content" even when many rejects share a category. The per-video reason is what `/review` and `/observe` learn from; lumping silently destroys that signal. `len(reject bullets in note) == len($SUITABLE_JSON.rejects[])`. If 21 videos were rejected, write 21 bullets.
+
+   **Parsing contract.** The `/review` handler and the Telegram feedback path parse ONLY the fenced ` ```yaml ... ``` ` block after each `### N. ` heading (via PyYAML). The prose above the YAML fence is for Keith to read, never parsed. Keith edits only `decision:`, `category_override:`, and `notes:` -- everything else is K2B-managed state. The new `details:` subkey under YAML is K2B-managed too.
 
    **N=0 still writes the note.** The note exists with an empty picks section and the full rejects list. Audit trail is mandatory even when nothing cleared the bar.
 
 9. **Write run record** at `K2B-Vault/raw/research/$(date +%F)_videos_${QUERY_SLUG}.md`. Sections:
-   - Frontmatter: `type: research-run`, `query`, `candidates_screened: <count from $CANDIDATES, never hardcoded>`, `picks-count`, `outcome: zero-picks | has-picks`.
+   - Frontmatter: `type: research-run`, `query`, `candidates_screened: <count from $CANDIDATES, never hardcoded>`, `picks-count`, `outcome: zero-picks | has-picks`, `deepextract_status: <DEEPEXTRACT_STATUS>`.
    - Query + baked framing version in use.
    - Preference tail snapshot that K2B saw (the literal `$PREF_TAIL` value).
    - **Picks-mode runs (`outcome: has-picks`):** the NBLM `what_it_covers` descriptions for picks only, plus K2B's `why_k2b` reasoning per pick, plus the rejects list (title · channel · one-line reason).
    - **Zero-picks runs (`outcome: zero-picks`):** include ALL NBLM descriptions (all 25, or however many were parsed) so the "why nothing was worth watching" evidence trail is durable. Zero-picks runs are exactly the ones Keith will want to audit later.
+   - **Pick deep-extract section (Step 6.5 output).** When `$DEEPEXTRACT_STATUS == "ok"` or `"partial"`, append the entire `$PICK_DETAILS_JSON` content as a fenced JSON block under a `## Pick deep-extract (NBLM)` heading. When status is `schema-failed`, `parse-failed`, or `ask-failed`, append the raw NBLM response from `$PICK_DETAILS_RAW_FILE` AND the `$PICK_DETAILS_ERR` log under `## Pick deep-extract (failed)` so the failure is diagnosable later. When status is `skipped-no-picks`, write a one-line note "No picks, deep-extract skipped".
    - Ready/fail log from Step 3.
    - Per-video playlist-add results from Step 7.
    - Any Telegram failures from Step 10.
@@ -773,11 +1028,12 @@ All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the ca
 
 ### Failure modes
 
-- **NotebookLM ask times out or errors:** abort, log to run record, notify Keith "research timed out on: <query>", delete the notebook.
-- **NBLM JSON parse fails twice:** log raw answer to run record, notify Keith "NBLM descriptions weren't parseable, see raw/research/", abort downstream steps.
-- **K2B schema validation fails on `$SUITABLE_JSON`:** Write partial run record with raw NBLM answer to `raw/research/` first, then Telegram abort, delete notebook, exit 1. This is the Step 6g gate.
+- **NotebookLM ask times out or errors (Step 5):** abort, log to run record, notify Keith "research timed out on: <query>", delete the notebook.
+- **NBLM JSON parse fails twice (Step 6a, parse-nblm.py):** log raw answer to run record, notify Keith "NBLM descriptions weren't parseable, see raw/research/", abort downstream steps.
+- **K2B schema validation fails on `$SUITABLE_JSON` (Step 6g):** Write partial run record with raw NBLM answer to `raw/research/` first, then Telegram abort, delete notebook, exit 1. This is the Step 6g gate.
+- **Pick deep-extract fails (Step 6.5):** ENRICHMENT FAILURE, NOT GATING. Step 7 onward continues. Status recorded in run note frontmatter (`deepextract-status:`) and run record. Per-pick fallback to thin template -- Keith still gets the run note, just without the rich detail for affected picks. The notebook is NOT deleted on this failure (Step 11 handles deletion at end of run regardless).
 - **Playlist add fails for a pick:** log per-video in run record, continue with the others, include the failure count in the Telegram summary.
-- **Zero picks:** still write the run note + run record + Telegram message ("nothing worth watching this week"), still delete the notebook. N=0 is normal, not an error.
+- **Zero picks:** still write the run note + run record + Telegram message ("nothing worth watching this week"), still delete the notebook. N=0 is normal, not an error. Step 6.5 is skipped (`deepextract-status: skipped-no-picks`).
 
 ### What NOT to do
 

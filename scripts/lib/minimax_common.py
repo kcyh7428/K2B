@@ -7,13 +7,21 @@ Always uses the global endpoint (api.minimaxi.com), never the China-only
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 MINIMAX_API_HOST = os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com")
 CHAT_PATH = "/v1/text/chatcompletion_v2"
-DEFAULT_TIMEOUT_S = 180
+DEFAULT_TIMEOUT_S = 300
+
+# Transient server-side statuses worth retrying. 529 = "overloaded" (MiniMax
+# congestion peak), 502/503/504 = upstream gateway hiccups. Anything else is
+# treated as a real error and surfaces immediately.
+RETRY_HTTP_STATUSES = {502, 503, 504, 529}
+MAX_RETRIES = 3
+RETRY_BACKOFF_S = (10, 20, 40)
 
 
 class MinimaxError(RuntimeError):
@@ -77,18 +85,48 @@ def chat_completion(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        detail = ""
+    body = None
+    last_err: Exception | None = None
+    for attempt in range(MAX_RETRIES + 1):
         try:
-            detail = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise MinimaxError(f"HTTP {e.code} from MiniMax: {detail[:500]}") from e
-    except urllib.error.URLError as e:
-        raise MinimaxError(f"Network error contacting MiniMax: {e}") from e
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code in RETRY_HTTP_STATUSES and attempt < MAX_RETRIES:
+                wait_s = RETRY_BACKOFF_S[attempt]
+                print(
+                    f"[minimax] HTTP {e.code} (transient) on attempt {attempt + 1}; "
+                    f"retrying in {wait_s}s",
+                    flush=True,
+                )
+                time.sleep(wait_s)
+                last_err = e
+                continue
+            raise MinimaxError(f"HTTP {e.code} from MiniMax: {detail[:500]}") from e
+        except urllib.error.URLError as e:
+            # Network errors (timeout, DNS, connection refused) are also worth
+            # one or two retries -- often resolves on the next attempt.
+            if attempt < MAX_RETRIES:
+                wait_s = RETRY_BACKOFF_S[attempt]
+                print(
+                    f"[minimax] network error on attempt {attempt + 1}: {e}; "
+                    f"retrying in {wait_s}s",
+                    flush=True,
+                )
+                time.sleep(wait_s)
+                last_err = e
+                continue
+            raise MinimaxError(f"Network error contacting MiniMax after {MAX_RETRIES + 1} attempts: {e}") from e
+    if body is None:
+        raise MinimaxError(
+            f"MiniMax unreachable after {MAX_RETRIES + 1} attempts; last error: {last_err}"
+        )
 
     try:
         parsed = json.loads(body)
