@@ -4,6 +4,36 @@
 
 
 
+## 2026-04-21 -- Apr 19 leftovers cleanup (claude-minimaxi wiring + skill-topology docs + orphan worktree)
+
+**Commits:** `83230c9` chore(claude-minimaxi): commit apr 19 wiring leftovers; `5ca659b` docs: commit apr 19 skill-topology plan + spec
+
+**What shipped:** Cleaned the dirty working tree that had been carrying Apr 19 leftovers across multiple sessions. Split into two logical commits plus one git-worktree removal:
+
+- Cluster 1 (`83230c9`): 5 files wiring the claude-minimaxi wrapper shipped 2026-04-19 as `6f07496` + `547708a`. `CLAUDE.md` registers the wrapper; `scripts/minimax-common.sh` sources `~/.zshrc` when `MINIMAX_API_KEY` is missing (same pattern as claude-minimaxi.sh and minimax-review.sh); `.claude/skills/k2b-compile/SKILL.md` documents offloading the batch-compile per-source loop to claude-minimaxi for 3+ sources; new `scripts/claude-minimaxi-usage-report.sh` (weekly usage from `minimax-jobs.jsonl`); new `scripts/minimax-json-job.sh` (generic JSON-job wrapper factoring shared plumbing).
+- Cluster 2 (`5ca659b`): 2 historical planning docs under `docs/superpowers/` for the 2026-04-19 skill-topology work. Implementation already landed in the vault (`wiki/context/context_k2b-system.md` grew 239 -> 839 lines); these are the approved design spec + implementation plan, committed as historical reference material matching other planning docs retained under the same tree.
+- Orphan git worktree at `.claude/worktrees/recursing-payne-496c17` from a 2026-04-19 superpowers agent run removed via `git worktree remove`.
+
+**Review:**
+- Cluster 1: MiniMax-M2.7 `--scope diff` single-pass, 2 findings. HIGH (zshrc-sourcing silent-failure in non-interactive shells): annotated with safety-assumption comment -- Keith's `.zshrc` is curated (only PATH exports + API keys), and the pattern is already shipped in claude-minimaxi.sh and minimax-review.sh; follow-up is a dedicated `~/.minimax-env` credentials-only file migrated across all three callers at once. MEDIUM (minimax-jobs.jsonl append has no flock): pre-existing behavior in `log_job_invocation`, unchanged by this diff, tracked as separate follow-up (adding flock needs testing against the pm2 observer loop). Archive: `.minimax-reviews/2026-04-21T02-26-41Z_diff.json`.
+- Cluster 2: no adversarial review. Pure markdown planning docs (801 lines of design + plan), zero runtime impact. Tier detector called Tier 3 only because unrelated untracked files inflated the file count; actual staged diff was Tier 0 scope (docs/plans).
+
+**Feature status change:** None. `--no-feature` housekeeping. The claude-minimaxi work ladders up to `wiki/projects/project_minimax-offload.md` as Phase X integration rather than getting a dedicated feature note; the skill-topology docs describe already-landed vault work so there is no ongoing feature to flip.
+
+**Follow-ups:**
+- Migrate `claude-minimaxi.sh`, `minimax-common.sh`, and `minimax-review.sh` to source a dedicated `~/.minimax-env` credentials-only file in one consistent change (removes the "what if .zshrc gains an early-exit guard?" theoretical failure mode).
+- Add `flock` around `log_job_invocation` in `minimax-common.sh` to protect `minimax-jobs.jsonl` concurrent writes from pm2 observer loop + Claude Code Bash tool + batch compile. Needs a deadlock test against the observer timer before shipping.
+- Wire `scripts/claude-minimaxi-usage-report.sh` to `k2b-scheduler` so the weekly summary lands in Telegram automatically.
+- Refactor `minimax-research-extract`, `minimax-compile`, `minimax-lint-deep` to delegate to the new `scripts/minimax-json-job.sh` helper (current state: helper exists, callers not migrated).
+
+**Key decisions (divergent from claude.ai project specs):**
+- Committed skill-topology historical docs rather than deleting, even though the plan was already implemented. They pattern-match other retained planning docs under `docs/superpowers/` and the 40 KB content is genuine design reference material.
+- Used `--scope diff --files` for MiniMax review on cluster 1 rather than the tier-3 full Codex gate the classifier defaulted to, because the classifier's file count was inflated by untracked files unrelated to the commit. The pragmatic single-pass review surfaced both real findings a working-tree-scope review would have.
+- Did not fix the two MiniMax findings inline because neither was introduced by this diff (both are pre-existing patterns). Annotating + tracking as follow-ups keeps the cleanup commit small and the follow-up work scoped to its own plan-review + /ship cycle.
+- `plans/2026-04-26_tiering-ship-2-handoff.md` intentionally left untracked -- it is a time-capsule for a fresh session to fire on/after 2026-04-26 (Ship 2 of feature_adversarial-review-tiering), designed to be ungit-committable so a bare session discovers it only via the file system check.
+
+---
+
 ## 2026-04-21 -- Telegram YouTube URL transcript pre-fetch
 
 **Commit:** `16618c3` feat(k2b-remote): pre-fetch YouTube transcript before agent runs
