@@ -6,8 +6,10 @@ feature: feature_washing-machine-memory
 ships-under: feature_washing-machine-memory
 checkpoint-1: codex-plan-review-complete-rework-folded
 checkpoint-2: at-pre-commit-per-commit
-revision: v2
-v1-review: Codex 2026-04-21 returned REWORK with 5 P1 + 6 P2 findings; all folded below
+revision: v2.2
+v1-review: Codex 2026-04-21 returned REWORK with 5 P1 + 6 P2 findings; all folded (see v1 → v2 delta table)
+v2-review: Codex 2026-04-21 returned GO-WITH-FIXES with 2 new P1s; folded as v2.1 (see Codex v2 re-review table)
+v2.2-changes: MiniMax Offload v2 handoff folded (endpoint + error codes + GIF correction + Chinese OCR gate + scripts/minimax-vlm.sh primitive)
 up: "[[plans/index]]"
 ---
 
@@ -365,6 +367,41 @@ Total: **~36 hours = 4-6 working days**.
 2. Reciprocal rank fusion weights (α/β/γ). Start `0.5/0.3/0.2`; tune during Commit 2 using doctor-phone test. Freeze in plan once green.
 3. Where to store `washing-machine.env` (WASHING_MACHINE_PYTHON + MINIMAX_VISION_MODEL). Proposed: `~/.config/k2b/washing-machine.env`, sourced by every new script.
 4. Calibration corpus extraction. Before Commit 0 closes, extract 25 rows from this session's discussion + past K2B conversations. Block Commit 1 until both corpus files exist.
+
+## Resume card (for next session)
+
+**Where we are as of 2026-04-21 ~22:20 HKT**: 2 of 10 commits shipped on `main`.
+
+Shipped:
+- **Commit 0** -- plan v2.2 + `scripts/washing-machine/preflight.sh`. Bundled into sibling session's `85513a5 refactor(ship): route Tier 2/3 adversarial review through scripts/review.sh` (the sibling's `git add` + `git commit` picked up my staged files -- content is correct, attribution is in DEVLOG). Preflight verified green on Mac Mini (all 7 steps).
+- **Commit 0b** (SHA `0e62c6d`) -- 25-row calibration corpus + JSON Schema + 4 image fixtures + PIL generator. All 25 rows validate against schema. Codex Tier 2 review: GO-WITH-NIT-FIXES, 3 of 5 folded, 2 advisory.
+
+Still to ship:
+- **Commit 1** -- shelf-writer.sh + lib/shelf_rows.py + 6 TDD tests (pipe-escape, UTF-8 Chinese round-trip, concurrent writers, empty append, existing append, rollback on temp failure). Start here.
+- **Commit 1b** -- migrate-historical.py with hardcoded Dr. Lo extractor (reads `K2B-Vault/Daily/2025-04-11.md` + Mac Mini `memories/telegram-*.jsonl`).
+- **Commit 2** -- embed-index.py + retrieve.py + 8 tests (includes the doctor-phone top-hit binary gate -- 3 query variants must return Dr. Lo as #1).
+- **Commit 3** -- Normalization Gate: classify.sh + scripts/minimax-vlm.sh + extract-attachment.sh + normalize.py + washingMachine.ts + washingMachineResume.ts + 10 tests + Chinese-OCR ≥80% accuracy gate.
+- **Commit 4a** -- memoryInject.ts (deterministic, bug-killer).
+- **Commit 4b** -- researchAgent.ts (Plan/Search/Integrate/Reflect loop). Hotfix-able: if 4b is unstable, ship 1-3+4a+5 without 4b.
+- **Commit 5** -- wire bot.ts (pending-confirm interceptor + photo OCR route + inject swap) + 5 smoke tests. Dual-write kept; nothing deleted.
+- **Commit 6** -- mvp-end-to-end.sh 3-mode gate (fresh-image, fresh-text, historical) + DEVLOG + /ship.
+
+### Next-session adoption notes
+
+1. **Use `scripts/review.sh` for pre-commit review, not manual Agent+codex-rescue dispatch.** The unified runner shipped in `41713b8` and k2b-ship Step 3 flipped in `85513a5`. CLI: `scripts/review.sh diff --files <files> --primary codex --wait`. Auto-falls-back to MiniMax on Codex deadline / quality-gate-fail / EISDIR hazard. Output JSON envelope with `log_path` pointing at `.code-reviews/YYYY-MM-DDTHH-MM-SSZ_<hash>.log`.
+
+2. **Stage + commit atomically.** My Commit 0 got bundled into sibling `85513a5` because I staged files then dispatched Codex review in parallel. The sibling's `/ship` swept up my staged files along with theirs. Lesson: don't leave files in the index across long-running operations. Either commit immediately after staging, or don't stage until you're ready.
+
+3. **Preflight re-run**: deps already installed on Mini. Second+ runs are fast (<5s if venv cached). Re-run before Commit 1 testing to confirm nothing broke.
+
+4. **Per-commit gate reminders** (from plan Checkpoint 2):
+   - Commits 1/2: Tier 2 (real code + tests, small footprint)
+   - Commits 3/4a/4b/5: Tier 3 (cross-file reads, memory semantics)
+   - Commits 1b/6: Tier 1-2 (docs + migration scripts + end-to-end)
+
+5. **Do not delete `buildMemoryContext` or `searchMemoriesFts`** in Ship 1 (per D4). They stay as dead code for 2-week bake. Ship 4 removes.
+
+6. **Branch: `main`** (per D5). Commit-by-commit, per-commit review gate.
 
 ## Design decisions log
 
