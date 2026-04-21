@@ -46,6 +46,22 @@ scripts/generate-org-chart.py
 # Scheduler runtime lock (orphaned if a scheduler session dies uncleanly)
 .claude/scheduled_tasks.lock
 
+# superpowers:using-git-worktrees stub dir (created empty by the skill).
+# Left untracked, it crashes Codex's `read()` walk with EISDIR and forces
+# scripts/review.sh to fall back to MiniMax on every commit.
+.claude/worktrees/
+
+# Per-machine Claude Code local settings (anywhere in tree). Same EISDIR
+# hazard as above when the `.claude/` dir it lives in has no tracked files.
+**/settings.local.json
+
+# Sub-project Claude Code dirs. Only the repo-root .claude/ has tracked
+# content (skills, settings, plans). Sub-projects keep their own local
+# config that isn't shared -- ignoring the whole dir avoids the "parent
+# has no tracked files" EISDIR hazard.
+/k2b-remote/.claude/
+/k2b-dashboard/.claude/
+
 # Python bytecode cache
 __pycache__/
 *.pyc
