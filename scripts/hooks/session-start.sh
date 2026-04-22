@@ -55,11 +55,16 @@ if [ -f "$wiki_index" ]; then
   output+="$(cat "$wiki_index")"$'\n\n'
 fi
 
-# --- 3. Check observer candidates ---
-candidates="$CONTEXT_DIR/observer-candidates.md"
-if [ -f "$candidates" ] && [ -s "$candidates" ]; then
-  output+="OBSERVER FINDINGS (review HIGH confidence items -- confirm or reject inline):"$'\n'
-  output+="$(cat "$candidates")"$'\n\n'
+# --- 3. K2B loop dashboard (observer candidates + review + research-delivery) ---
+# Replaces the bare observer-candidates dump. The dashboard numbers items with
+# stable content-hash IDs so Claude can route one-word accept/reject/defer
+# tokens back to scripts/loop/loop-apply.sh before the first prompt response.
+dashboard_output="$("$K2B/scripts/loop/loop-render-dashboard.sh" 2>/dev/null || true)"
+if [ -n "$dashboard_output" ]; then
+  output+="$dashboard_output"$'\n\n'
+  output+="LOOP ROUTING INSTRUCTION: If Keith's first message contains tokens matching"$'\n'
+  output+="the grammar above (a N / r N / d N), call scripts/loop/loop-apply.sh with the"$'\n'
+  output+="translated --accept N / --reject N / --defer N flags before any other action."$'\n\n'
 fi
 
 # --- 4. Load active rules ---
@@ -78,7 +83,10 @@ if [ -f "$learnings_file" 2>/dev/null ]; then
   # Build exclusion list from active rules (they reference learning IDs like L-2026-03-26-001)
   active_ids=""
   if [ -f "$active_rules" 2>/dev/null ]; then
-    active_ids=$(grep -oE 'L-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+' "$active_rules" 2>/dev/null | sort -u | tr '\n' '|')
+    # Pipefail + set -e would treat a no-match grep as fatal and silently kill
+    # the whole hook (pre-existing bug: observer/review output never reached
+    # Keith because the hook exited 1 on an empty active_rules grep).
+    active_ids=$( { grep -oE 'L-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+' "$active_rules" 2>/dev/null || true; } | sort -u | tr '\n' '|')
     active_ids="${active_ids%|}"  # strip trailing pipe
   fi
   # Extract learning blocks with Reinforced >= 2, excluding already-promoted ones
