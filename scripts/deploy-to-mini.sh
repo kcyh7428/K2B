@@ -9,12 +9,28 @@
 #   deploy-to-mini.sh scripts      # sync scripts/
 #   deploy-to-mini.sh all          # sync everything
 #   deploy-to-mini.sh --dry-run    # show what would sync without doing it
+#
+# Change detection (auto mode) compares local content against the remote via
+# `rsync -acn` (dry-run + checksum). This is authoritative regardless of git
+# commit structure, so a multi-commit ship (e.g. code commit + follow-up
+# devlog commit) never hides a category's files from the detector.
+#
+# Test hooks (do not set in prod):
+#   K2B_LOCAL_BASE             override LOCAL_BASE (source tree)
+#   K2B_MINI                   override remote host
+#   K2B_REMOTE_BASE            override remote project path
+#   K2B_RSYNC_TARGET_PREFIX    override "$MINI:$REMOTE_BASE" wholesale (e.g.
+#                              a local path to bypass SSH in tests)
+#   K2B_DETECT_ONLY=true       print detected categories and exit 0 before
+#                              the Mini reachability check runs
 
 set -euo pipefail
 
-MINI="macmini"
-LOCAL_BASE="$HOME/Projects/K2B"
-REMOTE_BASE="~/Projects/K2B"
+MINI="${K2B_MINI:-macmini}"
+LOCAL_BASE="${K2B_LOCAL_BASE:-$HOME/Projects/K2B}"
+REMOTE_BASE="${K2B_REMOTE_BASE:-~/Projects/K2B}"
+RSYNC_TARGET="${K2B_RSYNC_TARGET_PREFIX:-${MINI}:${REMOTE_BASE}}"
+DETECT_ONLY="${K2B_DETECT_ONLY:-false}"
 DRY_RUN=false
 MODE="${1:-auto}"
 
@@ -37,25 +53,50 @@ log()  { echo -e "${GREEN}[sync]${NC} $1"; }
 warn() { echo -e "${YELLOW}[sync]${NC} $1"; }
 err()  { echo -e "${RED}[sync]${NC} $1"; }
 
-# Detect what changed
-detect_changes() {
-    local changes
-    cd "$LOCAL_BASE"
+# RSYNC_TARGET is "host:path" in prod and a local path in tests. We need to
+# know which so we can skip the SSH reachability check when tests drive the
+# script against a local fixture tree.
+is_remote_target() {
+    [[ "$RSYNC_TARGET" == *":"* ]]
+}
 
-    # Try uncommitted changes first
-    changes=$(git diff --name-only HEAD 2>/dev/null || true)
-
-    # If nothing uncommitted, check last commit
-    if [[ -z "$changes" ]]; then
-        changes=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
+# rsync_has_changes <source> <target> [extra rsync flags...]
+# Returns 0 if a dry-run rsync with --checksum would transfer or delete
+# anything, 1 if source and target are byte-identical under the given flags.
+# Aborts the whole script (exit 1) on rsync error -- a swallowed error would
+# otherwise look identical to "no changes" and let auto mode silently ship
+# without deploying.
+# The flags passed in MUST mirror the flags the real sync function uses
+# (exclude lists, --delete, etc.) so the dry-run is authoritative.
+rsync_has_changes() {
+    local src="$1" dst="$2"
+    shift 2
+    local output stderr_file rc=0
+    stderr_file="$(mktemp)"
+    output=$(rsync -acn --itemize-changes "$@" "$src" "$dst" 2>"$stderr_file") || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        err "rsync dry-run failed ($src -> $dst, exit $rc):"
+        cat "$stderr_file" >&2
+        rm -f "$stderr_file"
+        # Common cause on a freshly provisioned Mini: the remote project dir
+        # doesn't exist, so the top-level single-file doc rsyncs can't cd into
+        # it. sync_skills's real sync hits the same error; manual bootstrap is
+        # required.
+        err "If the remote project tree is missing, SSH to the Mini, mkdir ~/Projects/K2B, then re-run."
+        exit 1
     fi
-
-    # Also check untracked files in key directories
-    local untracked
-    untracked=$(git ls-files --others --exclude-standard .claude/skills/ scripts/ k2b-remote/ k2b-dashboard/ 2>/dev/null || true)
-    changes="$changes"$'\n'"$untracked"
-
-    echo "$changes"
+    rm -f "$stderr_file"
+    if [[ -z "$output" ]]; then
+        return 1
+    fi
+    # itemize-changes lines begin with transfer indicators:
+    #   >f... / <f...   file transfer
+    #   >d... / cd...   dir transfer / dir create
+    #   *deleting       deletion (only with --delete)
+    if echo "$output" | grep -qE '^([><c*][fd]|\*deleting)'; then
+        return 0
+    fi
+    return 1
 }
 
 needs_skills=false
@@ -63,19 +104,41 @@ needs_code=false
 needs_dashboard=false
 needs_scripts=false
 
-categorize() {
-    local changes="$1"
-    if echo "$changes" | grep -qE '\.claude/|CLAUDE\.md|K2B_ARCHITECTURE\.md|^\.mcp\.json$'; then
-        needs_skills=true
+# Populate the four needs_* flags by diffing local content against
+# $RSYNC_TARGET via rsync --checksum --dry-run, once per category, using the
+# same include/exclude rules each category's real sync function uses. This
+# is commit-structure-independent: the detector sees the full local vs
+# remote drift regardless of how many commits produced it.
+detect_changes() {
+    local doc
+    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json; do
+        if [[ -f "$LOCAL_BASE/$doc" ]]; then
+            if rsync_has_changes "$LOCAL_BASE/$doc" "$RSYNC_TARGET/$doc"; then
+                needs_skills=true
+            fi
+        fi
+    done
+    if [[ -d "$LOCAL_BASE/.claude/skills" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/.claude/skills/" "$RSYNC_TARGET/.claude/skills/" --delete; then
+            needs_skills=true
+        fi
     fi
-    if echo "$changes" | grep -qE '^k2b-remote/'; then
-        needs_code=true
+    if [[ -d "$LOCAL_BASE/k2b-remote" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/k2b-remote/" "$RSYNC_TARGET/k2b-remote/" \
+            --exclude node_modules --exclude dist --exclude store --exclude .env; then
+            needs_code=true
+        fi
     fi
-    if echo "$changes" | grep -qE '^k2b-dashboard/'; then
-        needs_dashboard=true
+    if [[ -d "$LOCAL_BASE/k2b-dashboard" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/k2b-dashboard/" "$RSYNC_TARGET/k2b-dashboard/" \
+            --exclude node_modules --exclude dist --exclude legacy-v2 --exclude '.env*'; then
+            needs_dashboard=true
+        fi
     fi
-    if echo "$changes" | grep -qE '^scripts/'; then
-        needs_scripts=true
+    if [[ -d "$LOCAL_BASE/scripts" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/scripts/" "$RSYNC_TARGET/scripts/"; then
+            needs_scripts=true
+        fi
     fi
 }
 
@@ -91,11 +154,11 @@ sync_skills() {
     # breaking all bot-initiated image generation.
     for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json; do
         if [[ -f "$LOCAL_BASE/$doc" ]]; then
-            rsync -av $rsync_flag "$LOCAL_BASE/$doc" "$MINI:$REMOTE_BASE/$doc"
+            rsync -av $rsync_flag "$LOCAL_BASE/$doc" "$RSYNC_TARGET/$doc"
         fi
     done
 
-    rsync -av $rsync_flag --delete "$LOCAL_BASE/.claude/skills/" "$MINI:$REMOTE_BASE/.claude/skills/"
+    rsync -av $rsync_flag --delete "$LOCAL_BASE/.claude/skills/" "$RSYNC_TARGET/.claude/skills/"
 
     if ! $DRY_RUN; then
         log "Verifying skills on Mini..."
@@ -121,7 +184,7 @@ sync_code() {
         --exclude dist \
         --exclude store \
         --exclude .env \
-        "$LOCAL_BASE/k2b-remote/" "$MINI:$REMOTE_BASE/k2b-remote/"
+        "$LOCAL_BASE/k2b-remote/" "$RSYNC_TARGET/k2b-remote/"
 
     if ! $DRY_RUN; then
         log "Building and restarting k2b-remote on Mini..."
@@ -157,7 +220,7 @@ sync_dashboard() {
         --exclude dist \
         --exclude legacy-v2 \
         --exclude '.env*' \
-        "$LOCAL_BASE/k2b-dashboard/" "$MINI:$REMOTE_BASE/k2b-dashboard/"
+        "$LOCAL_BASE/k2b-dashboard/" "$RSYNC_TARGET/k2b-dashboard/"
 
     if ! $DRY_RUN; then
         log "Building and restarting k2b-dashboard on Mini..."
@@ -188,10 +251,10 @@ sync_scripts() {
     local rsync_flag=""
     $DRY_RUN && rsync_flag="--dry-run"
 
-    rsync -av $rsync_flag "$LOCAL_BASE/scripts/" "$MINI:$REMOTE_BASE/scripts/"
+    rsync -av $rsync_flag "$LOCAL_BASE/scripts/" "$RSYNC_TARGET/scripts/"
 }
 
-# Main
+# Main -- mode validation first so invalid modes exit fast (no SSH wait).
 case "$MODE" in
     skills)
         needs_skills=true
@@ -212,18 +275,7 @@ case "$MODE" in
         needs_scripts=true
         ;;
     auto)
-        changes=$(detect_changes)
-        if [[ -z "$changes" || "$changes" == $'\n' ]]; then
-            warn "No changes detected. Use 'all' to force full sync."
-            exit 0
-        fi
-        categorize "$changes"
-        if ! $needs_skills && ! $needs_code && ! $needs_dashboard && ! $needs_scripts; then
-            warn "Changes detected but none in syncable categories."
-            echo "$changes"
-            exit 0
-        fi
-        ;;
+        ;;  # detection happens after the reachability check below
     *)
         err "Unknown mode: $MODE"
         echo "Usage: deploy-to-mini.sh [auto|skills|code|dashboard|scripts|all] [--dry-run]"
@@ -231,10 +283,30 @@ case "$MODE" in
         ;;
 esac
 
-# Check Mini is reachable
-if ! ssh -o ConnectTimeout=5 "$MINI" "echo ok" &>/dev/null; then
-    err "Cannot reach Mac Mini (ssh macmini). Is it on?"
-    exit 1
+# Reachability check must happen BEFORE detect_changes: rsync's dry-run runs
+# over SSH for a remote target, so an unreachable Mini would silently report
+# "no changes" instead of failing loud. Skipped for local RSYNC_TARGET (tests).
+if is_remote_target; then
+    if ! ssh -o ConnectTimeout=5 "$MINI" "echo ok" &>/dev/null; then
+        err "Cannot reach Mac Mini (ssh macmini). Is it on?"
+        exit 1
+    fi
+fi
+
+if [[ "$MODE" == "auto" ]]; then
+    detect_changes
+    if ! $needs_skills && ! $needs_code && ! $needs_dashboard && ! $needs_scripts; then
+        [[ "$DETECT_ONLY" != "true" ]] && warn "No changes detected. Use 'all' to force full sync."
+        exit 0
+    fi
+fi
+
+if [[ "$DETECT_ONLY" == "true" ]]; then
+    $needs_skills && echo "skills"
+    $needs_code && echo "code"
+    $needs_dashboard && echo "dashboard"
+    $needs_scripts && echo "scripts"
+    exit 0
 fi
 
 $DRY_RUN && warn "DRY RUN -- no files will be changed"
