@@ -67,11 +67,9 @@ Detect URL type and handle accordingly:
 2. Extract key insights and techniques
 3. Analyze through the lens of "what can K2B learn from this?"
 
-**All URL types produce:**
-- Source summary
-- Key takeaways (5-10 bullet points)
-- K2B applicability analysis
-- Specific recommendations with implementation ideas
+**All URL types produce** the **Lens-Based Review Format** (see section below). The review leads with a verdict, runs the universal checks (gated, novelty, skepticism), applies a lens-specific already-have check against K2B's existing stack, and stakes one claim (adopt / retrofit / skip / post seed / seed ticker / etc., depending on detected lens).
+
+Save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md` per the format's skeleton.
 
 ## Deep Research Mode (`/research deep <topic>`) -- added 2026-04-12
 
@@ -171,12 +169,22 @@ notebooklm download infographic ~/Projects/K2B-Vault/Assets/images/<date>_resear
 
 #### Phase 5: Synthesis
 
-Opus reads all NotebookLM answers and writes a structured vault note. This is the ONLY phase that costs Opus tokens. Apply K2B identity framing:
-- How does this apply to Keith's SJM/Signhub/TalentSignals context?
-- What maps to K2B's existing architecture (raw/wiki/review, commander/worker)?
-- What's actionable now vs later?
+Opus reads all NotebookLM answers and writes a structured vault note. This is the ONLY phase that costs Opus tokens.
 
-Save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md` using the Deep Research Output Format below.
+Output format: use the **Lens-Based Review Format** (see section below). The lens is usually implied by the topic Keith chose (for example, "multi-agent coding patterns" is Stack lens; "semiconductor earnings trends" is K2Bi lens), but multi-lens is common on cross-cutting topics and both lenses should run in full when they apply.
+
+Deep Research adds one extra section before `## What they're actually showing`:
+
+```markdown
+## Sources Analyzed
+
+N sources (X YouTube, Y GitHub repos, Z articles, W vault notes)
+NotebookLM notebook: [notebook-id] (persistent, can revisit for follow-up queries)
+```
+
+And one extra frontmatter field: `notebooklm-notebook: "<notebook-id>"`. Everything else is identical to URL Deep Dive.
+
+Save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md`.
 
 #### Phase 6: Compile
 
@@ -187,60 +195,15 @@ Trigger k2b-compile on the new raw research note:
 
 ### Deep Research Output Format
 
+Deep research uses the **Lens-Based Review Format** (see section below). The deep-research-specific additions (sources-analyzed section, notebooklm-notebook frontmatter field, optional audio / mind-map deliverables) are documented in Phase 5 above.
+
+If audio overview or mind-map artifacts were generated in Phase 4, append them to the review under `## Deliverables`:
+
 ```markdown
----
-tags: [research, deep-dive, {topic-tags}]
-date: YYYY-MM-DD
-type: research-briefing
-origin: k2b-generate
-source: "NotebookLM deep research, N sources"
-notebooklm-notebook: "<notebook-id>"
-up: "[[Home]]"
----
-
-# Deep Dive: [Topic Title]
-
-## Sources Analyzed
-N sources (X YouTube, Y GitHub repos, Z articles, W vault notes)
-NotebookLM notebook: [notebook-id] (persistent -- can revisit for follow-up queries)
-
-## Key Findings
-1. [finding with context]
-2. ...
-
-## Architecture/Patterns
-### [Pattern/Approach A]
-- What it is
-- Who uses it
-- Tradeoffs
-
-### [Pattern/Approach B]
-...
-
-## K2B Applicability
-### What maps directly to our architecture
-- [specific mapping]
-
-### What we'd need to build new
-- [gap analysis]
-
-### Recommended approach for Keith
-- [concrete recommendation]
-
-## Risks and Limitations
-- [risk 1]
-- [risk 2]
-
-## Implementation Ideas
-- [ ] [concrete next step]
-- [ ] ...
-
 ## Deliverables
-- Audio overview: [[Assets/audio/YYYY-MM-DD_research_topic.mp3]] (if generated)
-- Mind map: [[Assets/YYYY-MM-DD_research_topic_mindmap.json]] (if generated)
 
-## Linked Notes
-[wikilinks to related vault notes]
+- Audio overview: [[Assets/audio/YYYY-MM-DD_research_topic.mp3]]
+- Mind map: [[Assets/YYYY-MM-DD_research_topic_mindmap.json]]
 ```
 
 ### Commander/Worker Pattern for Deep Research
@@ -254,6 +217,171 @@ Deep research adds Gemini (via NotebookLM) as a third worker alongside MiniMax:
 | Worker 2 | MiniMax M2.7 | Bulk extraction on individual long sources (if needed, per size gate) |
 
 Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. MiniMax handles individual source extraction when sources exceed the 10K char size gate.
+
+## Lens-Based Review Format
+
+Used by **URL Deep Dive** (`/research <url>`) and **Deep Research synthesis** (Phase 5 of `/research deep <topic>`). Other modes (default, topic, videos, notebook ask) keep their own output formats.
+
+Why this format exists: the research skill's job is not to summarize, it's to produce a **verdict** and **stake a claim** calibrated to what kind of content this is and to Keith's existing stack. A Claude Code tool demo, a founder interview, a macro-economy essay, and a recruiting industry piece all need different relevance anchors. One generic output shape cannot do all four well.
+
+### Step 1: Detect the lens (keyword classifier)
+
+Scan the fetched transcript (URL mode) or the topic string plus source list (deep research) for the clusters below. Pick the single strongest match, or multiple lenses when content genuinely spans domains. State the detected lens or lenses at the top of the review so Keith can redirect ("run as Investment lens").
+
+| Keyword cluster | Lens |
+|---|---|
+| `agent harness, hooks, SDK, codebase, MCP, Claude Code, skills, codex, worktree` | **Stack** |
+| `founder, ARR, solopreneur, launched, raised, product-market fit, solo` | **Content** |
+| `economy, labor market, AGI, policy, concentration, geopolitics, regulation` | **Worldview** |
+| `talent acquisition, recruiter, hire, HR, candidate, sourcing, ATS` | **Day-job** |
+| `position, trade, ticker, sector, Fed, yield, earnings, macro, backtest` | **K2Bi** |
+| `leadership, productivity, habits, exec coaching, decision-making, focus` | **Growth** |
+
+Multi-lens is allowed (example: a Claude-Code-for-recruiters piece hits both Stack and Day-job). When running multi-lens, present both lens sections in full so Keith can scan both views.
+
+### Step 2: Motivations pre-check
+
+Before writing the review, grep `K2B-Vault/wiki/context/active-motivations.md` Active Questions list for keyword overlap with the content. If any active question matches, flag at the very top of the review:
+
+> **Touches active question**: "[the matching question]"
+
+This is the highest-value relevance signal because it's what Keith said he cares about right now.
+
+### Step 3: Universal checks (apply regardless of lens)
+
+Every review leads with these, in this order:
+
+1. **Verdict line** -- exactly one of `Substance` / `Clickbait` / `Partial` / `Gated` / `Hype`, plus a one-sentence reason.
+2. **Gated flag** -- if the source paywalls code, community, or key details (course paywall, locked repo, course-members-only codebase), call it out at the verdict line.
+3. **Novelty check** -- is this actually new, or repackaging of prior art (AutoGen, CrewAI, Devin, standard agent patterns, etc.)? One line.
+4. **Skepticism flags** -- overstated claims, missing numbers, cavalier cost stance ("tokens are cheap, spend more"), survivorship bias, cherry-picked time windows, unchecked assumptions.
+
+### Step 4: Per-lens body
+
+Each lens has a specific "already-have anchor" and a fixed set of "stake-a-claim" options. The review body checks content against the anchor and picks one stake-a-claim per lens.
+
+#### Stack lens (Claude Code, agent harness, dev tool content)
+
+- **Already-have anchor**: K2B's harness -- Commander/Worker (Opus + MiniMax M2.7), adversarial review (Codex primary + MiniMax fallback), 30+ specialized skills, hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
+- **Check every claim against the anchor**: state explicitly "you already have this as X" or "new to you".
+- **Stake-a-claim options** (pick one): `Adopt` (rare -- whole-cloth migration justified) / `Retrofit` (steal specific ideas into existing stack, with file paths) / `Skip` / `Watch` (track, revisit later).
+
+#### Content lens (founder interviews, startup stories, AI creator content)
+
+- **Already-have anchor**: Keith's LinkedIn lane -- senior executive in a traditional corporate (SJM Resorts) using AI to 10x, the content angle demonstrated in `wiki/content-pipeline/` and vault posts.
+- **Check**: does this make a good counterpoint or post seed? What specific quotes land? Is the interviewee's framing usefully contrastable with Keith's senior-exec view?
+- **Stake-a-claim options** (pick one): `Post seed` (one-line angle for `review/content_*.md`) / `Counterpoint` (Keith's senior-exec angle vs the interviewee's) / `Quote mine` (specific pull-quotes worth archiving) / `Skip`.
+
+#### Worldview lens (AI strategy, macro, AGI, labor market, policy, geopolitics)
+
+- **Already-have anchor**: `wiki/concepts/` mental models + `active-motivations.md` active questions.
+- **Check**: does this update, confirm, or contradict existing K2B concept notes?
+- **Stake-a-claim options** (pick one): `Track` (add to watch list) / `Disagree` (write counter-note) / `Integrate` (propose update to concept note, include the slug) / `Skip`.
+
+#### Day-job lens (recruiting, TA, HR industry content)
+
+- **Already-have anchor**: Signhub Tech + TalentSignals + Agency at Scale state + TA industry trends tracked in `wiki/concepts/`.
+- **Check**: is this a product competitor (to Signhub or TalentSignals specifically), a service competitor, or an industry trend worth watching?
+- **Stake-a-claim options** (pick one): `Signhub intel` (draft competitive entry for `wiki/work/work_signhub.md`) / `TalentSignals intel` (same for `work_talentsignals.md`) / `Trend track` (add to a TA trends concept note) / `Post seed` / `Skip`.
+- **Explicitly NOT an option**: "Try at SJM". Keith does not route TA content into SJM operations via the research skill.
+
+#### K2Bi lens (investing, trading, markets)
+
+- **Already-have anchor**: K2Bi-Vault (`wiki/tickers/<SYMBOL>.md`, `wiki/theses/`, `data-sources.md`). K2Bi is in Phase 3.6 paper-trade shakedown as of 2026-04-22 -- still stocking the shelf of candidate strategies and tickers, not actively trading discretionary signals.
+- **Output shape for this lens**: produce numbered candidate lists so Keith can cherry-pick:
+  - **Candidate tickers**: `<SYMBOL> -- <sector> -- <one-line why>`
+  - **Candidate theses**: testable hypothesis with entry/exit rules if mentioned in the source
+  - **Candidate data sources**: feed / MCP / dataset with tier (free / paid) and coverage
+  - **Candidate regime signals**: indicator worth tracking (yield curve, VIX regime, sector rotation trigger)
+- **Stake-a-claim options** (pick one or more): `Seed ticker` / `Seed thesis` / `Seed data source` / `Seed regime signal` / `Skip`.
+- **Cross-vault handling**: output lands in K2B-Vault like any other review note. Keith copies the items he wants to K2Bi-Vault manually when he is next in a K2Bi session. Do NOT write directly to K2Bi-Vault from this skill.
+- **Investment-specific skepticism flags** (in addition to the universal ones):
+  - Overfit risk: claim tested on enough history? one market regime only?
+  - Survivorship bias: are failed versions of this strategy shown?
+  - Capital-tier mismatch: does it require size or fees retail cannot get?
+  - Decay guess: fast (news / earnings, ~5-day half-life) / medium (sector rotation, ~30-day) / slow (structural, ~180-day).
+
+#### Growth lens (leadership, exec coaching, personal productivity)
+
+- **Already-have anchor**: `active-motivations.md` active questions and Building section.
+- **Check**: does this add a new question worth tracking or confirm an existing one?
+- **Stake-a-claim options** (pick one): `Add to motivations` (route via `scripts/motivations-helper.sh add-question`) / `Bookmark` (save the quote or reference only) / `Skip`.
+
+### Step 5: Output frontmatter and skeleton
+
+```markdown
+---
+tags: [research, lens-review, {lens-slug}, {topic-tags}]
+date: YYYY-MM-DD
+type: research-briefing
+origin: k2b-generate
+source: "[Title](URL)"
+lens: "{Stack | Content | Worldview | Day-job | K2Bi | Growth | multi-lens}"
+up: "[[Home]]"
+---
+
+# Lens Review: [Title] -- [Lens] lens
+
+**Verdict**: [Substance / Clickbait / Partial / Gated / Hype] -- [one-sentence reason]
+
+**Touches active question**: "[question]"   _(omit this line entirely if no motivations match)_
+
+## What they're actually showing
+
+- [5-8 bullets summarizing the substantive content]
+
+## Universal checks
+
+- **Gated**: [what is behind paywall / what is free]
+- **Novelty**: [new idea or repackaged prior art, one line with comparison]
+- **Skepticism flags**: [overstated claims, missing numbers, cavalier cost stance, etc.]
+
+## Already-have check ([Lens] lens)
+
+[Table or bullet list mapping content claims to what K2B already has. Be explicit: "you have this as X" or "new to you".]
+
+## K2B vs K2Bi   _(include only when content has investment relevance)_
+
+- **K2B** (knowledge work): [relevance or "not relevant"]
+- **K2Bi** (trading): [relevance or "not relevant"]
+
+## Candidate list   _(K2Bi lens only; omit entire section for other lenses)_
+
+- **Tickers**: [numbered list if any]
+- **Theses**: [numbered list if any]
+- **Data sources**: [numbered list if any]
+- **Regime signals**: [numbered list if any]
+
+## Stake a claim
+
+**[Adopt / Retrofit / Skip / Watch / Post seed / Counterpoint / Quote mine / Track / Disagree / Integrate / Signhub intel / TalentSignals intel / Trend track / Seed ticker / Seed thesis / Seed data source / Seed regime signal / Add to motivations / Bookmark]**: [1-3 sentence reasoning and, if the stake is action-worthy, a concrete next step with file paths]
+
+## Linked Notes
+
+[wikilinks to related vault notes]
+```
+
+**For multi-lens content**: repeat the `## Already-have check` and `## Stake a claim` sections for each lens, labeled with the lens name. Keep universal checks as one section at top.
+
+**For Deep Research synthesis (vs URL mode)**: add these before `## What they're actually showing`:
+
+```markdown
+## Sources Analyzed
+
+N sources (X YouTube, Y GitHub repos, Z articles, W vault notes)
+NotebookLM notebook: [notebook-id] (persistent, can revisit for follow-up queries)
+```
+
+And add `notebooklm-notebook: "<notebook-id>"` to the frontmatter. Everything else is identical.
+
+### Step 6: Writing tips
+
+- **Lead with the verdict.** Keith reads the first line. Make it count.
+- **Be blunt about gating and hype.** No polite softening. "Paywalled", "overstated", "already done elsewhere".
+- **Map every substantive claim to what K2B already has.** Do not recommend "X pattern" without first checking if K2B already implements X.
+- **Stake exactly one claim per lens.** "Adopt and retrofit" is a hedge. Pick.
+- **Offer a concrete next action at the end** only if the stake is action-worthy (Adopt / Retrofit / Post seed / Seed ticker / Integrate / Signhub intel / etc.). Skip / Watch / Counterpoint usually do not need one.
+- **State detected lens upfront in the first output line** so Keith can redirect before reading the rest.
 
 ## `/research videos "<query>"` -- on-demand video discovery via NotebookLM
 
@@ -1510,40 +1638,7 @@ up: "[[Home]]"
 
 ## For URL Deep Dives
 
-Use a more focused output format:
-
-```markdown
----
-tags: [research, deep-dive, {topic-tags}]
-date: YYYY-MM-DD
-type: research-briefing
-origin: k2b-generate
-source: "[Title](URL)"
-up: "[[Home]]"
----
-
-# Deep Dive: [Topic/Source Title]
-
-## Source
-[URL and brief description of what this is]
-
-## Key Takeaways
-1. [takeaway with context]
-2. ...
-
-## K2B Applicability
-### What We Can Use
-- [specific technique] -- could apply to [specific K2B area]
-
-### What's Interesting But Not Actionable Yet
-- [concept] -- relevant when [condition]
-
-### Implementation Ideas
-- [ ] [concrete next step]
-
-## Linked Notes
-[wikilinks to related vault notes]
-```
+Use the **Lens-Based Review Format** (defined earlier in this file). The old "Source / Key Takeaways / K2B Applicability / Implementation Ideas" skeleton is superseded because it produced generic summaries regardless of content type (tool demo, founder interview, investment content, etc.). The lens format replaces it with a verdict-first, type-specific review that leads with "Substance / Clickbait / Partial / Gated / Hype" and stakes one claim per detected lens.
 
 ## Usage Logging
 
