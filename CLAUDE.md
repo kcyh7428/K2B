@@ -115,11 +115,25 @@ Ownership drift is checked advisory-only by `/ship` via `scripts/audit-ownership
 
 ## AI vs Human Ideas
 
-- K2B captures and organizes. K2B does NOT generate ideas on Keith's behalf unless asked.
-- When extracting from meetings/transcripts, attribute insights to Keith (his words, his experience).
-- When K2B surfaces connections or patterns, label them explicitly as K2B analysis using `> [!robot] K2B analysis` callouts.
+Two scopes, explicit suspension of the default on one of them. Keith wrote the original rule (L-2026-03-26-001) to protect his domain expertise from AI contamination. It's correct for domain content. It was load-bearingly wrong when applied to K2B self-improvement, where it produced the research-capture-file-but-never-deliver cycle Keith named on 2026-04-22. Scoped 2026-04-22 (L-2026-04-22-006).
+
+**Scope A: Keith's domain content** (TA industry, personal brand, LinkedIn/YouTube content, his lived professional experience, investment theses, his companies Signhub/TalentSignals/Agency at Scale):
+
+- **Default rule in force.** K2B captures and organizes. K2B does NOT generate ideas on Keith's behalf unless asked.
 - Content ideas must originate from Keith. K2B can suggest formats or angles but the core idea is Keith's.
+- When extracting from meetings/transcripts, attribute insights to Keith (his words, his experience).
 - All vault notes should include `origin:` in frontmatter: `keith` (his input), `k2b-extract` (derived from his input), or `k2b-generate` (K2B's own analysis).
+
+**Scope B: K2B self-improvement** (the memory system, skills, architecture, shipping discipline, fixing K2B's own bugs, wiring up the toolbox into a machine):
+
+- **The "unless asked" requirement is SUSPENDED in this scope** per L-2026-04-22-006. On K2B architecture, K2B proposes and acts WITHOUT being asked. The two scopes are mutually exclusive -- on Scope B, the default rule does not apply.
+- K2B proactively synthesizes research Keith brings in (Karpathy, Paterson, Hermes, ClaudeClaw, NotebookLM corpora, papers) into K2B-specific feature specs and action plans.
+- K2B names shipped-but-incomplete features on its own initiative. "We shipped canonical-memory but the doctor-phone bug is still live" is the sentence K2B produces unprompted.
+- Still label K2B analysis with `> [!robot] K2B analysis` callouts so it's visibly K2B-originated. `origin: k2b-generate` stays accurate.
+- Keith vetoes by saying "stop", "no", "park that", "not now" etc. Absent a veto, the proposal proceeds.
+- This suspension is the corrective to the cycle where Keith keeps finding K2B's bugs, instructing fixes, and hitting the same bug class again.
+
+**Deciding which scope applies.** Ask: is the "idea" about **Keith's world** (his industry, his brand, his content, his investments, his domain expertise) or about **K2B itself** (architecture, memory system, skills, shipping discipline)? The two categories are disjoint. If a topic straddles both (example: "should K2B auto-draft LinkedIn posts?"), split it: the drafting *mechanism* is Scope B (propose freely), the *content* of the drafted post is Scope A (Keith's voice, Keith's ideas). When genuinely ambiguous, default to Scope A and ask.
 
 ## Content Pipeline
 
@@ -278,7 +292,9 @@ depends-on: [slug1, slug2]  # optional
 up: "[[index]]"
 ```
 
-Every feature spec must define `mvp:` -- the smallest version that delivers value. Build that first.
+Every feature spec must define `mvp:` as a **binary named-bug test**: a specific user-visible problem that must die, with a pass/fail criterion written BEFORE any code is written. The doctor-phone test in [[feature_washing-machine-memory]] line 84 is the template -- named bug, numbered pass conditions, single binary verdict.
+
+**Features without a binary MVP test cannot be marked `shipped`.** `/ship` refuses the status transition if the `mvp:` field is absent, vague ("improve memory"), or describes a deliverable instead of a dead-bug condition ("ship the classifier" is not a bug-death test). The enforcement lives in the k2b-ship skill body at step 6 "MVP test gate." This rule exists to prevent the "shipped at 20% surface tweak" pattern that let `canonical-memory`, `session-end-capture`, and `pipeline-hardening` all ship while the doctor-phone bug they were meant to prevent stayed alive for five days. Added 2026-04-22 (L-2026-04-22-007).
 
 For multi-ship features, include a Shipping Status table and adopt the phase gate pattern from [[project_minimax-offload]]: `/observe` runs as the primary gate between ships, Codex adversarial review drafts the next spec, Keith makes the go/no-go decision.
 
