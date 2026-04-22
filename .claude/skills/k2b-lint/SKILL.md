@@ -168,6 +168,25 @@ Add two counters to the structured artifact frontmatter:
 - `memory-missing-pointers: N` (count of unresolved `[text](path)` links)
 - `memory-line-cap-warnings: N` (0, 1, or 2 depending on which files overflowed)
 
+### 14. Research Without Delivery Commitment (feature_k2b-integrated-loop Ship 1)
+
+Flags any `raw/research/*.md` note older than 30 days whose frontmatter has `follow-up-delivery: null` or no `follow-up-delivery:` field. Prevents the research-as-delivery failure mode (R1 in the 2026-04-22 root-cause diagnosis): a research note landed but never named the feature it commits to.
+
+Run:
+
+```bash
+~/Projects/K2B/scripts/loop/lint-research-delivery.sh
+```
+
+Read-only, exits 0. Prints one line per flagged note: `filename (age N days, follow-up-delivery missing/null)`.
+
+Emit findings into the inline report's `## Content Pipeline` section and the structured artifact's `## Research Without Delivery (Check #14)` section. Also surfaced by the session-start loop dashboard (top 3 oldest).
+
+Fix pathways Keith picks from when the lint flags a note:
+- `[l]ink feature` at the dashboard -> edit the note's frontmatter `follow-up-delivery:` to the feature slug.
+- Mark purely informational -> set `follow-up-delivery: none`.
+- Parked indefinitely -> move to an archive folder.
+
 ## Output Format
 
 Every lint run produces two artifacts:

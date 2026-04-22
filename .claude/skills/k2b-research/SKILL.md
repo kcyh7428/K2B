@@ -317,6 +317,7 @@ type: research-briefing
 origin: k2b-generate
 source: "[Title](URL)"
 lens: "{Stack | Content | Worldview | Day-job | K2Bi | Growth | multi-lens}"
+follow-up-delivery: null  # feature slug this research commits to; "none" if purely informational; null while pending. /lint flags null/absent older than 30 days.
 up: "[[Home]]"
 ---
 
