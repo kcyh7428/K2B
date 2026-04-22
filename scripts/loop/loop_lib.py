@@ -80,3 +80,23 @@ def parse_candidates(path: Path) -> List[Candidate]:
 
     flush()
     return items
+
+
+_LID_PATTERN = re.compile(
+    r"^### (L-(?P<date>\d{4}-\d{2}-\d{2})-(?P<num>\d{3}))\b", re.MULTILINE
+)
+
+
+def allocate_next_lid(learnings_path: Path, date_str: str) -> str:
+    """Return the next unused L-YYYY-MM-DD-NNN for the given date.
+
+    Scans learnings for existing L-IDs matching date_str, returns the
+    successor of the max NNN. Missing file -> start at 001.
+    """
+    max_num = 0
+    if learnings_path.exists():
+        text = learnings_path.read_text(encoding="utf-8")
+        for m in _LID_PATTERN.finditer(text):
+            if m.group("date") == date_str:
+                max_num = max(max_num, int(m.group("num")))
+    return f"L-{date_str}-{max_num + 1:03d}"
