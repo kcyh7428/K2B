@@ -57,19 +57,27 @@ def parse_candidates(path: Path) -> List[Candidate]:
         if current_header is None:
             return
         rule = current_header["rule"].strip()
+        severity = current_header["sev"]
+        area = current_header["area"].strip()
         evidence = " ".join(current_evidence).strip()
-        item_id = hashlib.sha256(rule.encode("utf-8")).hexdigest()[:8]
+        # Hash the full candidate payload so two items with identical rule
+        # text but different severity/area/evidence still get distinct IDs.
+        payload = f"{severity}|{area}|{rule}|{evidence}"
+        item_id = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
         items.append(
             Candidate(
                 item_id=item_id,
-                severity=current_header["sev"],
-                area=current_header["area"].strip(),
+                severity=severity,
+                area=area,
                 rule=rule,
                 evidence=evidence,
             )
         )
 
     for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
         header = _CANDIDATE_HEADER.match(line)
         if header:
             flush()
@@ -80,6 +88,13 @@ def parse_candidates(path: Path) -> List[Candidate]:
         if ev and current_header is not None:
             current_evidence.append(ev.group("ev"))
             continue
+        # Any non-blank line that is neither a valid candidate header nor an
+        # evidence continuation for a pending candidate is malformed. Freeze
+        # the pipeline loudly rather than silently dropping data.
+        raise ValueError(
+            f"observer-candidates parse error in {path}: "
+            f"unexpected line under '## Candidate Learnings' -- {line!r}"
+        )
 
     flush()
     return items

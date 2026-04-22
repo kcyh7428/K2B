@@ -49,4 +49,40 @@ if [ "$remaining" != "0" ]; then
   exit 1
 fi
 
+# MEDIUM-4 regression: duplicate --accept on same index must NOT produce duplicate writes.
+TMP2="$(mktemp -d)"
+trap 'rm -rf "$TMP" "$TMP2"' EXIT
+cp "$FIXTURE/observer-candidates.md" "$TMP2/observer-candidates.md"
+cp "$FIXTURE/self_improve_learnings.md" "$TMP2/self_improve_learnings.md"
+mkdir -p "$TMP2/observations.archive"
+K2B_LOOP_CANDIDATES="$TMP2/observer-candidates.md" \
+K2B_LOOP_LEARNINGS="$TMP2/self_improve_learnings.md" \
+K2B_LOOP_ARCHIVE_DIR="$TMP2/observations.archive" \
+K2B_LOOP_DATE=2026-04-23 K2B_LOOP_ACTOR=keith K2B_LOOP_OBSERVER_RUN=test \
+"$ROOT/scripts/loop/loop-apply.sh" --accept 1 --accept 1 >/dev/null
+dup_lids=$(grep -cE '^### L-2026-04-23-' "$TMP2/self_improve_learnings.md")
+if [ "$dup_lids" != "1" ]; then
+  echo "FAIL MEDIUM-4: duplicate --accept 1 --accept 1 produced $dup_lids learnings (expected 1)"
+  exit 1
+fi
+
+# MEDIUM-4 regression: cross-action conflict must exit 2 without mutations.
+TMP3="$(mktemp -d)"
+trap 'rm -rf "$TMP" "$TMP2" "$TMP3"' EXIT
+cp "$FIXTURE/observer-candidates.md" "$TMP3/observer-candidates.md"
+cp "$FIXTURE/self_improve_learnings.md" "$TMP3/self_improve_learnings.md"
+mkdir -p "$TMP3/observations.archive"
+set +e
+K2B_LOOP_CANDIDATES="$TMP3/observer-candidates.md" \
+K2B_LOOP_LEARNINGS="$TMP3/self_improve_learnings.md" \
+K2B_LOOP_ARCHIVE_DIR="$TMP3/observations.archive" \
+K2B_LOOP_DATE=2026-04-23 K2B_LOOP_ACTOR=keith K2B_LOOP_OBSERVER_RUN=test \
+"$ROOT/scripts/loop/loop-apply.sh" --accept 2 --reject 2 >/dev/null 2>&1
+conflict_exit=$?
+set -e
+if [ "$conflict_exit" != "2" ]; then
+  echo "FAIL MEDIUM-4: cross-action conflict expected exit 2, got $conflict_exit"
+  exit 1
+fi
+
 echo "PASS: loop-apply.test.sh"

@@ -152,3 +152,67 @@ def test_archive_reject_appends_without_clobber(tmp_path):
     target = archive_dir / "rejected-2026-04-23.jsonl"
     lines = target.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
+
+
+# --- Codex HIGH-3 regression: parse errors are blocking invariants ---
+
+
+def test_parse_candidates_raises_on_malformed_line(tmp_path):
+    bad = tmp_path / "observer-candidates.md"
+    bad.write_text(
+        "## Candidate Learnings\n"
+        "- [high] workflow: a valid header\n"
+        "  Evidence: ok\n"
+        "garbage line that is neither header nor evidence\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="parse error"):
+        loop_lib.parse_candidates(bad)
+
+
+def test_parse_candidates_still_accepts_blank_lines(tmp_path):
+    """Blank lines between items are normal observer output and must not error."""
+    good = tmp_path / "observer-candidates.md"
+    good.write_text(
+        "## Candidate Learnings\n"
+        "- [high] workflow: first rule\n"
+        "  Evidence: one\n"
+        "\n"
+        "- [medium] preferences: second rule\n"
+        "  Evidence: two\n",
+        encoding="utf-8",
+    )
+    items = loop_lib.parse_candidates(good)
+    assert len(items) == 2
+
+
+# --- Codex MEDIUM-5 regression: item_id hashes the full payload ---
+
+
+def test_item_id_differs_when_severity_differs(tmp_path):
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings\n"
+        "- [high] workflow: identical rule text\n"
+        "  Evidence: A\n"
+        "- [medium] workflow: identical rule text\n"
+        "  Evidence: A\n",
+        encoding="utf-8",
+    )
+    items = loop_lib.parse_candidates(f)
+    assert len(items) == 2
+    assert items[0].item_id != items[1].item_id
+
+
+def test_item_id_differs_when_evidence_differs(tmp_path):
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings\n"
+        "- [high] workflow: identical rule text\n"
+        "  Evidence: A\n"
+        "- [high] workflow: identical rule text\n"
+        "  Evidence: B\n",
+        encoding="utf-8",
+    )
+    items = loop_lib.parse_candidates(f)
+    assert items[0].item_id != items[1].item_id

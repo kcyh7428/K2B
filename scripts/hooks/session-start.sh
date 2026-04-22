@@ -56,16 +56,31 @@ if [ -f "$wiki_index" ]; then
 fi
 
 # --- 3. K2B loop dashboard (observer candidates + review + research-delivery) ---
-# Replaces the bare observer-candidates dump. The dashboard numbers items with
-# stable content-hash IDs so Claude can route one-word accept/reject/defer
-# tokens back to scripts/loop/loop-apply.sh before the first prompt response.
-dashboard_output="$("$K2B/scripts/loop/loop-render-dashboard.sh" 2>/dev/null || true)"
-if [ -n "$dashboard_output" ]; then
+# Replaces the bare observer-candidates dump. The dashboard numbers observer
+# candidates with stable content-hash IDs so Claude can route one-word
+# accept/reject/defer tokens back to scripts/loop/loop-apply.sh before the
+# first prompt response. Review/research items appear for awareness only in
+# Ship 1 (routing is observer-only; Ship 2 extends routing).
+# Silent degradation is forbidden per L-2026-04-22-001: if the renderer
+# errors, surface the failure loudly instead of hiding it.
+dashboard_stderr="$(mktemp)"
+dashboard_output="$("$K2B/scripts/loop/loop-render-dashboard.sh" 2>"$dashboard_stderr")" || dashboard_exit=$?
+dashboard_exit="${dashboard_exit:-0}"
+
+if [ "$dashboard_exit" -ne 0 ]; then
+  output+="## K2B LOOP DASHBOARD -- HOOK DEGRADED"$'\n'
+  output+="Renderer exited $dashboard_exit. Observer candidates, review queue, and stale research are not being surfaced."$'\n'
+  output+="stderr:"$'\n'
+  output+="$(cat "$dashboard_stderr" 2>/dev/null || true)"$'\n\n'
+elif [ -n "$dashboard_output" ]; then
   output+="$dashboard_output"$'\n\n'
-  output+="LOOP ROUTING INSTRUCTION: If Keith's first message contains tokens matching"$'\n'
-  output+="the grammar above (a N / r N / d N), call scripts/loop/loop-apply.sh with the"$'\n'
-  output+="translated --accept N / --reject N / --defer N flags before any other action."$'\n\n'
+  output+="LOOP ROUTING INSTRUCTION (Ship 1): observer candidates only are routable."$'\n'
+  output+="If Keith's first message contains tokens matching the grammar above (a N / r N / d N),"$'\n'
+  output+="call scripts/loop/loop-apply.sh with the translated --accept N / --reject N / --defer N"$'\n'
+  output+="flags before any other action. Review/research items listed below the observer section"$'\n'
+  output+="are informational in Ship 1; process them with /review or /lint, not the loop grammar."$'\n\n'
 fi
+rm -f "$dashboard_stderr"
 
 # --- 4. Load active rules ---
 active_rules=$(find -L ~/.claude/projects/ -name "active_rules.md" -type f 2>/dev/null | head -1)

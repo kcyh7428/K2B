@@ -88,37 +88,35 @@ def main() -> int:
     lines: list[str] = []
     lines.append(f"## K2B LOOP DASHBOARD -- {today.isoformat()}")
     lines.append("")
-    lines.append("Routing grammar (a N / r N / d N):")
-    lines.append("  a N = ACCEPT item N (apply routing)")
-    lines.append("  r N = REJECT item N (archive)")
-    lines.append("  d N = DEFER item N (leave for next session)")
+    lines.append("Routing grammar (a N / r N / d N) -- observer candidates only in Ship 1:")
+    lines.append("  a N = ACCEPT item N (append L-ID to learnings, remove from candidates)")
+    lines.append("  r N = REJECT item N (archive to observations.archive, remove from candidates)")
+    lines.append("  d N = DEFER item N (leave for next session; no-op in Ship 1)")
     lines.append(
         "Claude will call scripts/loop/loop-apply.sh with your choices before the next prompt."
     )
     lines.append("")
 
-    idx = 0
     if candidates:
-        lines.append(f"### Observer candidates ({len(candidates)})")
-        for cand in candidates:
-            idx += 1
+        lines.append(f"### Observer candidates ({len(candidates)}) -- ROUTABLE")
+        for i, cand in enumerate(candidates, start=1):
             lines.append(
-                f"  [{idx}] [{cand.severity}] {cand.item_id} · {cand.area} · {cand.rule}"
+                f"  [{i}] [{cand.severity}] {cand.item_id} · {cand.area} · {cand.rule}"
             )
         lines.append("")
 
     if reviews:
-        lines.append(f"### Review queue ({len(reviews)})")
+        lines.append(f"### Review queue ({len(reviews)}) -- process with /review")
         for p in reviews:
-            idx += 1
-            lines.append(f"  [{idx}] {p.name}")
+            lines.append(f"  - {p.name}")
         lines.append("")
 
     if researches:
-        lines.append(f"### Research without delivery link ({len(researches)})")
+        lines.append(
+            f"### Research without delivery link ({len(researches)}) -- edit frontmatter or process with /lint"
+        )
         for p, age in researches:
-            idx += 1
-            lines.append(f"  [{idx}] {p.name} (age {age} days)")
+            lines.append(f"  - {p.name} (age {age} days)")
         lines.append("")
 
     print("\n".join(lines))

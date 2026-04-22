@@ -55,8 +55,29 @@ def main() -> int:
             sys.exit(2)
         return items[idx - 1]
 
-    accepted = [pick(i) for i in args.accept]
-    rejected = [pick(i) for i in args.reject]
+    # Dedupe within each action and reject cross-action conflicts -- routing
+    # the same candidate twice would produce duplicate learnings / duplicate
+    # archive lines because the remove step runs once at the end.
+    accept_idx = list(dict.fromkeys(args.accept))  # preserves first-seen order
+    reject_idx = list(dict.fromkeys(args.reject))
+    defer_idx = list(dict.fromkeys(args.defer))
+
+    seen: dict[int, str] = {}
+    for idx, action in (
+        [(i, "accept") for i in accept_idx]
+        + [(i, "reject") for i in reject_idx]
+        + [(i, "defer") for i in defer_idx]
+    ):
+        prior = seen.get(idx)
+        if prior and prior != action:
+            sys.stderr.write(
+                f"loop-apply: index {idx} cannot be both {prior} and {action}\n"
+            )
+            sys.exit(2)
+        seen[idx] = action
+
+    accepted = [pick(i) for i in accept_idx]
+    rejected = [pick(i) for i in reject_idx]
 
     for cand in accepted:
         lid = loop_lib.append_learning(
