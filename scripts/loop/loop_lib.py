@@ -6,6 +6,7 @@ target files. Consumers: scripts/loop/loop_apply.py, loop_render.py.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -157,3 +158,70 @@ def rewrite_candidates_without(path: Path, remove_ids: Iterable[str]) -> None:
 
     new_text = text[: m.start()] + new_section + text[m.end():]
     _atomic_write(path, new_text)
+
+
+_LEARNING_TEMPLATE = """\
+### {lid}
+distilled-rule: "{rule}"
+- **Area:** {area}
+- **Distilled rule:** {rule}
+- **Learning:** {rule}
+- **Context:** Observer run {observer_run}, {severity}-confidence candidate learning auto-applied via session-start dashboard. Evidence: {evidence}
+- **Reinforced:** 1
+- **Confidence:** {severity}
+- **Date:** {date_str}
+- **Source:** observer-candidates (auto-applied {date_str} via session-start dashboard)
+"""
+
+
+def append_learning(
+    learnings_path: Path,
+    cand: Candidate,
+    *,
+    date_str: str,
+    observer_run: str,
+) -> str:
+    """Append a new L-ID entry for the candidate. Returns allocated L-ID."""
+    lid = allocate_next_lid(learnings_path, date_str)
+    block = _LEARNING_TEMPLATE.format(
+        lid=lid,
+        rule=cand.rule,
+        area=cand.area,
+        severity=cand.severity,
+        evidence=cand.evidence or "(no evidence recorded)",
+        date_str=date_str,
+        observer_run=observer_run,
+    )
+    existing = learnings_path.read_text(encoding="utf-8") if learnings_path.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    if existing and not existing.endswith("\n\n"):
+        existing += "\n"
+    new_text = existing + block
+    _atomic_write(learnings_path, new_text)
+    return lid
+
+
+def archive_reject(
+    archive_dir: Path,
+    cand: Candidate,
+    *,
+    date_str: str,
+    actor: str,
+) -> None:
+    """Append a reject record to observations.archive/rejected-YYYY-MM-DD.jsonl."""
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / f"rejected-{date_str}.jsonl"
+    record = {
+        "item_id": cand.item_id,
+        "severity": cand.severity,
+        "area": cand.area,
+        "rule": cand.rule,
+        "evidence": cand.evidence,
+        "rejected": f"{actor} {date_str}",
+    }
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    with target.open("a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
