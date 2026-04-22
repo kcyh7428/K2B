@@ -2,6 +2,46 @@
 
 ---
 
+## 2026-04-23 -- K2B Integrated Loop Ship 1 -- session-start dashboard + auto-apply + research-delivery-link
+
+**Commits:** `ad0259f..e8d1e50` (11 commits; 10 feature + 1 Codex fix)
+
+**What shipped:** Ship 1 of `feature_k2b-integrated-loop`, the feature that turns the 30 loose skills into a machine. Three pieces delivered in one ship: (1) session-start hook renders a K2B LOOP DASHBOARD that numbers observer candidates with stable 8-hex content-hash IDs (sha256 of `severity|area|rule|evidence`) so Keith can respond with one-word `a N / r N / d N` tokens; (2) `scripts/loop/loop-apply.sh` (bash wrapper under flock with macOS mkdir fallback) routes `--accept N --reject N --defer N` actions by calling `scripts/loop/loop_apply.py` which uses the shared `loop_lib.py` primitives (parse, L-ID allocate, atomic rewrite via tempfile+os.replace+fsync, append_learning with `Source: observer-candidates (auto-applied YYYY-MM-DD via session-start dashboard)` tag, archive_reject as JSONL); (3) research-requires-delivery-link rule adds `follow-up-delivery: null` to the k2b-research SKILL.md frontmatter template + a new `scripts/loop/lint-research-delivery.sh` that flags raw/research/*.md > 30 days with null/absent delivery link, wired into k2b-lint SKILL.md as Check #14. Dashboard routing grammar is observer-only in Ship 1 by design; review/research items display for awareness and process via /review or /lint.
+
+**Named bug killed (binary MVP 5/5):** observer candidates no longer rot unread. Reproduction: copy the 5-candidate fixture at `tests/fixtures/loop-mvp/observer-candidates.md` (frozen from 2026-04-22 21:44 run) + baseline `self_improve_learnings.md`; `scripts/loop/loop-apply.sh --accept 1 --accept 2 --accept 3 --reject 4 --reject 5`; verify (gate 1) 3 new `L-2026-04-23-00N` entries with `Source:` tag, (gate 2) 2 archive lines with `"rejected": "keith 2026-04-23"`, (gate 3) 0 remaining candidates, (gate 4) no duplicate L-IDs, (gate 5) dashboard shows `[1]..[5]` before routing. `tests/loop/loop-mvp.test.sh` runs this automatically; final run `BINARY MVP: SHIP (5/5 gates passed)`.
+
+**Codex review (Checkpoint 2 via codex:codex-rescue subagent, manual invocation):** 3 HIGH + 3 MEDIUM + 2 LOW. Tier classifier hit a false tier-0 classification because it only sees working-tree diff, not the cumulative commit diff. All 3 HIGHs + 2 MEDIUMs fixed inline in `e8d1e50` before ship:
+- HIGH-1 session-start hook silent-fallback recreated the exact bug this feature kills -> now surfaces `## K2B LOOP DASHBOARD -- HOOK DEGRADED` block + stderr on any renderer failure
+- HIGH-2 dashboard numbered observer+review+research together but routing only handled observer -> numbering restricted to observer candidates; review/research display without routable indices in Ship 1
+- HIGH-3 `parse_candidates()` docstring promised ValueError on malformed lines but implementation silently skipped them -> now raises per L-2026-04-22-001 (parse errors as blocking invariants). Blank lines still accepted.
+- MEDIUM-4 duplicate `--accept N --accept N` produced duplicate learnings -> dedupes within action and rejects cross-action conflicts with exit 2
+- MEDIUM-5 item_id hashed only rule text -> now hashes full payload so identical-headline candidates with different severity/area/evidence get distinct IDs
+
+Deferred (documented trade-offs, not blockers): MEDIUM-6 lint-memory.sh wiring (k2b-lint SKILL.md IS the real /lint entrypoint; Check #14 wired there via skill instructions), LOW-7 macOS flock fallback stale-lock recovery (matches observer-mark-processed.sh pattern; drift here worse than pattern), LOW-8 parent-dir fsync on atomic writes (consistent with every other K2B script; cross-cutting durability upgrade is a separate question).
+
+**Pre-existing bug fixed as side-effect:** `scripts/hooks/session-start.sh` was exiting 1 whenever the K2Bi active_rules.md grep for `L-ID` pattern returned no matches. With `set -euo pipefail`, the no-match grep killed the whole pipeline under the `$(...)` subshell assignment, and Claude Code silently hid the failure. This was R1/R6 from the 2026-04-22 root-cause diagnosis -- observer output was being produced but the hook ate it before it reached Claude's context. Fixed with `|| true` and a rationale comment. Now the hook exits 0 every time and loop dashboard + observer candidates + review queue + pending-sync mailbox all surface reliably.
+
+**Feature status change:** `feature_k2b-integrated-loop` status:next -> status:shipped; moved from wiki/concepts/ top-level to wiki/concepts/Shipped/. Next Up lane now empty; WMM stays in In Progress (Ship 1 Commit 3-6 resumes next per the 2026-04-22 TLDR action list).
+
+**Root cause coverage after this ship** (from 2026-04-22 TLDR R1-R6):
+- R1 research-as-delivery: NOT FIXED -> PARTIAL (follow-up-delivery field + /lint #14 flag stale research)
+- R3 artifacts-mistaken-for-progress: PARTIAL -> PARTIAL (loop surfaces observer artifacts as actions, but /compile /insight /weave still produce artifacts)
+- R6 skills-proliferate-integration-never-ships: NOT FIXED -> IN PROGRESS (dashboard IS the integration surface; Ship 2 retires /autoresearch /improve /review as standalone commands after 2 weeks of clean loop operation)
+
+**Follow-ups (Ship 2 scope):**
+- Live observer wiring (fixture -> `wiki/context/observer-candidates.md`; format matches by construction)
+- Defer counter `(deferred 1x, 2x, 3x)` per spec line 129
+- Review/research routing in loop grammar (Ship 1 displays them; Ship 2 routes them)
+- Retire /autoresearch /improve /review as standalone commands (after 2 weeks)
+- Fold ADL Protocol from Hal Stack review into active rules
+
+**Key decisions (divergent from spec / pragmatic):**
+- Item ID hashing: spec said "stable content-hash IDs"; implementation hashes `severity|area|rule|evidence` so two candidates with the same rule text but different severity don't collide. Codex MEDIUM-5 caught the narrower original.
+- Routing grammar scope: spec described accept/reject/defer on all three sections; Ship 1 restricts to observer only. Review/research processing stays on /review and /lint respectively. Rationale: review accept requires k2b-vault-writer + k2b-compile orchestration which would bloat Ship 1; keeping the binary MVP gate achievable.
+- Subagent-driven Codex review because `scripts/review.sh` uses working-tree diff only; cumulative commit diff required a different reviewer invocation path. Plan to fold "post-commit review scope" into Ship 2 tiering if it recurs.
+
+---
+
 ## 2026-04-22 -- Research Lens Selector -- 6-lens review format for /research
 
 **Commit:** `5e2438b` feat(research): lens-based review format for /research <url> + /research deep synthesis
