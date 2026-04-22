@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-04-22 -- Research Lens Selector -- 6-lens review format for /research
+
+**Commit:** `5e2438b` feat(research): lens-based review format for /research <url> + /research deep synthesis
+
+**What shipped:** New shared `## Lens-Based Review Format` section in `.claude/skills/k2b-research/SKILL.md`. URL Deep Dive (`/research <url>`) and Deep Research Phase 5 synthesis (`/research deep <topic>`) both reference it. Replaces the old generic "Source / Key Takeaways / K2B Applicability / Implementation Ideas" output shape, which produced same-shaped summaries regardless of whether content was a Claude Code tool demo, a founder interview, a macro essay, or a recruiting-industry trend piece. The lens format leads with a verdict (`Substance` / `Clickbait` / `Partial` / `Gated` / `Hype`) and stakes one claim per detected lens. Six lenses: Stack (dev tooling), Content (founder interviews, creator AI), Worldview (macro / AGI / policy), Day-job (recruiting / TA), K2Bi (trading), Growth (exec productivity). Each lens has its own already-have anchor (K2B harness, LinkedIn lane, concepts, Signhub+TalentSignals, K2Bi tickers/theses/data-sources, active-motivations) and its own fixed stake-a-claim options. Universal checks (verdict, gated flag, novelty, skepticism) plus a motivations pre-check against `active-motivations.md` run on every review. K2Bi lens produces numbered candidate lists (tickers / theses / data sources / regime signals) that stay in K2B-Vault; Keith copies items to K2Bi-Vault manually. ~180 lines added, ~85 replaced. `/research videos`, `/research notebook ask`, and regular topic mode are unchanged per scope.
+
+**Codex review:** Tier 3 via `scripts/review.sh diff --primary codex --wait`. Codex auto-skipped by the runner because of a pre-existing `plans/Parked/` directory that triggers EISDIR on Codex's working-tree scan; MiniMax-M2.7 fallback ran in 124s and returned NEEDS-ATTENTION with 9 findings (2 HIGH, 5 MEDIUM, 2 LOW). Author triage: **2 HIGH judged false alarms** (#1 multi-lens verdict collision -- verdict categories are properties of the source not the lens; #2 K2Bi cross-vault via k2b-compile -- k2b-compile's write domain does not include K2Bi-Vault). **1 MEDIUM is a false positive** (#7 cites lines 656-660 which are not in the diff). **3 MEDIUMs are cosmetic or out of scope** (#3 K2Bi skepticism location already separated by output template; #4 hardcoded phase text drifts slowly, /observe surfaces; #5 motivation pre-check staleness applies vault-wide, not just research). **1 MEDIUM covered by multi-lens fallback** (#6 classifier tiebreaker). **2 LOWs** (#8, #9) are nice-to-have follow-ups. All 9 findings deferred per author judgment with rationale in the commit body. Log at `.code-reviews/2026-04-22T13-46-27Z_8300c9.log`.
+
+**Feature status change:** feature_research-lens-selector status designed -> shipped. File moved from `K2B-Vault/wiki/concepts/` to `K2B-Vault/wiki/concepts/Shipped/`. Added to `wiki/concepts/index.md` Shipped lane; Entries count 24 -> 25. No lane advancement for In Progress / Next Up -- the feature was designed-and-shipped in one session, bypassing the usual Next Up staging.
+
+**Follow-ups:**
+- Re-examine findings #6 (classifier tiebreaker) and #9 (Conflicted verdict option) after first 2-3 real uses of the lens format. Promote to a follow-up ship if either pattern shows up in practice.
+- Refactor #4 (hardcoded "Phase 3.6 as of 2026-04-22") to read from K2Bi's Resume Card if the drift starts affecting output quality.
+- Shipped-lane inline row count now 14 (over the "recent 10" soft cap per CLAUDE.md). Pre-existing drift; separate cleanup task, not blocking.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Rejected cross-vault K2Bi handoff (inbox folder in K2Bi-Vault that `/continue k2b investment` would consume). Keith's call: "don't over engineer it, just keep things in K2B, I can easily copy to K2Bi if I have to." Investment-lens output stays in K2B-Vault as a regular research note; Keith cherry-picks items to K2Bi-Vault manually. Simpler, no cross-repo plumbing, fewer failure modes.
+- Rejected automatic "seed N" action that would create K2Bi vault stubs on reply. Same rationale -- candidate lists in the review note are sufficient; Keith drives the vault writes himself.
+- Scoped down from initial 6-mode coverage (URL + deep + notebook-ask + topic + videos + videos-notebook-ask) to just URL + deep-synthesis. Notebook ask and topic mode deferred per explicit out-of-scope call; videos stays untouched because its output shape (filtered video list) does not map to the lens review format.
+- Tier 3 was triggered because the classifier saw 12 "changed" files from untracked `plans/Parked/` + `plans/Shipped/` directories (pre-existing, not mine). Actual tracked diff was 1 file. Running Tier 3 anyway was fail-safe -- the review quality is the same either way, just more thorough.
+
+---
+
+
+
 ## 2026-04-22 -- Washing Machine Memory Ship 1 Commit 2
 
 **Commit:** `fc2a10f` feat(washing-machine): ship 1 commit 2 -- embed-index + retrieve + 14 TDD tests
