@@ -4,6 +4,27 @@
 
 
 
+## 2026-04-22 -- deploy-to-mini auto-detect rewrite (rsync checksum, not git diff)
+
+**Commit:** `6b35844` fix(deploy-to-mini): rsync-checksum detection replaces fragile git-diff
+
+**What shipped:** `scripts/deploy-to-mini.sh` `auto` mode now detects what needs syncing by running `rsync -acn --itemize-changes` per category against the actual Mini target, using the same include/exclude rules each category's real sync function uses. The old `git diff HEAD` -> `git diff HEAD~1 HEAD` fallback missed the earlier commit's files on any two-commit ship (the standard k2b-ship pattern: code commit + follow-up devlog commit). Concrete failure hit 2026-04-22 on `6617f53`+`d0b1f4e` where `auto` reported "Changes detected but none in syncable categories. DEVLOG.md" while real skills+scripts drift sat un-synced on the Mini. Rewrite also hardens failure semantics: rsync errors abort the script (exit 1) with a hint toward manual bootstrap, rather than being swallowed as "no changes." Added 8 TDD test scenarios in `tests/deploy-to-mini.test.sh` covering single/two/three-commit ships, no-change, DEVLOG-only drift (the exact 2026-04-22 bug), excluded node_modules, brand-new files, and the P1 fail-loud regression. Env hooks (`K2B_LOCAL_BASE`, `K2B_RSYNC_TARGET_PREFIX`, `K2B_DETECT_ONLY`) let tests drive the detector against local fixture trees without SSH.
+
+**Codex review:** Tier 2 (scripts/ change, touches shared deploy path). Two adversarial passes via `scripts/review.sh working-tree --wait`. Pass 1 (`.code-reviews/2026-04-22T07-29-29Z_7ffe16.log`) found P1: `rsync_has_changes` swallowed all rsync errors with `2>/dev/null || true`, so SSH-succeeds-but-rsync-fails would look identical to "no changes" and let `auto` silently ship without deploying. Fixed by capturing exit code + stderr and calling `exit 1` on failure; added regression test scenario 8. Pass 2 (`.code-reviews/2026-04-22T07-34-11Z_195692.log`) flagged two P2s: (a) deletion-only top-level docs skipped via `-f` guard, (b) freshly-provisioned-Mini first-deploy fails at detection time. Both accepted as non-regressions -- (a) matches existing sync_skills doc-loop `-f` guard behavior, (b) is pre-existing in sync_skills anyway. Added a user hint pointing at manual `mkdir ~/Projects/K2B` bootstrap for (b). Also moved the SSH reachability check ahead of detection so unreachable-Mini fails loud instead of silently reporting "no changes."
+
+**Feature status change:** `--no-feature` bug fix. No wiki/concepts/index.md lane move. This is infrastructure hardening of the sync path, not a tracked feature on the roadmap.
+
+**Follow-ups:**
+- First-deploy / reprovisioning flow for Mac Mini is still manual (mkdir project root, then `deploy all`). Consider a `--bootstrap` flag on `deploy-to-mini.sh` that creates the remote base dir before first sync. Low priority -- Keith's Mini has been running continuously since 2026-03-22.
+- Whole-category-root deletion (e.g. `rm -rf .claude/skills/`) is not propagated through `-d` guards. Matches existing sync behavior; acceptable edge case.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Picked rsync-checksum detection (user's option 2) over git-based walk-back or `.last-sync-ref` file because it is the only option that is correct under parallel-session concurrency where git history can diverge between MacBook and Mini. Content comparison is the source of truth regardless of how many commits / branches / merges led to the current state.
+- Ran /ship from a worktree (`claude/dazzling-goldberg-d8ef74`) rather than merging into main first. Pushed via `git push origin HEAD:main` (fast-forward) instead of the skill's literal `git push origin main` step. This is a mechanical adjustment for worktree isolation; the skill body assumes main-branch operation.
+- Added env hooks (`K2B_LOCAL_BASE`, `K2B_RSYNC_TARGET_PREFIX`, `K2B_DETECT_ONLY`) purely for testability. Not documented for Keith to use directly -- they exist so tests can drive the detector against local fixture trees without needing a real Mini + SSH.
+
+---
+
 ## 2026-04-21 -- MiniMax offload rescope to v2 + Washing Machine handoff
 
 **Commit:** `828559e` docs: rescope minimax-offload to v2 consolidated handoff
