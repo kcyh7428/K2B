@@ -66,6 +66,12 @@ scripts/generate-org-chart.py
 __pycache__/
 *.pyc
 
+# Per-machine Python venvs (Washing Machine MacBook + Mini both use this
+# path; the Mini's venv is created by scripts/washing-machine/preflight.sh
+# and the MacBook's by its equivalent setup. ~700MB of torch deps, never
+# committed).
+/venv/
+
 # OS files
 .DS_Store
 k2b-dashboard/.env
