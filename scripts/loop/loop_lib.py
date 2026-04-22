@@ -6,10 +6,12 @@ target files. Consumers: scripts/loop/loop_apply.py, loop_render.py.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, Set
 
 
 @dataclass(frozen=True)
@@ -100,3 +102,58 @@ def allocate_next_lid(learnings_path: Path, date_str: str) -> str:
             if m.group("date") == date_str:
                 max_num = max(max_num, int(m.group("num")))
     return f"L-{date_str}-{max_num + 1:03d}"
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Atomic write via tempfile + os.replace. Caller holds any needed lock."""
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".tmp_{path.name}_", suffix=path.suffix or ".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def rewrite_candidates_without(path: Path, remove_ids: Iterable[str]) -> None:
+    """Rewrite observer-candidates.md omitting items whose id is in remove_ids.
+
+    Atomic. Preserves non-candidate sections (Summary, Detected Patterns).
+    """
+    remove_set: Set[str] = set(remove_ids)
+    if not remove_set:
+        return
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    items = parse_candidates(path)
+    kept = [it for it in items if it.item_id not in remove_set]
+
+    m = re.search(
+        r"(^## Candidate Learnings[^\n]*\n)(.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not m:
+        return
+    header = m.group(1)
+
+    lines = [header]
+    for it in kept:
+        lines.append(f"- [{it.severity}] {it.area}: {it.rule}\n")
+        if it.evidence:
+            lines.append(f"  Evidence: {it.evidence}\n")
+    new_section = "".join(lines)
+    if not (m.end() < len(text) and text[m.end():].startswith("\n")):
+        new_section = new_section.rstrip("\n") + "\n\n"
+
+    new_text = text[: m.start()] + new_section + text[m.end():]
+    _atomic_write(path, new_text)

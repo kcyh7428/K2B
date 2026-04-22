@@ -51,3 +51,44 @@ def test_allocate_next_lid_skips_existing(tmp_path):
 
 def test_allocate_next_lid_handles_missing_file(tmp_path):
     assert loop_lib.allocate_next_lid(tmp_path / "nope.md", "2026-04-22") == "L-2026-04-22-001"
+
+
+def test_rewrite_candidates_removes_specified_ids(tmp_path):
+    src = FIXTURE_DIR / "observer-candidates.md"
+    dst = tmp_path / "observer-candidates.md"
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    before = loop_lib.parse_candidates(dst)
+    assert len(before) == 5
+    remove_ids = {before[0].item_id, before[2].item_id}
+
+    loop_lib.rewrite_candidates_without(dst, remove_ids)
+
+    after = loop_lib.parse_candidates(dst)
+    assert len(after) == 3
+    assert {c.item_id for c in after}.isdisjoint(remove_ids)
+    # Kept items preserve original order
+    kept_rules = [c.rule for c in after]
+    assert kept_rules == [before[1].rule, before[3].rule, before[4].rule]
+
+
+def test_rewrite_candidates_noop_when_nothing_to_remove(tmp_path):
+    src = FIXTURE_DIR / "observer-candidates.md"
+    dst = tmp_path / "observer-candidates.md"
+    original = src.read_text(encoding="utf-8")
+    dst.write_text(original, encoding="utf-8")
+    loop_lib.rewrite_candidates_without(dst, set())
+    assert dst.read_text(encoding="utf-8") == original
+
+
+def test_rewrite_candidates_empties_section_when_all_removed(tmp_path):
+    src = FIXTURE_DIR / "observer-candidates.md"
+    dst = tmp_path / "observer-candidates.md"
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    items = loop_lib.parse_candidates(dst)
+    loop_lib.rewrite_candidates_without(dst, {c.item_id for c in items})
+    assert loop_lib.parse_candidates(dst) == []
+    remaining = dst.read_text(encoding="utf-8")
+    assert "## Candidate Learnings" in remaining
+    assert "## Summary" in remaining
