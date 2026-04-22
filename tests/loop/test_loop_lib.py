@@ -1,0 +1,35 @@
+"""Unit tests for scripts/loop/loop_lib.py."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from loop import loop_lib  # noqa: E402
+
+
+FIXTURE_DIR = ROOT / "tests" / "fixtures" / "loop-mvp"
+
+
+def test_parse_candidates_returns_five_items():
+    items = loop_lib.parse_candidates(FIXTURE_DIR / "observer-candidates.md")
+    assert len(items) == 5
+    assert items[0].severity == "high"
+    assert items[0].area == "workflow"
+    assert "parse errors" in items[0].rule.lower()
+    assert items[0].evidence  # non-empty
+
+
+def test_parse_candidates_assigns_stable_ids():
+    items = loop_lib.parse_candidates(FIXTURE_DIR / "observer-candidates.md")
+    ids = [it.item_id for it in items]
+    assert len(set(ids)) == 5  # all unique
+    assert all(len(i) == 8 and all(c in "0123456789abcdef" for c in i) for i in ids)
+
+    # Re-parsing yields same IDs (deterministic hash)
+    items2 = loop_lib.parse_candidates(FIXTURE_DIR / "observer-candidates.md")
+    assert [it.item_id for it in items2] == ids
