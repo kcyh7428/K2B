@@ -11,6 +11,7 @@ import {
 import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount, getKv, setKv } from './db.js'
 import { runAgent } from './agent.js'
 import { buildMemoryContext, saveConversationTurn, loadPreferenceProfile } from './memory.js'
+import { normalizationGate } from './washingMachine.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
@@ -145,6 +146,7 @@ async function handleMessage(
   if (!chatId) return
 
   let typingInterval: ReturnType<typeof setInterval> | undefined
+  let gatePromise: Promise<unknown> | undefined
 
   try {
     // Load preference profile and check for changes (hash persisted to KV for durability across restarts)
@@ -157,6 +159,19 @@ async function handleMessage(
       logger.info({ chatId }, 'Preference profile changed, reset agent session')
     }
     if (profileHash !== prevHash) setKv(kvKey, profileHash)
+
+    // Washing Machine Normalization Gate (text-only in Ship 1 -- photo/document
+    // wrappers are skipped here and handled by Ship 1B's VLM pipeline).
+    // Fire-and-forget: the Gate writes to the semantic shelf for FUTURE
+    // retrievals. In Ship 1 the current turn still reads from the legacy
+    // FTS path (buildMemoryContext), so the agent reply does not depend on
+    // gate completion. This avoids blocking the typing indicator on a slow
+    // classifier. Errors are logged at error level so silent data loss is
+    // visible in monitoring; the gate itself also logs per-failure.
+    gatePromise = normalizationGate(rawText).catch((err: unknown) => {
+      logger.error({ err: String(err), chatId }, 'normalizationGate threw; shelf row lost for this turn')
+      return undefined
+    })
 
     // Build memory context
     const memoryContext = await buildMemoryContext(chatId, rawText)
@@ -238,6 +253,14 @@ async function handleMessage(
     }
   } finally {
     if (typingInterval) clearInterval(typingInterval)
+    // Await the gate here so if it is still running when the reply has
+    // already been sent, the handler scope holds onto it instead of
+    // leaving a dangling promise. Zero added latency if already settled.
+    try {
+      if (gatePromise) await gatePromise
+    } catch {
+      // gatePromise already has its own catch; swallow the second wrap.
+    }
   }
 }
 

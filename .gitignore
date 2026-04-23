@@ -77,3 +77,6 @@ __pycache__/
 k2b-dashboard/.env
 k2b-dashboard/node_modules/
 k2b-dashboard/dist/
+
+# pytest transient cache
+.pytest_cache/
