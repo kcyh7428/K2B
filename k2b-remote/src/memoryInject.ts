@@ -25,6 +25,8 @@
  */
 
 import { spawn } from 'node:child_process'
+import { readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { logger } from './logger.js'
 import { K2B_PROJECT_ROOT } from './config.js'
@@ -63,9 +65,81 @@ const MAX_RETRIEVE_STDOUT_BYTES = 1_000_000
 // the spec (feature_washing-machine-memory.md) does not carry multi-user
 // isolation. Codex/MiniMax flags tracked in the Ship 1 Commit 4 devlog.
 
-// WASHING_MACHINE_PYTHON pins the venv path in production (preflight
-// exports it). Falls through to system python3 for dev / tests.
-const DEFAULT_PYTHON_BIN = process.env.WASHING_MACHINE_PYTHON ?? 'python3'
+// Resolve the washing-machine Python interpreter. Production writes
+// WASHING_MACHINE_PYTHON into ~/.config/k2b/washing-machine.env via
+// `scripts/washing-machine/preflight.sh`. pm2 captures its env at
+// process-start time and does NOT source shell dotfiles, so on Mac Mini
+// the k2b-remote process ran without WASHING_MACHINE_PYTHON set even
+// though the env file was present on disk. `python3` (the fallback at
+// the end of this chain) resolves to system Python, which lacks
+// sentence-transformers -- retrieve.py exits 3 and inject returns ''.
+// The 2026-04-23 Ship 1 MVP failure was exactly this: every Telegram
+// turn silently skipped memory inject. Reading the env file here closes
+// that gap without requiring a pm2 restart dance on every deploy.
+// Precedence: process.env > env file > 'python3'. System python3 is
+// kept as the final fallback for dev / CI where the env file is absent.
+//
+// Validation layer (MiniMax Checkpoint 2 HIGH-1 + HIGH-2, 2026-04-23):
+//   - Whitespace/empty values (e.g. `WASHING_MACHINE_PYTHON="   "`) are
+//     rejected and fall through. Without this guard the regex captured
+//     whitespace and spawn got a bogus command, failing opaquely via
+//     the graceful-degradation path.
+//   - The resolved path is existence-checked via statSync. A stale env
+//     file pointing at a deleted venv converts what would be an opaque
+//     ENOENT-inside-spawn into a clean fall-through to system python3.
+//     Exec-bit check via `(s.mode & 0o111) !== 0` -- a venv python that
+//     lost its exec bit would otherwise pass isFile() and fail opaquely
+//     with EACCES/ENOEXEC inside spawn. Folded round-2 HIGH-1. Not a
+//     command-injection threat model (single-user machine), just a
+//     failure-mode-distinguisher so operators can tell "no binary" from
+//     "binary with wrong perms".
+export function resolveWashingMachinePython(
+  envReader: (path: string) => string = (p) => readFileSync(p, 'utf-8'),
+  existsCheck: (path: string) => boolean = (p) => {
+    try {
+      const s = statSync(p)
+      // isFile + any exec bit (owner/group/other). A venv python binary
+      // missing its exec bit would otherwise pass isFile() and then
+      // fail EACCES/ENOEXEC inside spawn -- same opaque failure mode
+      // as a non-existent path. MiniMax Checkpoint 2 round-2 HIGH-1.
+      return s.isFile() && (s.mode & 0o111) !== 0
+    } catch {
+      return false
+    }
+  },
+): string {
+  const fromEnv = process.env.WASHING_MACHINE_PYTHON?.trim()
+  if (fromEnv) {
+    if (existsCheck(fromEnv)) return fromEnv
+    // process.env value points at a non-file path. Surface once (debug-
+    // adjacent), then fall through to env-file + python3 chain rather
+    // than handing spawn a path that will ENOENT opaquely.
+    logger.warn(
+      { fromEnv },
+      'resolveWashingMachinePython: process.env.WASHING_MACHINE_PYTHON does not exist; falling through',
+    )
+  }
+  try {
+    const envPath = resolve(homedir(), '.config/k2b/washing-machine.env')
+    const raw = envReader(envPath)
+    const match = raw.match(
+      /^\s*(?:export\s+)?WASHING_MACHINE_PYTHON\s*=\s*"?([^"\n]+?)"?\s*$/m,
+    )
+    const candidate = match?.[1]?.trim()
+    if (candidate) {
+      if (existsCheck(candidate)) return candidate
+      logger.warn(
+        { candidate, envPath },
+        'resolveWashingMachinePython: env-file path does not exist; falling through to system python3',
+      )
+    }
+  } catch {
+    // env file missing or unreadable -- fall through to system python3
+  }
+  return 'python3'
+}
+
+const DEFAULT_PYTHON_BIN = resolveWashingMachinePython()
 
 export interface InjectDeps {
   retrieveScript?: string
