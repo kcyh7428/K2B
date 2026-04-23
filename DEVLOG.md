@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-04-23 -- WMM Ship 1 Commit 4 -- raw-rows memory-inject + current-turn-race regression
+
+**Commit:** `248c027 feat(washing-machine): ship 1 commit 4 -- raw-rows memory-inject + race regression test`
+
+**What shipped:** Commit 4 of WMM Ship 1 -- the retrieval-side station. `k2b-remote/src/memoryInject.ts` (NEW) spawns `scripts/washing-machine/retrieve.py` and prepends top-K semantic-shelf rows under `[Memory context]`. `bot.ts handleMessage` swaps the call site from `buildMemoryContext(chatId, rawText)` to `injectMemoryFromShelves(rawText)`. `memory.ts` loses `buildMemoryContext`. `db.ts` loses `searchMemoriesFts`, `touchMemory`, `getRecentMemories` (the latter two had no remaining callers). The three `memories_fts` triggers are dropped via idempotent `DROP TRIGGER IF EXISTS` migrations; the virtual table itself is frozen and marked DEPRECATED in-schema with a comment pointing at Ship 4's eventual `DROP TABLE`. The `/memory` command's sort column switches to `created_at DESC` because `accessed_at` is now inert post-shelf (touchMemory was its sole writer).
+
+**Named bug killed (spec contract -- current-turn race):** facts in Telegram message N must NOT affect the agent's reply to message N. Regression test `src/memoryInject.test.ts` imports the real `normalizationGate` with a hung-classifier spawn mock (never emits close), fires it fire-and-forget like `bot.ts handleMessage` does, then calls `injectMemoryFromShelves` in parallel. Inject MUST resolve within 2 s while the gate is still in-flight -- proves structural decoupling, not just isolated inject behavior. If a future refactor reintroduces a shared promise / lock / shelf-write coordination between the two paths, the test fails. The 2026-04-23b contract (ratified after Codex Tier 3 on Commit 3) is now locked in at the test layer, not just spec prose.
+
+**Tests:** 40 pass, 2 skipped (vitest full suite in `k2b-remote/`). Up from 36 baseline: +4 from the new memoryInject.test.ts (happy path, empty input, bad JSON, exec failure, timeout, stdout byte cap, UTF-8 multi-byte Chinese cap, race, structural "retrieve-only spawns"). Typecheck clean. `npm run build` green.
+
+**Live smoke** (MacBook MBP M2 Pro, venv, real K2B-Vault shelf, index.db rebuilt locally): `injectMemoryFromShelves("whats my doctor phone")` returned `[Memory context]\n- 2026-04-01 | contact | person_Dr-Lo-Hak-Keung | ... | tel:2830 3709 | ...` at 9.3 s latency. Dr. Lo row surfaced end-to-end via retrieve.py exactly as Ship 1 MVP requires. Latency is 18x over the feature note's 0.5 s hybrid-retrieval budget because sentence-transformers cold-starts on every retrieve.py subprocess (~8 s reload of the MiniLM model). 15 s timeout carries Ship 1 MVP through; warm-daemon optimization is explicit Ship 1B follow-up per the code comment.
+
+**MiniMax-M2.7 review (Checkpoint 2 via `scripts/review.sh`, Codex plugin unreachable this session -- runner auto-fell-back):** 4 rounds, NEEDS-ATTENTION verdict each round; real findings folded inline in rounds 2/3/4 before commit:
+- Round 1 (9 findings): race test was structurally weak; `runRetrieve` had no stdout size cap; single-user scope undocumented; timeout deviation unflagged. FP dismissed: SQLite writes "orphaned" (/memory still reads), SIGKILL double-settle (same finished-latch as approved washingMachine.ts captureStdout), finally gate-await re-enters outer catch (gatePromise's .catch swallows at fire-time).
+- Round 2 (6 findings): `stdout.length` counts UTF-16 code units not bytes (switched to Buffer.byteLength w/ 1 MB cap + Chinese multi-byte test); redundant inner try/catch in bot.ts finally dropped. Dismissed: warm-daemon/TTL cache (Ship 1B scope), chatId threading (speculative multi-user), path-existence check (spawn ENOENT includes path).
+- Round 3 (3 findings): `/memory` command sort switched to `created_at DESC`; DEPRECATED comment added to `memories_fts` CREATE. Pre-existing out-of-scope: spin-wait in `acquireLockWithRetry` (inherited from canonical-memory, not touched by Commit 4).
+- Round 4 (4 findings): `accessed_at` column is now dead state -> DEPRECATED comment on `memories` table pointing at Ship 4 cleanup. Dismissed: `gatePromise` await needs meta-timeout (gate has internal bounded SIGKILL timeouts via captureStdout), multi-user prerequisite comment (already present), agent self-declare on inject failure (spec contract = graceful degrade to empty string).
+
+Stopped iteration after round 4 -- remaining findings were all architectural Ship 1B follow-ups or defensive belt-and-braces beyond the feature note's 0.5 s / 1.5 s latency budgets. Review logs: `.code-reviews/2026-04-23T13-22-10Z_1b679a.log`, `2026-04-23T13-27-19Z_4f7c1d.log`, `2026-04-23T13-31-43Z_652f36.log`, `2026-04-23T13-35-19Z_7eb2d2.log`.
+
+**Feature status change:** none. `feature_washing-machine-memory` stays `status: in-progress`. Ship 1 has 1 commit remaining (Commit 5 -- binary MVP verification). MVP gate runs there, not here.
+
+**Key decisions (divergent or worth capturing):**
+- Deleted `touchMemory` and `getRecentMemories` from db.ts -- minor scope creep vs the spec's "delete searchMemoriesFts" but these had `buildMemoryContext` as their only caller. Leaving them in would be dead-code rot.
+- Dropped `memories_fts` triggers via idempotent `DROP TRIGGER IF EXISTS` migration (Commit-4 interpretation of "stops receiving writes") rather than leaving them firing uselessly. Table itself kept for Ship 4.
+- 15 s retrieve timeout matches classifier timeout, well above the documented 0.5 s budget. Pragmatic choice: warm-daemon is a Ship 1B architectural change, and 15 s carries the MVP through on cold start. Documented in code + devlog; not silently drifting the spec.
+
+**Follow-ups (Commit 5 obligations + Ship 1B priors + pre-existing bugs):**
+- Commit 5: binary MVP `/ship` gate (feature spec line 84). Fresh Telegram session on Mac Mini, "Whats my doctor phone number", must return `2830 3709` with zero tool calls. Keith runs this manually after `/sync` lands this commit on the Mini.
+- Ship 1B: warm-daemon for retrieve.py / sentence-transformers (closes the 8 s cold-start -> ~0.2 s warm gap).
+- Pre-existing: `acquireLockWithRetry` in `k2b-remote/src/memory.ts:57-67` uses synchronous spin-wait. Should be `await new Promise(r => setTimeout(r, waitMs))`. Trivial one-liner, not mine to fix in Commit 4.
+
+**Deferred (from step 0a ownership-drift scan):** same 5 rules x 37 offenders as Commit 3 -- historical log entries in observation archives + policy-ledger legitimately reference the direct-append pattern from the pre-helper era. Not fix-now material.
+
+---
+
 ## 2026-04-23 -- WMM Ship 1 Commit 3 -- text-only Normalization Gate (sibling-authored) + Codex Tier 3 fix-up
 
 **Commits:** `f962c44` + `d9b58c5` (2 commits; sibling Claude Code session authored the Gate, this session split out an unrelated agent.ts model-pin + ran Codex Tier 3 + folded the HIGH anchor bug + MEDIUM validator hardening + spec amendment). Preceded by `19fd907 fix(k2b-remote): pin agent to claude-opus-4-7` (standalone, unrelated to WMM, split out to keep the Codex review surface clean).
