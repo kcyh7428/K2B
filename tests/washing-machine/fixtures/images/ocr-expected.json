@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "generated": "2026-04-24",
+    "purpose": "Per-image expected OCR fields for the Ship 1B OCR accuracy gate. scripts/washing-machine/ocr-accuracy-gate.py runs each image through minimax-vlm.sh and computes field-match accuracy (case-insensitive substring match on the OCR content). Corpus accuracy = mean of per-image accuracies. Exits 0 if corpus accuracy >= threshold.",
+    "notes": "The 5 images exercise: (1) the Dr. Lo card (Chinese + English), (2) an English-only card, (3) an English+Chinese mixed card with a female Chinese name, (4) a doctor card with traditional-Chinese honorific, (5) a minimal name+phone card. Threshold 0.80 is the Ship 1B binary gate."
+  },
+  "threshold": 0.80,
+  "images": {
+    "dr-lo-card.png": {
+      "fields": {
+        "name": "Dr. Lo Hak Keung",
+        "phone": "2830 3709",
+        "whatsapp": "9861 9017",
+        "role": "Urology",
+        "organization": "St. Paul's Hospital",
+        "address": "Eastern Hospital Road"
+      }
+    },
+    "synthetic-andrew.png": {
+      "fields": {
+        "name": "Andrew Shwetzer",
+        "phone": "9876 5432",
+        "email": "andrew@talentsignals.co",
+        "organization": "TalentSignals"
+      }
+    },
+    "synthetic-mei-ling.png": {
+      "fields": {
+        "name": "Chen Mei Ling",
+        "name_zh": "陳美玲",
+        "phone": "2811 2233",
+        "role": "Architect",
+        "organization": "MLA Design"
+      }
+    },
+    "synthetic-physio.png": {
+      "fields": {
+        "name": "Dr. Chan Wai Ming",
+        "name_zh": "陳偉明醫生",
+        "phone": "2567 1234",
+        "role": "Physiotherapist",
+        "organization": "Central Wellness"
+      }
+    },
+    "synthetic-minimal.png": {
+      "fields": {
+        "name": "James Lau",
+        "phone": "6123 4567"
+      }
+    }
+  }
+}
