@@ -2,6 +2,39 @@
 
 ---
 
+## 2026-04-23 -- WMM Ship 1 Commit 5 -- binary MVP verification + venv-python resolver fix
+
+**Commit:** `11f9188 feat(washing-machine): ship 1 commit 5 -- binary MVP verification + venv-python resolver fix`
+
+**What shipped:** Commit 5 of WMM Ship 1 -- the binary MVP gate + a deployment-gap fix that the gate itself uncovered. First live Telegram run ("Whats my doctor phone number" in a fresh session on Mac Mini) failed Condition 5: agent made 1 `mcp__obsidian__obsidian_simple_search` call before returning `2830 3709`, and the user prompt contained no `[Memory context]` block. pm2 err log pointed at the root cause -- `retrieve.py exited with code 3: sentence-transformers not importable`. pm2 on Mini captured its env at process-start time and had no `WASHING_MACHINE_PYTHON`, so `memoryInject.ts` fell through to system python3, retrieve.py couldn't load embeddings, and inject swallowed the error per its graceful-degradation contract. New `resolveWashingMachinePython()` reads `~/.config/k2b/washing-machine.env` as a fallback when `process.env` is empty, with validation guards (trim empty/whitespace values, existence-check via statSync, exec-bit check via `mode & 0o111`). Converts stale-env-file paths and non-executable binaries into a clean fall-through to system python3 rather than opaque ENOENT inside spawn. After rsync + pm2 restart, retest on Mini passed all 5 MVP conditions: Dr. Lo row on shelf (Condition 1), row auto-pinned by type=contact (Condition 2 by-construction -- decay code absent in Ship 1), fresh session with 3-entry JSONL (Condition 3), `[Memory context]` block at prompt index 9056 containing the Dr. Lo row verbatim (Condition 4), reply `Tel: 2830 3709` with `tool_use_count=0` (Condition 5).
+
+**Ship 1 MVP gate: PASSED all 5 conditions.** Per-condition evidence written into the feature note's `## Updates` section (the L-2026-04-22-007 MVP gate requires named conditions + concrete outcomes + artifact citations, not a bare "MVP test passed"). Session JSONLs archived at `Assets/evidence/wmm-ship1-commit5/{wmm-mvp-fail,wmm-mvp-pass}.jsonl` for post-hoc verification.
+
+**Tests:** 56 pass, 2 skipped (vitest full suite in `k2b-remote/`). Up from 40 baseline: +16 from resolveWashingMachinePython coverage. Test matrix covers env precedence (process.env > file > 'python3'), commented-out lines, quoted vs unquoted values, empty/whitespace values (HIGH-2 round 1), process.env path non-existence, env-file path non-existence (HIGH-1 round 1), non-executable binary (HIGH-1 round 2), non-ENOENT reader errors (LOW-2 round 3). Typecheck clean. `npm run build` green.
+
+**MiniMax Tier 3 adversarial review** (Codex primary unavailable -- `codex --scope working-tree would EISDIR on 'plans/Parked'`, runner auto-fell-back to MiniMax per `scripts/review.sh` contract): 3 rounds, APPROVE on round 3.
+- Round 1: HIGH-1 unvalidated path from env file + HIGH-2 empty-string WASHING_MACHINE_PYTHON silently passes to spawn + MEDIUM-3 env-file-path has no DI knob. Folded HIGH-1 (existence check) + HIGH-2 (trim guard). Dismissed MEDIUM-3 (speculative containerization scope; K2B is single-deploy MBP+Mini).
+- Round 2: UNPARSEABLE (exit 2, MiniMax response truncated mid-JSON at 135s; visible content showed HIGH-1 no-exec-bit-check + MEDIUM lazy-resolution + MEDIUM single-quoted-value regex + MEDIUM EACCES-vs-ENOENT distinction). Folded HIGH-1 exec-bit check. Dismissed: lazy resolution (pm2 restart on `/sync` handles env-file edits de-facto; lazy re-resolve would add per-call stat cost for a stable value), single-quoted values (`preflight.sh` only writes double-quoted so drift-only), EACCES vs ENOENT (single-user threat model -- the distinction matters for multi-tenant deployments, not K2B).
+- Round 3: APPROVE with LOW-1 stale doc comment ("No exec-bit check" after I added one) + LOW-2 missing non-ENOENT test coverage. Both folded inline.
+- Review logs: `.code-reviews/2026-04-23T14-05-36Z_7564da.log` (r1, 3 findings), `.code-reviews/2026-04-23T14-10-13Z_c3a607.log` (r2 unparseable), `.code-reviews/2026-04-23T14-14-32Z_633f07.log` (r3 APPROVE).
+
+**Feature status change:** none. `feature_washing-machine-memory` stays `status: in-progress`. Ship 1 MVP gate has passed but this is a multi-ship feature -- Ship 1B is next (VLM + Chinese-OCR ≥80% accuracy gate + Research Agent Plan/Reflection + pending-confirmation date-contradiction UX). Feature note is NOT moved to `Shipped/`. `wiki/concepts/index.md` In Progress row updated to note Ship 1 gate passed + Ship 1B is the active sub-scope going into Commit 6 and beyond.
+
+**Key decisions:**
+- Code fix over pm2-env-injection workaround. Pm2 `--update-env` with inline `WASHING_MACHINE_PYTHON` would have unblocked the MVP but leaves the deployment fragile (lost on any pm2 restart-without-env, silently rebroken on next `/sync` + pm2 restart). Code reads the canonical env file that `preflight.sh` already writes -- same trust root, durable across deployments.
+- 3 review rounds not 4. Round 3 APPROVE with 2 LOW findings was a natural stopping point; folding both LOWs and pushing without a round 4 avoids the diminishing-returns trap MiniMax tends to fall into (novel-but-minor nits every pass). The feature-note Updates entry documents every dismissed finding with a reason so the reviewer's history is visible even on a MiniMax-APPROVE verdict.
+- Validation layer scope drawn explicitly around single-user threat model. Exec-bit check earns its place because a venv python without exec bit is a real operational mis-config, not a hypothetical attacker. EACCES vs ENOENT log distinction rejected because it only matters across users; on K2B the process user owns `~/.config/k2b/`, so EACCES on reading its own config file is effectively impossible. Documenting the threat-model scope in the resolver's block comment keeps future-maintainers from re-debating the same dismissed findings.
+
+**Follow-ups:**
+- retrieve.py warm-daemon (Ship 1B follow-up per Commit 4 docstring): close the 8-11s sentence-transformers cold-start gap. Carries the full MVP path today because of the 15s timeout, but 18x over the feature spec's 0.5s hybrid-retrieval budget on every cold call.
+- Reviewer EISDIR on untracked `plans/Parked/` + `plans/Shipped/` blocks Codex primary -- cost one review round this ship. Operational fix: either gitignore those dirs or stage+commit the archive plans. Neither destructive.
+- MEDIUM lazy-resolution (round 2 dismissed): document pm2-restart requirement for env-file changes on `/sync`. Low-priority; K2B's deploy cycle handles it de-facto.
+- Pre-existing spin-wait in `acquireLockWithRetry` (noted in Commit 4 devlog, unchanged by Commit 5). Trivial one-liner, carries into Ship 1B or backlog.
+
+**Deferred (from step 0a ownership-drift scan):** 5 rules x 37 offenders, same historical archives as Commits 3/4. Expected drift in policy-ledger + wiki/log + observation archives; not fix-now material.
+
+---
+
 ## 2026-04-23 -- WMM Ship 1 Commit 4 -- raw-rows memory-inject + current-turn-race regression
 
 **Commit:** `248c027 feat(washing-machine): ship 1 commit 4 -- raw-rows memory-inject + race regression test`
