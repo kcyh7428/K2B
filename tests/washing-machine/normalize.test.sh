@@ -123,5 +123,107 @@ assert_eq "composability-tomorrow-plus-iso" "2026-04-02 is 2026-04-02" "$got"
 got="$(run_norm 2026-04-01 "2026-04-10 then next Friday")"
 assert_eq "composability-iso-then-next-friday" "2026-04-10 then 2026-04-03" "$got"
 
+# --- Ship 1B Test 13: OCR date vs message timestamp > 6 months → date_mismatch ---
+got="$(printf 'card captured' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json --ocr-date 2025-04-11 --message-ts 2026-04-01T19:25:00Z)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert 'date_mismatch' in reasons, reasons
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-date-mismatch detection\n  got: $got"
+fi
+
+# --- Ship 1B Test 14: OCR date within 6 months → no reason ---
+got="$(printf 'text' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json --ocr-date 2026-04-01 --message-ts 2026-04-02T10:00:00Z)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert reasons == [], reasons
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-no-contradiction-when-close\n  got: $got"
+fi
+
+# --- Ship 1B Test 15: text-only path (no OCR flags) → no confirmation reasons ---
+got="$(printf 'text' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert reasons == [], reasons
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-text-path-backward-compat\n  got: $got"
+fi
+
+# --- Ship 1B Test 16: date_confidence < 0.7 → low_confidence ---
+got="$(printf 'text' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json --date-confidence 0.5)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert 'low_confidence' in reasons, reasons
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-low-confidence\n  got: $got"
+fi
+
+# --- Ship 1B Test 17: unparseable OCR date → date_parse_error ---
+got="$(printf 'x' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json --ocr-date banana --message-ts 2026-04-01T00:00:00Z)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert 'date_parse_error' in reasons, reasons
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-date-parse-error\n  got: $got"
+fi
+
+# --- Ship 1B Test 18: message-ts as raw epoch ms (integration format) ---
+# Guards against the R1 regression where epoch-ms was sliced via [:10] and
+# silently returned date_parse_error on every real attachment ingest.
+# 1711987200000 ms = 2024-04-01 UTC; 2025-04-11 OCR > 1y apart → date_mismatch.
+got="$(printf 'x' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json --ocr-date 2025-04-11 --message-ts 1711987200000)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert 'date_mismatch' in reasons, f'expected date_mismatch, got {reasons}'
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-epoch-ms-format\n  got: $got"
+fi
+
+# --- Ship 1B Test 19: epoch-seconds (10-digit) also supported ---
+# Telegram actually sends message.date as seconds, not ms. Guard both.
+got="$(printf 'x' | "$PYTHON_BIN" "$NORMALIZE" --anchor 2026-04-01 --json --ocr-date 2025-04-11 --message-ts 1711987200)"
+if printf '%s' "$got" | "$PYTHON_BIN" -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+reasons = d.get('needs_confirmation_reason', [])
+assert 'date_mismatch' in reasons, f'expected date_mismatch, got {reasons}'
+print('ok')
+" >/dev/null 2>&1; then
+  pass
+else
+  fail "ship-1b-epoch-seconds-format\n  got: $got"
+fi
+
 echo "normalize.test.sh: $PASS pass, $FAIL fail"
 [ "$FAIL" -eq 0 ]

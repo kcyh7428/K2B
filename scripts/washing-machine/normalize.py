@@ -189,10 +189,113 @@ def normalize_all(text: str, anchor: date) -> tuple[str, list[dict]]:
     return rewritten, back_subs + fwd_subs
 
 
+# --- Ship 1B: date-contradiction detection ---------------------------------
+#
+# When an attachment pipeline (VLM OCR on a business card) supplies an
+# OCR-detected date alongside the message metadata timestamp, we flag the
+# extraction for confirmation before writing to the semantic shelf if the
+# two disagree by more than 6 months. This is how the 2026-04-01 business
+# card mis-dated bug gets killed: the old path silently wrote a Daily note
+# dated 2025-04-11, driven by an OCR-sourced date on the card itself.
+
+_SIX_MONTHS_DAYS = 183
+_LOW_CONFIDENCE_THRESHOLD = 0.7
+
+
+def _parse_iso_prefix(value: str) -> date | None:
+    """Parse a date out of either an ISO prefix (YYYY-MM-DD) or a raw
+    epoch-milliseconds integer string. Returns None for unparseable
+    input so the caller can log a distinct reason instead of crashing.
+
+    Supporting both shapes matters because the attachment ingest path
+    passes Telegram's message timestamp as raw epoch-ms (e.g.
+    1711987200000), while the text path feeds ISO strings. Without the
+    epoch-ms branch, ship-1b date-contradiction detection was silently
+    returning date_parse_error on every real attachment (caught by
+    review round 1 on Commit 2, finding #1).
+    """
+    if not value:
+        return None
+    parsed: date | None = None
+    # Epoch-ms path: all-digits, >= 10 chars (10 digits is seconds, 13 is ms).
+    if value.isdigit() and len(value) >= 10:
+        try:
+            from datetime import datetime
+            ts = int(value)
+            if ts > 10**12:  # looks like ms, not seconds
+                ts = ts // 1000
+            parsed = datetime.fromtimestamp(ts).date()
+        except (ValueError, OSError, OverflowError):
+            return None
+    else:
+        # ISO path: may be date (YYYY-MM-DD) or full timestamp; slice first 10.
+        try:
+            parsed = date.fromisoformat(value[:10])
+        except (ValueError, TypeError):
+            return None
+
+    # Plausibility window: reject dates outside 2000-2100. Guards against
+    # phone numbers / order IDs that happened to be >= 10 digits and parsed
+    # cleanly as epoch timestamps. Keith is unlikely to capture a business
+    # card from 1970 or 2200 for the foreseeable future.
+    if parsed is None or parsed.year < 2000 or parsed.year > 2100:
+        return None
+    return parsed
+
+
+def detect_date_contradiction(ocr_date: str | None, message_ts: str | None) -> list[str]:
+    """Return list of needs_confirmation_reason codes.
+
+    Codes:
+      date_mismatch     OCR date and message timestamp disagree by > 6 months
+      date_parse_error  one of the dates wouldn't parse (could be ambiguous
+                        OCR like "4/11" -> 2025 vs 2026)
+
+    An empty list means the two dates agree and the write is safe.
+    """
+    if not ocr_date or not message_ts:
+        # Either missing → no contradiction possible; text-only path lands here.
+        return []
+    ocr_parsed = _parse_iso_prefix(ocr_date)
+    msg_parsed = _parse_iso_prefix(message_ts)
+    if ocr_parsed is None or msg_parsed is None:
+        return ["date_parse_error"]
+    delta = abs((ocr_parsed - msg_parsed).days)
+    if delta > _SIX_MONTHS_DAYS:
+        return ["date_mismatch"]
+    return []
+
+
+def assess_confidence(date_confidence: float | None) -> list[str]:
+    """Low-confidence flagging. Date confidence < 0.7 triggers the same
+    pending-confirmation UX as a 6-month mismatch."""
+    if date_confidence is None:
+        return []
+    if date_confidence < _LOW_CONFIDENCE_THRESHOLD:
+        return ["low_confidence"]
+    return []
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="normalize.py")
     parser.add_argument("--anchor", required=True)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--ocr-date",
+        default=None,
+        help="(Ship 1B) ISO date detected by OCR on an attachment, if any",
+    )
+    parser.add_argument(
+        "--message-ts",
+        default=None,
+        help="(Ship 1B) ISO timestamp of the message metadata, if any",
+    )
+    parser.add_argument(
+        "--date-confidence",
+        default=None,
+        type=float,
+        help="(Ship 1B) classifier-reported date confidence in [0, 1]",
+    )
     args = parser.parse_args(argv[1:])
 
     try:
@@ -204,8 +307,20 @@ def main(argv: list[str]) -> int:
     text = sys.stdin.read()
     rewritten, subs = normalize_all(text, anchor)
 
+    needs_confirmation: list[str] = []
+    needs_confirmation.extend(detect_date_contradiction(args.ocr_date, args.message_ts))
+    needs_confirmation.extend(assess_confidence(args.date_confidence))
+
     if args.json:
-        json.dump({"rewritten_text": rewritten, "substitutions": subs}, sys.stdout, ensure_ascii=False)
+        json.dump(
+            {
+                "rewritten_text": rewritten,
+                "substitutions": subs,
+                "needs_confirmation_reason": needs_confirmation,
+            },
+            sys.stdout,
+            ensure_ascii=False,
+        )
         sys.stdout.write("\n")
     else:
         sys.stdout.write(rewritten)
