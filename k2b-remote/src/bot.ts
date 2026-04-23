@@ -10,7 +10,8 @@ import {
 } from './config.js'
 import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount, getKv, setKv } from './db.js'
 import { runAgent } from './agent.js'
-import { buildMemoryContext, saveConversationTurn, loadPreferenceProfile } from './memory.js'
+import { saveConversationTurn, loadPreferenceProfile } from './memory.js'
+import { injectMemoryFromShelves } from './memoryInject.js'
 import { normalizationGate } from './washingMachine.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
@@ -162,19 +163,20 @@ async function handleMessage(
 
     // Washing Machine Normalization Gate (text-only in Ship 1 -- photo/document
     // wrappers are skipped here and handled by Ship 1B's VLM pipeline).
-    // Fire-and-forget: the Gate writes to the semantic shelf for FUTURE
-    // retrievals. In Ship 1 the current turn still reads from the legacy
-    // FTS path (buildMemoryContext), so the agent reply does not depend on
-    // gate completion. This avoids blocking the typing indicator on a slow
-    // classifier. Errors are logged at error level so silent data loss is
-    // visible in monitoring; the gate itself also logs per-failure.
+    // Fire-and-forget future-turn-only contract (ratified 2026-04-23b after
+    // Codex Tier 3 on Commit 3): facts in message N do NOT affect message N's
+    // reply. The gate writes for message N+1. injectMemoryFromShelves below
+    // reads the shelf snapshot at call time and does NOT await the gate --
+    // race-free property locked in by memoryInject.test.ts.
     gatePromise = normalizationGate(rawText).catch((err: unknown) => {
       logger.error({ err: String(err), chatId }, 'normalizationGate threw; shelf row lost for this turn')
       return undefined
     })
 
-    // Build memory context
-    const memoryContext = await buildMemoryContext(chatId, rawText)
+    // Inject top-K raw rows from the semantic shelf (Ship 1 Commit 4).
+    // Replaces the legacy buildMemoryContext FTS+recent path. Runs in
+    // parallel with the gate above; neither blocks the other.
+    const memoryContext = await injectMemoryFromShelves(rawText)
 
     // Get existing session (may have been cleared above)
     const sessionId = getSession(chatId)
@@ -256,11 +258,11 @@ async function handleMessage(
     // Await the gate here so if it is still running when the reply has
     // already been sent, the handler scope holds onto it instead of
     // leaving a dangling promise. Zero added latency if already settled.
-    try {
-      if (gatePromise) await gatePromise
-    } catch {
-      // gatePromise already has its own catch; swallow the second wrap.
-    }
+    // gatePromise's own .catch handler (attached at fire-time above) is
+    // the single error-suppression point -- it always resolves, never
+    // rejects. Await without a second wrap so a future refactor that
+    // removes the .catch cannot silently mask errors here.
+    if (gatePromise) await gatePromise
   }
 }
 

@@ -58,7 +58,14 @@ export function initDatabase(): void {
     }
   }
 
-  // Full memory: semantic + episodic
+  // Full memory: semantic + episodic.
+  // DEPRECATED post-Ship-1-Commit-4: accessed_at is inert. It was the sort key
+  // for the legacy read-bumps-access path (touchMemory + buildMemoryContext).
+  // That path is gone; accessed_at now equals created_at for every new row and
+  // is not read by any live code. Kept in the schema so existing rows' history
+  // survives until Ship 4 consolidation migration rewrites this table (drops
+  // the column OR drops the whole table if the shelf fully supersedes it).
+  // Do NOT add new read paths that depend on accessed_at -- use created_at.
   db.exec(`
     CREATE TABLE IF NOT EXISTS memories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,7 +79,15 @@ export function initDatabase(): void {
     )
   `)
 
-  // FTS5 virtual table for full-text search
+  // DEPRECATED: memories_fts virtual table is a tombstone post-Ship-1-Commit-4.
+  // The Washing Machine semantic shelf + retrieve.py is the live read path;
+  // memories_fts has no active reader and no active writer (triggers dropped
+  // below). CREATE VIRTUAL TABLE IF NOT EXISTS stays so old databases keep
+  // their historical FTS rows intact until Ship 4's consolidation migration
+  // runs `DROP TABLE IF EXISTS memories_fts` after confirming no downstream
+  // dependency. Do NOT rebuild triggers here -- any reader that wants FTS on
+  // shelf data should query retrieve.py, not this table. Tracked against
+  // feature_washing-machine-memory.md "Ship 4 (simpler)" section.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
@@ -81,23 +96,12 @@ export function initDatabase(): void {
     )
   `)
 
-  // Triggers to keep FTS in sync
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-      INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
-    END
-  `)
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-    END
-  `)
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-      INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
-    END
-  `)
+  // Idempotent teardown of the old sync triggers. On fresh installs the DROPs
+  // are no-ops; on existing DBs they peel off the triggers so new memory
+  // inserts no longer index into memories_fts.
+  db.exec('DROP TRIGGER IF EXISTS memories_ai')
+  db.exec('DROP TRIGGER IF EXISTS memories_ad')
+  db.exec('DROP TRIGGER IF EXISTS memories_au')
 
   // Scheduled tasks
   db.exec(`
@@ -227,69 +231,6 @@ export function insertMemory(
   }
 }
 
-export function searchMemoriesFts(
-  chatId: string,
-  query: string,
-  limit = 3
-): Array<{ id: number; content: string; sector: string; salience: number }> {
-  // Sanitize query for FTS5
-  const sanitized = query.replace(/[^a-zA-Z0-9\s]/g, '').trim()
-  if (!sanitized) return []
-
-  const terms = sanitized
-    .split(/\s+/)
-    .map((t) => t + '*')
-    .join(' ')
-
-  try {
-    return getDb()
-      .prepare(
-        `SELECT m.id, m.content, m.sector, m.salience
-         FROM memories m
-         JOIN memories_fts f ON m.id = f.rowid
-         WHERE memories_fts MATCH ? AND m.chat_id = ?
-         ORDER BY rank
-         LIMIT ?`
-      )
-      .all(terms, chatId, limit) as Array<{
-      id: number
-      content: string
-      sector: string
-      salience: number
-    }>
-  } catch {
-    return []
-  }
-}
-
-export function getRecentMemories(
-  chatId: string,
-  limit = 5
-): Array<{ id: number; content: string; sector: string; salience: number }> {
-  return getDb()
-    .prepare(
-      `SELECT id, content, sector, salience
-       FROM memories
-       WHERE chat_id = ?
-       ORDER BY accessed_at DESC
-       LIMIT ?`
-    )
-    .all(chatId, limit) as Array<{
-    id: number
-    content: string
-    sector: string
-    salience: number
-  }>
-}
-
-export function touchMemory(id: number): void {
-  getDb()
-    .prepare(
-      'UPDATE memories SET accessed_at = ?, salience = MIN(salience + 0.1, 5.0) WHERE id = ?'
-    )
-    .run(Date.now(), id)
-}
-
 export function decayAllMemories(): void {
   const oneDayAgo = Date.now() - 86400 * 1000
   getDb()
@@ -314,12 +255,18 @@ export function getRecentMemoriesForDisplay(
   chatId: string,
   limit = 10
 ): Array<{ content: string; sector: string; salience: number; created_at: number }> {
+  // Order by created_at (insertion time), not accessed_at. Ship 1 Commit 4
+  // removed the read-bumps-access path (touchMemory was only called from the
+  // legacy buildMemoryContext FTS join). Shelf reads never touch this table,
+  // so accessed_at would freeze at insert time for every row and give
+  // NULLS-LAST/tied ordering. created_at reflects the "recent conversation
+  // turns" semantic the /memory command advertises and is always populated.
   return getDb()
     .prepare(
       `SELECT content, sector, salience, created_at
        FROM memories
        WHERE chat_id = ?
-       ORDER BY accessed_at DESC
+       ORDER BY created_at DESC
        LIMIT ?`
     )
     .all(chatId, limit) as Array<{

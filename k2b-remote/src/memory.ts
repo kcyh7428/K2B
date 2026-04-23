@@ -2,13 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, appendFileSync, readdirSync, createReadStream, mkdirSync, rmdirSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { resolve } from 'node:path'
-import {
-  searchMemoriesFts,
-  getRecentMemories,
-  touchMemory,
-  insertMemory,
-  decayAllMemories,
-} from './db.js'
+import { insertMemory, decayAllMemories } from './db.js'
 import { K2B_VAULT_PATH, MEMORIES_DIR } from './config.js'
 import { logger } from './logger.js'
 
@@ -106,31 +100,6 @@ export function appendMemoryToVault(
   } finally {
     releaseLock(chatId)
   }
-}
-
-export async function buildMemoryContext(
-  chatId: string,
-  userMessage: string
-): Promise<string> {
-  const ftsResults = searchMemoriesFts(chatId, userMessage, 3)
-  const recentResults = getRecentMemories(chatId, 5)
-
-  // Deduplicate by id
-  const seen = new Set<number>()
-  const combined: Array<{ id: number; content: string; sector: string }> = []
-
-  for (const m of [...ftsResults, ...recentResults]) {
-    if (!seen.has(m.id)) {
-      seen.add(m.id)
-      combined.push(m)
-      touchMemory(m.id)
-    }
-  }
-
-  if (combined.length === 0) return ''
-
-  const lines = combined.map((m) => `- ${m.content} (${m.sector})`)
-  return `[Memory context]\n${lines.join('\n')}\n\n`
 }
 
 export async function saveConversationTurn(
