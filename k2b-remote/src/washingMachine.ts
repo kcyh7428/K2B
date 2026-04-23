@@ -160,11 +160,27 @@ export function unwrapForClassifier(rawText: string): string | null {
   return rawText
 }
 
-function isoDate(d: Date): string {
-  const y = d.getUTCFullYear()
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(d.getUTCDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+// Anchor is formatted in Asia/Hong_Kong because the user's "today" is HKT.
+// Using getUTC* would flip the anchor back one day during 00:00-07:59 HKT
+// every day (HKT is UTC+8, so UTC is still on the previous calendar date),
+// silently mis-resolving "tomorrow" and appointment timestamps for a third
+// of each day. formatToParts is defensive against locale-format drift.
+const HKT_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Hong_Kong',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+export function isoDate(d: Date): string {
+  const parts = HKT_DATE_FORMATTER.formatToParts(d)
+  const year = parts.find((p) => p.type === 'year')?.value
+  const month = parts.find((p) => p.type === 'month')?.value
+  const day = parts.find((p) => p.type === 'day')?.value
+  if (!year || !month || !day) {
+    throw new Error(`isoDate: HKT formatter missing parts for ${d.toISOString()}`)
+  }
+  return `${year}-${month}-${day}`
 }
 
 async function runNormalize(text: string, anchor: string, deps: GateDeps): Promise<string> {
@@ -238,6 +254,15 @@ function validateClassifier(obj: unknown): ClassifierResult {
     if (typeof o.timestamp_iso === 'string') result.timestamp_iso = o.timestamp_iso
     if (o.timestamp_iso === null) result.timestamp_iso = null
     if (typeof o.date_confidence === 'number') result.date_confidence = o.date_confidence
+    // Prompt-drift / API-error guard: keep=true with no usable entities would
+    // otherwise be silently reported as classified rowsWritten=0, identical to
+    // a legitimate keep=false. Surface as an error so monitoring can see it.
+    if (!result.entities || result.entities.length === 0) {
+      const rawCount = Array.isArray(o.entities) ? o.entities.length : 0
+      throw new Error(
+        `classifier kept message (category=${String(o.category)}) but produced zero valid entities (raw=${rawCount}, all dropped or missing) -- likely prompt drift`
+      )
+    }
   } else {
     result.discard_reason = typeof o.discard_reason === 'string' ? o.discard_reason : 'low_signal'
   }
@@ -249,15 +274,12 @@ async function writeAcceptedRows(
   anchor: string,
   deps: GateDeps
 ): Promise<number> {
-  if (!classifier.entities || classifier.entities.length === 0) {
-    logger.warn(
-      { category: classifier.category, shelf: classifier.shelf },
-      'Washing Machine classifier kept message but produced zero entities -- shelf row silently dropped (prompt drift?)'
-    )
-    return 0
-  }
+  // validateClassifier throws on keep=true with empty entities, so callers
+  // only reach here with a non-empty typed list. `?? []` is belt-and-braces
+  // for the optional type shape; at runtime the fallback is unreachable.
+  const entities = classifier.entities ?? []
   let written = 0
-  for (const entity of classifier.entities) {
+  for (const entity of entities) {
     // Defence-in-depth: validateClassifier already drops unknown types, but
     // re-check at the spawn boundary so a future refactor of the filter
     // cannot let an unvalidated type reach the shelf-writer argv.

@@ -99,5 +99,29 @@ else
   fi
 fi
 
+# --- Test 10: precondition -- normalize.py --help exits 0 ---
+# Proves the module imports successfully. Since _load_backward() runs at
+# import time, a missing / broken scripts/normalize-dates.py would make
+# even --help exit non-zero. Cheap canary against silent dependency breakage.
+if "$PYTHON_BIN" "$NORMALIZE" --help >/dev/null 2>&1; then
+  pass
+else
+  rc=$?
+  fail "normalize.py --help should exit 0 (proves import works); got $rc"
+fi
+
+# --- Test 11: composability -- relative + already-ISO date in one input ---
+# Guards against a future forward_pass regex accidentally matching ISO
+# dates produced by the backward pass. "tomorrow is 2026-04-02" must
+# produce "2026-04-02 is 2026-04-02", not double-substituted output.
+got="$(run_norm 2026-04-01 "tomorrow is 2026-04-02")"
+assert_eq "composability-tomorrow-plus-iso" "2026-04-02 is 2026-04-02" "$got"
+
+# --- Test 12: composability -- ISO date near "next" keyword must not mis-match ---
+# Forward pass regex is \bnext\s+(weekday|week)\b; a stray "next" near an
+# ISO should never turn the ISO into a date. Lock this down with an example.
+got="$(run_norm 2026-04-01 "2026-04-10 then next Friday")"
+assert_eq "composability-iso-then-next-friday" "2026-04-10 then 2026-04-03" "$got"
+
 echo "normalize.test.sh: $PASS pass, $FAIL fail"
 [ "$FAIL" -eq 0 ]

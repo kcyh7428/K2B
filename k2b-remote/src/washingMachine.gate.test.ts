@@ -444,6 +444,61 @@ describe('normalizationGate orchestration', () => {
     expect(result.rowsWritten).toBe(1)
     expect(mock.calls.filter((c) => matchShelfWriter(c.cmd, c.args))).toHaveLength(1)
   })
+
+  it('returns error status when keep=true but every entity is an invalid type (total prompt drift)', async () => {
+    // Separate from the "keep=false" legit-reject path: this is the model
+    // claiming there IS a fact to store but naming only unknown types. Prior
+    // implementation silently returned classified / rowsWritten=0 -- monitoring
+    // could not tell this apart from a legitimate keep=false reject.
+    const mock = createMockController()
+    mock.expect(matchNormalize, 'input')
+    mock.expect(
+      matchClassify,
+      JSON.stringify({
+        keep: true,
+        category: 'fact',
+        shelf: 'semantic',
+        entities: [
+          { type: 'hallucinated_type_1', fields: { name: 'A' } },
+          { type: 'hallucinated_type_2', fields: { name: 'B' } },
+        ],
+      })
+    )
+
+    const result = await normalizationGate('input', {
+      spawnImpl: mock.makeSpawn() as never,
+      anchorIsoDate: () => '2026-04-01',
+    })
+
+    expect(result.status).toBe('error')
+    expect(result.reason).toMatch(/zero valid entities/i)
+    expect(result.rowsWritten).toBe(0)
+    expect(mock.calls.filter((c) => matchShelfWriter(c.cmd, c.args))).toHaveLength(0)
+  })
+
+  it('returns error status when keep=true with the entities array missing entirely', async () => {
+    // Missing entities field is the simpler prompt-drift shape; same contract.
+    const mock = createMockController()
+    mock.expect(matchNormalize, 'input')
+    mock.expect(
+      matchClassify,
+      JSON.stringify({
+        keep: true,
+        category: 'fact',
+        shelf: 'semantic',
+        // entities field intentionally omitted
+      })
+    )
+
+    const result = await normalizationGate('input', {
+      spawnImpl: mock.makeSpawn() as never,
+      anchorIsoDate: () => '2026-04-01',
+    })
+
+    expect(result.status).toBe('error')
+    expect(result.reason).toMatch(/zero valid entities/i)
+    expect(result.rowsWritten).toBe(0)
+  })
 })
 
 function extractAttrs(args: string[]): string[] {
