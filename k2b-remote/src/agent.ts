@@ -50,6 +50,7 @@ export async function runAgent(
     const options: Parameters<typeof query>[0] = {
       prompt: message,
       options: {
+        model: 'claude-opus-4-7',
         cwd: K2B_PROJECT_ROOT,
         permissionMode: 'bypassPermissions' as const,
         settingSources: ['project', 'user'] as const,
