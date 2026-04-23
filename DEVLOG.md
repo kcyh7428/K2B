@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-04-23 -- WMM Ship 1 Commit 3 -- text-only Normalization Gate (sibling-authored) + Codex Tier 3 fix-up
+
+**Commits:** `f962c44` + `d9b58c5` (2 commits; sibling Claude Code session authored the Gate, this session split out an unrelated agent.ts model-pin + ran Codex Tier 3 + folded the HIGH anchor bug + MEDIUM validator hardening + spec amendment). Preceded by `19fd907 fix(k2b-remote): pin agent to claude-opus-4-7` (standalone, unrelated to WMM, split out to keep the Codex review surface clean).
+
+**What shipped:** Commit 3 of WMM Ship 1 -- the ingest-side station. Every qualifying Telegram TEXT message now passes through a MiniMax-M2.7 classifier (`scripts/washing-machine/classify.sh` with frozen prompt v1.0), a forward-relative-date pre-normaliser (`scripts/washing-machine/normalize.py` wrapping the 2026-04-19 backward pass), and a gate (`k2b-remote/src/washingMachine.ts normalizationGate()`) that writes kept entities to `wiki/context/shelves/semantic.md` via the Commit 1 shelf-writer. Pinning policy: contact/person/org/appointment/decision auto-pinned; preference/fact/context/location subject to Ship 4 decay.
+
+The sibling session also wired `bot.ts handleMessage` to fire the Gate in PARALLEL with the legacy `buildMemoryContext` read (awaited in `finally`) rather than the spec's "BEFORE any memory read" ordering. Codex flagged this as a medium in re-review; this session folded it by amending the spec (`feature_washing-machine-memory.md` Updates 2026-04-23b) to ratify the fire-and-forget pattern with a future-turn-only contract: facts in message N do NOT affect message N's reply but DO affect message N+1's reply.
+
+**Named bug killed (carry-over from Commit 3 MVP scope):** not the full MVP yet -- Commit 5 runs the Ship 1 binary test. Commit 3 closes the ingest-side half. Doctor-phone retrieval still satisfied by the Commit 1b migrated Dr. Lo row on disk (`source_hash:4401673e0b6ec37e`).
+
+**Tests:** 36 green, up from 28 baseline. Sibling ship added 28 (6 unwrap + 13 gate orchestration + 2 live-MiniMax-gated + 9 normalize.test.sh + 23 live-MiniMax classify-corpus rows with 2 Ship-1B-scope skips). Fix-up added 8 (3 HKT boundary in `washingMachine.test.ts` + 2 prompt-drift-error in `washingMachine.gate.test.ts` + 3 in `normalize.test.sh` -- precondition canary + 2 composability tests).
+
+**Codex Tier 3 review (Checkpoint 2 via `scripts/review.sh` + direct `codex-companion --scope branch` workaround):**
+
+First pass over `f962c44` (after recommit from sibling's `1c48027`) returned **needs-attention**, 1 HIGH + 2 MEDIUM. All folded in `d9b58c5`:
+- HIGH: `washingMachine.ts isoDate()` used `getUTCFullYear/Month/Date`. Mac Mini runs in HKT (UTC+8), so for 00:00-07:59 HKT each day (when UTC was still the prior calendar date) the computed anchor was off-by-one. `normalize.py`'s "tomorrow" and `classify.sh`'s `[anchor]` context inherited the wrong date, silently mis-dating appointments + shelf rows for a third of each day. Switched to `Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Hong_Kong'})` with `formatToParts` for locale-drift defense.
+- MEDIUM: `validateClassifier` accepted `keep=true` even when every entity was filtered out by `VALID_ENTITY_TYPES`, returning `status='classified' rowsWritten=0` -- indistinguishable from a legitimate `keep=false` reject. Prompt drift could therefore silently lose facts with no failure signal. Now throws `classifier kept message ... produced zero valid entities`, caught by `normalizationGate`'s try/catch, surfaced as `status='error'`. Dead warn block in `writeAcceptedRows` removed.
+- MEDIUM: Fire-and-forget ordering deviation from spec. Folded via spec amendment (see above), not a code change. Commit 4 now carries a required regression test: current-turn injection must be race-free (= not dependent on classifier timing).
+
+Second pass over `d9b58c5` returned **approve**, no material findings.
+
+Also folded from MiniMax's prior pass (same review log, less accurate -- Codex was skipped on the first runner call due to EISDIR on `plans/Parked/`): the HIGH was mis-attributed to `normalize.py` but pointed at the real `washingMachine.ts` issue; the precondition + composability tests were valid defensive additions.
+
+Review logs: `.code-reviews/2026-04-23T12-25-49Z_2fd0d4.log` (MiniMax first pass, Codex skipped), `/tmp/wmm-c3-codex.log` (Codex first pass via `codex-companion --scope branch --base 19fd907`), `/tmp/wmm-c3-codex-v2.log` (Codex re-review on the fix-up, approve).
+
+**Feature status change:** none. `feature_washing-machine-memory` stays `status: in-progress`. Ship 1 has 2 commits remaining (Commit 4 + Commit 5). MVP gate does not apply yet -- it runs at Commit 5.
+
+**Key decisions (divergent from the sibling's handoff / Scope B calls made this session):**
+- Path 2 over Path 1: ran Codex Tier 3 even though the sibling had MiniMax-only adversarial review. Rationale: `CLAUDE.md` mandates Codex primary at Tier 3; MiniMax-only is the documented fallback, not the default. The sibling's skip was "probably quota" -- probably is not the documented skip condition.
+- Pre-step to split `agent.ts` model-pin (`19fd907`) out of the WMM review surface: done via `git reset --soft origin/main` + explicit-file-list stage, keeping 1c48027's message via `git commit -C` on the re-made Commit 3 (`f962c44`). No destructive `git reset --hard`, no squash, no `--amend`.
+- Spec amendment over code rework on Finding 2 (fire-and-forget): per L-2026-04-22-004 (empirical format switching). Shipping sequential ordering would add 5-8 s to every Telegram typing indicator. Future-turn-only contract is the trade.
+- Feature note Updates entry written to vault, not to the plan file (`plans/2026-04-21_washing-machine-ship-1.md`) -- the plan is a pre-compression artifact and the feature note is the single source of truth per CLAUDE.md Memory Layer Ownership.
+
+**Follow-ups (Commit 4 obligations, next session):**
+- `injectMemoryFromShelves()` must not depend on current-turn classifier timing (regression test required per 2026-04-23b contract).
+- Replace `buildMemoryContext` in `bot.ts handleMessage` with the new inject station; delete `memory.ts:111-134` + `db.ts:230-263` at the same commit. `memories_fts` table stops receiving writes.
+- No shadow/parallel mode -- clean rollback is single `git revert`.
+
+**Deferred (from step 0a ownership-drift scan):** 5 rules × 37 offenders, all in vault observation archives + policy-ledger.jsonl + the wiki log + k2b-audit-fixes-status.md. Historical log entries legitimately reference the direct-append pattern (pre-helper-era syntax). Expected drift, not fix-now material.
+
+---
+
 ## 2026-04-23 -- K2B Integrated Loop Ship 1 -- session-start dashboard + auto-apply + research-delivery-link
 
 **Commits:** `ad0259f..e8d1e50` (11 commits; 10 feature + 1 Codex fix)
