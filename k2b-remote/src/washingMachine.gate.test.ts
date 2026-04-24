@@ -499,6 +499,138 @@ describe('normalizationGate orchestration', () => {
     expect(result.reason).toMatch(/zero valid entities/i)
     expect(result.rowsWritten).toBe(0)
   })
+
+  // --- Ship 1B: pending-confirmation park path ---------------------------
+  it('parks pending when needs_confirmation_reason returned by normalize AND chatId present', async () => {
+    const mock = createMockController()
+    // normalize.py --json output with date_mismatch reason
+    mock.expect(
+      matchNormalize,
+      JSON.stringify({
+        rewritten_text: 'Dr. Lo card capture',
+        substitutions: [],
+        needs_confirmation_reason: ['date_mismatch'],
+      })
+    )
+    mock.expect(
+      matchClassify,
+      JSON.stringify({
+        keep: true,
+        category: 'fact',
+        shelf: 'semantic',
+        entities: [
+          {
+            type: 'contact',
+            fields: { name: 'Dr. Lo Hak Keung', phone: '2830 3709' },
+          },
+        ],
+      })
+    )
+    // shelf-writer must NOT be called on park path
+
+    const { mkdtempSync, readdirSync, readFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const pendingDir = mkdtempSync(join(tmpdir(), 'park-'))
+
+    const result = await normalizationGate(
+      {
+        rawText: 'Dr. Lo card capture',
+        chatId: '42',
+        promptMessageId: 12345,
+        messageTsMs: Date.parse('2026-04-01T19:25:00Z'),
+        ocrDate: '2025-04-11',
+      },
+      {
+        spawnImpl: mock.makeSpawn() as never,
+        anchorIsoDate: () => '2026-04-01',
+        pendingDirOverride: pendingDir,
+      }
+    )
+
+    expect(result.status).toBe('pending-confirmation')
+    expect(result.rowsWritten).toBe(0)
+    expect(result.pendingUuid).toBeDefined()
+    expect(result.pendingPrompt).toContain('Reply 1')
+    expect(result.pendingPrompt).toContain('2025-04-11')
+
+    // Exactly one pending file written, not zero, not two
+    const files = readdirSync(pendingDir).filter((n) => n.endsWith('.json'))
+    expect(files.length).toBe(1)
+    const record = JSON.parse(readFileSync(join(pendingDir, files[0]), 'utf8'))
+    expect(record.chatId).toBe('42')
+    expect(record.promptMessageId).toBe(12345)
+    expect(record.candidates.length).toBe(2)
+    expect(record.candidates[0].date).toBe('2026-04-01')
+    expect(record.candidates[1].date).toBe('2025-04-11')
+
+    // Verify shelf-writer was NOT called (park bypasses the write path)
+    const writerCalls = mock.calls.filter((c) => matchShelfWriter(c.cmd, c.args))
+    expect(writerCalls.length).toBe(0)
+  })
+
+  it('writes to shelf (not park) when needs_confirmation is empty', async () => {
+    const mock = createMockController()
+    mock.expect(
+      matchNormalize,
+      JSON.stringify({
+        rewritten_text: 'clean capture',
+        substitutions: [],
+        needs_confirmation_reason: [],
+      })
+    )
+    mock.expect(
+      matchClassify,
+      JSON.stringify({
+        keep: true,
+        category: 'fact',
+        shelf: 'semantic',
+        entities: [{ type: 'contact', fields: { name: 'Test Person', phone: '1234 5678' } }],
+      })
+    )
+    mock.expect(matchShelfWriter, '')
+
+    const result = await normalizationGate(
+      { rawText: 'clean capture', chatId: '42', messageTsMs: Date.parse('2026-04-01T00:00:00Z') },
+      { spawnImpl: mock.makeSpawn() as never, anchorIsoDate: () => '2026-04-01' }
+    )
+    expect(result.status).toBe('classified')
+    expect(result.rowsWritten).toBe(1)
+    expect(result.pendingUuid).toBeUndefined()
+  })
+
+  it('falls through to write path when chatId is missing, even if normalize flags contradiction', async () => {
+    // Covers the back-compat case: a legacy caller passes a bare string.
+    // We do not have a chatId to park against, so the gate writes the row
+    // rather than silently losing it. This is an explicit choice: Ship 1B
+    // park requires chatId to route the prompt back.
+    const mock = createMockController()
+    mock.expect(
+      matchNormalize,
+      JSON.stringify({
+        rewritten_text: 'text',
+        substitutions: [],
+        needs_confirmation_reason: ['low_confidence'],
+      })
+    )
+    mock.expect(
+      matchClassify,
+      JSON.stringify({
+        keep: true,
+        category: 'fact',
+        shelf: 'semantic',
+        entities: [{ type: 'contact', fields: { name: 'Anon', phone: '9999 9999' } }],
+      })
+    )
+    mock.expect(matchShelfWriter, '')
+
+    const result = await normalizationGate('text', {
+      spawnImpl: mock.makeSpawn() as never,
+      anchorIsoDate: () => '2026-04-01',
+    })
+    expect(result.status).toBe('classified')
+    expect(result.rowsWritten).toBe(1)
+  })
 })
 
 function extractAttrs(args: string[]): string[] {

@@ -18,12 +18,15 @@
 
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { writeFileSync, renameSync, mkdirSync } from 'node:fs'
 import { logger } from './logger.js'
-import { K2B_PROJECT_ROOT } from './config.js'
+import { K2B_PROJECT_ROOT, K2B_VAULT_PATH } from './config.js'
 
 const CLASSIFIER_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/classify.sh')
 const NORMALIZE_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/normalize.py')
 const SHELF_WRITER_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/shelf-writer.sh')
+const PENDING_DIR_DEFAULT = resolve(K2B_VAULT_PATH, 'wiki/context/shelves/.pending-confirmation')
 
 const CLASSIFIER_TIMEOUT_MS = 15_000
 const NORMALIZE_TIMEOUT_MS = 5_000
@@ -59,14 +62,47 @@ export interface ClassifierResult {
   }>
   timestamp_iso?: string | null
   date_confidence?: number
+  /** Ship 1B: reasons the gate should park rather than write directly. */
+  needs_confirmation_reason?: string[]
 }
 
 export interface GateInvocation {
-  status: 'classified' | 'skipped-attachment' | 'skipped-empty' | 'error'
+  /**
+   * Ship 1B added `pending-confirmation`. Everything else preserves the
+   * Ship 1 contract for existing callers (bot.ts, memoryInject.test.ts,
+   * washingMachine.gate.test.ts).
+   */
+  status:
+    | 'classified'
+    | 'skipped-attachment'
+    | 'skipped-empty'
+    | 'pending-confirmation'
+    | 'error'
   reason?: string
   classifier?: ClassifierResult
   rowsWritten: number
   latencyMs: number
+  /** Ship 1B pending-confirmation path: UUID of the .pending file written. */
+  pendingUuid?: string
+  /** Ship 1B pending-confirmation path: Telegram prompt text to post. */
+  pendingPrompt?: string
+}
+
+/**
+ * Ship 1B: structured input for the gate. String input is still accepted
+ * via the overload so the Ship 1 callers (bot.ts line 171, gate tests,
+ * live tests) keep working unchanged.
+ */
+export interface GateInput {
+  rawText: string
+  /** Epoch-ms timestamp of the source Telegram message. */
+  messageTsMs?: number
+  /** Chat ID -- required for the pending-confirmation write path. */
+  chatId?: string
+  /** message_id of the prompt we'll send, for reply-to disambiguation. */
+  promptMessageId?: number
+  /** ISO date detected by OCR on the attachment, if any. */
+  ocrDate?: string
 }
 
 export interface GateDeps {
@@ -80,21 +116,33 @@ export interface GateDeps {
   classifierTimeoutMs?: number
   normalizeTimeoutMs?: number
   shelfWriteTimeoutMs?: number
+  /** Ship 1B: override where .pending-confirmation/ files land. */
+  pendingDirOverride?: string
 }
 
 /**
  * Main entry point. Call fire-and-forget from bot.handleMessage BEFORE
  * memory read. The promise resolves with a structured result for tests;
  * callers may ignore it. Errors are swallowed + logged.
+ *
+ * Overloaded for backward compatibility: callers may pass a bare string
+ * (Ship 1 contract) or a GateInput object (Ship 1B attachment path with
+ * chatId / ocrDate / messageTsMs). String input is equivalent to
+ * `{rawText: <string>}` and never triggers the pending-confirmation path.
  */
 export async function normalizationGate(
-  rawText: string,
+  input: string | GateInput,
+  deps?: GateDeps
+): Promise<GateInvocation>
+export async function normalizationGate(
+  input: string | GateInput,
   deps: GateDeps = {}
 ): Promise<GateInvocation> {
+  const gateInput: GateInput = typeof input === 'string' ? { rawText: input } : input
   const now = deps.now ?? Date.now
   const started = now()
 
-  const unwrapped = unwrapForClassifier(rawText)
+  const unwrapped = unwrapForClassifier(gateInput.rawText)
   if (unwrapped === null) {
     return {
       status: 'skipped-attachment',
@@ -114,8 +162,23 @@ export async function normalizationGate(
   const anchor = deps.anchorIsoDate ? deps.anchorIsoDate() : isoDate(new Date())
 
   try {
-    const rewritten = await runNormalize(unwrapped, anchor, deps)
-    const classifier = await runClassifier(rewritten, anchor, deps)
+    const { rewrittenText, needsConfirmationReason } = await runNormalize(
+      unwrapped,
+      anchor,
+      gateInput,
+      deps
+    )
+    const classifier = await runClassifier(rewrittenText, anchor, deps)
+    // Attach normalize's confirmation reasons so the park decision has a
+    // single source of truth. Also preserve any reasons the classifier
+    // itself emitted (future prompt revisions may populate this).
+    const mergedReasons = dedupe([
+      ...(classifier.needs_confirmation_reason ?? []),
+      ...needsConfirmationReason,
+    ])
+    if (mergedReasons.length > 0) {
+      classifier.needs_confirmation_reason = mergedReasons
+    }
 
     if (!classifier.keep) {
       return {
@@ -123,6 +186,23 @@ export async function normalizationGate(
         classifier,
         rowsWritten: 0,
         latencyMs: now() - started,
+      }
+    }
+
+    // Ship 1B: when the Gate has a contradiction reason AND a chatId is
+    // known, park the extraction in .pending-confirmation/ instead of
+    // writing to the shelf. If chatId is missing (e.g. a legacy text-only
+    // caller that didn't pass GateInput), fall through to the normal
+    // write path rather than losing the row silently.
+    if (mergedReasons.length > 0 && gateInput.chatId) {
+      const park = parkPendingConfirmation(gateInput, classifier, deps)
+      return {
+        status: 'pending-confirmation',
+        classifier,
+        rowsWritten: 0,
+        latencyMs: now() - started,
+        pendingUuid: park.uuid,
+        pendingPrompt: park.prompt,
       }
     }
 
@@ -142,6 +222,10 @@ export async function normalizationGate(
       latencyMs: now() - started,
     }
   }
+}
+
+function dedupe<T>(xs: T[]): T[] {
+  return Array.from(new Set(xs))
 }
 
 /**
@@ -183,16 +267,108 @@ export function isoDate(d: Date): string {
   return `${year}-${month}-${day}`
 }
 
-async function runNormalize(text: string, anchor: string, deps: GateDeps): Promise<string> {
+interface NormalizeResult {
+  rewrittenText: string
+  needsConfirmationReason: string[]
+}
+
+async function runNormalize(
+  text: string,
+  anchor: string,
+  gateInput: GateInput,
+  deps: GateDeps
+): Promise<NormalizeResult> {
   const script = deps.normalizeScript ?? NORMALIZE_SCRIPT
   const spawner = deps.spawnImpl ?? spawn
   const timeout = deps.normalizeTimeoutMs ?? NORMALIZE_TIMEOUT_MS
-  return await captureStdout(
-    spawner('python3', [script, '--anchor', anchor], { stdio: ['pipe', 'pipe', 'pipe'] }),
+  // Always use --json so we can surface needs_confirmation_reason even on
+  // the text-only path (empty array when no OCR flags are set).
+  const args: string[] = [script, '--anchor', anchor, '--json']
+  if (gateInput.ocrDate) args.push('--ocr-date', gateInput.ocrDate)
+  if (gateInput.messageTsMs !== undefined) args.push('--message-ts', String(gateInput.messageTsMs))
+  const raw = await captureStdout(
+    spawner('python3', args, { stdio: ['pipe', 'pipe', 'pipe'] }),
     text,
     timeout,
     'normalize.py'
   )
+  // Tests may stub normalize with a spawn that emits plain text (Ship 1
+  // contract). Tolerate both JSON and plain-text outputs so every existing
+  // gate test keeps passing without changes.
+  try {
+    const parsed = JSON.parse(raw) as {
+      rewritten_text?: string
+      needs_confirmation_reason?: string[]
+    }
+    if (typeof parsed.rewritten_text === 'string') {
+      return {
+        rewrittenText: parsed.rewritten_text,
+        needsConfirmationReason: Array.isArray(parsed.needs_confirmation_reason)
+          ? parsed.needs_confirmation_reason
+          : [],
+      }
+    }
+  } catch {
+    // fall through: assume plain-text output
+  }
+  return { rewrittenText: raw, needsConfirmationReason: [] }
+}
+
+function parkPendingConfirmation(
+  gateInput: GateInput,
+  classifier: ClassifierResult,
+  deps: GateDeps
+): { uuid: string; prompt: string } {
+  const dir = deps.pendingDirOverride ?? PENDING_DIR_DEFAULT
+  const uuid = randomUUID()
+  const messageDate = gateInput.messageTsMs
+    ? new Date(gateInput.messageTsMs).toISOString().slice(0, 10)
+    : isoDate(new Date())
+  const candidates: Array<{ date: string; label: string }> = [
+    { date: messageDate, label: 'message date' },
+  ]
+  if (gateInput.ocrDate && gateInput.ocrDate !== messageDate) {
+    candidates.push({ date: gateInput.ocrDate, label: 'OCR date' })
+  }
+  const row = classifier.entities?.[0] ?? {}
+  const record = {
+    chatId: gateInput.chatId,
+    promptMessageId: gateInput.promptMessageId ?? 0,
+    candidates,
+    row,
+  }
+  const finalPath = resolve(dir, `${uuid}.json`)
+  const tmpPath = resolve(dir, `.${uuid}.json.tmp`)
+  // Atomic write: mkdir + tempfile + rename. Any disk / permission failure
+  // throws to the outer normalizationGate try-catch, which returns
+  // status:'error'. Since bot.ts only posts the Telegram prompt when
+  // status is 'pending-confirmation', the user is never told to reply to
+  // a file that doesn't exist. Clean up any half-written tempfile so a
+  // retry on the next message isn't blocked by a stray .tmp.
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf8')
+    renameSync(tmpPath, finalPath)
+  } catch (err) {
+    try {
+      // Best-effort cleanup; swallow the secondary error so the primary
+      // error surfaces with its original context.
+      const { rmSync } = require('node:fs') as typeof import('node:fs')
+      rmSync(tmpPath, { force: true })
+    } catch {
+      // ignore
+    }
+    throw new Error(`pending-write-failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  const promptParts = [
+    'Date mismatch on capture.',
+    ` Reply 1 for ${candidates[0].date} (${candidates[0].label})`,
+  ]
+  if (candidates[1]) {
+    promptParts.push(`, 2 for ${candidates[1].date} (${candidates[1].label})`)
+  }
+  promptParts.push(', or type YYYY-MM-DD.')
+  return { uuid, prompt: promptParts.join('') }
 }
 
 async function runClassifier(text: string, anchor: string, deps: GateDeps): Promise<ClassifierResult> {
@@ -254,6 +430,11 @@ function validateClassifier(obj: unknown): ClassifierResult {
     if (typeof o.timestamp_iso === 'string') result.timestamp_iso = o.timestamp_iso
     if (o.timestamp_iso === null) result.timestamp_iso = null
     if (typeof o.date_confidence === 'number') result.date_confidence = o.date_confidence
+    if (Array.isArray(o.needs_confirmation_reason)) {
+      result.needs_confirmation_reason = o.needs_confirmation_reason.filter(
+        (r) => typeof r === 'string'
+      ) as string[]
+    }
     // Prompt-drift / API-error guard: keep=true with no usable entities would
     // otherwise be silently reported as classified rowsWritten=0, identical to
     // a legitimate keep=false. Surface as an error so monitoring can see it.
