@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-04-24 -- Integrated Loop Ship 2 -- defer counter + review routing + deprecation notices
+
+**Commit:** `e5b3bcc feat(loop): ship 2 -- defer counter + review routing + deprecation notices`
+
+**What shipped:** Ship 2 of feature_k2b-integrated-loop. Three root-cause fixes from the 2026-04-22 TLDR that Ship 1 left as known followups: (1) defer counter with auto-archive at 3 persisted in `wiki/context/observer-defers.jsonl`, (2) review/ queue items share a unified 1..N index space with observer candidates and route through the same `a N / r N / d N` grammar, (3) deprecation preamble with the sentinel string "DEPRECATED in Ship 2 of k2b-integrated-loop" on the three skill bodies whose triage surface the dashboard now absorbs (k2b-autoresearch, k2b-improve, k2b-review). Review accept routes to `review/Ready/` + `review-action: accepted`; reject routes to `Archive/review-archive/YYYY-MM-DD/` + `review-action: rejected`; both surfaces share the same auto-archive-on-third-defer policy. Dashboard reads the defers sidecar and renders `(deferred Nx)` badges. The session-start hook's "LOOP ROUTING INSTRUCTION" block updated from "observer candidates only are routable" (Ship 1) to "observer candidates AND review/ items are routable in the same index space" (Ship 2). Binary MVP gates 4/4 pass via `tests/loop/loop-mvp-ship2.test.sh` inside a sandbox `HOME` -- gate A proves the default path resolution works without touching the real vault, gates B/C/D exercise defer counter + review routing + deprecation sentinel grep.
+
+**Named bugs that died:** (1) Deferred items rotted unread -- `--defer` is no longer a no-op; the counter visibly ages items and auto-cleans on the third defer so the queue can't grow unbounded. (2) Review items required a separate pull-based `/review` invocation to triage -- merged into the same keystroke grammar as observer candidates. (3) The three deprecated skills had no in-skill signal that the dashboard had absorbed them -- now they emit a deprecation sentence and wait for Keith's explicit go-ahead before running the legacy workflow.
+
+**Codex MiniMax review (tier-3 diff, 5 findings, 4 fixed inline):**
+- HIGH-2 (80% conf) fixed: accept_review now peeks frontmatter `type:` and emits a follow-up hint for crosslink-digest items (`scripts/k2b-weave.sh apply`). Loop grammar stays transport-only in Ship 2 by design; semantic application stays with specialized skills.
+- MEDIUM-3 (75%) fixed: `_move_review_file` writes to destination temp then os.replace, eliminating the "modified source + failed move" window. Source is unlinked only after the destination write durably lands.
+- MEDIUM-4 (70%) fixed: `loop_apply.py` resets defer counters for consumed observer + review items so orphaned entries can't bite a regenerated identical payload.
+- LOW-5 (60%) fixed: `test_reset_defers_preserves_malformed_lines` added; confirms the writer preserves non-JSON audit lines on rewrite.
+- HIGH-1 (85%) deferred to Ship 3: library-level `increment_defer` race is real but mitigated in production by `loop-apply.sh`'s outer flock -- every caller goes through the wrapper, and the wrapper serializes all invocations. Tests call the library directly in single-threaded context. Ship 3 can harden the library itself.
+- Review log: `.code-reviews/2026-04-24T12-42-56Z_b49f92.log` (auto-fell back from Codex to MiniMax on EISDIR for untracked `plans/Parked/` dir).
+
+**Feature status change:** `feature_k2b-integrated-loop` stays `status: shipped` (already moved to `Shipped/` after Ship 1). Ship 2 adds a new `## Updates` section to the feature note capturing the 4/4 gate evidence + named-bug receipts. No lane move needed.
+
+**Tests:** 36 pytest + 5 bash tests green. No Ship 1 regressions -- `tests/loop/loop-mvp.test.sh` still passes 5/5, integration + render tests clean.
+
+**Key decisions:**
+- Defer state sidecar (`observer-defers.jsonl`) rather than embedding counts in `observer-candidates.md`. The observer loop owns the candidates file; the dashboard owns defers. Single-writer per file, no format drift.
+- Unified index space (observer 1..O, review O+1..O+R) over per-surface prefixes (`r:1`, `o:2`). Single keystroke per item beats double-character prefixes for the same grammar.
+- Review accept = transport only (move to Ready/ + flip frontmatter). Semantic processing (crosslink-apply, content-promote) stays with specialized skills. HIGH-2 fix surfaces the follow-up hint rather than inlining k2b-weave logic -- keeps the ship focused.
+- 1 review pass this ship, fix 4 of 5 findings inline, defer HIGH-1. The human-driven iteration model says Keith re-runs /ship if he wants another pass; this commit bundles all findings with explicit accept/defer reasons so the next ship doesn't re-litigate.
+
+**Follow-ups:**
+- Ship 3 scope: retire `/autoresearch`, `/improve`, `/review` as standalone commands after 2-week bake (i.e. earliest 2026-05-08 if they stay unused). Harden `increment_defer` with its own flock for library-direct callers. Research-without-delivery routing via loop grammar (requires inline slug-prompt UX).
+- Session-start ageing badge for review items that have sat > 7 days untouched even with zero defers.
+- Observer auto-detection of defer-counter anomalies (same candidate auto-archived 3x twice after regeneration = signal).
+# K2B Development Log
+
+---
+
 ## 2026-04-23 -- WMM Ship 1 Commit 5 -- binary MVP verification + venv-python resolver fix
 
 **Commit:** `11f9188 feat(washing-machine): ship 1 commit 5 -- binary MVP verification + venv-python resolver fix`
