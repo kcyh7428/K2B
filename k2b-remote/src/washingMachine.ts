@@ -28,13 +28,14 @@ const NORMALIZE_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/norm
 const SHELF_WRITER_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/shelf-writer.sh')
 const PENDING_DIR_DEFAULT = resolve(K2B_VAULT_PATH, 'wiki/context/shelves/.pending-confirmation')
 
-// Classifier budget bumped 2026-04-24 after Ship 1B live run: real
-// bilingual OCR text (Dr. Lo card, Keith's actual send) took 25s for
-// classify.sh to return, while the prior 15s limit killed the subprocess
-// before the Promise could resolve. 30s covers real attachment loads +
-// leaves headroom; keeps well under the user-visible typing indicator
-// ceiling.
-const CLASSIFIER_TIMEOUT_MS = 30_000
+// Classifier budget tuned 2026-04-24 after live Ship 1B runs:
+//   first live send:  classify returned in 25.1s
+//   second live send: classify returned in 31.7s
+// Real bilingual OCR text on the Mac Mini varies 25-35s end-to-end.
+// 60s gives ~2x headroom on observed variance without pushing past the
+// Telegram typing indicator envelope. Text-only classify stays fast
+// (~5s unchanged) so the bump only affects attachment-driven ingests.
+const CLASSIFIER_TIMEOUT_MS = 60_000
 const NORMALIZE_TIMEOUT_MS = 5_000
 const SHELF_WRITE_TIMEOUT_MS = 5_000
 
