@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # K2B integrated-loop routing entry point.
 # Applies --accept/--reject/--defer N actions under flock.
-# Env defaults cover day-to-day invocation; tests override.
+# Env defaults cover day-to-day invocation; tests override. Ship 2 adds
+# defer counter + review-item routing; the extra env vars default to
+# vault-local paths so no overrides are needed in production.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,6 +14,10 @@ MEM_DEFAULT="$HOME/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory"
 export K2B_LOOP_CANDIDATES="${K2B_LOOP_CANDIDATES:-$VAULT_DEFAULT/wiki/context/observer-candidates.md}"
 export K2B_LOOP_LEARNINGS="${K2B_LOOP_LEARNINGS:-$MEM_DEFAULT/self_improve_learnings.md}"
 export K2B_LOOP_ARCHIVE_DIR="${K2B_LOOP_ARCHIVE_DIR:-$VAULT_DEFAULT/wiki/context/observations.archive}"
+export K2B_LOOP_DEFERS="${K2B_LOOP_DEFERS:-$VAULT_DEFAULT/wiki/context/observer-defers.jsonl}"
+export K2B_LOOP_REVIEW_DIR="${K2B_LOOP_REVIEW_DIR:-$VAULT_DEFAULT/review}"
+export K2B_LOOP_REVIEW_READY_DIR="${K2B_LOOP_REVIEW_READY_DIR:-$VAULT_DEFAULT/review/Ready}"
+export K2B_LOOP_REVIEW_ARCHIVE_ROOT="${K2B_LOOP_REVIEW_ARCHIVE_ROOT:-$VAULT_DEFAULT/Archive/review-archive}"
 export K2B_LOOP_DATE="${K2B_LOOP_DATE:-$(date '+%Y-%m-%d')}"
 export K2B_LOOP_ACTOR="${K2B_LOOP_ACTOR:-keith}"
 export K2B_LOOP_OBSERVER_RUN="${K2B_LOOP_OBSERVER_RUN:-unknown}"

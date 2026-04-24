@@ -9,10 +9,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -240,3 +241,274 @@ def archive_reject(
         f.write(line)
         f.flush()
         os.fsync(f.fileno())
+
+
+# --- Ship 2: defer counter (observer + review share one JSONL) ---------------
+
+
+def read_defers(path: Path) -> Dict[Tuple[str, str], int]:
+    """Return {(item_id, kind): count} from observer-defers.jsonl.
+
+    One line = one defer event. Count is number of matching lines. Missing
+    file or non-JSON lines are tolerated (audit log, not execution state).
+    """
+    out: Dict[Tuple[str, str], int] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item_id = rec.get("item_id")
+        kind = rec.get("kind")
+        if not item_id or not kind:
+            continue
+        key = (str(item_id), str(kind))
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def increment_defer(
+    path: Path, *, item_id: str, kind: str, date_str: str
+) -> int:
+    """Append one defer event and return the new count for (item_id, kind)."""
+    record = {
+        "item_id": item_id,
+        "kind": kind,
+        "deferred_at": date_str,
+    }
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+    return read_defers(path).get((item_id, kind), 0)
+
+
+def reset_defers(path: Path, *, item_id: str, kind: str) -> None:
+    """Atomic rewrite of defers file with all (item_id, kind) entries removed."""
+    if not path.exists():
+        return
+    kept_lines: List[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            rec = json.loads(stripped)
+        except json.JSONDecodeError:
+            # Preserve malformed lines so we don't silently drop data.
+            kept_lines.append(line)
+            continue
+        if rec.get("item_id") == item_id and rec.get("kind") == kind:
+            continue
+        kept_lines.append(line)
+    new_text = "\n".join(kept_lines)
+    if new_text and not new_text.endswith("\n"):
+        new_text += "\n"
+    _atomic_write(path, new_text)
+
+
+def archive_observer_auto_deferred(
+    archive_dir: Path,
+    cand: "Candidate",
+    *,
+    date_str: str,
+    defer_count: int,
+) -> None:
+    """Append a record to observations.archive/auto-archived-deferred-YYYY-MM-DD.jsonl."""
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / f"auto-archived-deferred-{date_str}.jsonl"
+    record = {
+        "item_id": cand.item_id,
+        "severity": cand.severity,
+        "area": cand.area,
+        "rule": cand.rule,
+        "evidence": cand.evidence,
+        "defer_count": defer_count,
+        "auto_archived": date_str,
+    }
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    with target.open("a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+# --- Ship 2: review-item surface ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReviewItem:
+    item_id: str  # 8-hex of filename stem; stable across sessions
+    path: Path
+    filename: str  # basename for display
+
+
+_FRONTMATTER_BOUNDARY = "---"
+_REVIEW_ACTION = re.compile(r"^review-action:\s*.*$", re.MULTILINE)
+
+
+def _review_item_id(filename: str) -> str:
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    return hashlib.sha256(stem.encode("utf-8")).hexdigest()[:8]
+
+
+def list_reviews(review_dir: Path) -> List[ReviewItem]:
+    """Return sorted ReviewItem objects for *.md files under review_dir.
+
+    Excludes index.md and any files that live in a subdirectory (Ready/,
+    Archive/). Observer and review kinds each own their own numbering when
+    merged by resolve_index.
+    """
+    if not review_dir.is_dir():
+        return []
+    items: List[ReviewItem] = []
+    for p in sorted(review_dir.glob("*.md")):
+        if p.name == "index.md":
+            continue
+        items.append(
+            ReviewItem(
+                item_id=_review_item_id(p.name),
+                path=p,
+                filename=p.name,
+            )
+        )
+    return items
+
+
+def _set_review_action(text: str, action: str) -> str:
+    """Return file text with review-action replaced or inserted in frontmatter."""
+    lines = text.splitlines(keepends=False)
+    if not lines or lines[0].strip() != _FRONTMATTER_BOUNDARY:
+        # No frontmatter -- prepend one so the field is always present.
+        new_fm = [_FRONTMATTER_BOUNDARY, f"review-action: {action}", _FRONTMATTER_BOUNDARY, ""]
+        return "\n".join(new_fm + lines) + ("\n" if not text.endswith("\n") else "")
+
+    # Walk the frontmatter block, replace review-action if found; else append
+    # before the closing boundary.
+    end_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == _FRONTMATTER_BOUNDARY:
+            end_idx = i
+            break
+    if end_idx is None:
+        # Malformed frontmatter -- leave the file alone except for a safe append.
+        return text + f"\nreview-action: {action}\n"
+
+    replaced = False
+    new_fm_lines: List[str] = []
+    for i in range(1, end_idx):
+        if re.match(r"^review-action:\s*", lines[i]):
+            new_fm_lines.append(f"review-action: {action}")
+            replaced = True
+        else:
+            new_fm_lines.append(lines[i])
+    if not replaced:
+        new_fm_lines.append(f"review-action: {action}")
+
+    rebuilt: List[str] = [_FRONTMATTER_BOUNDARY] + new_fm_lines + [_FRONTMATTER_BOUNDARY]
+    rebuilt.extend(lines[end_idx + 1 :])
+    result = "\n".join(rebuilt)
+    if text.endswith("\n") and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _move_review_file(src: Path, dst: Path, *, action: str) -> Path:
+    """Write mutated content directly to dst via tempfile + os.replace, then
+    delete the source. Creates dst.parent if missing.
+
+    This one-step move avoids the modified-but-not-moved window that occurs
+    when writing to the source first -- if the destination write or the
+    source unlink fails, the source keeps its original content intact
+    (Codex MEDIUM-3 regression).
+    """
+    text = src.read_text(encoding="utf-8")
+    new_text = _set_review_action(text, action)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    final_dst = dst
+    if final_dst.exists():
+        # Suffix with an integer until unique.
+        n = 1
+        while True:
+            candidate = dst.with_name(f"{dst.stem}.{n}{dst.suffix}")
+            if not candidate.exists():
+                final_dst = candidate
+                break
+            n += 1
+
+    # Write mutated content straight to destination.
+    _atomic_write(final_dst, new_text)
+    # Only remove source after destination is durably on disk.
+    try:
+        src.unlink()
+    except OSError:
+        # If unlink fails, the destination is already correct; source is
+        # stale but recoverable. Surface loudly rather than silently.
+        raise
+    return final_dst
+
+
+def accept_review(review: ReviewItem, *, date_str: str, ready_dir: Path) -> Path:
+    """Flip review-action: accepted and move review.path into ready_dir."""
+    return _move_review_file(
+        review.path, ready_dir / review.filename, action="accepted"
+    )
+
+
+def reject_review(
+    review: ReviewItem, *, date_str: str, archive_root: Path
+) -> Path:
+    """Flip review-action: rejected and move into archive_root/YYYY-MM-DD/."""
+    return _move_review_file(
+        review.path, archive_root / date_str / review.filename, action="rejected"
+    )
+
+
+def archive_review_auto_deferred(
+    review: ReviewItem,
+    *,
+    date_str: str,
+    archive_root: Path,
+    defer_count: int,  # kept for future use + parity with observer side
+) -> Path:
+    """Move the review file to archive with action auto-archived-deferred."""
+    del defer_count  # unused today; kept for symmetry + audit
+    return _move_review_file(
+        review.path,
+        archive_root / date_str / review.filename,
+        action="auto-archived-deferred",
+    )
+
+
+# --- Ship 2: unified numbering across observer + review ---------------------
+
+
+def resolve_index(
+    idx: int,
+    candidates: Sequence[Candidate],
+    reviews: Sequence[ReviewItem],
+) -> Tuple[str, object]:
+    """Map a 1-based dashboard index to (kind, object).
+
+    kind is "observer" or "review". Raises IndexError for out-of-range.
+    """
+    if idx < 1:
+        raise IndexError(f"index {idx} below 1")
+    n_obs = len(candidates)
+    if idx <= n_obs:
+        return ("observer", candidates[idx - 1])
+    rel = idx - n_obs
+    if rel <= len(reviews):
+        return ("review", reviews[rel - 1])
+    raise IndexError(
+        f"index {idx} out of range (observer 1..{n_obs}, review "
+        f"{n_obs + 1}..{n_obs + len(reviews)})"
+    )

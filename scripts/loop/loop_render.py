@@ -1,11 +1,17 @@
 """Render the session-start loop dashboard.
 
-Reads:
-  - $K2B_LOOP_CANDIDATES      observer-candidates.md
-  - $K2B_LOOP_REVIEW_DIR      review/ directory (flat .md files)
-  - $K2B_LOOP_RESEARCH_DIR    raw/research/ directory
+Ship 2 merges observer candidates and review items into one routable index
+space. Observer entries carry their severity + area. Review entries show the
+filename. Both participate in `a N / r N / d N` keystrokes. Research-without-
+delivery-link stays informational in Ship 2.
 
-Emits a compact dashboard to stdout. Empty sections collapse to silence.
+Reads:
+  $K2B_LOOP_CANDIDATES          observer-candidates.md
+  $K2B_LOOP_REVIEW_DIR          review/ directory
+  $K2B_LOOP_RESEARCH_DIR        raw/research/ directory
+  $K2B_LOOP_DEFERS              observer-defers.jsonl (Ship 2)
+
+Emits a compact dashboard to stdout. Empty surfaces collapse to silence.
 """
 from __future__ import annotations
 
@@ -60,26 +66,26 @@ def _find_research_without_delivery(research_dir: Path, today: date):
     return out[:3]
 
 
-def _list_review_items(review_dir: Path):
-    if not review_dir.is_dir():
-        return []
-    return sorted(
-        p for p in review_dir.glob("*.md") if p.name not in {"index.md"}
-    )
-
-
 def main() -> int:
     candidates_path = Path(os.environ["K2B_LOOP_CANDIDATES"])
     review_dir = Path(os.environ.get("K2B_LOOP_REVIEW_DIR", ""))
     research_dir = Path(os.environ.get("K2B_LOOP_RESEARCH_DIR", ""))
+    defers_path_str = os.environ.get("K2B_LOOP_DEFERS", "")
     today = date.today()
 
     candidates = (
         loop_lib.parse_candidates(candidates_path) if candidates_path.exists() else []
     )
-    reviews = _list_review_items(review_dir) if str(review_dir) else []
+    reviews = (
+        loop_lib.list_reviews(review_dir) if str(review_dir) else []
+    )
     researches = (
-        _find_research_without_delivery(research_dir, today) if str(research_dir) else []
+        _find_research_without_delivery(research_dir, today)
+        if str(research_dir)
+        else []
+    )
+    defers = (
+        loop_lib.read_defers(Path(defers_path_str)) if defers_path_str else {}
     )
 
     if not candidates and not reviews and not researches:
@@ -88,27 +94,36 @@ def main() -> int:
     lines: list[str] = []
     lines.append(f"## K2B LOOP DASHBOARD -- {today.isoformat()}")
     lines.append("")
-    lines.append("Routing grammar (a N / r N / d N) -- observer candidates only in Ship 1:")
-    lines.append("  a N = ACCEPT item N (append L-ID to learnings, remove from candidates)")
-    lines.append("  r N = REJECT item N (archive to observations.archive, remove from candidates)")
-    lines.append("  d N = DEFER item N (leave for next session; no-op in Ship 1)")
+    lines.append("Routing grammar (a N / r N / d N) -- observer candidates + review queue routable:")
+    lines.append("  a N = ACCEPT item N (observer: learning; review: move to Ready/)")
+    lines.append("  r N = REJECT item N (observer: archive; review: move to Archive/review-archive)")
+    lines.append("  d N = DEFER item N (increments counter; auto-archive on 3rd defer)")
     lines.append(
         "Claude will call scripts/loop/loop-apply.sh with your choices before the next prompt."
     )
     lines.append("")
 
+    index = 0
     if candidates:
         lines.append(f"### Observer candidates ({len(candidates)}) -- ROUTABLE")
-        for i, cand in enumerate(candidates, start=1):
+        for cand in candidates:
+            index += 1
+            defer_count = defers.get((cand.item_id, "observer"), 0)
+            badge = f" (deferred {defer_count}x)" if defer_count else ""
             lines.append(
-                f"  [{i}] [{cand.severity}] {cand.item_id} · {cand.area} · {cand.rule}"
+                f"  [{index}] [{cand.severity}] {cand.item_id} · {cand.area} · {cand.rule}{badge}"
             )
         lines.append("")
 
     if reviews:
-        lines.append(f"### Review queue ({len(reviews)}) -- process with /review")
-        for p in reviews:
-            lines.append(f"  - {p.name}")
+        lines.append(f"### Review queue ({len(reviews)}) -- ROUTABLE")
+        for review in reviews:
+            index += 1
+            defer_count = defers.get((review.item_id, "review"), 0)
+            badge = f" (deferred {defer_count}x)" if defer_count else ""
+            lines.append(
+                f"  [{index}] review · {review.filename}{badge}"
+            )
         lines.append("")
 
     if researches:

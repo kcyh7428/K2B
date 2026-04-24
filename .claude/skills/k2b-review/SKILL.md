@@ -3,6 +3,18 @@ name: k2b-review
 description: Review and process pending content ideas and LinkedIn drafts -- triage review queue items by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /review, "check review", "process review", "what's in review", or wants to review/triage review queue items.
 ---
 
+> [!warning] DEPRECATED in Ship 2 of k2b-integrated-loop
+> The session-start dashboard routes review/ queue items via the same
+> `a N / r N / d N` grammar used for observer candidates. Accept -> move to
+> `review/Ready/`, reject -> move to `Archive/review-archive/YYYY-MM-DD/`,
+> defer -> counter (auto-archive on third defer). Run `/review` directly only
+> when Keith needs the full triage workflow -- video-feedback batch moves,
+> crosslink application via k2b-vault-writer, content-idea promotion to
+> `wiki/content-pipeline/`. Before proceeding with the legacy workflow, emit
+> the sentence "DEPRECATED in Ship 2 of k2b-integrated-loop -- the session-
+> start dashboard covers accept/reject/defer; continue only if you need the
+> full triage workflow" and wait for Keith's explicit go-ahead.
+
 # K2B Review Manager
 
 ## Narrowed Scope (Vault Redesign)

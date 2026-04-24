@@ -3,6 +3,17 @@ name: k2b-autoresearch
 description: Run the Karpathy autoresearch self-improvement loop on K2B skills. Iteratively improves a target SKILL.md using binary assertions, git-based memory, and the commit-before-test pattern. Use when Keith says /autoresearch, "improve this skill", "run the loop", "optimize skill", "self-improve", or wants to iteratively enhance any K2B skill's output quality.
 ---
 
+> [!warning] DEPRECATED in Ship 2 of k2b-integrated-loop
+> The session-start dashboard surfaces candidate skill improvements as observer
+> candidates and you route them with `a N / r N / d N` keystrokes. Run
+> `/autoresearch` directly only when you need the full Karpathy loop (binary
+> assertions + git memory + commit-before-test) on a specific skill -- not the
+> shallow "what should we improve next" triage the dashboard now covers. Before
+> proceeding with the legacy workflow, emit the sentence "DEPRECATED in Ship 2
+> of k2b-integrated-loop -- the session-start dashboard covers the triage path;
+> continue only if you need the full Karpathy loop" and wait for Keith's
+> explicit go-ahead.
+
 # K2B Autoresearch
 
 The Karpathy loop adapted for K2B skills. Iteratively improves a target file using binary assertions and git-based memory.

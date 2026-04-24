@@ -57,10 +57,11 @@ fi
 
 # --- 3. K2B loop dashboard (observer candidates + review + research-delivery) ---
 # Replaces the bare observer-candidates dump. The dashboard numbers observer
-# candidates with stable content-hash IDs so Claude can route one-word
+# candidates AND review items in one index space so Claude can route one-word
 # accept/reject/defer tokens back to scripts/loop/loop-apply.sh before the
-# first prompt response. Review/research items appear for awareness only in
-# Ship 1 (routing is observer-only; Ship 2 extends routing).
+# first prompt response. Ship 2 added review routing and the defer counter;
+# research-without-delivery items are still informational (edit frontmatter
+# or `/lint` -- Ship 3 scope).
 # Silent degradation is forbidden per L-2026-04-22-001: if the renderer
 # errors, surface the failure loudly instead of hiding it.
 dashboard_stderr="$(mktemp)"
@@ -74,11 +75,13 @@ if [ "$dashboard_exit" -ne 0 ]; then
   output+="$(cat "$dashboard_stderr" 2>/dev/null || true)"$'\n\n'
 elif [ -n "$dashboard_output" ]; then
   output+="$dashboard_output"$'\n\n'
-  output+="LOOP ROUTING INSTRUCTION (Ship 1): observer candidates only are routable."$'\n'
-  output+="If Keith's first message contains tokens matching the grammar above (a N / r N / d N),"$'\n'
-  output+="call scripts/loop/loop-apply.sh with the translated --accept N / --reject N / --defer N"$'\n'
-  output+="flags before any other action. Review/research items listed below the observer section"$'\n'
-  output+="are informational in Ship 1; process them with /review or /lint, not the loop grammar."$'\n\n'
+  output+="LOOP ROUTING INSTRUCTION (Ship 2): observer candidates AND review/ items are routable"$'\n'
+  output+="in the same 1..N index space shown above. If Keith's first message contains tokens"$'\n'
+  output+="matching the grammar (a N / r N / d N), call scripts/loop/loop-apply.sh with the"$'\n'
+  output+="translated --accept N / --reject N / --defer N flags before any other action. Defers"$'\n'
+  output+="increment a persistent counter (shown as '(deferred Nx)' next to the item); the third"$'\n'
+  output+="defer auto-archives the item. Research-without-delivery items remain informational --"$'\n'
+  output+="fix the frontmatter or run /lint, not the loop grammar."$'\n\n'
 fi
 rm -f "$dashboard_stderr"
 

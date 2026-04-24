@@ -3,6 +3,18 @@ name: k2b-improve
 description: Full K2B system health dashboard -- reviews self-improvement logs, preference profile, vault health, and skill eval status. This skill should be used when Keith says /improve, "how is K2B doing", "review learnings", "system health", "vault health", "show me errors", "open requests", or wants to audit K2B's overall state and improvement trajectory.
 ---
 
+> [!warning] DEPRECATED in Ship 2 of k2b-integrated-loop
+> The session-start dashboard surfaces observer candidates + review queue +
+> stale-research-without-delivery automatically, and Keith routes them with
+> `a N / r N / d N`. `/improve` was the pull-based equivalent -- the dashboard
+> is the push-based replacement. Run `/improve` directly only when Keith needs
+> the full health deep-dive (vault health, skill eval status, preference
+> profile) that the dashboard does not yet absorb. Before proceeding with the
+> legacy workflow, emit the sentence "DEPRECATED in Ship 2 of k2b-integrated-
+> loop -- the session-start dashboard covers the routine audit; continue only
+> if you need the full health deep-dive" and wait for Keith's explicit
+> go-ahead.
+
 # K2B Self-Improvement Dashboard
 
 Single command for the full picture of how K2B is doing -- learnings, errors, requests, preferences, vault health, and skill eval status.
