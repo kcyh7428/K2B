@@ -28,7 +28,13 @@ const NORMALIZE_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/norm
 const SHELF_WRITER_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/shelf-writer.sh')
 const PENDING_DIR_DEFAULT = resolve(K2B_VAULT_PATH, 'wiki/context/shelves/.pending-confirmation')
 
-const CLASSIFIER_TIMEOUT_MS = 15_000
+// Classifier budget bumped 2026-04-24 after Ship 1B live run: real
+// bilingual OCR text (Dr. Lo card, Keith's actual send) took 25s for
+// classify.sh to return, while the prior 15s limit killed the subprocess
+// before the Promise could resolve. 30s covers real attachment loads +
+// leaves headroom; keeps well under the user-visible typing indicator
+// ceiling.
+const CLASSIFIER_TIMEOUT_MS = 30_000
 const NORMALIZE_TIMEOUT_MS = 5_000
 const SHELF_WRITE_TIMEOUT_MS = 5_000
 
