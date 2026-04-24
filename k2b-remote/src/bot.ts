@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process'
+import { resolve } from 'node:path'
 import { request as httpsRequest } from 'node:https'
 import { Bot, Context } from 'grammy'
 import { HttpsProxyAgent } from 'https-proxy-agent'
@@ -7,12 +9,16 @@ import {
   MAX_MESSAGE_LENGTH,
   TYPING_REFRESH_MS,
   HTTP_PROXY,
+  K2B_PROJECT_ROOT,
+  K2B_VAULT_PATH,
 } from './config.js'
 import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount, getKv, setKv } from './db.js'
 import { runAgent } from './agent.js'
 import { saveConversationTurn, loadPreferenceProfile } from './memory.js'
 import { injectMemoryFromShelves } from './memoryInject.js'
 import { normalizationGate } from './washingMachine.js'
+import { ingestAttachment } from './attachmentIngest.js'
+import { resumePendingConfirmation, type ShelfWriter } from './washingMachineResume.js'
 import { voiceCapabilities, transcribeAudio } from './voice.js'
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage } from './media.js'
 import { logger } from './logger.js'
@@ -137,6 +143,163 @@ function isAuthorised(chatId: number): boolean {
   return String(chatId) === ALLOWED_CHAT_ID
 }
 
+// --- Ship 1B helpers (pending-confirmation resume path) ---
+
+const SHELF_WRITER_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/shelf-writer.sh')
+const PENDING_DIR = resolve(K2B_VAULT_PATH, 'wiki/context/shelves/.pending-confirmation')
+const SHELF_WRITER_TIMEOUT_MS = 10_000
+
+const PINNED_TYPES = new Set(['contact', 'person', 'org', 'appointment', 'decision'])
+
+/**
+ * Shelf-writer helper for pending-confirmation resume. Translates a
+ * parked `{type, fields}` row into shelf-writer.sh args with the
+ * Keith-chosen date. Returns true on clean write, false so the resume
+ * handler can surface "try again" to Telegram.
+ */
+const shelfWriterForResume: ShelfWriter = async (rowUnknown, chosenDate) => {
+  const row = rowUnknown as { type?: string; fields?: Record<string, unknown> }
+  const type = row.type ?? ''
+  const fields = row.fields ?? {}
+  if (!type) {
+    logger.warn({ row }, 'pending-resume: missing row.type, cannot write shelf row')
+    return false
+  }
+  const nameCandidate =
+    pickStringField(fields, 'name') ||
+    pickStringField(fields, 'name_en') ||
+    pickStringField(fields, 'name_zh') ||
+    pickStringField(fields, 'subject') ||
+    'unnamed'
+  const slug = slugifyForShelf(nameCandidate)
+  const attrs: string[] = []
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === null || value === undefined) continue
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue
+    const str = String(value).replace(/[\r\n]+/g, ' ').trim()
+    if (!str) continue
+    const safeKey = key.toLowerCase().replace(/[^a-z0-9_-]+/g, '_')
+    if (!/^[a-z]/.test(safeKey)) continue
+    attrs.push(`${safeKey}:${str}`)
+  }
+  attrs.push(`pinned:${PINNED_TYPES.has(type) ? 'yes' : 'no'}`)
+  attrs.push('source:telegram-pending-resume')
+  const args = [SHELF_WRITER_SCRIPT, '--shelf', 'semantic', '--date', chosenDate, '--type', type, '--slug', slug]
+  for (const a of attrs) {
+    args.push('--attr', a)
+  }
+  return await new Promise<boolean>((resolveFn) => {
+    const child = spawn('bash', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', (c) => {
+      stderr += c.toString()
+    })
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // ignore
+      }
+      logger.error({ slug, type }, 'pending-resume: shelf-writer timed out')
+      resolveFn(false)
+    }, SHELF_WRITER_TIMEOUT_MS)
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        resolveFn(true)
+      } else {
+        logger.error({ slug, type, code, stderr: stderr.trim() }, 'pending-resume: shelf-writer failed')
+        resolveFn(false)
+      }
+    })
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      logger.error({ err: String(err), slug, type }, 'pending-resume: shelf-writer spawn error')
+      resolveFn(false)
+    })
+  })
+}
+
+function pickStringField(fields: Record<string, unknown>, key: string): string {
+  const v = fields[key]
+  return typeof v === 'string' ? v : ''
+}
+
+function slugifyForShelf(s: string): string {
+  const base = s
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return base || 'unnamed'
+}
+
+/**
+ * Rewrite the promptMessageId in a pending-confirmation record once we
+ * know the Telegram message_id of the prompt we just sent. The gate
+ * wrote the original user message's id as promptMessageId; swapping to
+ * the reply's message id makes Keith's reply-to-quote match cleanly.
+ * Best-effort: atomic rewrite via temp + rename.
+ */
+async function rewritePendingPromptId(uuid: string, newPromptMessageId: number): Promise<void> {
+  const { readFile, writeFile, rename, rm } = await import('node:fs/promises')
+  const path = resolve(PENDING_DIR, `${uuid}.json`)
+  const tmp = resolve(PENDING_DIR, `.${uuid}.json.tmp`)
+  try {
+    const raw = await readFile(path, 'utf8')
+    const record = JSON.parse(raw) as Record<string, unknown>
+    record.promptMessageId = newPromptMessageId
+    await writeFile(tmp, JSON.stringify(record, null, 2), 'utf8')
+    await rename(tmp, path)
+  } catch (err) {
+    // Best-effort cleanup of any stale temp file so a later retry isn't blocked.
+    await rm(tmp, { force: true }).catch(() => {
+      // ignore
+    })
+    throw err
+  }
+}
+
+/**
+ * Startup-time pending cleanup: remove any `.pending-confirmation/*.json`
+ * files older than TTL, and drop stray `.tmp` files from a previous run
+ * that failed mid-write. Called once from createBot. Non-fatal: logs and
+ * continues on failure so the bot still boots.
+ */
+const PENDING_TTL_MS = 24 * 60 * 60 * 1000  // 24h
+
+async function sweepExpiredPending(): Promise<void> {
+  try {
+    const { readdirSync, statSync, rmSync } = await import('node:fs')
+    const now = Date.now()
+    const names = readdirSync(PENDING_DIR)
+    let expired = 0
+    let tmpCleaned = 0
+    for (const name of names) {
+      const full = resolve(PENDING_DIR, name)
+      try {
+        const stat = statSync(full)
+        if (name.endsWith('.tmp')) {
+          rmSync(full)
+          tmpCleaned += 1
+        } else if (name.endsWith('.json') && now - stat.mtimeMs > PENDING_TTL_MS) {
+          rmSync(full)
+          expired += 1
+        }
+      } catch {
+        // ignore per-file errors; continue
+      }
+    }
+    if (expired > 0 || tmpCleaned > 0) {
+      logger.info({ expired, tmpCleaned }, 'pending-cleanup: swept .pending-confirmation/')
+    }
+  } catch (err) {
+    // Pending dir may not exist yet on a fresh deploy; that's fine.
+    logger.debug({ err: String(err) }, 'pending-cleanup: sweep skipped')
+  }
+}
+
 // --- Main message handler ---
 
 async function handleMessage(
@@ -150,6 +313,51 @@ async function handleMessage(
   let gatePromise: Promise<unknown> | undefined
 
   try {
+    // --- Ship 1B pending-confirmation interceptor ------------------------
+    // Before any Washing Machine / agent work, check whether this message
+    // is a reply to a pending-confirmation prompt. Matches by Telegram
+    // reply-to-message-id first, then falls through to sole-pending-for-
+    // chat. Short-circuits the rest of handleMessage on any resolve path
+    // so the agent is never called with Keith's "1"/"2"/date reply.
+    const replyToMessageId =
+      (ctx.message as { reply_to_message?: { message_id: number } } | undefined)
+        ?.reply_to_message?.message_id ?? null
+    try {
+      const resume = await resumePendingConfirmation(
+        { chatId, replyText: rawText, replyToMessageId },
+        { pendingDir: PENDING_DIR, shelfWriter: shelfWriterForResume }
+      )
+      if (resume.status === 'resolved') {
+        await ctx.reply(`Saved. Using date ${resume.chosenDate}.`)
+        return
+      }
+      if (resume.status === 'retry') {
+        await ctx.reply(resume.message ?? 'Reply with 1, 2, or a date in YYYY-MM-DD.')
+        return
+      }
+      if (resume.status === 'corrupt-record') {
+        await ctx.reply('That pending capture is malformed; discarding. Please send the card again.')
+        return
+      }
+      if (resume.status === 'ambiguous') {
+        await ctx.reply(
+          resume.message ??
+            'Multiple pending confirmations in this chat. Reply-to-quote the specific prompt.'
+        )
+        return
+      }
+      if (resume.status === 'error') {
+        logger.error({ uuid: resume.uuid, chatId }, 'pending-resume: reported error, notifying user')
+        await ctx.reply(
+          resume.message ?? 'Something went wrong resolving the pending capture. Check logs.'
+        )
+        return
+      }
+      // status === 'not-found' → fall through to normal message handling
+    } catch (err) {
+      logger.warn({ err: String(err), chatId }, 'pending-resume intercept threw; continuing with normal handleMessage')
+    }
+
     // Load preference profile and check for changes (hash persisted to KV for durability across restarts)
     const { text: preferenceContext, hash: profileHash } = loadPreferenceProfile()
     const kvKey = `profile_hash:${chatId}`
@@ -272,6 +480,14 @@ export function createBot(): Bot {
   if (!TELEGRAM_BOT_TOKEN) {
     throw new Error('TELEGRAM_BOT_TOKEN not set. Run: npm run setup')
   }
+
+  // Ship 1B: best-effort startup sweep of stale pending-confirmation files.
+  // Runs once at createBot and continues if the directory is missing or
+  // the sweep fails. Keeps .pending-confirmation/ from growing unbounded
+  // when users send a card and then go silent.
+  sweepExpiredPending().catch((err: unknown) => {
+    logger.warn({ err: String(err) }, 'pending-cleanup: sweep threw (continuing)')
+  })
 
   // Stall-defense timeout ladder (innermost to outermost):
   //   Telegram long-poll     50s   (bot.start timeout, server-side wait)
@@ -421,8 +637,65 @@ export function createBot(): Bot {
       const largest = photos[photos.length - 1]
       const localPath = await downloadMedia(largest.file_id)
       const caption = ctx.message.caption ?? ''
-      const message = buildPhotoMessage(localPath, caption)
-      await handleMessage(ctx, message)
+      const chatId = String(ctx.chat.id)
+      // Telegram sends seconds; washingMachine needs epoch-ms.
+      const messageTsMs = (ctx.message.date ?? Math.floor(Date.now() / 1000)) * 1000
+      const promptMessageId = ctx.message.message_id
+
+      // Ship 1B: route through the VLM attachment-ingest pipeline BEFORE
+      // the agent call. OCR text is produced by extract-attachment.sh and
+      // fed through normalizationGate. On pending-confirmation, post the
+      // prompt and short-circuit; Keith's reply is caught by the
+      // pending-resume interceptor at the top of handleMessage.
+      //
+      // Error differentiation: "unsupported format" and similar expected
+      // rejects log at info level (dropping through to agent-only path is
+      // correct UX). Everything else logs at error so broken extractors
+      // are visible without digging through debug logs.
+      const ingest = await ingestAttachment({
+        type: 'photo',
+        path: localPath,
+        caption,
+        messageTsMs,
+        chatId,
+        promptMessageId,
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        const benign = /unsupported mime|GIF not supported|image not found/i.test(msg)
+        if (benign) {
+          logger.info({ err: msg, chatId }, 'attachmentIngest: benign reject; agent-only path')
+        } else {
+          logger.error(
+            { err: msg, chatId },
+            'attachmentIngest failed; investigate extractor. Falling through to agent-only path.'
+          )
+        }
+        return null
+      })
+
+      if (ingest?.pendingPrompt) {
+        // Post the confirmation prompt; Telegram records its message_id so
+        // Keith's reply-to-quote routes to the right pending UUID.
+        const sent = await ctx.reply(ingest.pendingPrompt)
+        if (ingest.gate.pendingUuid) {
+          rewritePendingPromptId(ingest.gate.pendingUuid, sent.message_id).catch((err: unknown) => {
+            logger.warn(
+              { err: String(err), uuid: ingest.gate.pendingUuid },
+              'pending-ingest: prompt id rewrite failed; resume still routes by sole-pending fallback'
+            )
+          })
+        }
+        return
+      }
+
+      // Append OCR text as context so the agent sees what was extracted,
+      // even on the normal (no-contradiction) path. The agent response
+      // runs through handleMessage below.
+      const wrapper = buildPhotoMessage(localPath, caption)
+      const messageWithOcr = ingest?.ocrText
+        ? `${wrapper}\n\n[OCR extracted]: ${ingest.ocrText}`
+        : wrapper
+      await handleMessage(ctx, messageWithOcr)
     } catch (err) {
       logger.error({ err }, 'Photo processing failed')
       await ctx.reply('Failed to process photo.')
@@ -434,8 +707,57 @@ export function createBot(): Bot {
       const doc = ctx.message.document
       const localPath = await downloadMedia(doc.file_id, doc.file_name ?? undefined)
       const caption = ctx.message.caption ?? ''
-      const message = buildDocumentMessage(localPath, doc.file_name ?? 'unknown', caption)
-      await handleMessage(ctx, message)
+      const filename = doc.file_name ?? 'unknown'
+      const chatId = String(ctx.chat.id)
+      const messageTsMs = (ctx.message.date ?? Math.floor(Date.now() / 1000)) * 1000
+      const promptMessageId = ctx.message.message_id
+
+      // Route PDFs / text docs through the Ship 1B ingest pipeline too.
+      // Binary documents the extractor can't read exit non-zero; the
+      // catch below differentiates benign rejects (unsupported mime) from
+      // real extractor failures so operators can tell them apart.
+      const ingest = await ingestAttachment({
+        type: 'document',
+        path: localPath,
+        caption,
+        messageTsMs,
+        chatId,
+        promptMessageId,
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        const benign = /unsupported|scanned PDF|document path not found/i.test(msg)
+        if (benign) {
+          logger.info(
+            { err: msg, chatId, filename },
+            'document ingest: benign reject; agent-only path'
+          )
+        } else {
+          logger.error(
+            { err: msg, chatId, filename },
+            'document ingest failed; investigate extractor. Falling through to agent-only path.'
+          )
+        }
+        return null
+      })
+
+      if (ingest?.pendingPrompt) {
+        const sent = await ctx.reply(ingest.pendingPrompt)
+        if (ingest.gate.pendingUuid) {
+          rewritePendingPromptId(ingest.gate.pendingUuid, sent.message_id).catch((err: unknown) => {
+            logger.warn(
+              { err: String(err), uuid: ingest.gate.pendingUuid },
+              'pending-ingest: prompt id rewrite failed'
+            )
+          })
+        }
+        return
+      }
+
+      const wrapper = buildDocumentMessage(localPath, filename, caption)
+      const messageWithOcr = ingest?.ocrText
+        ? `${wrapper}\n\n[Document text]: ${ingest.ocrText}`
+        : wrapper
+      await handleMessage(ctx, messageWithOcr)
     } catch (err) {
       logger.error({ err }, 'Document processing failed')
       await ctx.reply('Failed to process document.')
