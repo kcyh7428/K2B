@@ -85,3 +85,5 @@ k2b-dashboard/dist/
 
 # pytest transient cache
 .pytest_cache/
+plans/Parked/
+plans/Shipped/
