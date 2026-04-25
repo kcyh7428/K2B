@@ -2,6 +2,39 @@
 
 ---
 
+## 2026-04-25 -- k2b-remote SILENT_CHAT_IDS allowlist -- enable K2Bi alert sink without rejection-reply pollution
+
+**Commit:** `63c38e8 feat(k2b-remote): add SILENT_CHAT_IDS allowlist for one-way alert chats`
+
+**What shipped:** Auth middleware in `k2b-remote/src/bot.ts` gains a silent-drop branch that fires before the existing `isAuthorised()` gate. Chats listed in the new `SILENT_CHAT_IDS` env var (comma-separated) have ALL inbound updates dropped without invoking handlers, posting auto-replies, or warning at log level. Bot can still post outbound to those chats. Initial deployment: K2Bi alerts supergroup chat_id `-1003906978345` added to MacBook + Mac Mini `.env`, K2Bi-side `~/Projects/K2Bi/.env` created with `TELEGRAM_BOT_TOKEN` + `K2BI_TELEGRAM_CHAT_ID` (mode 600, gitignored, mirrors K2B's k2b-remote/.env pattern). Outbound API smoke test landed a `[TEST]` message in the K2Bi Alerts group cleanly. Mac Mini pm2 restarted with `--update-env`, new pid 10332 confirmed online via `pm2 logs k2b-remote` "K2B Remote is running".
+
+**Why this ship now and not later:** Bundle 5a m2.9 (invest-alert) lands next in the K2Bi queue and posts Telegram alerts for Q40-class outages. Without this fix, every alert post in the K2Bi Alerts group would race against the K2B bot's "Not authorized." auto-reply for any inbound system message in the same chat, polluting the alerting signal. Decoupling lands BEFORE m2.9 deploys so the alert channel stays clean from day 1.
+
+**Named bug killed:** k2b-remote auto-replied "Not authorized." to every inbound message in the K2Bi Alerts supergroup -- including Telegram system events on group creation -- because the auth middleware had a single ALLOWED_CHAT_ID slot. Adding `-1003906978345` to ALLOWED_CHAT_ID would have authorized full command processing in the K2Bi alert channel (wrong direction). Adding it to SILENT_CHAT_IDS dropped both the rejection reply AND the unwanted command-processing surface in one move. Verified by sending an outbound `[TEST]` message via the bot API to the supergroup -- API returned ok=true, message landed.
+
+**Adversarial review (Tier 3, single-pass per `/ship` Tier 3 contract):** Codex skipped (EISDIR on untracked `plans/Parked/` per the runner's known-hazard auto-fallback), Kimi K2.6 ran NEEDS-ATTENTION with 8 findings.
+- Fixed inline (3): #3 added `logger.debug` for silent-drop traffic with chatId + updateType so audit trail is preserved at debug level (security blindspot mitigation); #4 added regex validation `/^-?\d+$/` for SILENT_CHAT_IDS entries with startup `console.warn` for invalid entries (catches misconfig like `'-1003906978345,abc'`); #8 rewrote the silent-drop comment to accurately describe full inbound-drop behavior (was previously understated as "no auto-reply only").
+- Accepted as design intent (3): #1 silent-drop deliberately suppresses ALL inbound (commands shouldn't respond in one-way alert chats; reviewer's recommendation to call `next()` would defeat the purpose); #2 String/number type concern is type-correct via `String(ctx.chat.id)` + `Array.includes()` (#4 regex covers the misconfig vector); #5 bypass-isAuthorised IS the architectural point (#3 logging adds the missing observability). All three accept-rationale notes are in the commit body for the audit trail.
+- Deferred (2): #6 outbound `sendTelegramMessage` allowlist (out of scope; this ship is inbound auth only); #7 silent-drop unit tests (auth middleware has no existing tests; consistent posture preserved; defer to broader auth-test ship).
+- Review log: `.code-reviews/2026-04-25T04-01-24Z_85ca5e.log`.
+
+**Feature status change:** none. `--no-feature` ship -- this is K2B-side enabling work for the K2Bi Bundle 5a m2.9 (invest-alert) decomposition decided 2026-04-24 afternoon HKT. K2Bi-side planning + queue updates already landed in `K2Bi-Vault/wiki/planning/` (Resume Card, upcoming-sessions §"Queue revision 2026-04-24", phase-2-bundles §"Bundle 5 decomposition (2026-04-24)", new bundle-5a-m2.9-invest-alert-kickoff.md).
+
+**Deferred (advisory ownership-drift):** `scripts/audit-ownership.sh` reported 5 rules with 39 offender files. All pre-existing in vault docs + observations.archive + ownership-watchlist self-reference; not introduced by this commit. Same drift surface as recent ships.
+
+**Key decisions:**
+- Silent-drop list, not "send-only" list. The bot has NO outbound-allowlist enforcement today and didn't gain one in this ship -- outbound was already wide open. The new env var only governs inbound-handler suppression. If outbound auth becomes a concern, that's a separate ship (#6 deferred).
+- Single-pass review per Tier 3 contract. Three real findings fixed inline + three design-intent overrides documented + two deferred with explicit scope reasons. Did not iterate to clean APPROVE -- per the runner spec, Tier 3 iteration is human-driven across `/ship` invocations, not bash-loop within one. Commit body lists every finding's disposition so the next ship doesn't re-litigate.
+- K2Bi-side `.env` pattern mirrors K2B's k2b-remote/.env (mode 600, gitignored, dotenv-loaded). Avoids hard-coding secrets in shell rc files; survives pm2 restarts on Mac Mini via the deploy script's `--update-env` flag.
+
+**Follow-ups:**
+- Bot token rotation pending (Keith pasted token in chat during setup; Keith said "later"; before end of week per hygiene). Update `TELEGRAM_BOT_TOKEN` in `~/Projects/K2B/k2b-remote/.env` + `~/Projects/K2Bi/.env` on both machines after `/revoke` via @BotFather.
+- Mac Mini re-sync needed for the inline review fixes (logger.debug + regex validation + comment) since the earlier in-session deploy ran BEFORE those edits. Functionally identical silent-drop behavior either way; deferred to step 12 sync question.
+- Outbound `sendTelegramMessage` allowlist (Kimi finding #6 deferred). Worth a separate ship if K2B grows multiple long-lived outbound chats with different trust levels.
+- Auth middleware unit tests (Kimi finding #7 deferred). Whole `bot.use(auth)` path has no existing test coverage; folding tests in here would be inconsistent posture. Defer to a dedicated auth-test ship.
+
+---
+
 ## 2026-04-24 -- Integrated Loop Ship 2 -- defer counter + review routing + deprecation notices
 
 **Commit:** `e5b3bcc feat(loop): ship 2 -- defer counter + review routing + deprecation notices`
