@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-04-25 -- gitignore plans/Parked + plans/Shipped to clear Codex EISDIR pre-flight hazard
+
+**Commit:** `9ff5dfc chore(infra): gitignore plans/Parked + plans/Shipped to clear Codex EISDIR pre-flight hazard`
+
+**What shipped:** Two new entries in `.gitignore` for `plans/Parked/` and `plans/Shipped/`. The review runner's pre-flight check (`scripts/lib/review_runner.py:102-149`) detects untracked top-level directories that would crash Codex's working-tree walk with EISDIR ("Is A Directory") and pre-emptively routes to MiniMax/Kimi fallback. Both K2B and K2Bi were hitting this pre-flight on most aggressive-bucket reviews this month -- K2B's `plans/Parked/` + `plans/Shipped/` (Claude Code session working notes), K2Bi's `logs/` (engine output). With the K2B-side dirs gitignored, the `--exclude-standard` flag respects them and they no longer appear in `git ls-files --others --exclude-standard --directory` output. Verified post-fix: untracked-directories listing returns empty, runner hazard check passes, Codex ran successfully on this very commit's review pass (first time in weeks of K2B aggressive-bucket reviews; previous reviews all auto-fell-back to Kimi).
+
+**Named bug killed:** every aggressive-bucket review since at least 2026-04-21 logged `REVIEWER_SKIP reviewer=codex reason=codex --scope working-tree would EISDIR on 'plans/Parked'` and routed to Kimi fallback. Net effect: capital-path commits on `execution/risk/**`, `k2b-remote/src/**`, etc. were getting one-pass MiniMax review when CLAUDE.md prefers Codex iterate-until-clean. With this fix, Codex is back as primary on aggressive-bucket commits.
+
+**Adversarial review:** Two Codex passes (Tier 3, single-pass per /ship -- human-driven iteration meant a second /ship invocation when pass 1's finding pivoted the architectural approach).
+
+- Pass 1 (.code-reviews/2026-04-25T04-57-43Z_bd9e8a.log) on the .gitignore +2 lines diff: NEEDS-ATTENTION, 1 MEDIUM finding -- "broad directory ignores cause future plan files under plans/Parked/ or plans/Shipped/ to disappear from git status unless force-added; recommended committing the existing plan archive instead."
+- Pass 2 (.code-reviews/2026-04-25T05-04-23Z_b86508.log) on the alternative "commit the archive" path (10 plan files, ~5950 lines markdown): NEEDS-ATTENTION, 1 HIGH + 1 MEDIUM -- handoff plan self-references its pre-move path (broken workflow), and one plan file contains a personal Telegram chat_id that would land in permanent git history.
+
+**Architect call:** accept pass-1 finding as design intent, reject commit-archive path. Rationale: `plans/Parked/` and `plans/Shipped/` are Claude Code session working notes, not canonical archive. Canonical plan/decision home is `K2B-Vault/wiki/concepts/feature_*.md` per CLAUDE.md File Conventions (separate repo, Syncthing-synced). Working notes do not need permanent git history; canonical archive is already preserved durably in vault. Auditing + redacting + maintaining 10+ scratch files is ongoing maintenance cost vs the actual archive (vault) which already provides version history via Syncthing + K2B-Vault git.
+
+**Side cleanup:** deleted two empty leftover test-fixture directories (`tests/fixtures/loop-mvp-ship2/Archive` + `observations.archive`). They were 0-byte cruft from pre-sandbox test runs (the current `tests/loop/loop-mvp-ship2.test.sh` uses sandbox HOME paths under `$SBX_VAULT` and `$SBX_CTX`). Empty dirs are not git-tracked so they don't appear in this commit's diff but they were the second EISDIR hazard alongside `plans/Parked/` + `plans/Shipped/`.
+
+**Feature status change:** none. `--no-feature` ship -- pure infra cleanup that re-enables Codex on aggressive-bucket reviews.
+
+**Tests:** none added. `.gitignore` change has no test surface; verification was the runner's hazard check returning empty + Codex actually running on this commit's review.
+
+**Deferred (advisory ownership-drift):** `scripts/audit-ownership.sh` reported same 5 rules / 39 offender files as recent ships (pre-existing vault docs + observations.archive + ownership-watchlist self-reference). Not introduced by this commit.
+
+**Key decisions:**
+- The right architectural fix was NOT what Codex suggested in pass 1 (commit the plan archive). Pass 2 surfaced exactly why -- the plan files contain stale self-references and personal identifiers that would compound the privacy/audit concerns the original gitignore approach already addressed. Two-pass review converged on the correct call: gitignore is the simpler fix; the working-notes-vs-canonical-archive distinction makes pass 1's concern moot.
+- Single-pass-per-/ship Tier 3 contract was respected: each architectural variant got its own /ship review pass, with the architect making the override call between them. This is "human-driven iteration" working as designed -- not a bash-loop, but two distinct /ship invocations bookending the architect's pivot.
+- `.gitignore` choice over `.gitkeep` placeholder approach: `.gitkeep` would have committed empty placeholder files in `plans/Parked/` and `plans/Shipped/`, making the dirs "tracked" so the runner's hazard check passes. But `.gitkeep` doesn't address the underlying point -- those dirs ARE working notes that don't belong in git. Gitignoring is more semantically correct.
+
+**Follow-ups:**
+- K2Bi-side equivalent fix (`logs/` directory). Different repo; K2Bi session handles it. Cross-project rule: K2B architect proposes, K2Bi session implements.
+- Periodic check that no NEW untracked top-level directories appear in K2B working tree. The hazard check is a runtime gate, not a permanent guarantee.
+
+---
+
 ## 2026-04-25 -- k2b-remote SILENT_CHAT_IDS allowlist -- enable K2Bi alert sink without rejection-reply pollution
 
 **Commit:** `63c38e8 feat(k2b-remote): add SILENT_CHAT_IDS allowlist for one-way alert chats`
