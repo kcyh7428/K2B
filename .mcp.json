@@ -16,6 +16,9 @@
       "env": {
         "OBSIDIAN_API_KEY": "28f910d06b65def6955c4a7b2b2ae77e09d83145001767276b38f460e9b0c3d1"
       }
+    },
+    "hostinger": {
+      "command": "/Users/keithmbpm2/Projects/K2B/scripts/run-hostinger-mcp.sh"
     }
   }
 }
