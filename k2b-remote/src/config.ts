@@ -19,6 +19,23 @@ export const K2B_VAULT_PATH = env['VAULT_PATH'] ?? resolve(K2B_PROJECT_ROOT, '..
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
+const SILENT_CHAT_IDS_RAW = (env['SILENT_CHAT_IDS'] ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+const VALID_CHAT_ID_RE = /^-?\d+$/
+const SILENT_CHAT_IDS_INVALID = SILENT_CHAT_IDS_RAW.filter((s) => !VALID_CHAT_ID_RE.test(s))
+if (SILENT_CHAT_IDS_INVALID.length > 0) {
+  console.warn(
+    `[config] SILENT_CHAT_IDS contains ${SILENT_CHAT_IDS_INVALID.length} invalid entr${
+      SILENT_CHAT_IDS_INVALID.length === 1 ? 'y' : 'ies'
+    } (must match /^-?\\d+$/, will be ignored): ${JSON.stringify(SILENT_CHAT_IDS_INVALID)}`
+  )
+}
+export const SILENT_CHAT_IDS: string[] = SILENT_CHAT_IDS_RAW.filter((s) =>
+  VALID_CHAT_ID_RE.test(s)
+)
+
 // Voice - Groq
 export const GROQ_API_KEY = env['GROQ_API_KEY'] ?? ''
 

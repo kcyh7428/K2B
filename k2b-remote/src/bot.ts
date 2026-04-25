@@ -6,6 +6,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent'
 import {
   TELEGRAM_BOT_TOKEN,
   ALLOWED_CHAT_ID,
+  SILENT_CHAT_IDS,
   MAX_MESSAGE_LENGTH,
   TYPING_REFRESH_MS,
   HTTP_PROXY,
@@ -538,10 +539,28 @@ export function createBot(): Bot {
 
   // Auth middleware
   bot.use(async (ctx, next) => {
-    if (ctx.chat && !isAuthorised(ctx.chat.id)) {
-      logger.warn({ chatId: ctx.chat.id }, 'Unauthorized access attempt')
-      await ctx.reply('Not authorized.')
-      return
+    if (ctx.chat) {
+      const chatIdStr = String(ctx.chat.id)
+      // Silent-drop list: bot can post outbound to these chats, but ALL
+      // inbound updates from them are dropped without invoking any handler
+      // (no commands, no auto-reply, no warn log). Used for chats where the
+      // bot is a one-way alert sink (e.g. K2Bi alerts supergroup) so the
+      // channel stays clean -- only bot-originated alert posts appear, no
+      // command replies, no "Not authorized." rejections. Logged at debug
+      // level so audit-curious operators can see traffic without noise at
+      // default log levels.
+      if (SILENT_CHAT_IDS.includes(chatIdStr)) {
+        logger.debug(
+          { chatId: ctx.chat.id, updateType: ctx.update ? Object.keys(ctx.update).filter((k) => k !== 'update_id')[0] : 'unknown' },
+          'silent-drop inbound update'
+        )
+        return
+      }
+      if (!isAuthorised(ctx.chat.id)) {
+        logger.warn({ chatId: ctx.chat.id }, 'Unauthorized access attempt')
+        await ctx.reply('Not authorized.')
+        return
+      }
     }
     await next()
   })
