@@ -62,6 +62,11 @@ scripts/generate-org-chart.py
 /k2b-remote/.claude/
 /k2b-dashboard/.claude/
 
+# Editor config. Same EISDIR hazard as .claude/worktrees/ above: an untracked
+# .vscode/ directory crashes Codex's read() walk and forces scripts/review.sh
+# to fall back to MiniMax on every /ship.
+.vscode/
+
 # Python bytecode cache
 __pycache__/
 *.pyc

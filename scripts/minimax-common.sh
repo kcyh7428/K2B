@@ -17,7 +17,7 @@ set -euo pipefail
 # zsh-specific control flow). If that assumption ever stops holding, the
 # better fix is a dedicated ~/.minimax-env credentials-only file updated in
 # all three callers at once (MiniMax review note 2026-04-21).
-if [[ -z "${MINIMAX_API_KEY:-}" && -f "$HOME/.zshrc" ]]; then
+if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) && -f "$HOME/.zshrc" ]]; then
   set +u
   source "$HOME/.zshrc" >/dev/null 2>&1 || true
   set -u
@@ -25,6 +25,33 @@ fi
 
 MINIMAX_API_KEY="${MINIMAX_API_KEY:?Set MINIMAX_API_KEY in your environment}"
 MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
+
+# --- LLM text-provider switch (Kimi K2.6 primary, MiniMax fallback) ---
+# 2026-04-25: MiniMax Plus plan started returning status_code 2061 "your current
+# token plan not support model" for every text model (M2.7, M2.5, abab6.5, etc.).
+# Kimi K2.6 via the /coding/v1 Anthropic-compatible endpoint is the new primary.
+# Image generation and TTS stay on MiniMax -- Kimi is text-only. To roll back
+# to MiniMax for text when MiniMax releases a supported model, export
+# K2B_LLM_PROVIDER=minimax (no other changes needed).
+K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
+KIMI_API_HOST="${KIMI_API_HOST:-https://api.kimi.com/coding}"
+KIMI_DEFAULT_MODEL="${KIMI_DEFAULT_MODEL:-kimi-for-coding}"
+# Convenience exposed to callers: use this instead of hardcoding model ids.
+if [[ "$K2B_LLM_PROVIDER" == "kimi" ]]; then
+  K2B_LLM_MODEL="${K2B_LLM_MODEL:-$KIMI_DEFAULT_MODEL}"
+else
+  K2B_LLM_MODEL="${K2B_LLM_MODEL:-MiniMax-M2.7}"
+fi
+
+# KIMI_API_KEY must be in env. The .zshrc-source fallback above already covers
+# non-interactive shells (cron, pm2, Bash tool) if the export is present. If
+# KIMI_API_KEY is still missing, fail loud with remediation.
+if [[ "$K2B_LLM_PROVIDER" == "kimi" && -z "${KIMI_API_KEY:-}" ]]; then
+  echo "ERROR: KIMI_API_KEY is not set." >&2
+  echo "       Add to ~/.zshrc: export KIMI_API_KEY=\"sk-kimi-...\"" >&2
+  echo "       Or export K2B_LLM_PROVIDER=minimax to fall back." >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # Detect vault path: Mac Mini (fastshower) vs MacBook (keithmbpm2)
 if [ -n "${K2B_VAULT:-}" ]; then
@@ -48,9 +75,29 @@ slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
 }
 
-# Make an authenticated API call
-# Usage: mm_api POST /v1/image_generation '{"model":"image-01",...}'
+# Make an authenticated API call.
+# Routes text chatcompletion requests to Kimi (when K2B_LLM_PROVIDER=kimi);
+# everything else (image_generation, t2a_v2, ...) always hits MiniMax because
+# Kimi is text-only. Callers keep writing OpenAI-style bodies -- the Kimi
+# branch translates to/from Anthropic Messages on the wire.
+#
+# Usage: mm_api POST /v1/text/chatcompletion_v2 '{"model":"...","messages":[...],...}'
+#        mm_api POST /v1/image_generation      '{"model":"image-01",...}'
 mm_api() {
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+
+  if [[ "$K2B_LLM_PROVIDER" == "kimi" && "$path" == /v1/text/chatcompletion_v2* ]]; then
+    _mm_api_kimi_text "$method" "$body"
+    return $?
+  fi
+  _mm_api_minimax "$method" "$path" "$body"
+}
+
+# Direct MiniMax call -- original mm_api behavior, used for image/TTS always
+# and for text when K2B_LLM_PROVIDER=minimax (manual rollback).
+_mm_api_minimax() {
   local method="$1"
   local path="$2"
   local body="${3:-}"
@@ -76,7 +123,6 @@ mm_api() {
     return 1
   }
 
-  # Check for API-level errors
   local error_code
   error_code=$(echo "$response" | jq -r '.base_resp.status_code // .error_code // empty' 2>/dev/null)
   if [[ -n "$error_code" && "$error_code" != "0" && "$error_code" != "null" ]]; then
@@ -88,6 +134,90 @@ mm_api() {
   fi
 
   echo "$response"
+}
+
+# Kimi K2.6 (Anthropic Messages shape at /coding/v1/messages).
+# Translates an OpenAI chatcompletion_v2 body IN, and returns an OpenAI-shape
+# envelope OUT so existing jq callers see no wire difference:
+#   .choices[0].message.content    <- content[0].text
+#   .usage.{prompt,completion,total}_tokens  (Kimi already emits these)
+#   .base_resp.status_code = 0     (injected so existing error checks pass)
+_mm_api_kimi_text() {
+  local method="$1"
+  local body="${2:-}"
+
+  if [[ -z "$body" ]]; then
+    echo "ERROR: _mm_api_kimi_text requires a JSON body" >&2
+    return 1
+  fi
+
+  # Translate OpenAI -> Anthropic Messages:
+  #   - collapse any system-role messages into a single top-level `system` string
+  #   - drop `response_format` (Anthropic has no equivalent; system prompts already say "return JSON")
+  #   - force model to the configured Kimi model (callers may still carry a MiniMax-* id)
+  local kimi_body
+  kimi_body=$(jq -c --arg model "$K2B_LLM_MODEL" '
+    {
+      model: $model,
+      max_tokens: (.max_tokens // 4096),
+      messages: [.messages[] | select(.role != "system")]
+    }
+    + ( if (.messages | map(select(.role=="system")) | length) > 0
+        then { system: (.messages | map(select(.role=="system") | .content) | join("\n\n")) }
+        else {}
+        end )
+    + ( if has("temperature") then { temperature: .temperature } else {} end )
+  ' <<<"$body" 2>/dev/null) || {
+    echo "ERROR: failed to translate request body to Kimi shape" >&2
+    echo "$body" >&2
+    return 1
+  }
+
+  local response
+  response=$(curl \
+    --silent --show-error --fail-with-body \
+    --max-time 300 \
+    -X "$method" \
+    -H "x-api-key: ${KIMI_API_KEY}" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "Content-Type: application/json" \
+    -d "$kimi_body" \
+    "${KIMI_API_HOST}/v1/messages" 2>&1) || {
+    echo "ERROR: Kimi API call failed" >&2
+    echo "$response" >&2
+    return 1
+  }
+
+  # Kimi error shape: {"error":{"type":"...","message":"..."}}
+  local err_type
+  err_type=$(echo "$response" | jq -r '.error.type // empty' 2>/dev/null)
+  if [[ -n "$err_type" ]]; then
+    local err_msg
+    err_msg=$(echo "$response" | jq -r '.error.message // "unknown"' 2>/dev/null)
+    echo "ERROR: Kimi API error ${err_type}: ${err_msg}" >&2
+    echo "$response" >&2
+    return 1
+  fi
+
+  # Translate Anthropic Messages response -> OpenAI envelope.
+  # Kimi already emits prompt_tokens/completion_tokens/total_tokens under .usage,
+  # so usage passes through unchanged.
+  echo "$response" | jq -c '
+    {
+      id: .id,
+      model: .model,
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: ((.content // []) | map(select(.type=="text") | .text) | join(""))
+        },
+        finish_reason: (.stop_reason // "stop")
+      }],
+      usage: (.usage // {}),
+      base_resp: { status_code: 0, status_msg: "success" }
+    }
+  '
 }
 
 # Download a file from URL

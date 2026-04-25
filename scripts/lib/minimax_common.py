@@ -4,6 +4,7 @@ Always uses the global endpoint (api.minimaxi.com), never the China-only
 .chat host. See ~/.claude/projects/.../memory/minimax_endpoint.md.
 """
 
+import http.client
 import json
 import os
 import random
@@ -17,6 +18,14 @@ from pathlib import Path
 MINIMAX_API_HOST = os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com")
 CHAT_PATH = "/v1/text/chatcompletion_v2"
 DEFAULT_TIMEOUT_S = 300
+
+# Kimi K2.6 via the Anthropic-compatible /coding endpoint. Primary text
+# provider as of 2026-04-25 -- see scripts/minimax-common.sh header.
+# Image/TTS stay on MiniMax (Kimi is text-only). Rollback: K2B_LLM_PROVIDER=minimax.
+K2B_LLM_PROVIDER = os.environ.get("K2B_LLM_PROVIDER", "kimi").strip() or "kimi"
+KIMI_API_HOST = os.environ.get("KIMI_API_HOST", "https://api.kimi.com/coding")
+KIMI_MESSAGES_PATH = "/v1/messages"
+KIMI_DEFAULT_MODEL = os.environ.get("KIMI_DEFAULT_MODEL", "kimi-for-coding")
 
 # Transient server-side HTTP statuses worth retrying. 529 = "overloaded"
 # (MiniMax congestion peak), 502/503/504 = upstream gateway hiccups. Anything
@@ -65,6 +74,25 @@ def load_api_key() -> str:
     )
 
 
+def load_kimi_api_key() -> str:
+    key = os.environ.get("KIMI_API_KEY", "").strip()
+    if key:
+        return key
+    zshrc = Path.home() / ".zshrc"
+    if zshrc.exists():
+        match = re.search(
+            r'^\s*export\s+KIMI_API_KEY\s*=\s*"([^"]+)"',
+            zshrc.read_text(),
+            re.MULTILINE,
+        )
+        if match:
+            return match.group(1)
+    raise MinimaxError(
+        "KIMI_API_KEY not set and not found in ~/.zshrc. "
+        "Export it or set K2B_LLM_PROVIDER=minimax to fall back."
+    )
+
+
 def chat_completion(
     model: str,
     messages: list,
@@ -76,10 +104,27 @@ def chat_completion(
     response_format: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT_S,
 ) -> dict:
-    """POST to chatcompletion_v2 and return the parsed JSON response.
+    """POST a chat-completion request and return the parsed JSON response.
+
+    Routes to Kimi K2.6 when K2B_LLM_PROVIDER=kimi (default as of 2026-04-25,
+    since MiniMax text models are returning status_code 2061 "plan not
+    supported"). Falls back to MiniMax chatcompletion_v2 when
+    K2B_LLM_PROVIDER=minimax.
+
+    Kimi responses are translated into the MiniMax chatcompletion_v2 envelope
+    shape (choices[0].message.content / usage.{prompt,completion,total}_tokens
+    / base_resp.status_code=0) so downstream extract_assistant_text /
+    extract_token_usage callers keep working unchanged.
 
     Raises MinimaxError on transport, HTTP, or API-level errors.
     """
+    if K2B_LLM_PROVIDER == "kimi":
+        return _kimi_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
     api_key = load_api_key()
     payload: dict = {
         "model": model,
@@ -196,6 +241,140 @@ def chat_completion(
     raise MinimaxError(
         f"MiniMax unreachable after {MAX_RETRIES + 1} attempts; last error: {last_err}"
     )
+
+
+def _kimi_chat_completion(
+    messages: list,
+    *,
+    max_tokens: int,
+    temperature: float,
+    timeout: int,
+) -> dict:
+    """Call Kimi K2.6 at /coding/v1/messages and return the response in
+    MiniMax chatcompletion_v2 envelope shape.
+
+    Translation:
+      - System-role messages -> top-level `system` (Anthropic concatenates
+        duplicates; we join with \\n\\n).
+      - `response_format` dropped (no Anthropic equivalent; prompts already
+        instruct JSON output).
+      - Model id forced to KIMI_DEFAULT_MODEL -- callers may still carry a
+        MiniMax-* id from older code.
+    """
+    api_key = load_kimi_api_key()
+
+    system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    payload: dict = {
+        "model": KIMI_DEFAULT_MODEL,
+        "max_tokens": max_tokens,
+        "messages": non_system,
+        "temperature": temperature,
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(s for s in system_parts if s)
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(
+        f"{KIMI_API_HOST}{KIMI_MESSAGES_PATH}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    last_err: Exception | None = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code in RETRY_HTTP_STATUSES and attempt < MAX_RETRIES:
+                wait_s = RETRY_BACKOFF_S[attempt] + random.uniform(0, RETRY_JITTER_MAX_S)
+                print(
+                    f"[kimi] HTTP {e.code} (transient) on attempt {attempt + 1}; "
+                    f"retrying in {wait_s:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(wait_s)
+                last_err = e
+                continue
+            raise MinimaxError(f"HTTP {e.code} from Kimi: {detail[:500]}") from e
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError) as e:
+            # RemoteDisconnected (HTTPException subclass), connection resets,
+            # and socket timeouts all fall here. Kimi has occasional mid-stream
+            # drops under long prompts -- retry generously.
+            if attempt < MAX_RETRIES:
+                wait_s = RETRY_BACKOFF_S[attempt] + random.uniform(0, RETRY_JITTER_MAX_S)
+                print(
+                    f"[kimi] network error on attempt {attempt + 1}: {type(e).__name__}: {e}; "
+                    f"retrying in {wait_s:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(wait_s)
+                last_err = e
+                continue
+            raise MinimaxError(
+                f"Network error contacting Kimi after {MAX_RETRIES + 1} attempts: {e}"
+            ) from e
+    else:
+        raise MinimaxError(
+            f"Kimi unreachable after {MAX_RETRIES + 1} attempts; last error: {last_err}"
+        )
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise MinimaxError(f"Non-JSON response from Kimi: {body[:500]}") from e
+
+    if isinstance(parsed.get("error"), dict):
+        err = parsed["error"]
+        raise MinimaxError(
+            f"Kimi API error {err.get('type', '?')}: {err.get('message', 'unknown')}"
+        )
+
+    content_blocks = parsed.get("content") or []
+    assistant_text = "".join(
+        b.get("text", "") for b in content_blocks if b.get("type") == "text"
+    )
+    usage_raw = parsed.get("usage") or {}
+    # Kimi already emits OpenAI-style prompt_tokens/completion_tokens/total_tokens
+    # alongside its Anthropic-style input_tokens/output_tokens. Prefer the
+    # OpenAI-compat fields; fall back to computing from Anthropic fields.
+    usage = {
+        "prompt_tokens": usage_raw.get("prompt_tokens", usage_raw.get("input_tokens")),
+        "completion_tokens": usage_raw.get(
+            "completion_tokens", usage_raw.get("output_tokens")
+        ),
+        "total_tokens": usage_raw.get(
+            "total_tokens",
+            (usage_raw.get("input_tokens") or 0) + (usage_raw.get("output_tokens") or 0),
+        ),
+    }
+
+    return {
+        "id": parsed.get("id"),
+        "model": parsed.get("model", KIMI_DEFAULT_MODEL),
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": assistant_text},
+                "finish_reason": parsed.get("stop_reason") or "stop",
+            }
+        ],
+        "usage": usage,
+        "base_resp": {"status_code": 0, "status_msg": "success"},
+    }
 
 
 def extract_assistant_text(response: dict) -> str:
