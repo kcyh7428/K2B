@@ -2,6 +2,43 @@
 
 ---
 
+## 2026-04-25 -- wire Hostinger MCP via env-var wrapper (enables K2Bi VPS provisioning)
+
+**Commit:** `a66bb4d feat(mcp): wire Hostinger MCP via env-var wrapper`
+
+**What shipped:** New `scripts/run-hostinger-mcp.sh` wrapper + `hostinger` entry in `.mcp.json` pointing at the wrapper. The wrapper sources `HOSTINGER_API_TOKEN` from `~/.zshenv` (because Claude Code on macOS GUI launches doesn't source shell rc files, and `${VAR}` expansion in `.mcp.json` env blocks isn't supported in the current Claude Code build -- empirically verified: literal string `${HOSTINGER_API_TOKEN}` was being passed to the spawned MCP process), then exposes it as `API_TOKEN` (the env name `hostinger-api-mcp@latest` expects) scoped to the MCP child via `exec env`. Token never appears in `.mcp.json`, so the file stays in git without leaking the secret.
+
+**Named bug killed:** Calling Hostinger MCP tools from Claude Code returned `{"message":"Unauthenticated"}` even though `curl -H "Authorization: Bearer $HOSTINGER_API_TOKEN" https://developers.hostinger.com/api/vps/v1/virtual-machines` worked from a Bash tool subshell. Root cause: `ps eww $(pgrep -f hostinger-api-mcp)` showed the MCP process had `API_TOKEN=${HOSTINGER_API_TOKEN}` (literal `${...}` string) in its env, not the expanded value. Same finding for `MINIMAX_API_KEY` -- `${VAR}` expansion in `.mcp.json` env blocks is documented as supported but doesn't work on this Claude Code build for macOS GUI launches. After the wrapper landed, `mcp__hostinger__VPS_getVirtualMachinesV1` returned the actual VPS list. Bug dead.
+
+**Adversarial review:** MiniMax `--scope diff` Tier 2 single-pass (Codex tier classifier flagged Tier 3 because of 5 untracked files in working tree, but only 2 were from this session -- the other 3 are pre-existing untracked plan/AGENTS files. Reviewed only the actual change set: `.mcp.json` + `scripts/run-hostinger-mcp.sh`).
+
+- 8 findings total: 1 CRITICAL, 4 HIGH, 3 MEDIUM.
+- **Applied 2 fixes inline:** HIGH "API_TOKEN exported with no scope" -> switched to `exec env API_TOKEN=... npx ...` so the token is scoped to the spawned MCP process tree only. MEDIUM "no `$HOME` check" -> added explicit `[ -z "${HOME:-}" ]` guard before using `$HOME/.zshenv`.
+- **Deferred / accepted with rationale:** CRITICAL "source `~/.zshenv` executes arbitrary code" -- threat model is unrealistic for single-user macOS where the same `.zshenv` is sourced on every interactive shell login. HIGH "no token format validation" -- API surfaces auth errors clearly. HIGH "`npx @latest` no version pinning" -- matches official Hostinger MCP doc pattern; supply-chain hardening can pin to a specific version later. MEDIUM "shell history leak" -- user-side concern, not code (already covered by guidance to set token in fresh terminal). MEDIUM "no npx failure handling" -- Claude Code surfaces MCP failures clearly.
+- Tier-2 contract is single-pass per `/ship`. Findings surfaced verbatim, architect made the call, committed.
+
+**Feature status change:** none. `--no-feature` ship -- the Hostinger MCP wiring enables a different project (K2Bi VPS migration), tracked at `K2Bi-Vault/wiki/planning/feature_vps-migration.md`. K2B-side scope is just the wrapper + `.mcp.json` plumbing.
+
+**Tier:** 3 by classifier (`5 files changed`), reviewed at Tier 2 effective scope (only 2 files actually from this session -- AGENTS.md and 2 plan files were pre-existing untracked from prior sessions).
+
+**Tests:** none added. Validation was empirical: pre-fix MCP call returned `Unauthenticated`, post-fix returned the VPS list. `bash -n scripts/run-hostinger-mcp.sh` passes.
+
+**Deferred (advisory ownership-drift):** `scripts/audit-ownership.sh` reported same 5 rules / 39 offender files as recent ships -- pre-existing vault docs and observations archives. Not introduced by this commit.
+
+**Key decisions:**
+
+- Wrapper script over hardcoding token in `.mcp.json`. Hardcoding would put the secret in git (`.mcp.json` is tracked); wrapper keeps the token in `~/.zshenv` (not in repo) and reads it at MCP-launch time.
+- `~/.zshenv` over `~/.zshrc` for the token. `.zshrc` is only sourced by interactive shells, but Claude Code MCP processes inherit env from the GUI launchd context which sources `.zshenv` only. This was the original "MCP loaded but auth failed" symptom -- token was in `.zshrc` so a Bash subshell saw it, but Claude Code's MCP child didn't. Documented in the K2Bi planning doc's "IBC install gotchas" section since the same lesson applies to any per-machine secret loading on macOS.
+- Single-pass Tier 2 review even though classifier said Tier 3. Reasoning: the classifier counted 5 changed files (working tree state) but only 2 were from this session. The other 3 (AGENTS.md, plans/2026-04-22_*, plans/2026-04-26_*) predate this session and the K2B rule "Files in the working tree that predate the session and were not touched in this session must NOT be staged" applies. Reviewing the actual 2-file change set at Tier 2 fidelity is the correct discipline; reviewing inflated-scope at Tier 3 would either (a) include unrelated file content in the focus prompt, biasing the review, or (b) require the reviewer to figure out which files are "actually mine" -- which is a job for the ship-agent, not the reviewer.
+
+**Follow-ups:**
+
+- Pin `hostinger-api-mcp` to a specific version (currently `@latest`) for supply-chain hardening. Track as a backlog item; not blocking.
+- Same `${VAR}` expansion bug likely affects MiniMax MCP (`MINIMAX_API_KEY=${MINIMAX_API_KEY}` in `.mcp.json` shows the same literal-string passthrough). If MiniMax MCP tools ever auth-fail, apply the same wrapper pattern.
+- Hostinger MCP enables: VPS lifecycle (snapshot/reboot/firewall), DNS, billing, hosting, domains, reach (mail). For K2Bi specifically the VPS scope is what matters now, but the broader API is available.
+
+---
+
 ## 2026-04-25 -- gitignore plans/Parked + plans/Shipped to clear Codex EISDIR pre-flight hazard
 
 **Commit:** `9ff5dfc chore(infra): gitignore plans/Parked + plans/Shipped to clear Codex EISDIR pre-flight hazard`
