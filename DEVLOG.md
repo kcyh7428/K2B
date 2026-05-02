@@ -2,6 +2,41 @@
 
 ---
 
+## 2026-05-02 -- drop local Clash proxy default; route k2b-remote via router VPN
+
+**Commit:** `5ca7fa2 infra(k2b-remote): drop local Clash proxy default; route via router VPN`
+
+**What shipped:** `k2b-remote/ecosystem.config.cjs` HTTP_PROXY/HTTPS_PROXY defaults flipped from `"http://127.0.0.1:7897"` to `""`. Out-of-repo: Mac Mini `~/.zshenv` Clash proxy block commented out (backup at `~/.zshenv.bak`); pm2 `k2b-remote` deleted+started so the new defaults take effect; memory note `project_mac_mini_clash_required.md` rewritten to reflect the new regime.
+
+**Named bug killed:** k2b-remote was throwing `connect ECONNREFUSED 127.0.0.1:7897` on every Telegram getUpdates poll because the local Clash Verge listener was gone -- both Mac Mini and MacBook moved behind a new router that runs the VPN itself, so the local proxy was retired. Bot was `pm2 online` but blind to Telegram. Post-fix: pm2 `k2b-remote` 0 restarts, no ECONNREFUSED, log shows "K2B Remote is running"; `curl --noproxy '*' https://api.telegram.org/` returns 302 from Mini; egress IP 61.227.208.104 (router VPN). Bug dead.
+
+**Adversarial review:** kimi-for-coding `--scope diff` Tier 3 single-pass (`.code-reviews/2026-05-02T15-32-21Z_8170f8.log`). Auto-fallback to MiniMax via runner because Codex `--scope working-tree` would EISDIR on the pre-existing untracked `.agents/` path -- the runner's known fallback for that hazard.
+
+- 7 findings total: 2 HIGH, 5 MEDIUM. NEEDS-ATTENTION verdict.
+- **#1 HIGH MiniMax silently fails without proxy:** false positive. Verified empirically -- `api.minimaxi.chat`, `googleapis.com`, `api.kimi.com` all return HTTP 404 direct from Mini (TCP+TLS handshake completed; only path is wrong). Router VPN handles all egress, not just Telegram.
+- **#2 HIGH empty-string proxy ambiguity:** false positive. k2b-remote uses falsy check `HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : undefined` at 4 sites (bot.ts:500, bot.ts:817, voice.ts:8, media.ts:8) -- empty and undefined are equivalent.
+- **#3-#7 MEDIUM:** conditional/architectural/pre-existing -- NO_PROXY domain list (only matters if local proxy returns), no startup connectivity probe (pre-existing), Google CLI keyring proxy concern (covered by router VPN), router VPN single-point-of-failure (Keith's network reality), proxy-credential log-leak (conditional on credentialed proxy URLs returning). Recorded for follow-up; not blocking.
+
+**Feature status change:** none. `--no-feature` ship -- infrastructure tweak for changed network conditions.
+
+**Tier:** 3 by classifier (`54 files changed in working tree`, fail-safe). Effective review scope: 1 file (only `k2b-remote/ecosystem.config.cjs` from this session; the rest predate it).
+
+**Deferred (advisory ownership-drift):** `scripts/audit-ownership.sh` reported same 5 rules / 40 offender files as prior ships -- pre-existing vault docs and observations archives. Not introduced by this commit.
+
+**Key decisions:**
+
+- Edit canonical source on MacBook + rsync the single file to Mini, not full `/sync`. Surgical change, single file, no other categories touched.
+- `pm2 delete && pm2 start` over `pm2 restart --update-env`. Delete+start guarantees the cached env from the original (proxy-tainted) start is fully dropped; `--update-env` would have had to override every pre-existing env var, which is more failure modes for no benefit on a single-process app.
+- Comment the proxy block in `~/.zshenv` rather than delete it. Cheap to reverse if the router VPN regime changes; backup at `~/.zshenv.bak` for the same reason.
+- Did NOT update Telegram-tier dependency proxy logic (`src/config.ts` HTTP_PROXY resolution, src/voice.ts/media.ts agent gating). The falsy-check pattern there already handles empty string correctly. Adding "router VPN" branches to JS code would be premature -- the env-var contract is sufficient.
+
+**Follow-ups:**
+
+- If/when local proxy returns, both `~/.zshenv` and `ecosystem.config.cjs` need restoration plus pm2 delete+start. Documented in the rewritten memory note.
+- Reviewer findings #3 (NO_PROXY domain list), #4 (startup probe), #7 (proxy log redaction) are real-but-deferred. Worth addressing if a future ship adds proxy logic back. Not tracked as a feature note yet -- raise to Backlog if patterns emerge.
+
+---
+
 ## 2026-04-25 -- wire Hostinger MCP via env-var wrapper (enables K2Bi VPS provisioning)
 
 **Commit:** `a66bb4d feat(mcp): wire Hostinger MCP via env-var wrapper`
