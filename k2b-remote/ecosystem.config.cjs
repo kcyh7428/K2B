@@ -18,8 +18,11 @@ module.exports = {
       VAULT_PATH: VAULT_PATH,
       GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: "file",
       MINIMAX_API_KEY: process.env.MINIMAX_API_KEY || "",
-      HTTP_PROXY: process.env.HTTP_PROXY || "http://127.0.0.1:7897",
-      HTTPS_PROXY: process.env.HTTPS_PROXY || "http://127.0.0.1:7897",
+      // Router-level VPN as of 2026-05-02 -- no local Clash Verge.
+      // Empty defaults so Telegram traffic goes direct via the router VPN.
+      // Set HTTP_PROXY/HTTPS_PROXY in the shell env if a local proxy returns.
+      HTTP_PROXY: process.env.HTTP_PROXY || "",
+      HTTPS_PROXY: process.env.HTTPS_PROXY || "",
       NO_PROXY: "localhost,127.0.0.1",
     },
     autorestart: true,
