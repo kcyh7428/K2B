@@ -136,7 +136,18 @@ detect_changes() {
         fi
     fi
     if [[ -d "$LOCAL_BASE/scripts" ]]; then
-        if rsync_has_changes "$LOCAL_BASE/scripts/" "$RSYNC_TARGET/scripts/"; then
+        if rsync_has_changes "$LOCAL_BASE/scripts/" "$RSYNC_TARGET/scripts/" \
+            --exclude '__pycache__/' --exclude '*.pyc'; then
+            needs_scripts=true
+        fi
+    fi
+    if [[ -d "$LOCAL_BASE/launchd" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/launchd/" "$RSYNC_TARGET/launchd/" --delete; then
+            needs_scripts=true
+        fi
+    fi
+    if [[ -f "$LOCAL_BASE/README-router-watchdog.md" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/README-router-watchdog.md" "$RSYNC_TARGET/README-router-watchdog.md"; then
             needs_scripts=true
         fi
     fi
@@ -247,11 +258,19 @@ for p in procs:
 }
 
 sync_scripts() {
-    log "Syncing scripts/..."
+    log "Syncing scripts/ + launchd router-watchdog files..."
     local rsync_flag=""
     $DRY_RUN && rsync_flag="--dry-run"
 
-    rsync -av $rsync_flag "$LOCAL_BASE/scripts/" "$RSYNC_TARGET/scripts/"
+    rsync -av $rsync_flag \
+        --exclude '__pycache__/' --exclude '*.pyc' \
+        "$LOCAL_BASE/scripts/" "$RSYNC_TARGET/scripts/"
+    if [[ -d "$LOCAL_BASE/launchd" ]]; then
+        rsync -av $rsync_flag --delete "$LOCAL_BASE/launchd/" "$RSYNC_TARGET/launchd/"
+    fi
+    if [[ -f "$LOCAL_BASE/README-router-watchdog.md" ]]; then
+        rsync -av $rsync_flag "$LOCAL_BASE/README-router-watchdog.md" "$RSYNC_TARGET/README-router-watchdog.md"
+    fi
 }
 
 # Main -- mode validation first so invalid modes exit fast (no SSH wait).
@@ -317,7 +336,7 @@ log "Sync plan:"
 $needs_skills && log "  - Skills + CLAUDE.md + README.md + K2B_ARCHITECTURE.md + .mcp.json"
 $needs_code && log "  - k2b-remote code (+ build + restart)"
 $needs_dashboard && log "  - k2b-dashboard code (+ build + restart)"
-$needs_scripts && log "  - scripts/"
+$needs_scripts && log "  - scripts/ + launchd router-watchdog files"
 echo ""
 
 # Execute

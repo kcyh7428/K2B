@@ -102,6 +102,12 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/stop-observe.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/cleanup-zombies.sh",
+            "timeout": 15,
+            "async": true
           }
         ]
       }

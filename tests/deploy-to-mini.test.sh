@@ -24,9 +24,11 @@ SCRIPT="$REPO_ROOT/scripts/deploy-to-mini.sh"
 TMP_DIRS=()
 cleanup() {
   local d
+  set +u
   for d in "${TMP_DIRS[@]}"; do
     [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
   done
+  set -u
 }
 trap cleanup EXIT
 
@@ -45,6 +47,8 @@ mktmp() {
 #   CLAUDE.md, README.md, .mcp.json, DEVLOG.md
 #   .claude/skills/k2b-ship/SKILL.md
 #   scripts/deploy-to-mini.sh, scripts/review.sh
+#   launchd/com.k2b.router-watchdog.plist
+#   README-router-watchdog.md
 #   k2b-remote/src/index.ts, k2b-remote/package.json
 #   k2b-dashboard/src/App.tsx
 #   k2b-remote/node_modules/junk/x.js   (excluded dir)
@@ -52,6 +56,7 @@ build_tree() {
   local base="$1" tag="${2:-baseline}"
   mkdir -p "$base/.claude/skills/k2b-ship"
   mkdir -p "$base/scripts"
+  mkdir -p "$base/launchd"
   mkdir -p "$base/k2b-remote/src"
   mkdir -p "$base/k2b-remote/node_modules/junk"
   mkdir -p "$base/k2b-dashboard/src"
@@ -59,9 +64,11 @@ build_tree() {
   printf 'README %s\n' "$tag" > "$base/README.md"
   printf '{"tag":"%s"}\n' "$tag" > "$base/.mcp.json"
   printf 'DEVLOG %s\n' "$tag" > "$base/DEVLOG.md"
+  printf 'router watchdog runbook %s\n' "$tag" > "$base/README-router-watchdog.md"
   printf 'skill body %s\n' "$tag" > "$base/.claude/skills/k2b-ship/SKILL.md"
   printf '#!/bin/bash\n# deploy %s\n' "$tag" > "$base/scripts/deploy-to-mini.sh"
   printf '#!/bin/bash\n# review %s\n' "$tag" > "$base/scripts/review.sh"
+  printf '<plist>%s</plist>\n' "$tag" > "$base/launchd/com.k2b.router-watchdog.plist"
   printf 'export const tag = "%s";\n' "$tag" > "$base/k2b-remote/src/index.ts"
   printf '{"name":"k2b-remote","tag":"%s"}\n' "$tag" > "$base/k2b-remote/package.json"
   printf 'export const App = "%s";\n' "$tag" > "$base/k2b-dashboard/src/App.tsx"
@@ -236,6 +243,20 @@ echo "=== deploy-to-mini.test.sh ==="
     echo "  FAIL: rsync dry-run failure did NOT abort the script (exit 0)"
     FAIL=$((FAIL + 1))
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 9: router-watchdog launchd/runbook files travel with scripts sync
+# ---------------------------------------------------------------------------
+{
+  LOCAL="$(mktmp)"
+  REMOTE="$(mktmp)"
+  build_tree "$LOCAL" "v2"
+  build_tree "$REMOTE" "v2"
+  printf '<plist>NEW</plist>\n' > "$LOCAL/launchd/com.k2b.router-watchdog.plist"
+  printf 'router watchdog runbook NEW\n' > "$LOCAL/README-router-watchdog.md"
+  out="$(run_detect "$LOCAL" "$REMOTE")"
+  assert_detect "launchd + router watchdog runbook detected as scripts sync" "scripts" "$out"
 }
 
 echo ""

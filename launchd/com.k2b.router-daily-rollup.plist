@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.k2b.router-daily-rollup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__APP_DIR__/bin/rollup.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>0</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+    <key>K2B_ROUTER_WATCHDOG_APP_DIR</key>
+    <string>__APP_DIR__</string>
+    <key>K2B_ROUTER_WATCHDOG_LOG_DIR</key>
+    <string>__LOG_DIR__</string>
+    <key>K2B_ROUTER_WATCHDOG_ENV_FILE</key>
+    <string>__ENV_FILE__</string>
+    <key>K2B_VAULT_PATH</key>
+    <string>__VAULT_PATH__</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/launchd-rollup.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/launchd-rollup.err.log</string>
+</dict>
+</plist>
