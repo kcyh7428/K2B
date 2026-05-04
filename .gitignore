@@ -87,3 +87,11 @@ k2b-dashboard/dist/
 .pytest_cache/
 plans/Parked/
 plans/Shipped/
+
+# Kimi handoff job specs (local only)
+.kimi/
+
+# Codex CLI hooks + agent skills config (local-only, not version-controlled)
+.codex/
+.agents/
+AGENTS.md
