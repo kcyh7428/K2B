@@ -79,6 +79,13 @@ def parse_candidates(path: Path) -> List[Candidate]:
         stripped = line.strip()
         if not stripped:
             continue
+        # `(none)` is the documented empty-section sentinel (exact-match
+        # lowercase, symmetric with how `## Detected Patterns` uses it).
+        # Tolerated ONLY between candidates (current_header is None) so the
+        # strict-mode guard still fires on a stray `(none)` inside a
+        # candidate's evidence block, where it could mask a malformed entry.
+        if stripped == "(none)" and current_header is None:
+            continue
         header = _CANDIDATE_HEADER.match(line)
         if header:
             flush()

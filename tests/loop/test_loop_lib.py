@@ -186,6 +186,79 @@ def test_parse_candidates_still_accepts_blank_lines(tmp_path):
     assert len(items) == 2
 
 
+def test_parse_candidates_tolerates_none_sentinel(tmp_path):
+    """`(none)` is the documented empty-section sentinel used by the
+    weekly promotion loop after it clears all candidates. It is symmetric
+    with how `## Detected Patterns` already uses `(none)` and must not
+    trip the strict-mode parse-error guard."""
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings (confirm with Keith)\n"
+        "(none)\n",
+        encoding="utf-8",
+    )
+    assert loop_lib.parse_candidates(f) == []
+
+
+def test_parse_candidates_tolerates_none_with_surrounding_blank_lines(tmp_path):
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings\n"
+        "\n"
+        "(none)\n"
+        "\n",
+        encoding="utf-8",
+    )
+    assert loop_lib.parse_candidates(f) == []
+
+
+def test_parse_candidates_none_sentinel_does_not_suppress_real_candidates(tmp_path):
+    """A `(none)` line BEFORE a real candidate (no active header yet) is a
+    no-op sentinel. Real candidates that follow still parse."""
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings\n"
+        "(none)\n"
+        "- [high] workflow: real rule\n"
+        "  Evidence: real evidence\n",
+        encoding="utf-8",
+    )
+    items = loop_lib.parse_candidates(f)
+    assert len(items) == 1
+    assert items[0].rule == "real rule"
+
+
+def test_parse_candidates_none_inside_evidence_block_still_raises(tmp_path):
+    """Inside an active candidate's evidence block, `(none)` must NOT be
+    treated as a sentinel -- it could mask a malformed evidence line.
+    Strict-mode guard must still fire."""
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings\n"
+        "- [high] workflow: real rule\n"
+        "  Evidence: legitimate evidence\n"
+        "(none)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="parse error"):
+        loop_lib.parse_candidates(f)
+
+
+def test_parse_candidates_none_after_header_before_evidence_still_raises(tmp_path):
+    """A `(none)` line between a header and its evidence must NOT silently
+    pass -- the candidate has an active header so strict-mode applies."""
+    f = tmp_path / "observer-candidates.md"
+    f.write_text(
+        "## Candidate Learnings\n"
+        "- [high] workflow: real rule\n"
+        "(none)\n"
+        "  Evidence: would-be evidence\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="parse error"):
+        loop_lib.parse_candidates(f)
+
+
 # --- Codex MEDIUM-5 regression: item_id hashes the full payload ---
 
 
