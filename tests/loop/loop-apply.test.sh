@@ -68,7 +68,7 @@ fi
 
 # MEDIUM-4 regression: cross-action conflict must exit 2 without mutations.
 TMP3="$(mktemp -d)"
-trap 'rm -rf "$TMP" "$TMP2" "$TMP3"' EXIT
+trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "${TMP4:-}"' EXIT
 cp "$FIXTURE/observer-candidates.md" "$TMP3/observer-candidates.md"
 cp "$FIXTURE/self_improve_learnings.md" "$TMP3/self_improve_learnings.md"
 mkdir -p "$TMP3/observations.archive"
@@ -84,5 +84,47 @@ if [ "$conflict_exit" != "2" ]; then
   echo "FAIL MEDIUM-4: cross-action conflict expected exit 2, got $conflict_exit"
   exit 1
 fi
+
+# R-2026-04-23-001 regression: with NO env overrides, MEM_DEFAULT must resolve
+# to $HOME/Projects/K2B-Vault/System/memory (the Syncthing-synced canonical
+# home), not to a path containing the literal MacBook user "keithmbpm2".
+# Apply must succeed when running under a $HOME that doesn't contain that
+# literal -- which is exactly the Mini's situation (HOME=/Users/fastshower).
+TMP4="$(mktemp -d)"
+trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$TMP4"' EXIT
+mkdir -p "$TMP4/Projects/K2B-Vault/System/memory"
+mkdir -p "$TMP4/Projects/K2B-Vault/wiki/context/observations.archive"
+mkdir -p "$TMP4/Projects/K2B-Vault/review"
+cp "$FIXTURE/observer-candidates.md" "$TMP4/Projects/K2B-Vault/wiki/context/observer-candidates.md"
+cp "$FIXTURE/self_improve_learnings.md" "$TMP4/Projects/K2B-Vault/System/memory/self_improve_learnings.md"
+
+# Sanity: this fake HOME does NOT contain the MacBook username string.
+case "$TMP4" in
+  *keithmbpm2*) echo "FAIL R-2026-04-23-001 setup: tmpdir contains 'keithmbpm2'"; exit 1;;
+esac
+
+# Run with HOME pointing at the fake vault and ALL K2B_LOOP_* path vars
+# unset (so the script falls through to defaults derived from $HOME).
+# The earlier test cases at top-of-file `export`ed K2B_LOOP_CANDIDATES etc.
+# pointing at their own $TMP -- those values would otherwise leak in here
+# and mask the very behavior we're testing.
+env -u K2B_LOOP_CANDIDATES \
+    -u K2B_LOOP_LEARNINGS \
+    -u K2B_LOOP_ARCHIVE_DIR \
+    -u K2B_LOOP_DEFERS \
+    -u K2B_LOOP_REVIEW_DIR \
+    -u K2B_LOOP_REVIEW_READY_DIR \
+    -u K2B_LOOP_REVIEW_ARCHIVE_ROOT \
+    HOME="$TMP4" \
+    K2B_LOOP_DATE=2026-04-23 K2B_LOOP_ACTOR=keith K2B_LOOP_OBSERVER_RUN=test \
+    "$ROOT/scripts/loop/loop-apply.sh" --accept 1 >/dev/null
+
+if ! grep -qE '^### L-2026-04-23-001$' "$TMP4/Projects/K2B-Vault/System/memory/self_improve_learnings.md"; then
+  echo "FAIL R-2026-04-23-001: default MEM_DEFAULT did not resolve to vault path under tmp HOME"
+  echo "  expected new L-2026-04-23-001 in $TMP4/Projects/K2B-Vault/System/memory/self_improve_learnings.md"
+  exit 1
+fi
+
+echo "  PASS: R-2026-04-23-001 default memory path resolves under tmp HOME (Mini-portable)"
 
 echo "PASS: loop-apply.test.sh"
