@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -72,6 +73,11 @@ DEFAULT_HEARTBEAT_S = 5
 HEARTBEAT_STALE_AFTER_S = 30
 WEDGE_SUSPECTED_AFTER_S = 120
 KILL_GRACE_S = 10
+DEFAULT_RECONNECT_STALL_S = 45
+
+_RECONNECT_RE = re.compile(
+    r"^(?:\[codex\]\s+)?Codex error:\s+Reconnecting\.\.\.\s+(\d+)\s*/\s*(\d+)\s*$"
+)
 
 _log_lock = threading.Lock()
 
@@ -258,17 +264,47 @@ def spawn_child(cmd: list[str], logf, extra_env: dict | None = None
 
 
 def reader_thread(proc: subprocess.Popen, logf,
-                  last_activity: list[float]) -> threading.Thread:
+                  last_activity: list[float],
+                  reconnect_state: dict | None = None,
+                  reconnect_lock: threading.Lock | None = None) -> threading.Thread:
+    """Relay child stdout to the unified log.
+
+    When supplied, reconnect_state arms the post-reconnect stall detector.
+    It is True only after a sane `Reconnecting... N/N` cap-exhausted line,
+    reset by real child output, and preserved on malformed reconnect shapes.
+    """
     def run():
         if proc.stdout is None:
             return
         for line in proc.stdout:
             last_activity[0] = time.time()
+            if reconnect_state is not None:
+                m = _RECONNECT_RE.search(line)
+                if reconnect_lock is None:
+                    raise RuntimeError("reconnect_state requires reconnect_lock")
+                with reconnect_lock:
+                    if m is not None:
+                        reconnect_state["last_reconnect_ts"] = last_activity[0]
+                        try:
+                            attempt = int(m.group(1))
+                            cap = int(m.group(2))
+                        except (TypeError, ValueError):
+                            attempt = cap = 0
+                        if 0 < cap and attempt == cap:
+                            reconnect_state["saw_final"] = True
+                        elif 0 < cap and 0 < attempt < cap:
+                            reconnect_state["saw_final"] = False
+                    elif line.strip():
+                        reconnect_state["saw_final"] = False
             log_line(logf, line.rstrip("\n"))
         try:
             proc.stdout.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_line(logf, f"[{utc_now_iso()}] STDOUT_CLOSE_FAILED "
+                     f"reason={type(exc).__name__}: {exc}")
+        if reconnect_state is not None and reconnect_lock is not None:
+            with reconnect_lock:
+                reconnect_state["saw_final"] = False
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
@@ -278,7 +314,11 @@ def reader_thread(proc: subprocess.Popen, logf,
 def watchdog_thread(proc: subprocess.Popen, logf, state_path: Path,
                     state: dict, deadline_s: int, heartbeat_s: int,
                     last_activity: list[float],
-                    stop_event: threading.Event) -> threading.Thread:
+                    stop_event: threading.Event,
+                    reconnect_state: dict | None = None,
+                    reconnect_stall_s: int = 0,
+                    attempt_id: str | None = None,
+                    reconnect_lock: threading.Lock | None = None) -> threading.Thread:
     def run():
         start = time.time()
         soft_at = start + (deadline_s * 2 // 3)
@@ -291,6 +331,78 @@ def watchdog_thread(proc: subprocess.Popen, logf, state_path: Path,
             now = time.time()
             elapsed = now - start
             stale = now - last_activity[0]
+
+            if reconnect_state is not None:
+                if reconnect_lock is None:
+                    raise RuntimeError("reconnect_state requires reconnect_lock")
+                with reconnect_lock:
+                    saw_final = bool(reconnect_state.get("saw_final"))
+                    last_reconnect_ts = (
+                        reconnect_state.get("last_reconnect_ts", 0.0) or 0.0
+                    )
+            else:
+                saw_final = False
+                last_reconnect_ts = 0.0
+            if (saw_final and reconnect_stall_s > 0
+                    and stale >= reconnect_stall_s):
+                if proc.poll() is not None:
+                    state.pop("killed_by_reconnect_stall", None)
+                    state.pop("killed_by_reconnect_stall_attempt", None)
+                    write_state(state_path, state)
+                    return
+                if reconnect_state is not None and reconnect_lock is not None:
+                    with reconnect_lock:
+                        saw_final = bool(reconnect_state.get("saw_final"))
+                        last_reconnect_ts = (
+                            reconnect_state.get("last_reconnect_ts", 0.0) or 0.0
+                        )
+                if not saw_final:
+                    continue
+                if proc.poll() is not None:
+                    state.pop("killed_by_reconnect_stall", None)
+                    state.pop("killed_by_reconnect_stall_attempt", None)
+                    write_state(state_path, state)
+                    return
+                since_reconnect = (now - last_reconnect_ts
+                                   if last_reconnect_ts > 0 else stale)
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except ProcessLookupError:
+                    log_line(logf, f"[{utc_now_iso()}] "
+                             f"RECONNECT_STALL_AVOIDED "
+                             f"elapsed={elapsed:.0f}s stale={stale:.0f}s "
+                             f"(child exited during stall evaluation)")
+                    state.pop("killed_by_reconnect_stall", None)
+                    state.pop("killed_by_reconnect_stall_attempt", None)
+                    write_state(state_path, state)
+                    return
+                log_line(logf, f"[{utc_now_iso()}] RECONNECT_STALL_DETECTED "
+                         f"elapsed={elapsed:.0f}s stale={stale:.0f}s "
+                         f"since_final_reconnect={since_reconnect:.0f}s "
+                         f"threshold={reconnect_stall_s}s; SIGTERM "
+                         f"(codex reconnect cap exhausted, no progress)")
+                state.update({
+                    "status": "running",
+                    "phase": "reconnect_stall_detected",
+                    "killed_by_reconnect_stall": True,
+                    "killed_by_reconnect_stall_attempt": attempt_id,
+                    "elapsed_s": round(elapsed, 1),
+                    "last_activity_s_ago": round(stale, 1),
+                    "since_final_reconnect_s": round(since_reconnect, 1),
+                    "deadline_remaining_s": max(0, round(hard_at - now, 1)),
+                    "reconnect_stall_threshold_s": reconnect_stall_s,
+                    "updated_at": utc_now_iso(),
+                })
+                write_state(state_path, state)
+                time.sleep(KILL_GRACE_S)
+                if not stop_event.is_set() and proc.poll() is None:
+                    log_line(logf, f"[{utc_now_iso()}] SIGKILL after "
+                             f"{KILL_GRACE_S}s grace")
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                return
 
             phase = "running_commands"
             if stale >= WEDGE_SUSPECTED_AFTER_S:
@@ -333,7 +445,7 @@ def watchdog_thread(proc: subprocess.Popen, logf, state_path: Path,
                 except ProcessLookupError:
                     pass
                 time.sleep(KILL_GRACE_S)
-                if proc.poll() is None:
+                if not stop_event.is_set() and proc.poll() is None:
                     log_line(logf, f"[{utc_now_iso()}] SIGKILL after "
                              f"{KILL_GRACE_S}s grace")
                     try:
@@ -358,15 +470,36 @@ def run_one_reviewer(
     state: dict,
     deadline_s: int,
     heartbeat_s: int,
+    reconnect_stall_s: int = 0,
 ) -> int:
     """Run a single reviewer end-to-end with the three guarantees.
 
-    Returns the child's exit code; 124 if killed by the deadline.
+    Returns the child's exit code; 124 if killed by the deadline,
+    126 if killed by the post-reconnect stall detector.
     """
+    if reconnect_stall_s > 0 and reviewer != "codex":
+        reconnect_stall_s = 0
+    disabled_reason = None
+    if reconnect_stall_s > 0 and reconnect_stall_s >= deadline_s:
+        disabled_reason = (
+            "reconnect_stall_threshold_s >= deadline_s; hard deadline "
+            "will own this attempt"
+        )
+        reconnect_stall_s = 0
     attempt_start = time.time()
+    attempt_id = f"{job}:{reviewer}:{time.monotonic_ns()}:{secrets.token_hex(4)}"
+    state.pop("killed_by_reconnect_stall", None)
+    state.pop("killed_by_reconnect_stall_attempt", None)
+    state.pop("since_final_reconnect_s", None)
+    state.pop("phase", None)
     with log_path.open("a", buffering=1) as logf:
+        attempt_log_start = logf.tell()
         log_line(logf, f"[{utc_now_iso()}] REVIEWER_START reviewer={reviewer} "
-                 f"job={job} deadline={deadline_s}s heartbeat={heartbeat_s}s")
+                 f"job={job} deadline={deadline_s}s heartbeat={heartbeat_s}s "
+                 f"reconnect_stall={reconnect_stall_s}s")
+        if disabled_reason is not None:
+            log_line(logf, f"[{utc_now_iso()}] RECONNECT_STALL_DISABLED "
+                     f"reason={disabled_reason}")
         try:
             proc = spawn_child(cmd, logf)
         except FileNotFoundError as e:
@@ -378,13 +511,29 @@ def run_one_reviewer(
 
         state["reviewer_current"] = reviewer
         state["pid"] = proc.pid
+        state["reviewer_attempt_id"] = attempt_id
+        state["reconnect_stall_threshold_s"] = reconnect_stall_s
         write_state(state_path, state)
 
         last_activity = [time.time()]
         stop_event = threading.Event()
-        reader = reader_thread(proc, logf, last_activity)
-        watchdog = watchdog_thread(proc, logf, state_path, state, deadline_s,
-                                   heartbeat_s, last_activity, stop_event)
+        if reconnect_stall_s > 0:
+            reconnect_state: dict | None = {
+                "saw_final": False,
+                "last_reconnect_ts": 0.0,
+            }
+            reconnect_lock: threading.Lock | None = threading.Lock()
+        else:
+            reconnect_state = None
+            reconnect_lock = None
+        reader = reader_thread(
+            proc, logf, last_activity, reconnect_state, reconnect_lock
+        )
+        watchdog = watchdog_thread(
+            proc, logf, state_path, state, deadline_s,
+            heartbeat_s, last_activity, stop_event,
+            reconnect_state, reconnect_stall_s, attempt_id, reconnect_lock,
+        )
 
         rc = proc.wait()
         stop_event.set()
@@ -393,11 +542,26 @@ def run_one_reviewer(
 
         elapsed = time.time() - attempt_start
         hit_deadline = elapsed >= deadline_s - 1
-        effective_rc = 124 if hit_deadline and rc != 0 else rc
+        stalled = (
+            bool(state.get("killed_by_reconnect_stall"))
+            and state.get("killed_by_reconnect_stall_attempt") == attempt_id
+        )
+        if stalled:
+            effective_rc = 126
+        elif hit_deadline and rc != 0:
+            effective_rc = 124
+        else:
+            effective_rc = rc
 
         if effective_rc == 0:
+            state.pop("killed_by_reconnect_stall", None)
+            state.pop("killed_by_reconnect_stall_attempt", None)
+            state.pop("since_final_reconnect_s", None)
             try:
-                log_text = log_path.read_text()
+                with log_path.open("r", encoding="utf-8",
+                                   errors="replace") as readf:
+                    readf.seek(attempt_log_start)
+                    log_text = readf.read()
             except OSError:
                 log_text = ""
             verdict_markers = (
@@ -446,12 +610,22 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                 log_line(logf, f"[{utc_now_iso()}] REVIEWER_SKIP "
                          f"reviewer={reviewer} reason={reason}")
             continue
+        stall_s = (args.reconnect_stall_threshold_s
+                   if reviewer == "codex" else 0)
         rc = run_one_reviewer(reviewer, cmd, job, log_path, state_path, state,
-                              args.deadline, args.heartbeat_interval)
+                              args.deadline, args.heartbeat_interval,
+                              reconnect_stall_s=stall_s)
+        if rc == 0:
+            attempt_result = "ok"
+        elif rc == 124:
+            attempt_result = "timed_out"
+        elif rc == 126:
+            attempt_result = "reconnect_stalled"
+        else:
+            attempt_result = "error"
         state["reviewer_attempts"].append(
             {"reviewer": reviewer, "exit_code": rc,
-             "result": "ok" if rc == 0 else
-                       "timed_out" if rc == 124 else "error"})
+             "result": attempt_result})
         if rc == 0:
             state.update({"status": "completed", "primary_used": primary,
                           "fallback_used": idx > 0, "exit_code": 0,
@@ -459,7 +633,12 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
             write_state(state_path, state)
             return 0
         with log_path.open("a") as logf:
-            why = "deadline" if rc == 124 else f"exit_{rc}"
+            if rc == 124:
+                why = "deadline"
+            elif rc == 126:
+                why = "reconnect_stall"
+            else:
+                why = f"exit_{rc}"
             if idx == 0:
                 log_line(logf, f"[{utc_now_iso()}] FALLBACK triggering "
                          f"{secondary} ({reviewer} failed: {why})")
@@ -492,6 +671,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
         "elapsed_s": state.get("elapsed_s"),
         "last_activity_s_ago": state.get("last_activity_s_ago"),
         "deadline_remaining_s": state.get("deadline_remaining_s"),
+        "reconnect_stall_threshold_s": state.get("reconnect_stall_threshold_s"),
         "reviewer_current": state.get("reviewer_current"),
         "reviewer_attempts": state.get("reviewer_attempts", []),
         "primary_used": state.get("primary_used"),
@@ -516,6 +696,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "job_id": job, "scope": args.scope, "primary_requested": args.primary,
         "focus": args.focus, "files": args.files, "plan": args.plan,
         "deadline_s": args.deadline, "heartbeat_interval_s": args.heartbeat_interval,
+        "reconnect_stall_threshold_s": args.reconnect_stall_threshold_s,
         "log_path": str(log_path), "state_path": str(state_path),
         "started_at": utc_now_iso(), "started_at_ts": time.time(),
         "status": "starting",
@@ -523,7 +704,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     write_state(state_path, state)
     log_path.write_text(
         f"[{utc_now_iso()}] JOB_START job={job} scope={args.scope} "
-        f"primary={args.primary} deadline={args.deadline}s\n"
+        f"primary={args.primary} deadline={args.deadline}s "
+        f"reconnect_stall={args.reconnect_stall_threshold_s}s\n"
     )
 
     if not args.wait:
@@ -575,6 +757,13 @@ def main() -> int:
     p.add_argument("--deadline", type=int, default=DEFAULT_DEADLINE_S,
                    help="Hard wall-clock deadline per reviewer, seconds")
     p.add_argument("--heartbeat-interval", type=int, default=DEFAULT_HEARTBEAT_S)
+    p.add_argument("--reconnect-stall-threshold-s", type=int,
+                   default=DEFAULT_RECONNECT_STALL_S,
+                   dest="reconnect_stall_threshold_s",
+                   help=("Seconds of silence after Codex's reconnect cap "
+                         "(Reconnecting... N/N) before SIGTERMing the child "
+                         "and triggering fallback. 0 disables. Only applied "
+                         "to the codex reviewer."))
     p.add_argument("--codex-plugin", default=str(CODEX_PLUGIN_DEFAULT))
     p.add_argument("--wait", action="store_true",
                    help="Block until review finishes; default is background+poll")
