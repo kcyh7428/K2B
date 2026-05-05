@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-05-05 -- BenAI CAIO identity + Capture Stack section + voice-routing fix
+
+**Commit:** `2ab207e docs: BenAI CAIO identity + Capture Stack section + voice-routing fix`
+
+**What shipped:** Three identity / context updates ported from Keith's Claude Web "K2B" project, plus a pre-existing source-doc inconsistency caught during ship review.
+
+1. **CLAUDE.md "Who Is Keith"** -- added Chief AI Officer in Ben Van Sprundel's BenAI Partner Network (also Resident Instructor and Co-Builder); BenAI is the primary deal-flow channel for TalentSignals + Agency at Scale. The vault person page (`wiki/people/person_Ben-Van-Sprundel.md`) and career portfolio already had this; the identity layer (CLAUDE.md + auto-memory) was missing it.
+
+2. **CLAUDE.md new "Capture Stack" section** (between Commander/Worker and Mac Mini) -- codifies the SJM corporate IT constraint (calendar sync + email forwarding both blocked, do not propose features that depend on SJM IT whitelisting), the Telegram-desktop-on-work-computer primary capture path (installed 2026-05), the supported attachment types via `extract-attachment.sh` (photo/document/text only, voice via separate `voice.ts` path), Excel/Word binary unsupported with PDF-export workaround. Points to new context note at `wiki/context/context_capture-stack.md`.
+
+3. **scripts/washing-machine/extract-attachment.sh header** -- corrected the routing claim. Old comment said the script handled `photo / document / voice`; actual schema accepts only `photo|document|text` and voice is routed separately through `k2b-remote/src/voice.ts` (Groq Whisper). Pre-existing source doc inconsistency; not introduced by this session.
+
+**Vault-side companions** (auto-sync via Syncthing, not in this commit):
+- `wiki/context/context_capture-stack.md` -- full constraint reference, supported types, workarounds, what's not built yet (native xlsx parser as `/request` candidate)
+- `raw/research/2026-05-05_research_tradingagents-vs-k2bi.md` -- TauricResearch/TradingAgents Lens-Based Review (K2Bi + Stack lens, multi-lens). Verdict: Substance but solves a different problem than Keith's stated upstream pain. Stake: RETROFIT (selective, Phase 4 backlog), not ADOPT.
+- `System/memory/user_keith_profile.md` -- refreshed with BenAI, the five content pillars by name, K2Bi-operator-archetype mention, decide-don't-ask preference. Cleared the 30-days-old auto-memory reminder.
+
+**Adversarial review:** Codex Tier 3 multi-pass via runner.
+- Pass 1 (`.code-reviews/2026-05-05T14-39-11Z_98638d.log`): NEEDS-ATTENTION. 1 medium finding -- CLAUDE.md misattributed voice transcription to extract-attachment.sh. Fixed inline.
+- Pass 2 (`.code-reviews/2026-05-05T14-41-21Z_b8ef1c.log`): NEEDS-ATTENTION. 1 medium finding -- the script's own header comment carried the same misattribution; CLAUDE.md fix alone left source-level contradiction in place. Fixed inline.
+- Pass 3 (`.code-reviews/2026-05-05T14-43-28Z_dfbb69.log`): APPROVE. Docs consistent across CLAUDE.md and script header.
+
+**Tier:** 3 by classifier (4 working-tree files, fail-safe path -- only 2 ended up staged).
+
+**Feature status change:** none. `--no-feature` ship -- identity / context housekeeping driven by porting Claude Web project content into K2B-CC's authoritative layer.
+
+**Deferred (advisory ownership-drift):** `scripts/audit-ownership.sh` reported 5 rules / 40 offender files, all pre-existing in vault content and observation archives. Not introduced by this commit.
+
+**Key decisions:**
+
+- Caught and fixed the voice-routing misattribution in BOTH places (CLAUDE.md AND the script header) rather than ship the docs inconsistency. Codex's pass-2 catch was correct: fixing CLAUDE.md while leaving the script's own comment contradicting it would have re-introduced the bug as soon as someone read the source.
+- Did NOT port the "five content pillars" because they are already named at `wiki/projects/project_keithcheung-com.md:53-58`. My initial grep window cut them off.
+- Did NOT port the Web project's "Plans live in Claude.ai project, builds in Claude Code" framing -- it was a workaround for Claude Web's lack of filesystem access; K2B-CC has direct fs and is both builder + planner.
+- Recommended sunsetting the Web project as a parallel source of truth. Single authoritative system: K2B repo CLAUDE.md + auto-memory + K2B-Vault.
+
+**Follow-ups:**
+
+- Native `.xlsx` parsing in `extract-attachment.sh` (drop in `xlsx2csv` or `openpyxl` branch) -- `/request` candidate if PDF-export workflow becomes annoying.
+- Pre-existing ownership-drift cleanup (5 rules, 40 offenders) -- separate housekeeping ship.
+
+---
+
 ## 2026-05-05 -- defensive set +eu around source ~/.zshrc in MiniMax wrappers
 
 **Commit:** `d8e016a fix(scripts): set +eu around source ~/.zshrc in three minimax wrappers`
