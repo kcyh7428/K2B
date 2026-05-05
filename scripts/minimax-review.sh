@@ -26,8 +26,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # MiniMax key won't be in env. Source it if available; minimax_common.py also
 # parses ~/.zshrc as a last resort.
 if [ -z "${MINIMAX_API_KEY:-}" ] && [ -f "$HOME/.zshrc" ]; then
+  # set +eu while sourcing: a stale `source /path/to/missing-file` line in
+  # ~/.zshrc will fail INSIDE .zshrc with set -e still active, killing the
+  # whole shell before the trailing `|| true` can catch it. Also disable
+  # set -u so unset-variable expansions in .zshrc (referenced before any
+  # subsequent export) cannot abort the source the same way. Matches the
+  # bracket already used in scripts/minimax-common.sh and claude-minimaxi.sh.
+  set +eu
   # shellcheck disable=SC1091
   source "$HOME/.zshrc" 2>/dev/null || true
+  set -eu
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"

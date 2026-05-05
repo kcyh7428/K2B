@@ -28,9 +28,12 @@ set -euo pipefail
 # Bash tool) and may not have sourced ~/.zshrc. If MINIMAX_API_KEY isn't in
 # env, try sourcing the user's shell profile as a fallback.
 if [[ -z "${MINIMAX_API_KEY:-}" && -f "$HOME/.zshrc" ]]; then
-  set +u
+  # set +e in addition to +u: a stale `source /path/to/missing-file` line in
+  # ~/.zshrc will fail INSIDE .zshrc with set -e still active, killing the
+  # whole shell before the trailing `|| true` can catch it.
+  set +eu
   source "$HOME/.zshrc" >/dev/null 2>&1 || true
-  set -u
+  set -eu
 fi
 
 : "${MINIMAX_API_KEY:?MINIMAX_API_KEY not set -- add export to ~/.zshrc and reload}"

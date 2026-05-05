@@ -18,9 +18,13 @@ set -euo pipefail
 # better fix is a dedicated ~/.minimax-env credentials-only file updated in
 # all three callers at once (MiniMax review note 2026-04-21).
 if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) && -f "$HOME/.zshrc" ]]; then
-  set +u
+  # set +e in addition to +u: a stale `source /path/to/missing-file` line in
+  # ~/.zshrc will fail INSIDE .zshrc with set -e still active, killing the
+  # whole shell before the trailing `|| true` can catch it. Bit us 2026-05-04
+  # when an uninstalled openclaw line in .zshrc broke the VLM extractor chain.
+  set +eu
   source "$HOME/.zshrc" >/dev/null 2>&1 || true
-  set -u
+  set -eu
 fi
 
 MINIMAX_API_KEY="${MINIMAX_API_KEY:?Set MINIMAX_API_KEY in your environment}"
