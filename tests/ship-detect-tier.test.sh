@@ -797,4 +797,322 @@ test_is_tier_1_doc_unit_cases
 test_is_tier_0_path_unit_cases
 test_rule_ordering_tier_3_allowlist_wins_over_docs
 
+# ---------- Staged-vs-working-tree conflation (Ship 2 commit 1) ----------
+# 2026-05-05: add explicit "staged" mode capability to gather_tree_state
+# and classify_tier. Default behavior unchanged ("working-tree") to avoid
+# the under-classification risk Codex flagged on the first revision: if
+# the staged set is stale or only-partial, classifying staged-only would
+# silently miss session changes that /ship step 5 will stage later.
+# The staged mode is opt-in for callers that pre-stage the EXACT commit
+# set and want to ignore unrelated dirty noise.
+
+test_default_mode_is_working_tree_classifies_full_dirty_tree() {
+  # Codex regression: a stale staged file MUST NOT cause the default
+  # classifier to scope to the staged set, leaving unstaged session code
+  # invisible. With default mode, the classifier sees BOTH staged and
+  # unstaged files (this is the original pre-2026-05-05 contract).
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+
+  # Pre-existing staged Tier-0 docs (e.g., leftover from a half-attempted commit)
+  mkdir -p "$repo/.claude/plans"
+  (cd "$repo" && printf 'plan\n' > .claude/plans/old.md)
+  (cd "$repo" && git add .claude/plans/old.md)
+
+  # Unstaged session code change
+  (cd "$repo" && printf 'def real_session_code(): pass\n' > unstaged_code.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(call_classifier "$repo" "$config")
+  # Default mode = working-tree. Both files visible. Tier 2 (1 plans file
+  # in Tier-0 set + 1 code file -> not all-Tier-0, falls through to Tier 2
+  # default since under scale thresholds).
+  echo "$out" | grep -q "tier:2" || fail "default working-tree mode should classify staged + unstaged together (no under-review); got: $out"
+  echo "PASS: test_default_mode_is_working_tree_classifies_full_dirty_tree"
+}
+
+test_explicit_working_tree_mode_sees_staged_and_unstaged() {
+  # Symmetric to the default test, but invoking gather_tree_state directly
+  # with mode='working-tree' to lock the contract at the function level.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+
+  (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 250))" > unrelated.py)
+  mkdir -p "$repo/.claude/skills/k2b-test"
+  (cd "$repo" && printf '# small\n' > .claude/skills/k2b-test/SKILL.md)
+  (cd "$repo" && git add .claude/skills/k2b-test/SKILL.md)
+
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import gather_tree_state
+state = gather_tree_state(repo_root=r'$repo', mode='working-tree')
+print('files:', sorted(state['files']))
+print('total_loc:', state['total_loc'])
+")
+  echo "$out" | grep -q "'unrelated.py'" || fail "working-tree mode must include unstaged file; got: $out"
+  echo "$out" | grep -q "'.claude/skills/k2b-test/SKILL.md'" || fail "working-tree mode must include staged file too; got: $out"
+  echo "PASS: test_explicit_working_tree_mode_sees_staged_and_unstaged"
+}
+
+test_explicit_staged_mode_scopes_to_staged_only() {
+  # Opt-in capability: when caller passes mode='staged', only the staged
+  # set is classified. This is what /ship will use once step 3 stages
+  # files first (separate follow-up commit on the SKILL.md).
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+
+  # Unrelated 250-line dirty file (not staged) -- the "noise" that would
+  # otherwise force Tier 3 in default mode.
+  (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 250))" > unrelated.py)
+
+  # Staged: 1-line docs change
+  mkdir -p "$repo/.claude/skills/k2b-test"
+  (cd "$repo" && printf '# small\n' > .claude/skills/k2b-test/SKILL.md)
+  (cd "$repo" && git add .claude/skills/k2b-test/SKILL.md)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths: []
+YAML
+
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import classify_tier
+tier, reason = classify_tier(repo_root=r'$repo', tier3_config_path=r'$config', mode='staged')
+print(f'tier:{tier} reason:{reason}')
+")
+  echo "$out" | grep -q "tier:1" || fail "explicit staged mode should classify only the 1-line docs change as tier 1; got: $out"
+  echo "PASS: test_explicit_staged_mode_scopes_to_staged_only"
+}
+
+test_explicit_staged_mode_ignores_unstaged_files() {
+  # Direct gather_tree_state assertion that staged mode never includes
+  # unstaged files.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+
+  (cd "$repo" && printf 'unstaged\n' > unstaged.py)
+  (cd "$repo" && printf 'staged\n' > staged.py)
+  (cd "$repo" && git add staged.py)
+
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import gather_tree_state
+state = gather_tree_state(repo_root=r'$repo', mode='staged')
+print('files:', sorted(state['files']))
+")
+  echo "$out" | grep -q "'staged.py'" || fail "staged mode must include staged.py; got: $out"
+  if echo "$out" | grep -q "'unstaged.py'"; then
+    fail "staged mode must NOT include unstaged.py; got: $out"
+  fi
+  echo "PASS: test_explicit_staged_mode_ignores_unstaged_files"
+}
+
+test_explicit_staged_mode_allowlist_hit_still_tier_3() {
+  # Staged file in the allowlist must still trigger Tier 3 even with
+  # other unstaged dirty files. Allowlist semantics preserved within
+  # the staged scope.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+
+  (cd "$repo" && printf 'docs\n' > random.md)
+
+  mkdir -p "$repo/scripts/lib"
+  (cd "$repo" && printf 'def f(): pass\n' > scripts/lib/minimax_review.py)
+  (cd "$repo" && git add scripts/lib/minimax_review.py)
+
+  local config="$(mktmp)/tier3-paths.yml"
+  cat > "$config" <<'YAML'
+paths:
+  - "scripts/lib/minimax_review.py"
+YAML
+
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import classify_tier
+tier, reason = classify_tier(repo_root=r'$repo', tier3_config_path=r'$config', mode='staged')
+print(f'tier:{tier} reason:{reason}')
+")
+  echo "$out" | grep -q "tier:3" || fail "staged-mode allowlist hit should be tier 3 regardless of unstaged noise; got: $out"
+  echo "PASS: test_explicit_staged_mode_allowlist_hit_still_tier_3"
+}
+
+test_unknown_mode_raises_value_error() {
+  # Codex follow-up: catch typos in the mode parameter. ValueError must
+  # propagate (the CLI catches it and exits 1 -> caller falls back to
+  # Tier 3).
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+
+  if PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+from tier_detection import gather_tree_state
+gather_tree_state(repo_root=r'$repo', mode='auto')
+" 2>/dev/null; then
+    fail "unknown mode 'auto' (the rejected design) should raise ValueError"
+  fi
+  echo "PASS: test_unknown_mode_raises_value_error"
+}
+
+test_cli_wrapper_mode_staged_flag() {
+  # CLI exposes --mode staged as opt-in for callers that pre-stage.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  cat > "$repo/scripts/tier3-paths.yml" <<'YAML'
+paths: []
+YAML
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+  (cd "$repo" && git add scripts && git commit -q -m "install classifier")
+
+  # Unrelated 250-LOC unstaged + 1-line staged docs
+  (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 250))" > unrelated.py)
+  mkdir -p "$repo/.claude/skills/k2b-test"
+  (cd "$repo" && printf '# small\n' > .claude/skills/k2b-test/SKILL.md)
+  (cd "$repo" && git add .claude/skills/k2b-test/SKILL.md)
+
+  # Default mode (working-tree): both files visible, 250 LOC -> tier 3
+  local default_out
+  default_out=$(cd "$repo" && ./scripts/ship-detect-tier.py)
+  echo "$default_out" | grep -q "^tier: 3$" || fail "default mode should see full dirty tree -> tier 3; got: $default_out"
+
+  # --mode staged: only staged file, 1 line of docs -> tier 1
+  local staged_out
+  staged_out=$(cd "$repo" && ./scripts/ship-detect-tier.py --mode staged)
+  echo "$staged_out" | grep -q "^tier: 1$" || fail "--mode staged should scope to staged docs -> tier 1; got: $staged_out"
+
+  echo "PASS: test_cli_wrapper_mode_staged_flag"
+}
+
+test_cli_wrapper_mode_invalid_rejects() {
+  # Argparse choices=("staged","working-tree") rejects bogus values.
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  cat > "$repo/scripts/tier3-paths.yml" <<'YAML'
+paths: []
+YAML
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+  (cd "$repo" && printf 'x=1\n' > code.py)
+
+  if (cd "$repo" && ./scripts/ship-detect-tier.py --mode auto) 2>/dev/null; then
+    fail "--mode auto (rejected design) should be refused by argparse"
+  fi
+  echo "PASS: test_cli_wrapper_mode_invalid_rejects"
+}
+
+test_staged_mode_fails_closed_on_unmerged_or_unknown_status() {
+  # Codex pass-2 HIGH: classifier IS the guardrail. An unmerged ("U")
+  # entry in the staged index, or any unknown name-status code, must
+  # raise (CLI then exits 1 -> caller falls back to Tier 3) rather than
+  # silently skipping. Test by monkey-patching _run_git to return a
+  # crafted U token (creating a real merge conflict in a bash fixture
+  # is flaky; the parser-level test is the load-bearing assertion).
+  local out
+  out=$(PYTHONPATH="$LIB_DIR" python3 -c "
+import sys
+sys.path.insert(0, r'$LIB_DIR')
+import tier_detection
+# Simulate 'git diff --cached --name-status -z' output containing an
+# unmerged entry: 'U\\0path/with/conflict.py\\0'.
+def fake_run_git(*args, cwd):
+    if args == ('diff', '--cached', '--name-status', '-z'):
+        return 'U\x00path/with/conflict.py\x00'
+    if args == ('diff', '--cached', '--numstat'):
+        return ''
+    raise AssertionError(f'unexpected git call: {args}')
+tier_detection._run_git = fake_run_git
+try:
+    tier_detection._gather_staged_state(__import__('pathlib').Path('/tmp'))
+    print('NO_RAISE')
+except ValueError as exc:
+    msg = str(exc)
+    if 'U' in msg and 'conflict.py' in msg:
+        print('RAISED_OK')
+    else:
+        print(f'WRONG_MSG: {msg}')
+")
+  [ "$out" = "RAISED_OK" ] || fail "staged mode must raise on U/unknown code; got: $out"
+  echo "PASS: test_staged_mode_fails_closed_on_unmerged_or_unknown_status"
+}
+
+test_staged_mode_cli_unmerged_exits_1_fail_safe() {
+  # End-to-end: a real unmerged index entry causes the CLI to exit 1,
+  # which /ship's step 3a treats as Tier 3 fail-safe. Built via genuine
+  # merge-conflict commit chain (no plumbing tricks).
+  local repo
+  repo="$(mktmp)"
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  cat > "$repo/scripts/tier3-paths.yml" <<'YAML'
+paths: []
+YAML
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+
+  (
+    cd "$repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "test"
+    printf 'shared\nbase\n' > conflicted.txt
+    git add scripts conflicted.txt
+    git commit -q -m "init"
+
+    git checkout -q -b branch-a
+    printf 'shared\nbranch-a-line\n' > conflicted.txt
+    git commit -q -am "branch-a"
+
+    git checkout -q main
+    git checkout -q -b branch-b
+    printf 'shared\nbranch-b-line\n' > conflicted.txt
+    git commit -q -am "branch-b"
+
+    git merge -q --no-edit branch-a >/dev/null 2>&1 || true
+    # Now conflicted.txt has merge markers + index has unmerged entry (U).
+  )
+
+  if (cd "$repo" && ./scripts/ship-detect-tier.py --mode staged) 2>/dev/null; then
+    fail "staged mode with unmerged index should exit 1 (fail-safe to Tier 3)"
+  fi
+  echo "PASS: test_staged_mode_cli_unmerged_exits_1_fail_safe"
+}
+
+test_default_mode_is_working_tree_classifies_full_dirty_tree
+test_explicit_working_tree_mode_sees_staged_and_unstaged
+test_explicit_staged_mode_scopes_to_staged_only
+test_explicit_staged_mode_ignores_unstaged_files
+test_explicit_staged_mode_allowlist_hit_still_tier_3
+test_unknown_mode_raises_value_error
+test_cli_wrapper_mode_staged_flag
+test_cli_wrapper_mode_invalid_rejects
+test_staged_mode_fails_closed_on_unmerged_or_unknown_status
+test_staged_mode_cli_unmerged_exits_1_fail_safe
+
 echo "all tests passed"

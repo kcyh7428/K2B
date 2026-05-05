@@ -52,13 +52,30 @@ def main() -> int:
             "Missing default = exit 1 (caller falls back to Tier 3)."
         ),
     )
+    parser.add_argument(
+        "--mode",
+        default="working-tree",
+        choices=("staged", "working-tree"),
+        help=(
+            "Which file set to classify. 'working-tree' (default) reads the "
+            "full dirty tree via `git status --porcelain` -- preserves "
+            "pre-2026-05-05 behavior. 'staged' reads only `git diff --cached` "
+            "and is for callers that pre-stage the EXACT commit set and want "
+            "to ignore unrelated dirty noise. Do not pass 'staged' from /ship "
+            "step 3 unless step 3 stages files first -- /ship's current "
+            "workflow stages at step 5, AFTER review at step 3, so a "
+            "stale-staging scenario would silently under-classify."
+        ),
+    )
     args = parser.parse_args()
 
     root = _repo_root()
     config = Path(args.config) if args.config else root / "scripts" / "tier3-paths.yml"
 
     try:
-        tier, reason = classify_tier(repo_root=root, tier3_config_path=config)
+        tier, reason = classify_tier(
+            repo_root=root, tier3_config_path=config, mode=args.mode
+        )
     except Exception as exc:
         print(f"ship-detect-tier: classifier error: {exc}", file=sys.stderr)
         return 1

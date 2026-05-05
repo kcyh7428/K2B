@@ -85,20 +85,145 @@ def _run_git(*args: str, cwd: Path) -> str:
     )
 
 
-def gather_tree_state(repo_root: str | Path) -> dict:
-    """Return the current working-tree state for classification.
+def gather_tree_state(
+    repo_root: str | Path,
+    mode: str = "working-tree",
+) -> dict:
+    """Return the tree state used to classify the change set.
 
-    Uses `git status --porcelain -z` to correctly handle paths with spaces,
-    renames, and unusual characters. Merges staged and unstaged numstat so
-    classification matches exactly what the review would see.
+    Args:
+      repo_root: path to the git repo root.
+      mode: which set of files to consider.
+        - "working-tree" (default): full working tree via
+          `git status --porcelain` + untracked files. This is the
+          original pre-2026-05-05 behavior. Default kept unchanged for
+          backwards compatibility -- callers that know they want the
+          staged set must opt in explicitly.
+        - "staged": only `git diff --cached` files. Used by callers that
+          have already staged the exact set of files they intend to
+          commit AND want to exclude unrelated dirty noise. Important
+          contract: the caller is asserting "the staged set IS the
+          commit set." Do NOT default to this mode for /ship step 3
+          unaided -- /ship's current workflow stages files at step 5,
+          AFTER tier detection at step 3, so a stale-staging scenario
+          would silently under-classify the actual commit (Codex finding
+          on this file's first revision; see commit message).
+
+    The staged mode is the capability that fixes the conflation bug
+    observed 2026-05-04: the renderer fix and router-watchdog ship both
+    required manual --files overrides on scripts/review.sh because
+    unrelated dirty files in the working tree forced Tier 3. With
+    staged mode, callers that pre-stage the intended commit can scope
+    the classifier correctly. Wiring /ship to use this safely is a
+    follow-up commit.
 
     Returns:
-      - files: list[str] -- paths with any working-tree change
+      - files: list[str] -- paths with a change in the resolved set
       - statuses: dict[str, str] -- path -> "A"/"M"/"D"/"R"/"?"
-      - total_loc: int -- insertions + deletions across tracked diffs, plus
-        untracked-file line counts (binary files count as 0)
+      - total_loc: int -- insertions + deletions across tracked diffs,
+        plus untracked-file line counts in working-tree mode (binary
+        files count as 0). Staged mode never has untracked files
+        (untracked means not staged by definition).
+
+    Raises:
+      ValueError: if mode is not one of the documented values.
+      subprocess.CalledProcessError: if a critical git command fails.
+        Callers (CLI wrapper) catch this and fail-safe to Tier 3 rather
+        than silently soften the classification.
     """
+    if mode not in ("staged", "working-tree"):
+        raise ValueError(
+            f"unknown mode {mode!r}; expected 'staged' or 'working-tree'"
+        )
+
     root = Path(repo_root)
+    if mode == "staged":
+        return _gather_staged_state(root)
+    return _gather_working_tree_state(root)
+
+
+def _gather_staged_state(root: Path) -> dict:
+    """Return state restricted to `git diff --cached`.
+
+    Git failures propagate -- the CLI fail-safe (ship-detect-tier.py
+    treats classifier errors as Tier 3) is the right surface, not silent
+    softening here.
+    """
+    files: list[str] = []
+    statuses: dict[str, str] = {}
+
+    # name-status -z emits: <code>\0<path>\0  (or for renames/copies:
+    # <code><score>\0<old>\0<new>\0). Walk tokens carefully. Errors
+    # propagate -- a damaged index should fail loudly, not be silently
+    # treated as "no staged files."
+    name_status = _run_git(
+        "diff", "--cached", "--name-status", "-z", cwd=root
+    )
+    tokens = name_status.split("\x00")
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok:
+            i += 1
+            continue
+        # First char is the status letter; rename/copy carry a similarity
+        # score (e.g. "R100"), but we only need the letter.
+        status_letter = tok[0]
+        if status_letter in ("R", "C"):
+            # Two more tokens: <old>, <new>. We track <new>.
+            if i + 2 >= len(tokens):
+                break
+            new_path = tokens[i + 2]
+            files.append(new_path)
+            statuses[new_path] = "R" if status_letter == "R" else "M"
+            i += 3
+            continue
+        if i + 1 >= len(tokens):
+            break
+        path = tokens[i + 1]
+        if status_letter in ("A", "M", "D"):
+            files.append(path)
+            statuses[path] = status_letter
+        elif status_letter == "T":  # type change (symlink <-> file)
+            files.append(path)
+            statuses[path] = "M"
+        else:
+            # Codex pass-2 HIGH: classifier is the guardrail. Unmerged
+            # ("U") entries in the index, or any unknown name-status
+            # token, must fail closed -- the CLI catches this and exits
+            # 1, falling back to Tier 3. Silently skipping would let the
+            # classifier run on an incomplete staged set and emit a
+            # misleadingly low tier.
+            raise ValueError(
+                f"unmerged or unknown name-status code {status_letter!r} for "
+                f"path {path!r} in staged set; classifier failing closed so "
+                "the CLI fail-safes to Tier 3"
+            )
+        i += 2
+
+    # LOC from staged numstat. Errors propagate (same rationale as
+    # name-status above).
+    total_loc = 0
+    numstat = _run_git("diff", "--cached", "--numstat", cwd=root)
+    for line in numstat.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        ins, dels, _path = parts
+        if ins == "-" and dels == "-":
+            continue  # binary
+        try:
+            total_loc += int(ins) + int(dels)
+        except ValueError:
+            continue
+
+    return {"files": files, "statuses": statuses, "total_loc": total_loc}
+
+
+def _gather_working_tree_state(root: Path) -> dict:
+    """Return state for the full working tree (porcelain + untracked)."""
     porcelain = _run_git("status", "--porcelain", "-z", cwd=root)
 
     files: list[str] = []
@@ -221,8 +346,16 @@ def _is_tier_1_doc(path: str) -> bool:
 def classify_tier(
     repo_root: str | Path,
     tier3_config_path: str | Path | None = None,
+    mode: str = "working-tree",
 ) -> tuple[int, str]:
-    state = gather_tree_state(repo_root)
+    """Classify the change set into Tier 0/1/2/3.
+
+    `mode` is forwarded to `gather_tree_state()` -- see that docstring
+    for the contract. Default is "working-tree" (preserves original
+    pre-2026-05-05 behavior). Pass "staged" only when the caller is
+    asserting the staged set IS the commit set.
+    """
+    state = gather_tree_state(repo_root, mode=mode)
     files = state["files"]
 
     if not files:
