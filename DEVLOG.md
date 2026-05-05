@@ -2,6 +2,39 @@
 
 ---
 
+## 2026-05-05 -- defensive set +eu around source ~/.zshrc in MiniMax wrappers
+
+**Commit:** `d8e016a fix(scripts): set +eu around source ~/.zshrc in three minimax wrappers`
+
+**What shipped:** Three MiniMax wrapper scripts (`scripts/minimax-common.sh`, `scripts/claude-minimaxi.sh`, `scripts/minimax-review.sh`) had `set +u; source "$HOME/.zshrc"; set -u` around the env-loading fallback. They all toggled `set -u` but left `set -e` active during the source. A failure inside .zshrc (e.g. `source /path/to/missing-file`) would die before the trailing `|| true` could catch it, killing the parent shell. Patch: `set +eu; ...; set -eu` in all three.
+
+**Named bug killed:** Telegram image at 2026-05-05 00:28 Macau (UTC 2026-05-04 16:28) failed Washing Machine OCR because `~/.zshrc` had a stale `source /Users/fastshower/.openclaw/completions/openclaw.zsh` line for an uninstalled package. The dead source killed `minimax-common.sh` mid-source, `KIMI_API_KEY` never exported, `minimax-vlm.sh` wrapper exited 1, attachmentIngest fell through to agent-only path, image arrived at the agent with no extracted text. Compounded by an immediate context auto-compact that dropped the image entirely. Empirically verified the patch with a deliberately broken `.zshrc` containing both a missing-source line and an unset-variable expansion: pre-patch exits 1 with vars empty, post-patch exits 0 with vars populated.
+
+**Out-of-repo work this session:**
+- Removed the stale openclaw block from Mac Mini `~/.zshrc` (backed up to `~/.zshrc.bak-<ts>`)
+- `pm2 restart k2b-remote --update-env` then `pm2 save` so the bot's runtime env now carries both `MINIMAX_API_KEY` and `KIMI_API_KEY` (was missing the latter)
+
+**Adversarial review:** Codex tier-3 single-pass via runner (`.code-reviews/2026-05-05T13-58-54Z_0733f8.log`). Round 1 caught a real P1 inconsistency: I had patched `minimax-review.sh` with only `set +e` while the other two used `set +eu` -- meaning a `.zshrc` with an unset-variable expansion would still die. Fixed inline. Round 2 confirmed all three callers consistent. A separate medium finding about `scripts/k2bi-nblm-bootstrap.sh` `--generate-only` path was raised; out of scope (untracked file), spawned follow-up task.
+
+**Tier:** 3 by classifier (`scripts/minimax-review.sh` is on the Tier 3 allowlist -- the reviewer touching its own script needs strict review).
+
+**Feature status change:** none. `--no-feature` ship -- infrastructure fix for a brittle env-loading chain.
+
+**Deferred (advisory ownership-drift):** `scripts/audit-ownership.sh` reported 5 rules / 40 offender files, all pre-existing vault content and observation archives. Not introduced by this commit.
+
+**Key decisions:**
+
+- Patched all three callers in one commit, not three separate commits. The fix is identical in shape and the inconsistency itself was a defect (Codex flagged it round 1) -- splitting would have made re-introducing the inconsistency more likely.
+- Left the `pm2 restart --update-env` and `~/.zshrc` openclaw cleanup as out-of-repo work, not committed. The cleanup is to Keith's home dir on the Mini, not the K2B project tree.
+- Did NOT remove the `~/.zshrc` source fallback in `minimax-common.sh` even though the live bot now has both keys in its env (because of the pm2 restart). The fallback still earns its keep for cron jobs and any other non-pm2 caller that doesn't inherit the keys.
+
+**Follow-ups:**
+
+- `scripts/k2bi-nblm-bootstrap.sh` `--generate-only` flag -- spawned task chip.
+- The longer-term cleanup mentioned in `minimax-common.sh` line 18 (dedicated `~/.minimax-env` credentials file shared across all three callers) is still the better fix; this defensive patch buys time but the brittle dependency on `.zshrc` shape persists. Park for now.
+
+---
+
 ## 2026-05-02 -- drop local Clash proxy default; route k2b-remote via router VPN
 
 **Commit:** `5ca7fa2 infra(k2b-remote): drop local Clash proxy default; route via router VPN`
