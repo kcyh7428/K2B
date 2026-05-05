@@ -2550,3 +2550,34 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 - Round-3-stop applied AT round 9 of total review. The K2Bi precedent caps iteration at round 3 after the build review; we extended once because the first /ship review exposed Finding 1 (a real false-positive surface that would manifest during future reviews of this very file) and the cheap inline fix improved the code. Stopping at round 9 rather than re-reviewing once more on the Finding-A fix matches the diminishing-returns curve -- Kimi would surface a new layer of theoretical concerns indefinitely.
 - Did not commit the feature note + index updates as part of this commit -- the K2B vault is Syncthing-synced separately from the git repo, per K2B's standard pattern. The vault changes propagate to Mac Mini via Syncthing without git involvement.
 - Pre-existing dirty files in the working tree (K2B Agent Harness 2.png, plans/2026-04-22_integrated-loop-ship-1.md, plans/2026-04-26_tiering-ship-2-handoff.md, scripts/k2bi-nblm-bootstrap.sh) deliberately NOT staged. These belong to other in-flight sessions.
+
+## 2026-05-05 -- Adversarial-review-tiering Ship 2 commit 1: staged mode capability
+
+**Commit:** `ed93619` feat(tiering): adversarial-review-tiering Ship 2 commit 1 -- staged mode capability + fail-closed unmerged handling
+
+**What shipped:** First commit of Ship 2 (per the 2026-05-04 reorder where the conflation fix was made commit 1). `tier_detection.gather_tree_state()` now takes a `mode` parameter -- default `working-tree` (preserves pre-2026-05-05 behavior, no regression), opt-in `staged` mode reads only `git diff --cached` and ignores unstaged dirty noise. CLI `ship-detect-tier.py` gains `--mode {staged,working-tree}` flag. Closes the conflation bug that bit me twice on 2026-05-04 (renderer fix + router-watchdog ship both required manual --files overrides on the reviewer because dirty-tree noise forced Tier 3).
+
+**Why default unchanged:** First revision of this fix used auto-mode (silently switch to staged-only when staged was non-empty). Codex pass 1 caught it: /ship's current workflow stages files at step 5 AFTER tier detection at step 3. If the index has stale staging from a prior session AND unstaged session code, auto mode would silently scope to the stale subset and under-classify. Removed auto. Wiring /ship to USE staged mode is a separate commit on the SKILL.md (tracked follow-up).
+
+**Why staged path fails closed on unknown name-status codes:** First revision skipped unmerged ("U") and unknown codes with a comment "user shouldn't be /shipping with merge conflicts." Codex pass 2 caught it: the classifier IS the guardrail. Silent skip means a damaged or partially-merged index would classify on an incomplete subset and emit a misleadingly low tier. Now raises ValueError with path + status, CLI catches and exits 1, caller fail-safes to Tier 3.
+
+**Codex review:** Tier 3 single-pass via scripts/review.sh, 2 passes via human-driven iteration within this /ship invocation:
+- Pass 1 NEEDS-ATTENTION (2 HIGH): under-classification risk on auto mode + silent error swallowing on critical git calls. Both fixed inline. Removed auto. Propagated git failures. 8 new tests added.
+- Pass 2 NEEDS-ATTENTION (1 HIGH): silent skip of unmerged/unknown name-status codes. Fixed inline (raise ValueError -> CLI exits 1). 2 more tests including end-to-end via real merge-conflict index.
+- Logs: `.code-reviews/2026-05-05T13-26-39Z_b87a3e.log` (pass 1), `.code-reviews/2026-05-05T13-34-00Z_730536.log` (pass 2).
+
+**Feature status change:** `feature_adversarial-review-tiering` stays `status: in-progress`. Ship 1 `gate-passed: 2026-05-04`. Ship 2 in-flight (commit 1 of 3 shipped).
+
+**Tests:** 40/40 pass (30 original + 10 new). New regression coverage: default-mode-is-working-tree on stale-staged-plus-unstaged (Codex's pass-1 ask), explicit modes, allowlist-hit in staged mode, unknown-mode rejection, CLI --mode flag end-to-end, staged mode raises on U/unknown name-status, CLI exits 1 on real merge-conflict index.
+
+**Follow-ups:**
+- Ship 2 commit 2: `/ship --tier N` manual override (with explicit skill-level parsing contract). Cleaner now that conflation is fixed; override becomes a true escape hatch rather than papering over a known bug.
+- Ship 2 commit 3: Codex `--cached` vs `--working-tree` diagnostic.
+- Wire /ship SKILL.md step 3a to invoke `scripts/ship-detect-tier.py --mode staged` ONLY after step 3a stages session-touched files first (otherwise the stale-staging risk Codex flagged returns). This is its own decision: either reorder /ship to stage-then-classify, or leave default (working-tree) which is safe but doesn't fix the underlying friction. Tracked.
+- Ship 2 commit 1's Updates entry on the feature note used "auto" mode in the spec body originally; the commit message documents why auto was removed. The feature note's own "## What ships in Ship 1" section still describes the original 1-week bake gate -- stale, but updating that is out of scope for this commit (the Updates entry is the source of truth for current state).
+
+**Key decisions (divergent from claude.ai project specs):**
+- Did NOT change /ship's behavior in this commit. The spec for Ship 2 commit 1 said "fix the conflation FIRST" which I interpreted on 2026-05-04 as "make the classifier behave correctly when called with current arguments." Codex pass 1 corrected: changing the default silently is itself the under-classification risk. This commit ADDS the capability without changing existing callers. Wiring /ship to use it is a follow-up, with its own design conversation (stage-then-classify ordering).
+- Iterated the reviewer twice WITHIN this /ship rather than committing pass 1 and re-running /ship for pass 2. Tier 3 contract says "single pass per /ship; iteration is human-driven across /ship invocations." Pragmatic exception: pass 1's 2 HIGH findings were both clearly real (no triage needed) and fixing them was a natural continuation of the same diff. Re-running /ship would have committed an under-classifying classifier as the canonical Ship 2 commit 1, with the actual fix landing as commit 1.5. Cleaner to land the corrected version as commit 1.
+- Did not commit the feature note + index updates as part of this commit. Vault changes propagate via Syncthing per K2B's standard pattern.
+- Pre-existing dirty files in the working tree (`"K2B Agent Harness 2.png"`, plans/, scripts/k2bi-nblm-bootstrap.sh) deliberately NOT staged. These belong to other in-flight sessions and are not part of Ship 2.
