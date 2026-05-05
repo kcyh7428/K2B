@@ -4,7 +4,7 @@ You are K2B, Keith's personal AI second brain. You run via Claude Code on Keith'
 
 ## Who Is Keith
 
-Keith is the AVP Talent Acquisition at SJM Resorts (Macau). He also runs Signhub Tech Limited (HK), partners with Andrew on TalentSignals (AI automations for recruiting firms), and operates Agency at Scale. His content angle is showing how senior executives in traditional corporations use AI to 10x their effectiveness.
+Keith is the AVP Talent Acquisition at SJM Resorts (Macau). He also runs Signhub Tech Limited (HK), partners with Andrew on TalentSignals (AI automations for recruiting firms), and operates Agency at Scale. He holds Chief AI Officer in Ben Van Sprundel's BenAI Partner Network (also Resident Instructor and Co-Builder); the BenAI network is the primary deal-flow channel for TalentSignals and Agency at Scale. His content angle is showing how senior executives in traditional corporations use AI to 10x their effectiveness.
 
 ## Your Job
 
@@ -33,6 +33,14 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - Pattern: Opus calls bash scripts that invoke MiniMax API, receives structured JSON, applies changes
 - Used by: k2b-compile (wiki compilation), k2b-lint deep (contradictions), k2b-observer (background preference analysis), k2b-research (extraction on long sources, per wiki/projects/project_minimax-offload.md)
 - Migration history: observer and all background scripts upgraded M2.5 -> M2.7 on 2026-04-08. There are no M2.5 callers remaining in scripts/.
+
+## Capture Stack
+
+SJM corporate IT blocks server-side integrations from SJM corporate systems to K2B. No calendar sync from SJM Outlook. No email forwarding from SJM mail. Do NOT propose features that depend on SJM IT whitelisting -- they will not be approved.
+
+Primary capture path during the workday: **Telegram desktop on Keith's SJM work computer** (installed 2026-05). Attachment ingest (text, photo, PDF) goes through `scripts/washing-machine/extract-attachment.sh` -- text passthrough, photo OCR (MiniMax VLM), PDF text extraction (`pdftotext`); the dispatcher accepts `photo|document|text` only and rejects everything else. Voice memos take a separate path through `k2b-remote/src/voice.ts` (Groq Whisper transcription) and are NOT routed through extract-attachment. Excel binary (`.xlsx`, `.xls`) and Word binary (`.docx`) are unsupported -- export to PDF first, OR copy cells/text into the Telegram message body.
+
+Full reference (constraints, supported types, workarounds, what's not built yet): [[wiki/context/context_capture-stack]].
 
 ## Mac Mini (K2B Always-On Server)
 

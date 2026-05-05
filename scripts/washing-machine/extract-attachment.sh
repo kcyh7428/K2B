@@ -3,8 +3,10 @@
 #
 # Reads a single JSON envelope from stdin and emits a single JSON envelope
 # on stdout. Used by k2b-remote/src/attachmentIngest.ts to turn a Telegram
-# photo / document / voice into plain OCR text that flows through the
-# existing Ship 1 Normalization Gate (text-only classifier).
+# photo / document / text message into plain text that flows through the
+# existing Ship 1 Normalization Gate (text-only classifier). Voice memos
+# are NOT routed here -- they take a separate path through
+# k2b-remote/src/voice.ts (Groq Whisper) before any normalization.
 #
 # Input:
 #   {
