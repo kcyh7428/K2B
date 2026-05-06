@@ -36,9 +36,12 @@ launchd runs that installed copy. Runtime state and logs live outside the repo:
 ~/Library/Logs/k2b-router-watchdog/health.jsonl
 ~/Library/Logs/k2b-router-watchdog/alerts.jsonl
 ~/Library/Logs/k2b-router-watchdog/node-score.jsonl
+~/Library/Logs/k2b-router-watchdog/leaf-optimizer.jsonl
 ~/Library/Logs/k2b-router-watchdog/auto-switch.jsonl
 ~/Library/Logs/k2b-router-watchdog/install.log
 ```
+
+The installer registers the leaf optimizer launchd job, but live mutation still requires the separate `~/.k2b-router-leafopt-enabled` sentinel. Leave that sentinel absent after install until the first live dry-run has been inspected.
 
 ## Operations
 
@@ -48,6 +51,7 @@ Check launchd:
 launchctl print gui/$(id -u)/com.k2b.router-watchdog
 launchctl print gui/$(id -u)/com.k2b.router-daily-rollup
 launchctl print gui/$(id -u)/com.k2b.router-node-score
+launchctl print gui/$(id -u)/com.k2b.router-leaf-optimizer
 launchctl print gui/$(id -u)/com.k2b.router-digest
 ```
 
@@ -69,6 +73,12 @@ Score proxy nodes manually:
 bash "$HOME/Library/Application Support/k2b-router-watchdog/bin/score-nodes.sh"
 ```
 
+Dry-run the manual-selector leaf optimizer:
+
+```bash
+bash "$HOME/Library/Application Support/k2b-router-watchdog/bin/optimize-leaves.sh" --dry-run
+```
+
 Generate the recommendation digest without sending it:
 
 ```bash
@@ -81,6 +91,7 @@ Stop the watchdog:
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-watchdog.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-daily-rollup.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-node-score.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-leaf-optimizer.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-digest.plist
 ```
 
@@ -90,6 +101,7 @@ Start it again:
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-watchdog.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-daily-rollup.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-node-score.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-leaf-optimizer.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-digest.plist
 ```
 
@@ -128,6 +140,53 @@ On a live failure trigger, `check.sh` runs a fresh `score-nodes.sh` pass before 
 - the best healthy manual selector is clearly better than the current candidate by `K2B_AUTOSWITCH_MIN_SCORE_IMPROVEMENT` (default `0.05` score points).
 
 If auto-switch is triggered but blocked, the watchdog emits an `auto_switch_blocked` alert explaining the reason and best candidate, subject to the same Telegram reachability limits as all other alerts.
+
+## Leaf Optimizer
+
+The leaf optimizer is a separate 6-hour automation. It keeps the inner `♻️ 手动切换*` selectors ready for AI traffic while leaving outer failover to `auto-switch.py`.
+
+Live leaf changes are disabled unless this file exists:
+
+```text
+~/.k2b-router-leafopt-enabled
+```
+
+When the sentinel is absent, the scheduled job logs `sentinel_missing` and does not call Mihomo `PUT`. This sentinel is separate from `~/.k2b-router-autoswitch-enabled` because leaf optimization can change several manual selectors in one run, while outer auto-switch only changes `🤖 OpenAI` after failures.
+
+Allowed mutation:
+
+```text
+PUT /proxies/♻️ 手动切换N
+{"name":"<known-good-non-HK-leaf>"}
+```
+
+It excludes HK leaves for AI-service candidates, scores leaves against ChatGPT, Claude, AI Studio, NotebookLM, and the Gemini API endpoint, and preserves diversity so the manual selectors do not all collapse onto the same fastest leaf. It does not mutate `🤖 OpenAI`, Google, YouTube, media groups, DNS, mode, provider subscriptions, or YAML rules.
+
+To avoid route churn, live changes require a 12-hour dwell per selector and two consecutive runs where the same replacement wins. Clearly invalid current leaves, including HK or failing AI leaves, may be replaced immediately unless that selector changed in the last 60 minutes. Optimizer state is stored at:
+
+```text
+~/Library/Application Support/k2b-router-watchdog/leaf-optimizer-state.json
+```
+
+The optimizer also takes a singleton lock at:
+
+```text
+~/Library/Application Support/k2b-router-watchdog/leaf-optimizer.lock
+```
+
+Router selector mutation is serialized across the leaf optimizer and the outer auto-switcher with:
+
+```text
+~/Library/Application Support/k2b-router-watchdog/mihomo-mutation.lock
+```
+
+The leaf optimizer holds this shared lock for the whole mutation pass after scoring. Each selector is guarded with a fresh read immediately before `PUT` and a verify read immediately after `PUT`. Mihomo does not expose a conditional selector update in this setup, so manual dashboard changes outside the watchdog remain a best-effort race; watchdog-owned mutations are serialized.
+
+The scheduled job includes a 300-second launchd `ThrottleInterval` so repeated API or scope failures do not create a rapid restart loop.
+
+Use `K2B_LEAF_OPTIMIZER_CANDIDATE_REGEX` only if selector discovery needs to change. The final mutation scope is still hard-locked to literal `♻️ 手动切换*` selector names.
+
+`optimize-leaves.sh` parses `MIHOMO_API_BASE`, `MIHOMO_API_SECRET`, and `MIHOMO_OPENAI_GROUP` from the watchdog env file. It accepts `KEY=value`, `export KEY=value`, and matching outer quotes without sourcing the file, so the existing unquoted `MIHOMO_OPENAI_GROUP=🤖 OpenAI` format remains valid.
 
 ## Alert Rules
 

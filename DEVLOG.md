@@ -2662,6 +2662,26 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 - Did not commit the feature note + index updates as part of this commit -- the K2B vault is Syncthing-synced separately from the git repo, per K2B's standard pattern. The vault changes propagate to Mac Mini via Syncthing without git involvement.
 - Pre-existing dirty files in the working tree (K2B Agent Harness 2.png, plans/2026-04-22_integrated-loop-ship-1.md, plans/2026-04-26_tiering-ship-2-handoff.md, scripts/k2bi-nblm-bootstrap.sh) deliberately NOT staged. These belong to other in-flight sessions.
 
+## 2026-05-07 -- Router-watchdog Phase 5: AI leaf optimizer
+
+**Commit:** `bec4819` feat(router-watchdog): add AI leaf optimizer
+
+**What shipped:** Added a fifth router-watchdog launchd job, `com.k2b.router-leaf-optimizer`, plus `optimize-leaves.py` / `optimize-leaves.sh`, README coverage, install integration, and 15 focused leaf-optimizer tests. The new job maintains inner manual-selector leaves for AI traffic: `♻️ 手动切换N -> best suitable non-HK leaf`. Outer failover remains the existing `🤖 OpenAI -> ♻️ 手动切换N` auto-switch path.
+
+**Safety model:** Live leaf mutation is disabled unless `~/.k2b-router-leafopt-enabled` exists on the Mini. The sentinel is separate from `~/.k2b-router-autoswitch-enabled` because this optimizer can mutate several manual selectors in one run. Mutation scope is hard-locked to literal `♻️ 手动切换*` selector names, requires selector type `Selector`, refetches membership before PUT, retries/validates PUT, and serializes watchdog-owned Mihomo writes through `mihomo-mutation.lock` shared with `auto-switch.py`.
+
+**Anti-thrash discipline:** Excludes HK leaves from AI-service pools; scores ChatGPT, Claude, AI Studio, NotebookLM, and Gemini API; ranks success before latency; preserves diversity; uses 3-run rolling score, two consecutive wins, 12-hour dwell, and a 60-minute invalid-leaf dwell.
+
+**Adversarial review:** Official gate was direct Kimi via `scripts/minimax-review.sh --json`, not `scripts/review.sh`, because the runner's fallback path was wedged into Codex self-review. Kimi returned NEEDS-ATTENTION with HIGH/MEDIUM findings. Fixed inline before commit: full-pass shared mutation lock, alarm disabled before state writes, install warning if the leaf sentinel already exists, and auto-switch decision logging while the shared mutation lock is held. No Codex fallback verdict was accepted.
+
+**Tests:** `router-watchdog-leaf-optimizer.test.sh` 15/15; `router-watchdog.test.sh` 9/9; `router-watchdog-phase234.test.sh` 7/7; Python `py_compile`; bash `-n`.
+
+**Deploy/install:** Synced scripts to the Mini and ran `bash ~/Projects/K2B/scripts/router-watchdog/install.sh`. Launchd list showed five jobs loaded: `router-watchdog`, `router-daily-rollup`, `router-node-score`, `router-digest`, and `router-leaf-optimizer`. `~/.k2b-router-leafopt-enabled` was confirmed absent; the first leaf-optimizer tick logged `sentinel_missing` and `changed:0`.
+
+**Known issue:** `scripts/deploy-to-mini.sh scripts` reads from canonical `~/Projects/K2B`, not from the temporary router worktree used for this commit, so it also copied the parallel session's untracked `scripts/gptsapi-image.sh` to the Mini. That file is not staged or committed here. Push to GitHub failed twice with `Recv failure: Connection reset by peer`; branch remains local until network recovers.
+
+**Feature status change:** `feature_router-watchdog` stays `in-progress`. Phase 5 landed, but the controlled MVP fault-injection window is still required before moving the feature to shipped.
+
 ## 2026-05-05 -- Adversarial-review-tiering Ship 2 commit 1: staged mode capability
 
 **Commit:** `ed93619` feat(tiering): adversarial-review-tiering Ship 2 commit 1 -- staged mode capability + fail-closed unmerged handling

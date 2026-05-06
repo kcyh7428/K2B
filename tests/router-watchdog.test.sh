@@ -198,8 +198,15 @@ EOF
   chmod +x "$fakebin/pm2" "$fakebin/tailscale"
 
   PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
-  grep -q '"name":"pm2_daemon","ok":true' "$d/pm2.jsonl" || fail "pm2 daemon parser should report ok"
-  grep -q '"name":"pm2_services","ok":true' "$d/pm2.jsonl" || fail "pm2 services parser should report ok"
+  python3 - "$d/pm2.jsonl" <<'PY' || fail "pm2 parser should report daemon and services ok"
+import json
+import sys
+
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+by_name = {row["name"]: row for row in rows}
+assert by_name["pm2_daemon"]["ok"] is True
+assert by_name["pm2_services"]["ok"] is True
+PY
 
   K2B_TAILSCALE_BIN="$fakebin/tailscale" PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/tailscale.sh" > "$d/tailscale.jsonl"
   grep -q '"name":"tailscale_direct","ok":true' "$d/tailscale.jsonl" || fail "tailscale parser should report direct path ok"
@@ -381,10 +388,10 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: Phase 4 router mutation code is scope-locked.
+# Test 8: Router mutation code is scope-locked.
 # ---------------------------------------------------------------------------
 {
-  python3 - "$SRC_DIR" <<'PY' || fail "router mutation paths must stay scope locked to auto-switch.py"
+  python3 - "$SRC_DIR" <<'PY' || fail "router mutation paths must stay scope locked"
 import os
 import re
 import sys
@@ -407,8 +414,9 @@ for dirpath, dirs, files in os.walk(root):
 
 if forbidden:
     raise SystemExit(f"forbidden mutation verbs in {forbidden}")
-if sorted(set(put_hits)) != ["bin/auto-switch.py"]:
-    raise SystemExit(f"PUT must appear only in auto-switch.py, got {sorted(set(put_hits))}")
+allowed_putters = ["bin/auto-switch.py", "bin/optimize-leaves.py"]
+if sorted(set(put_hits)) != allowed_putters:
+    raise SystemExit(f"PUT must appear only in {allowed_putters}, got {sorted(set(put_hits))}")
 PY
   echo "  PASS: router mutation paths are scope locked"
 }
