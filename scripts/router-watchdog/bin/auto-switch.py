@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import datetime as dt
+import fcntl
 import json
 import os
 import urllib.parse
@@ -35,6 +36,28 @@ def load_json(path: str, default):
         return default
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def try_lock(path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
+def close_lock(handle) -> None:
+    try:
+        handle.close()
+    except OSError:
+        pass
 
 
 def latest_scores(path: str, now: dt.datetime, max_age_hours: int) -> dict[str, dict]:
@@ -161,6 +184,7 @@ def main() -> int:
     parser.add_argument("--candidate-regex", default=os.environ.get("K2B_AUTOSWITCH_CANDIDATE_REGEX", r"^♻️ 手动切换"))
     parser.add_argument("--score-command", default=None)
     parser.add_argument("--score-command-timeout-seconds", type=int, default=180)
+    parser.add_argument("--mutation-lock-file", default=os.path.expanduser("~/Library/Application Support/k2b-router-watchdog/mihomo-mutation.lock"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -272,49 +296,60 @@ def main() -> int:
         append_jsonl(args.decision_log, decision)
         return 0
 
-    try:
-        status = put_openai_group(
-            os.environ["MIHOMO_API_BASE"],
-            os.environ["MIHOMO_API_SECRET"],
-            os.environ["MIHOMO_OPENAI_GROUP"],
-            decision["to_candidate"],
-        )
-    except Exception as exc:  # noqa: BLE001 -- any failure here must NOT abort check.sh's pending-alert drain
+    mutation_lock = try_lock(args.mutation_lock_file)
+    if mutation_lock is None:
         decision["http_status"] = 0
         decision["switched"] = False
-        decision["reason"] = f"put_exception_{type(exc).__name__}"
+        decision["reason"] = "mutation_lock_busy"
         append_jsonl(args.decision_log, decision)
-        if args.alerts_file:
+        append_blocked_alert(args.alerts_file, decision, group, args.min_consecutive_fails)
+        return 0
+    try:
+        try:
+            status = put_openai_group(
+                os.environ["MIHOMO_API_BASE"],
+                os.environ["MIHOMO_API_SECRET"],
+                os.environ["MIHOMO_OPENAI_GROUP"],
+                decision["to_candidate"],
+            )
+        except Exception as exc:  # noqa: BLE001 -- any failure here must NOT abort check.sh's pending-alert drain
+            decision["http_status"] = 0
+            decision["switched"] = False
+            decision["reason"] = f"put_exception_{type(exc).__name__}"
+            append_jsonl(args.decision_log, decision)
+            if args.alerts_file:
+                append_jsonl(args.alerts_file, {
+                    "timestamp": iso(now),
+                    "type": "auto_switch_blocked",
+                    "check": "openai_node",
+                    "message": (
+                        "K2B router watchdog auto-switch BLOCKED: "
+                        f"PUT to {os.environ['MIHOMO_OPENAI_GROUP']} failed "
+                        f"({type(exc).__name__}: {exc}). Pending watchdog alerts "
+                        "still drained on this tick."
+                    ),
+                })
+            return 0
+        decision["http_status"] = status
+        decision["switched"] = 200 <= status < 300
+        decision["reason"] = "switched" if decision["switched"] else f"put_http_{status}"
+        append_jsonl(args.decision_log, decision)
+
+        if decision["switched"] and args.alerts_file:
             append_jsonl(args.alerts_file, {
                 "timestamp": iso(now),
-                "type": "auto_switch_blocked",
+                "type": "auto_switch",
                 "check": "openai_node",
                 "message": (
-                    "K2B router watchdog auto-switch BLOCKED: "
-                    f"PUT to {os.environ['MIHOMO_OPENAI_GROUP']} failed "
-                    f"({type(exc).__name__}: {exc}). Pending watchdog alerts "
-                    "still drained on this tick."
+                    "K2B router watchdog auto-switch: "
+                    f"{os.environ['MIHOMO_OPENAI_GROUP']} {current_candidate} ({current_leaf}) "
+                    f"-> {decision['to_candidate']} ({decision['to_leaf']}) "
+                    f"after {max_consecutive} failed ticks."
                 ),
             })
         return 0
-    decision["http_status"] = status
-    decision["switched"] = 200 <= status < 300
-    decision["reason"] = "switched" if decision["switched"] else f"put_http_{status}"
-    append_jsonl(args.decision_log, decision)
-
-    if decision["switched"] and args.alerts_file:
-        append_jsonl(args.alerts_file, {
-            "timestamp": iso(now),
-            "type": "auto_switch",
-            "check": "openai_node",
-            "message": (
-                "K2B router watchdog auto-switch: "
-                f"{os.environ['MIHOMO_OPENAI_GROUP']} {current_candidate} ({current_leaf}) "
-                f"-> {decision['to_candidate']} ({decision['to_leaf']}) "
-                f"after {max_consecutive} failed ticks."
-            ),
-        })
-    return 0
+    finally:
+        close_lock(mutation_lock)
 
 
 if __name__ == "__main__":

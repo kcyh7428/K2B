@@ -9,6 +9,7 @@ PLISTS=(
   com.k2b.router-watchdog.plist
   com.k2b.router-daily-rollup.plist
   com.k2b.router-node-score.plist
+  com.k2b.router-leaf-optimizer.plist
   com.k2b.router-digest.plist
 )
 
@@ -17,6 +18,7 @@ INSTALL_BIN="$APP_DIR/bin"
 LOG_DIR="${K2B_ROUTER_WATCHDOG_LOG_DIR:-$HOME/Library/Logs/k2b-router-watchdog}"
 LAUNCH_AGENTS_DIR="${K2B_ROUTER_WATCHDOG_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 ENV_FILE="${K2B_ROUTER_WATCHDOG_ENV_FILE:-$HOME/.k2b-router-watchdog.env}"
+LEAFOPT_SENTINEL="${K2B_ROUTER_LEAFOPT_SENTINEL:-$HOME/.k2b-router-leafopt-enabled}"
 MANIFEST="$APP_DIR/install-manifest.sha256"
 INSTALL_LOG="$LOG_DIR/install.log"
 SKIP_LAUNCHCTL="${K2B_ROUTER_WATCHDOG_SKIP_LAUNCHCTL:-0}"
@@ -83,6 +85,11 @@ load_watchdog_env
 : "${MIHOMO_API_BASE:?env file is missing MIHOMO_API_BASE}"
 : "${MIHOMO_API_SECRET:?env file is missing MIHOMO_API_SECRET}"
 : "${MIHOMO_OPENAI_GROUP:?env file is missing MIHOMO_OPENAI_GROUP}"
+
+if [[ -e "$LEAFOPT_SENTINEL" ]]; then
+  log "WARNING: $LEAFOPT_SENTINEL exists; router leaf optimizer will be allowed to mutate manual selectors after install"
+  log "WARNING: remove it before install if you have not inspected optimize-leaves.sh --dry-run output"
+fi
 
 dirty="$(git -C "$REPO_ROOT" status --porcelain -- scripts/router-watchdog launchd)"
 blocking_dirty="$(printf '%s\n' "$dirty" | grep -vE '^(\?\? .*)?$' || true)"
