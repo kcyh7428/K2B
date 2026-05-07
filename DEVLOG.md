@@ -1,6 +1,40 @@
 # K2B Development Log
 
 ---
+## 2026-05-07 -- Mac Mini .git removed, DEVLOG.md added to top-level docs sync
+
+**Commit:** `594ade9 docs(sync): document Mac Mini has no .git, add DEVLOG.md to top-level docs sync`
+
+**What shipped:** Mac Mini's `.git` directory in `~/Projects/K2B/` was deleted entirely. Source of truth for code is now physically MacBook + GitHub; rsync is the only path code reaches Mini. Prior to this, Mini had a vestigial `.git` left over from initial `git clone` -- the bot kept reading `git log` to answer "what's new" and getting data frozen at 2026-03-30. With `.git` gone, those commands now fail loud (`not a git repository`), which is the intended behavior. As the replacement Mini-side "what shipped" introspection path, `DEVLOG.md` is now part of the top-level docs rsync payload (alongside CLAUDE.md, README.md, K2B_ARCHITECTURE.md, .mcp.json) and rolls up under the `skills` sync category.
+
+**Trigger:** Keith asked the Telegram bot "what new skill do you have now" after a pm2 restart. Bot first hallucinated "nothing changed", then ran `git log` on Mini and reported "last commit 2026-03-30" -- misleadingly stale. The investigation surfaced that nothing on Mini actually uses git: zero scripts, zero hooks, zero services. The `.git` tree was 7.1 MB of vestigial state.
+
+**Cross-file consistency on the new top-level-docs payload:**
+- `scripts/deploy-to-mini.sh`: `detect_changes()` and `sync_skills()` both add DEVLOG.md to the doc loop; sync-plan log line lists DEVLOG.md
+- `.claude/skills/k2b-ship/SKILL.md`: skills category table covers all 5 top-level docs; proactive-ship trigger list mentions all 5; "nothing to sync" wording corrected to drop the stale "devlog only" claim
+- `.claude/skills/k2b-sync/SKILL.md`: frontmatter description, proactive trigger list, `/sync skills` command summary, fallback rsync dry-run recipe, and category table all enumerate the same 5 docs
+- `tests/deploy-to-mini.test.sh`: Scenario 5 flipped (DEVLOG-only diff now expects `skills` category, not empty); 9/9 pass
+
+**Adversarial review:** Codex tier-3 pre-commit gate. Five passes:
+- Pass 1 (initial 1-file change, tier-1 MiniMax): NEEDS-ATTENTION, 1 real finding (DEVLOG not synced) + 5 false-positives
+- Pass 2 (after adding deploy-to-mini.sh): NEEDS-ATTENTION, 3 cross-file consistency findings -- ship workflow drops DEVLOG-only drift; sync skill omits DEVLOG; tests still assert old behavior
+- Pass 3: NEEDS-ATTENTION, 2 more findings -- ship category table missing README.md and .mcp.json; sync trigger list/desc omits DEVLOG
+- Pass 4: NEEDS-ATTENTION, 2 more findings -- fallback rsync dry-run doesn't include README/.mcp.json; frontmatter description still stale
+- Pass 5: APPROVE. No further blockers.
+
+Each pass found cross-file drift the previous pass missed. The expanding scope is the natural cost of pulling on a thread that touches both ship/sync skills, the deploy script, and the test.
+
+**Captured as:** `L-2026-05-07-001` in `self_improve_learnings.md`, plus a guard in `policy-ledger.jsonl` (`scope:*`, `action:run_git_on_mini`, `risk:medium`).
+
+**Feature status change:** none (`--no-feature` infrastructure work).
+
+**Follow-ups:**
+- `7fe23e3 docs(plans): file integrated-loop Ship 1 and tiering Ship 2 handoff plans` was committed and pushed in this session by what looks like the Codex companion during one of its review passes (kconverto author identity, AI-style commit body). Worth investigating whether scripts/review.sh has a side-effect that auto-commits untracked plans.
+- `pre-existing` ownership-drift offenders flagged by step-0a (compile-all-indexes, rsync-hard-rule, shipped-file-location). Advisory only. Deferred.
+
+**Key decisions:** rejected adding `git pull` to `/sync` post-rsync (would have kept `.git` on Mini for introspection). Removing `.git` is cleaner: nothing on Mini needs git, fail-loud is preferable to fail-confused, and "MacBook = source of truth" is now physically enforced not just documented.
+
+---
 ## 2026-05-07 -- /ship Step 3a wired to use --mode staged classifier
 
 **Commit:** `526d82a feat(ship): wire /ship Step 3a to use --mode staged classifier`
