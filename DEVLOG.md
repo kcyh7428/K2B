@@ -1,6 +1,35 @@
 # K2B Development Log
 
 ---
+## 2026-05-07 -- deploy-to-mini.sh auto-runs install.sh; install/source drift closed
+
+**Commit:** `9ac2517 fix(deploy): auto-install router-watchdog after rsync; resolve install/source drift`
+
+**What shipped:** Three bundled fixes in scripts/deploy-to-mini.sh + scripts/router-watchdog/install.sh + tests/deploy-to-mini.test.sh that close the install/source drift bug class on Mac Mini.
+
+(1) `deploy-to-mini.sh` now runs `install.sh` on Mini after every `/sync` (any mode), via a new `maybe_run_remote_install()` helper. Runs UNCONDITIONALLY when target is remote and install.sh exists locally — closes the case where `/sync auto` exits early with no source delta but the launchd-served `~/Library/Application Support/k2b-router-watchdog/bin/` is stale from a previous incomplete deploy. Also parses `MINI_HOST`/`MINI_PATH` once from `RSYNC_TARGET` so reachability probe + skills-verify + k2b-remote build/restart + k2b-dashboard build/restart + install trigger all route to the SAME machine; previously raw `$MINI` could disagree with `K2B_RSYNC_TARGET_PREFIX` overrides.
+
+(2) `install.sh` tolerates Mini's missing `.git` (deleted today as L-2026-05-07-001). Probes git with `rev-parse --is-inside-work-tree`, only bypasses dirty-tree check on the specific "not a git repository" stderr; any other git failure (corrupt, perm, missing binary) fails closed via `fail()`.
+
+(3) `install.sh` launchctl bootout/bootstrap now gated on actual change. MANIFEST file is the source of truth for "what launchctl is actually running," and is written ONLY after launchctl succeeds (deferred from the original pre-launchctl write). On no-change runs where MANIFEST matches disk AND all jobs are loaded, launchctl is skipped — avoids interrupting in-flight router-watchdog probes/optimizer runs. On partial failure, set -e aborts before MANIFEST update, so next install detects mismatch and retries. SKIP_LAUNCHCTL=1 path leaves MANIFEST unchanged so next non-skip run also detects the unapplied state.
+
+**Origin:** Today's leaf-optimizer fix `cd813fe` shipped at 13:28, but the dry-run inspection on Mini at ~14:00 found it wasn't actually running in production — launchd kept invoking the pre-fix installed snapshot. Root cause: `deploy-to-mini.sh` rsyncs source files but never runs `install.sh` (the script that copies source/bin to the launchd-served install/bin). Codex's separate session pre-flagged this as HIGH-1 in router-watchdog Ship 2's deferred findings on 2026-05-04; today's inspection confirmed the bug bites every router-watchdog ship until install.sh runs.
+
+**Adversarial review:** 4 Codex rounds via the `--no-fallback` runner shipped today as `a8a41b6`. Matrix-clean throughout (I built, Codex reviewed). Round 1 found 1 HIGH + 4 MED, round 2 found 1 HIGH + 1 MED, round 3 found 2 HIGH + 1 MED, round 4 APPROVE. Each round caught real cross-file consistency drift the previous round missed (raw `$MINI` ssh calls in skills/code/dashboard sync paths, `SKIP_LAUNCHCTL` MANIFEST footgun, etc.). All findings addressed inline except per-plist launchctl rollback on partial bootstrap failure — deferred as its own ship because adding rollback requires preserving previous bin/plists and substantial install.sh refactor.
+
+**Live verification post-/sync:** new code now installed on Mini at `/Users/fastshower/Library/Application Support/k2b-router-watchdog/bin/optimize-leaves.py`. `STATE_VERSION = 2` confirmed; 13 hits for `leaf_score`/`RESPONSIVENESS_HALF_LIFE`/`state_version_migrated` symbols. The leaf-optimizer Option B formula is finally LIVE in production. Sentinel `~/.k2b-router-leafopt-enabled` still absent (observe-only mode). Next dry-run inspection (queued for separate session) will run against the now-correct production code.
+
+**Tests:** 10/10 pass in tests/deploy-to-mini.test.sh including new scenario 10 proving local-shaped RSYNC_TARGET (test mode) skips ssh+install via `is_remote_target` gate. Full positive test (remote-shaped → install fires) was attempted via PATH-mocked ssh but is intractable without also mocking the rsync-over-ssh server protocol; documented in test header. Positive case smoke-tested by THIS commit's /sync.
+
+**Closes:** HIGH-1 from router-watchdog Ship 2's 2026-05-04 deferred findings (item #9 in `wiki/context/context_open-items.md`).
+
+**Deferred follow-ups:**
+- Per-plist launchctl rollback on partial bootstrap failure. Currently a partial failure leaves a mixed launchd fleet until next /sync retries; rollback would preserve previous bin/plists. Substantial change; tracking as separate ship.
+- The remaining 4 router-watchdog Ship 2 findings (transactional install, state.json flock, partition-queue flock, `send-alert.sh` TELEGRAM_BOT_TOKEN exposure). Already tracked as item #9.
+
+**Key decisions:** Move install trigger out of `sync_scripts()` into the main flow so it runs even on no-source-change `/sync auto` invocations. Defer manifest write to AFTER launchctl succeeds so partial failure forces retry on next run. Don't write manifest in SKIP_LAUNCHCTL path so test runs don't mask drift on production runs.
+
+---
 ## 2026-05-07 -- leaf-optimizer scoring fix (Option B multiplicative responsiveness)
 
 **Commit:** `cd813fe feat(router-watchdog): leaf-optimizer scoring formula -- Option B (multiplicative responsiveness)`
