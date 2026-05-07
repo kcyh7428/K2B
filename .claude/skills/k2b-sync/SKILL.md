@@ -296,7 +296,7 @@ Tell Keith:
 - **node_modules/** and **dist/** -- excluded from rsync, rebuilt on Mini
 - **store/** -- production SQLite database lives on Mac Mini, NEVER overwrite from MacBook
 - **.env** -- environment config stays local to each machine
-- **.git/** -- each machine has its own git state
+- **.git/** -- Mini has NO `.git` directory (deleted 2026-05-07). Source of truth = MacBook + GitHub. Mini receives files via rsync only; never run `git` commands on Mini -- they will fail loud, which is the intended behavior. If you ever need to introspect "what's deployed", read `DEVLOG.md` (which is rsync'd) or check `dist/` mtimes, NOT git log.
 
 ## Usage Logging
 
