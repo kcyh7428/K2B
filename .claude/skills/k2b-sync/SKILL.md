@@ -1,6 +1,6 @@
 ---
 name: k2b-sync
-description: Sync K2B project files to the Mac Mini server -- detects what changed, syncs skills/code/scripts, rebuilds if needed. Use when Keith says /sync, "sync to mini", "deploy to mini", "push to mini", or after K2B modifies project files (skills, CLAUDE.md, k2b-remote code, scripts).
+description: Sync K2B project files to the Mac Mini server -- detects what changed, syncs skills/code/scripts, rebuilds if needed. Use when Keith says /sync, "sync to mini", "deploy to mini", "push to mini", or after K2B modifies project files (skills, CLAUDE.md, README.md, K2B_ARCHITECTURE.md, .mcp.json, DEVLOG.md, k2b-remote code, k2b-dashboard, scripts).
 ---
 
 # K2B Sync to Mac Mini
@@ -13,7 +13,7 @@ Push K2B project file changes from MacBook to the always-on Mac Mini server.
 
 **Proactively prompt Keith** at the end of any session where K2B modified files in:
 - `.claude/skills/` (any skill SKILL.md)
-- `CLAUDE.md` or `K2B_ARCHITECTURE.md`
+- `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, or `DEVLOG.md` (top-level docs synced alongside skills)
 - `k2b-remote/` (bot code)
 - `k2b-dashboard/` (dashboard app -- full-stack React/Vite + Express, requires build + pm2 restart on Mini)
 - `scripts/` (utility scripts)
@@ -25,7 +25,7 @@ Do NOT auto-sync without Keith's confirmation. Always ask first.
 ## Commands
 
 - `/sync` -- auto-detect what changed and sync it
-- `/sync skills` -- sync only skills + CLAUDE.md + K2B_ARCHITECTURE.md
+- `/sync skills` -- sync only skills + top-level docs (CLAUDE.md, README.md, K2B_ARCHITECTURE.md, .mcp.json, DEVLOG.md)
 - `/sync code` -- sync only k2b-remote code (+ build + restart pm2)
 - `/sync dashboard` -- sync only k2b-dashboard (+ npm run build + pm2 restart k2b-dashboard)
 - `/sync scripts` -- sync only scripts/
@@ -191,7 +191,7 @@ This mechanism is the durable recovery path: a fresh Claude Code session can dis
 rsync -avn --delete \
   ~/Projects/K2B/.claude/skills/ macmini:~/Projects/K2B/.claude/skills/ 2>&1 | grep -E "^(sending|deleting|\.claude)"
 
-rsync -avn ~/Projects/K2B/CLAUDE.md ~/Projects/K2B/K2B_ARCHITECTURE.md \
+rsync -avn ~/Projects/K2B/CLAUDE.md ~/Projects/K2B/README.md ~/Projects/K2B/K2B_ARCHITECTURE.md ~/Projects/K2B/.mcp.json ~/Projects/K2B/DEVLOG.md \
   macmini:~/Projects/K2B/ 2>&1 | grep -v "^$"
 
 # Scripts
@@ -216,7 +216,7 @@ Group changed files into categories:
 
 | Category | Matched Paths | Needs Build? |
 |----------|--------------|-------------|
-| skills | `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md` | No |
+| skills | `.claude/skills/`, `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md` | No |
 | code | `k2b-remote/` | Yes -- npm run build + pm2 restart k2b-remote |
 | dashboard | `k2b-dashboard/` | Yes -- npm run build + pm2 restart k2b-dashboard |
 | scripts | `scripts/` | No |
@@ -296,7 +296,7 @@ Tell Keith:
 - **node_modules/** and **dist/** -- excluded from rsync, rebuilt on Mini
 - **store/** -- production SQLite database lives on Mac Mini, NEVER overwrite from MacBook
 - **.env** -- environment config stays local to each machine
-- **.git/** -- Mini has NO `.git` directory (deleted 2026-05-07). Source of truth = MacBook + GitHub. Mini receives files via rsync only; never run `git` commands on Mini -- they will fail loud, which is the intended behavior. If you ever need to introspect "what's deployed", read `DEVLOG.md` (which is rsync'd) or check `dist/` mtimes, NOT git log.
+- **.git/** -- Mac Mini has NO `.git` directory (deleted 2026-05-07). Source of truth = MacBook + GitHub. Mac Mini receives files via rsync only; never run `git` commands against `~/Projects/K2B/` on Mac Mini -- they will fail loud (`not a git repository`), which is the intended behavior. To introspect "what's deployed on Mac Mini", read `DEVLOG.md` (rsync'd to Mac Mini since 2026-05-07 alongside the .git removal -- see L-2026-05-07-001) or check `dist/` mtimes for last build/deploy time, NOT `git log`.
 
 ## Usage Logging
 

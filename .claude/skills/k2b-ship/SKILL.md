@@ -11,7 +11,7 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 **Explicit:** Keith says `/ship`, "ship it", "ship this", "wrap up", "end of session", "done shipping", "close out", "commit and push this".
 
-**Proactive prompt:** At the natural end of any session where K2B modified code in `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
+**Proactive prompt:** At the natural end of any session where K2B modified project files in `.claude/skills/`, `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
 
 **Do NOT auto-ship.** Always confirm the commit message and the reviewer findings before committing.
 
@@ -114,13 +114,12 @@ Categorize touched files into:
 
 | Category | Matching paths | Needs /sync? |
 |----------|---------------|--------------|
-| skills    | `.claude/skills/`, `CLAUDE.md`, `K2B_ARCHITECTURE.md` | yes |
+| skills    | `.claude/skills/`, `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md` | yes |
 | code      | `k2b-remote/` | yes (build + pm2 restart k2b-remote) |
 | dashboard | `k2b-dashboard/` | yes (build + pm2 restart k2b-dashboard) |
 | scripts   | `scripts/` including `scripts/hooks/` | yes |
 | vault     | `K2B-Vault/` | no (Syncthing) |
 | plans     | `.claude/plans/` | no |
-| devlog    | `DEVLOG.md` | no |
 
 **Category names must match `/sync`'s category table exactly.** `/sync` currently defines: `skills`, `code`, `dashboard`, `scripts`. Any category label that `/ship --defer` writes into a mailbox entry must be one of those four -- otherwise `/sync` would consume the entry without a deploy target, silently dropping the change. In particular, `scripts/hooks/**` rolls up into `scripts` (not a separate `hooks` category): the deploy script's `scripts` mode already rsyncs `scripts/` recursively, which covers hooks.
 
@@ -813,7 +812,7 @@ If any files in categories `skills`, `code`, `dashboard`, or `scripts` were in t
 
 **Race-safety invariant:** The mailbox is a multi-producer / single-consumer queue where each producer writes a unique filename. Producers (`/ship --defer`) never read or delete. The consumer (`/sync`) deletes only filenames it has observed and processed. No state is ever rewritten in place. This makes the lifecycle race-free on POSIX without locks.
 
-**If no syncable files changed:** Skip the question entirely. Do not write a marker. Report "Nothing to sync -- all changes were vault/plan/devlog only."
+**If no syncable files changed:** Skip the question entirely. Do not write a marker. Report "Nothing to sync -- all changes were vault/plan only." (Note: DEVLOG.md is now syncable -- it rolls up into the `skills` category as of 2026-05-07 alongside the Mac Mini .git removal, so a DEVLOG-only ship does need /sync. See L-2026-05-07-001.)
 
 Do NOT auto-sync without asking. Per Active Rule L-2026-03-29-002, never run manual rsync -- always go through the deploy script via `/sync` or `k2b-sync`.
 

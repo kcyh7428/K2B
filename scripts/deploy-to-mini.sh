@@ -111,7 +111,7 @@ needs_scripts=false
 # remote drift regardless of how many commits produced it.
 detect_changes() {
     local doc
-    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json; do
+    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json DEVLOG.md; do
         if [[ -f "$LOCAL_BASE/$doc" ]]; then
             if rsync_has_changes "$LOCAL_BASE/$doc" "$RSYNC_TARGET/$doc"; then
                 needs_skills=true
@@ -163,7 +163,11 @@ sync_skills() {
     # .mcp.json added 2026-04-19 after silent drift let MiniMax MCP BASE_PATH
     # diverge between machines (MacBook user `keithmbpm2` vs Mini user `fastshower`),
     # breaking all bot-initiated image generation.
-    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json; do
+    # DEVLOG.md added 2026-05-07 alongside .git removal on Mini -- Mini-side
+    # processes (e.g. the Telegram bot) now read DEVLOG.md to introspect
+    # "what shipped recently" instead of `git log`, since git no longer exists
+    # on Mini. See L-2026-05-07-001.
+    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json DEVLOG.md; do
         if [[ -f "$LOCAL_BASE/$doc" ]]; then
             rsync -av $rsync_flag "$LOCAL_BASE/$doc" "$RSYNC_TARGET/$doc"
         fi
@@ -333,7 +337,7 @@ $DRY_RUN && warn "DRY RUN -- no files will be changed"
 # Summary
 echo ""
 log "Sync plan:"
-$needs_skills && log "  - Skills + CLAUDE.md + README.md + K2B_ARCHITECTURE.md + .mcp.json"
+$needs_skills && log "  - Skills + CLAUDE.md + README.md + K2B_ARCHITECTURE.md + .mcp.json + DEVLOG.md"
 $needs_code && log "  - k2b-remote code (+ build + restart)"
 $needs_dashboard && log "  - k2b-dashboard code (+ build + restart)"
 $needs_scripts && log "  - scripts/ + launchd router-watchdog files"

@@ -178,10 +178,13 @@ echo "=== deploy-to-mini.test.sh ==="
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 5: only DEVLOG.md differs -> NO categories (the exact bug)
-# This is the precise case that caused the 2026-04-22 failure: a follow-up
-# devlog commit leaves the code already on the Mini, so detect should report
-# clean -- NOT "changes detected but none syncable".
+# Scenario 5: only DEVLOG.md differs -> skills category (revised 2026-05-07)
+# Prior to 2026-05-07, DEVLOG.md was excluded from rsync -- a follow-up devlog
+# commit was treated as no-op for sync. After the Mac Mini .git removal on
+# 2026-05-07, Mini-side processes (bot, observer) read DEVLOG.md to introspect
+# "what shipped" since `git log` no longer works on Mini. DEVLOG.md is now
+# part of the top-level docs sync, which is in the skills category, so a
+# DEVLOG-only diff must flag "skills". See L-2026-05-07-001.
 # ---------------------------------------------------------------------------
 {
   LOCAL="$(mktmp)"
@@ -190,7 +193,7 @@ echo "=== deploy-to-mini.test.sh ==="
   build_tree "$REMOTE" "v2"
   printf 'DEVLOG NEW entry\n' > "$LOCAL/DEVLOG.md"
   out="$(run_detect "$LOCAL" "$REMOTE")"
-  assert_detect "only DEVLOG.md differs: no sync categories flagged" "" "$out"
+  assert_detect "only DEVLOG.md differs: skills category flagged" "skills" "$out"
 }
 
 # ---------------------------------------------------------------------------
