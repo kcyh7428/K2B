@@ -436,7 +436,7 @@ PY
   mkdir -p "$d"
   touch "$d/sentinel"
   cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{},"consecutive_wins":{},"score_history":{}}
+{"version":2,"last_change_at":{},"consecutive_wins":{},"score_history":{}}
 EOF
   start_fake_mihomo "$d"
 
@@ -525,6 +525,57 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# Test 5b: leaf scoring weights latency strongly and does not cap slow nodes.
+# ---------------------------------------------------------------------------
+{
+  python3 - "$OPTIMIZER" <<'PY' || fail "leaf scoring formula invalid"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("optimize_leaves", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+fast = mod.leaf_score(1.0, 100)
+slow = mod.leaf_score(1.0, 1000)
+assert fast > slow, (fast, slow)
+assert fast - slow >= 0.10, (fast, slow)
+
+very_slow = mod.leaf_score(1.0, 2500)
+glacial = mod.leaf_score(1.0, 10000)
+assert glacial < very_slow, (very_slow, glacial)
+
+asia = mod.leaf_score(1.0, 205)
+west = mod.leaf_score(1.0, 712)
+assert asia > west, (asia, west)
+assert asia - west >= 0.10, (asia, west)
+
+unreliable_fast = mod.leaf_score(0.5, 50)
+reliable_medium = mod.leaf_score(1.0, 300)
+assert unreliable_fast < reliable_medium, (unreliable_fast, reliable_medium)
+
+partial_fast = {"success_rate": 0.8, "score": mod.leaf_score(0.8, 100), "avg_delay_ms": 100}
+full_medium = {"success_rate": 1.0, "score": mod.leaf_score(1.0, 300), "avg_delay_ms": 300}
+assert mod.leaf_rank_key(full_medium) > mod.leaf_rank_key(partial_fast)
+
+same_success_fast = {"success_rate": 1.0, "score": mod.leaf_score(1.0, 100), "avg_delay_ms": 100}
+same_success_slow = {"success_rate": 1.0, "score": mod.leaf_score(1.0, 300), "avg_delay_ms": 300}
+assert mod.leaf_rank_key(same_success_fast) > mod.leaf_rank_key(same_success_slow)
+
+full_slow = {"success_rate": 1.0, "score": mod.leaf_score(1.0, 2000), "avg_delay_ms": 2000}
+slightly_partial_fast = {"success_rate": 0.9, "score": mod.leaf_score(0.9, 100), "avg_delay_ms": 100}
+assert mod.leaf_rank_key(slightly_partial_fast) > mod.leaf_rank_key(full_slow)
+
+malformed_delay = {"success_rate": 1.0, "score": mod.leaf_score(1.0, 100), "avg_delay_ms": "bad"}
+assert mod.leaf_rank_key(same_success_fast) > mod.leaf_rank_key(malformed_delay)
+
+assert mod.leaf_score(1.0, -10) == 1.0
+assert mod.leaf_score(0.5, None) == 0.5
+PY
+  echo "  PASS: latency dominates tied-success leaf scoring"
+}
+
+# ---------------------------------------------------------------------------
 # Test 6: stable but better leaves need two consecutive wins before PUT.
 # ---------------------------------------------------------------------------
 {
@@ -532,7 +583,7 @@ PY
   mkdir -p "$d"
   touch "$d/sentinel"
   cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{},"consecutive_wins":{},"score_history":{}}
+{"version":2,"last_change_at":{},"consecutive_wins":{},"score_history":{}}
 EOF
   start_stable_fake_mihomo "$d" 800 100
 
@@ -560,6 +611,7 @@ first = json.load(open(sys.argv[1], encoding="utf-8"))
 second = json.load(open(sys.argv[2], encoding="utf-8"))
 assert first["changed"] == 0, first
 assert first["assignments"][0]["reason"] == "waiting_for_consecutive_win", first
+assert first["assignments"][0]["success_rate_delta"] == 0.0, first
 assert second["changed"] == 1, second
 requests = [json.loads(line) for line in open(sys.argv[3], encoding="utf-8") if line.strip()]
 puts = [req for req in requests if req["method"] == "PUT"]
@@ -578,7 +630,7 @@ PY
   touch "$d/sentinel"
   start_stable_fake_mihomo "$d" 500 100
   cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{"♻️ 手动切换1":"2026-05-06T00:00:00Z"},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
+{"version":2,"last_change_at":{"♻️ 手动切换1":"2026-05-06T00:00:00Z"},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
 EOF
 
   MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
@@ -612,9 +664,26 @@ PY
   mkdir -p "$d"
   touch "$d/sentinel"
   start_stable_fake_mihomo "$d" 300 100
-  cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{"♻️ 手动切换1":{"5台湾-联通/移动(AnyTLS) [AP1]":[0.9,0.9],"🇸🇬15新加坡-专线(AnyTLS) [AP1]":[0.91,0.91]}}}
-EOF
+  python3 - "$d/state.json" <<'PY'
+import json
+import sys
+
+current = "5台湾-联通/移动(AnyTLS) [AP1]"
+better = "🇸🇬15新加坡-专线(AnyTLS) [AP1]"
+state = {
+    "version": 2,
+    "last_change_at": {},
+    "consecutive_wins": {"♻️ 手动切换1": {better: 2}},
+    "score_history": {
+        "♻️ 手动切换1": {
+            current: [0.7692] * 2,
+            better: [0.7407] * 2,
+        }
+    },
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(state, f, ensure_ascii=False, separators=(",", ":"))
+PY
 
   MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
   MIHOMO_API_SECRET="test-secret" \
@@ -734,7 +803,7 @@ summary = json.load(open(sys.argv[1], encoding="utf-8"))
 state = json.load(open(sys.argv[2], encoding="utf-8"))
 assert summary["changed"] == 0
 assert {item["reason"] for item in summary["assignments"]} == {"state_missing"}
-assert state["version"] == 1
+assert state["version"] == 2
 requests = [json.loads(line) for line in open(sys.argv[3], encoding="utf-8") if line.strip()]
 assert not any(req["method"] == "PUT" for req in requests)
 PY
@@ -769,12 +838,53 @@ summary = json.load(open(sys.argv[1], encoding="utf-8"))
 state = json.load(open(sys.argv[2], encoding="utf-8"))
 assert summary["changed"] == 0
 assert {item["reason"] for item in summary["assignments"]} == {"state_invalid"}
-assert state["version"] == 1
+assert state["version"] == 2
 requests = [json.loads(line) for line in open(sys.argv[3], encoding="utf-8") if line.strip()]
 assert not any(req["method"] == "PUT" for req in requests)
 PY
   stop_servers
   echo "  PASS: invalid state safely reinitializes"
+}
+
+# ---------------------------------------------------------------------------
+# Test 12b: state version mismatch logs the score-history reset.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-version-mismatch"
+  mkdir -p "$d"
+  touch "$d/sentinel"
+  cat > "$d/state.json" <<'EOF'
+{"version":1,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"old-leaf":2}},"score_history":{"♻️ 手动切换1":{"old-leaf":[0.9,0.9]}}}
+EOF
+  start_fake_mihomo "$d"
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --decision-log "$d/leaf-optimizer.jsonl" \
+    --state-file "$d/state.json" \
+    --sentinel "$d/sentinel" \
+    --now "2026-05-06T00:00:00Z" > "$d/stdout.json" 2> "$d/stderr.txt"
+
+  python3 - "$d/stdout.json" "$d/state.json" "$d/requests.jsonl" "$d/stderr.txt" <<'PY' || fail "state version warning invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+state = json.load(open(sys.argv[2], encoding="utf-8"))
+stderr = open(sys.argv[4], encoding="utf-8").read()
+assert summary["changed"] == 0
+assert {item["reason"] for item in summary["assignments"]} == {"state_version_migrated"}
+assert state["version"] == 2
+assert "old-leaf" not in json.dumps(state, ensure_ascii=False)
+assert "state version mismatch" in stderr, stderr
+assert "discarding rolling-score history" in stderr, stderr
+requests = [json.loads(line) for line in open(sys.argv[3], encoding="utf-8") if line.strip()]
+assert not any(req["method"] == "PUT" for req in requests)
+PY
+  stop_servers
+  echo "  PASS: state version reset is operator-visible"
 }
 
 # ---------------------------------------------------------------------------
@@ -785,7 +895,7 @@ PY
   mkdir -p "$d"
   touch "$d/sentinel"
   cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
+{"version":2,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
 EOF
   start_stale_fake_mihomo "$d"
 
@@ -820,7 +930,7 @@ PY
   mkdir -p "$d"
   touch "$d/sentinel"
   cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
+{"version":2,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
 EOF
   start_put_behavior_fake_mihomo "$d" "retry"
 
@@ -857,7 +967,7 @@ PY
   mkdir -p "$d"
   touch "$d/sentinel"
   cat > "$d/state.json" <<'EOF'
-{"version":1,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
+{"version":2,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{}}
 EOF
   start_put_behavior_fake_mihomo "$d" "nochange"
 

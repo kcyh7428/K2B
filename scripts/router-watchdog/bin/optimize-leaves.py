@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import sys
 import tempfile
 import time
 import urllib.error
@@ -29,7 +30,8 @@ DEFAULT_TARGETS = [
 SELECTOR_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
 MANUAL_SELECTOR_PREFIX = "♻️ 手动切换"
 HK_RE = re.compile(r"(🇭🇰|香港|hong[\s_-]*kong|(?:^|[^a-z0-9])hk(?:[^a-z0-9]|$)|hk-\d+)", re.IGNORECASE)
-STATE_VERSION = 1
+STATE_VERSION = 2
+RESPONSIVENESS_HALF_LIFE_MS = 1000.0
 
 
 class RunTimedOut(RuntimeError):
@@ -151,8 +153,19 @@ def load_state(path: str) -> tuple[dict, bool, str]:
         state = load_json(path, {})
     except (json.JSONDecodeError, OSError):
         return empty_state(), True, "state_invalid"
-    if not isinstance(state, dict) or state.get("version") != STATE_VERSION:
+    if not isinstance(state, dict):
         return empty_state(), True, "state_invalid"
+    if state.get("version") != STATE_VERSION:
+        print(
+            f"leaf-optimizer: state version mismatch "
+            f"(file={state.get('version')!r}, expected={STATE_VERSION}); "
+            f"discarding rolling-score history and consecutive-wins, "
+            f"rebuilding from scratch. This is expected when the score "
+            f"formula changes (e.g. v1 -> v2 on 2026-05-07).",
+            file=sys.stderr,
+            flush=True,
+        )
+        return empty_state(), True, "state_version_migrated"
     for key in ("last_change_at", "consecutive_wins", "score_history"):
         if not isinstance(state.get(key), dict):
             return empty_state(), True, "state_invalid"
@@ -174,6 +187,25 @@ def is_leaf_proxy(name: str, payload: dict) -> bool:
         return False
     proxy_type = payload.get("type") or ""
     return proxy_type not in SELECTOR_TYPES
+
+
+def leaf_score(success_rate: float, avg_delay: float | None) -> float:
+    if avg_delay is None:
+        return success_rate
+    delay = max(0.0, avg_delay)
+    return success_rate * RESPONSIVENESS_HALF_LIFE_MS / (RESPONSIVENESS_HALF_LIFE_MS + delay)
+
+
+def leaf_rank_key(row: dict) -> tuple[float, float, float]:
+    try:
+        avg_delay = float(row["avg_delay_ms"]) if row["avg_delay_ms"] is not None else 999999.0
+    except (TypeError, ValueError):
+        avg_delay = 999999.0
+    return (
+        float(row["score"]),
+        float(row["success_rate"]),
+        -avg_delay,
+    )
 
 
 def score_leaf(base: str, secret: str, leaf: str, targets: Iterable[str], timeout_ms: int) -> dict:
@@ -201,9 +233,7 @@ def score_leaf(base: str, secret: str, leaf: str, targets: Iterable[str], timeou
     targets_list = list(targets)
     success_rate = ok_count / len(targets_list) if targets_list else 0.0
     avg_delay = sum(delays) / len(delays) if delays else None
-    score = success_rate
-    if avg_delay is not None:
-        score = max(0.0, success_rate - min(avg_delay / 10000.0, 0.25))
+    score = leaf_score(success_rate, avg_delay)
     return {
         "leaf": leaf,
         "targets": target_results,
@@ -511,7 +541,7 @@ def main() -> int:
         selector_leaves[selector] = set(payload.get("all") or [])
         ranked = sorted(
             available,
-            key=lambda leaf: (eligible[leaf]["score"], eligible[leaf]["success_rate"], -(eligible[leaf]["avg_delay_ms"] or 999999)),
+            key=lambda leaf: leaf_rank_key(eligible[leaf]),
             reverse=True,
         )
         target = next((leaf for leaf in ranked if leaf not in used), ranked[0] if ranked else None)
@@ -519,6 +549,7 @@ def main() -> int:
             used.add(target)
 
         current_score = leaf_scores.get(current)
+        target_score = leaf_scores.get(target) if target else None
         selector_history = score_history.setdefault(selector, {})
         for leaf in available:
             append_score(score_history, selector, leaf, eligible[leaf]["score"], max(1, args.rolling_runs))
@@ -541,6 +572,9 @@ def main() -> int:
                 current_compare = float(current_score["score"])
             if current_compare is not None:
                 score_delta = round(target_rolling_score - current_compare, 4)
+        success_rate_delta = None
+        if target_score is not None and current_score is not None:
+            success_rate_delta = round(float(target_score["success_rate"]) - float(current_score["success_rate"]), 4)
 
         wins_for_selector = consecutive_wins.setdefault(selector, {})
         for candidate in list(wins_for_selector):
@@ -637,6 +671,7 @@ def main() -> int:
             "changed": should_change,
             "reason": reason,
             "score_delta": score_delta,
+            "success_rate_delta": success_rate_delta,
             "current_rolling_score": round(current_rolling_score, 4) if current_rolling_score is not None else None,
             "target_rolling_score": round(target_rolling_score, 4) if target_rolling_score is not None else None,
             "consecutive_wins": consecutive_win_count,
