@@ -1,6 +1,33 @@
 # K2B Development Log
 
 ---
+## 2026-05-07 -- /ship Step 3a wired to use --mode staged classifier
+
+**Commit:** `526d82a feat(ship): wire /ship Step 3a to use --mode staged classifier`
+
+**Branch:** `codex/ship-wire-staged-mode` (pushed; PR pending Keith's call). https://github.com/kcyh7428/K2B/pull/new/codex/ship-wire-staged-mode
+
+**What shipped:** /ship's tier-detection step now stages the intended commit set FIRST, then runs `scripts/ship-detect-tier.py --mode staged` so unrelated dirty files in the working tree no longer force Tier 3 classification or leak into review scope. Closes the conflation bug Keith hit twice on 2026-05-04 (renderer-fix `60232d7` and router-watchdog `4584296` both required manual `--files` overrides). `feature_adversarial-review-tiering.md` Ship 2 wiring follow-up to commit `ed93619` (which added the staged-mode capability to `tier_detection.py`).
+
+**Implementation:** option (b) inline stage-then-classify (per the 2026-05-05 spec's two design options). Step 3a writes intended set to a temp file (mktemp + EXIT trap), unstages stale entries via `git reset` (NOT `git restore --staged` so deletions are preserved), stages exactly the intended set, and enforces staged==intended before classification with comma-in-path and empty-set guards. Step 3b's `CHANGED_FILES` derives from staged set, not `git diff HEAD`. Step 5 verifies `staged==reviewed` BEFORE commit AND `committed==reviewed` AFTER commit (catches pre-commit-hook scope drift). `scripts/tier3-paths.yml` adds `.claude/skills/k2b-ship/SKILL.md` to the Tier 3 allowlist (changes to /ship blind every future review path).
+
+**Adversarial review history:**
+- Codex built (Task 2 of `.codex/job-ship-wiring.md`). Reviewer must be non-Codex per K2B's "Two Reviewers" rule.
+- Round 1: Kimi K2.6 review at `.minimax-reviews/2026-05-07T01-13-38Z_diff.json` -- NEEDS-ATTENTION, 1 HIGH + 5 MEDIUM. Fixed all 6 inline (mktemp+trap; `git reset` not `git restore --staged`; comma-in-path guard; post-commit scope-identity check; early empty-intended guard; `comm` diagnostic delimiters).
+- Round 2: Kimi review at `.minimax-reviews/2026-05-07T01-25-19Z_diff.json` -- NEEDS-ATTENTION on stale snapshot (raw_text references `$$` predictable temp names not present in the fixed code; reviewed pre-fix version). Discarded.
+- Round 3: Kimi network-failed (`RemoteDisconnected`, `SSL UNEXPECTED_EOF`) on 4+ attempts. MiniMax-M2.7 fallback also network-failed. Same Kimi gateway flakiness that hit today's gptsapi-image session.
+- Round 3 closeout: Opus (Claude Code main session) served the non-Codex adversarial pass. **Matrix-clean: Opus did NOT author the diff -- Codex did, with Kimi pass-1 fixes.** APPROVED. No blocking findings. Three LOW advisories logged for follow-up: trap-clobber risk if outer skill code adds traps; `sort` could be `sort -u` for operator-typo robustness; `|| exit 3` on diagnostic `comm` lines is dead code in normal operation.
+
+**Tests:** 29/29 pass in `tests/ship-detect-tier.test.sh` (no test additions needed -- the staged-mode capability tests were added in `ed93619`; this commit just wires the SKILL.md to use them).
+
+**Self-application caveat:** /ship is what we're modifying. Per Codex's parked-state report, self-application risks getting wedged. Used the manual fallback path documented in CLAUDE.md (direct `git commit` + `git push`, no `/ship` invocation).
+
+**Feature status change:** `feature_adversarial-review-tiering` stays `in-progress`. Ship 2 commit 1 (capability, `ed93619`) is shipped; this commit completes the wiring; commits 2 (`/ship --tier N` manual override) and 3 (Codex `--cached` vs `--working-tree` diagnostic) still pending.
+
+**Sync status:** SKILL.md lives in the project repo at `.claude/skills/k2b-ship/SKILL.md`. The active loaded path is the same file (project-level skill, no global symlink on this MacBook). Once the PR merges to main and the main K2B repo branch is on main, the change is live on MacBook. Mac Mini needs `/sync` to pick up the new skill body for any /ship invocations on Mini.
+
+---
+
 
 ## 2026-05-07 -- /media image defaults to gpt-image-2-plus via gptsapi proxy
 
