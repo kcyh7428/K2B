@@ -1,10 +1,11 @@
 # K2B Media Generator
 
-Generate images, speech, audio transcriptions, video, and music using the MiniMax API (minimaxi.com). Powered by Keith's Plus subscription.
+Generate images, speech, audio transcriptions, video, and music. Images default to GPTsAPI `gpt-image-2-plus`; MiniMax remains the explicit image fallback. Speech, video, music, and VLM routes stay on MiniMax.
 
 ## Commands
 
-- `/media image "prompt" [aspect] [slug]` -- Generate an image
+- `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2-plus`
+- `/media image --minimax "prompt" [aspect] [slug]` -- Generate an image via MiniMax fallback
 - `/media speech "text" [voice] [emotion] [slug]` -- Generate TTS audio
 - `/media transcribe <audio-file> [slug]` -- Transcribe audio via Groq Whisper (Chinese/English/50+ languages)
 - `/media video "prompt" [slug]` -- Generate video clip (requires Max tier)
@@ -20,7 +21,21 @@ Generate images, speech, audio transcriptions, video, and music using the MiniMa
 
 ## Integration Method
 
-**Primary: MCP Server** (when available in session)
+**Image primary: GPTsAPI wrapper**
+Use the bash wrapper for image generation:
+```bash
+./scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio 16:9 --slug slug
+```
+
+The wrapper submits an async `gpt-image-2-plus` prediction, polls for completion for up to 120 seconds, decodes the returned base64 image, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
+
+**MiniMax fallback**
+Use MiniMax only when Keith passes `--minimax`, when GPTsAPI is down, or when the requested style benefits from MiniMax's faster stylized output:
+```bash
+./scripts/minimax-image.sh "prompt" 16:9 slug
+```
+
+**Other media: MiniMax MCP Server** (when available in session)
 The MiniMax MCP server (`minimax-mcp-js`) provides direct tools:
 - `text_to_image` -- image generation
 - `text_to_audio` -- TTS
@@ -34,7 +49,8 @@ The MiniMax MCP server (`minimax-mcp-js`) provides direct tools:
 **Fallback: Bash Scripts**
 If MCP tools are unavailable, use the bash scripts:
 ```bash
-./scripts/minimax-image.sh "prompt" [aspect] [slug]
+./scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio 16:9 --slug slug
+./scripts/minimax-image.sh "prompt" [aspect] [slug]    # only with --minimax fallback
 ./scripts/minimax-speech.sh "text" [voice] [emotion] [slug]
 ./scripts/minimax-transcribe.sh <audio-file> [slug]
 ```
@@ -43,17 +59,28 @@ If MCP tools are unavailable, use the bash scripts:
 
 ### Parameters
 - **prompt**: Description of the image to generate
-- **aspect**: `1:1`, `16:9`, `4:3`, `3:2`, `2:3`, `3:4`, `9:16`, `21:9` (default: `16:9`)
+- **aspect**: GPTsAPI supports `1:1`, `16:9`, `9:16`, `4:3`, `3:4` (default: `16:9`). MiniMax fallback also supports `3:2`, `2:3`, `21:9`.
 - **slug**: Filename slug (auto-generated from prompt if omitted)
-- Model: `image-01`
+- Default model: GPTsAPI `gpt-image-2-plus`
+- Fallback model: MiniMax `image-01`
+
+### Provider choice
+- Default GPTsAPI for executive editorial images, typography, diagrams, quote cards, LinkedIn headers, and clean business visuals.
+- Use `--minimax` for stylized images, faster drafts, quota fallback, or when GPTsAPI is degraded.
+- Rollback path: `/media image --minimax "prompt" [aspect] [slug]`.
+- TTS is not routed to GPTsAPI yet. There is no current K2B voice-reply consumer, so do not add that capability until the consumer ships.
 
 ### Workflow
-1. If using MCP: call `text_to_image` with prompt and aspect_ratio
-2. If using bash: run `scripts/minimax-image.sh "prompt" aspect slug`
+1. Default: run `scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio aspect --slug slug`
+2. Fallback: when `--minimax` is present, run `scripts/minimax-image.sh "prompt" aspect slug`
 3. Asset saves to `K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png`
-4. **Send to Telegram** (if running via k2b-remote): write an outbox manifest so the bot delivers the image to Keith:
+4. **Send to Telegram**:
+   - If running through k2b-remote `/media image`, the bot sends a progress message, waits for the wrapper, then sends the photo directly.
+   - If running inside an agent session, write an outbox manifest so the bot delivers the image to Keith:
    ```bash
-   echo '{"type":"photo","path":"'$HOME'/Projects/K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png","caption":"description"}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
+   ~/Projects/K2B/scripts/telegram-outbox-write.sh photo \
+     "$HOME/Projects/K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png" \
+     "description"
    ```
 5. Print the Obsidian embed: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
 6. If generating for a vault note, update that note with the embed link
@@ -136,7 +163,7 @@ curl -s --retry 2 --retry-delay 3 \
 
 #### Step 5: Fallback to OpenAI Whisper (only if Groq fails)
 ```bash
-WHISPER_KEY=$(grep OPENAI_API_KEY ~/.zshrc 2>/dev/null | head -1 | sed "s/export OPENAI_API_KEY=//;s/'//g")
+WHISPER_KEY="${OPENAI_API_KEY:-$(awk -F= '$1=="OPENAI_API_KEY"{print substr($0,index($0,"=")+1); exit}' ~/Projects/K2B/k2b-remote/.env 2>/dev/null)}"
 
 curl -s --retry 1 \
   https://api.openai.com/v1/audio/transcriptions \
@@ -239,7 +266,8 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 
 - No em dashes, no AI cliches
 - Always confirm with Keith before generating multiple assets (API quota awareness)
-- Plus tier daily limits: ~50 images, ~4,000 chars speech. Plan accordingly.
+- GPTsAPI image cost: $0.019 per `gpt-image-2-plus` request. MiniMax Plus tier daily limits still apply when using `--minimax`.
 - For batch generation, spread across days rather than burning quota in one session
 - Always print the Obsidian embed path so Keith can paste it into notes
 - If API key is not set, tell Keith: "Set MINIMAX_API_KEY in your shell environment. Get it from minimaxi.com dashboard."
+  For the default image path, tell Keith: "Set GPTSAPI_KEY in your shell environment."

@@ -26,6 +26,7 @@ import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
 import { scanOutbox, sendMedia, consumeManifest } from './telegram-outbox.js'
 import { buildAgentInputWithYouTubeContext } from './url-prefetch.js'
+import { handleMediaCommand } from './mediaCommand.js'
 
 // --- Telegram formatting ---
 
@@ -575,7 +576,8 @@ export function createBot(): Bot {
       '/newchat - Start a fresh session\n' +
       '/memory - Show recent memories\n' +
       '/forget - Clear session (alias for /newchat)\n' +
-      '/voice - Check voice capabilities'
+      '/voice - Check voice capabilities\n' +
+      '/media image - Generate an image'
     )
   })
 
@@ -621,6 +623,10 @@ export function createBot(): Bot {
       `- Speech-to-text (Groq): ${caps.stt ? 'Enabled' : 'Not configured'}\n` +
       `- Text-to-speech: ${caps.tts ? 'Enabled' : 'Not configured'}`
     )
+  })
+
+  bot.command('media', async (ctx) => {
+    await handleMediaCommand(ctx)
   })
 
   // --- Message handlers ---
