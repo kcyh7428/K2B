@@ -1,6 +1,26 @@
 # K2B Development Log
 
 ---
+## 2026-05-07 -- review runner gets --no-fallback flag and --files-required gate
+
+**Commit:** `a8a41b6 feat(review-runner): add --no-fallback flag and require --files for diff/files scopes`
+
+**What shipped:** Two changes that close a real matrix-violation incident from this session's `.codex/job.md leaf-optimizer-scoring-fix` handoff. The runner had been silently falling back from MiniMax to Codex when callers forgot `--files` (the MiniMax wrapper failed at argparse, runner treated it as primary failure, looped to Codex). For Codex-built diffs that fallback violates the K2B adversarial-review matrix. New `--no-fallback` flag + new `--files`-required gate close it. The `--files` gate fails fast at argparse rc=2 before any reviewer process spawns. State schema bumped to v2 with `no_fallback` field; cmd_poll output now includes both `schema_version` and `no_fallback`. New NO_FALLBACK and QUALITY_GATE_FAIL log lines for log-based observability.
+
+**Origin:** found while attempting Kimi-backed review of Codex's leaf-optimizer fix. The wrapper silently fell back to Codex (matrix-violating). Codex (sibling session) traced root cause to runner.
+
+**Adversarial review:** direct `scripts/minimax-review.sh` (Kimi-only, no wrapper, no fallback risk) — chosen specifically to avoid the catch-22 of using the fix to review itself. Two rounds: Round 1 NEEDS-ATTENTION (1 HIGH cmd_poll observability + 1 HIGH test fragility + 4 MEDIUM); fixed all six inline. Round 2 NEEDS-ATTENTION (1 HIGH cmd_poll missing schema_version + 1 HIGH validation-order on --poll + 3 MEDIUM); fixed HIGH-1, deferred the rest as polish (residue documented in commit body trailer).
+
+**Tests:** 12/12 passing in `tests/review-runner.test.sh`. New regression coverage: archive-file-count negative spawn check (proves the gate fires before any reviewer process); negative SPAWN argv pattern check on the --no-fallback path (proves the matrix is actually preserved); NO_FALLBACK log assertion.
+
+**Feature status change:** none (`--no-fallback` is feature_review-runner-reconnect-stall-detect's natural successor for matrix safety; if a feature note tracks it, this would be that feature's next ship; otherwise tracked-debt closeout).
+
+**Follow-ups:**
+- Track 2 (leaf optimizer scoring fix) still NEEDS-ATTENTION after round-1 Kimi review. Now that `--no-fallback` exists and `scripts/review.sh diff --primary minimax --no-fallback --wait --files <list>` is matrix-safe, Codex round 3 can re-fix per Kimi's CRITICAL-1 (rank-key inversion) + HIGH-1 (success_rate_delta bypass) + MEDIUM advisories, then re-review cleanly.
+
+**Key decisions:** Reviewed via `scripts/minimax-review.sh` direct rather than `scripts/review.sh --primary minimax` because the runner-fix is itself the thing that makes review.sh safe; using the unsafe-old runner to review the fix-of-the-runner would have re-tripped the matrix violation.
+
+---
 ## 2026-05-07 -- Mac Mini .git removed, DEVLOG.md added to top-level docs sync
 
 **Commit:** `594ade9 docs(sync): document Mac Mini has no .git, add DEVLOG.md to top-level docs sync`
