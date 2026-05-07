@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-05-07 -- /media image defaults to gpt-image-2-plus via gptsapi proxy
+
+**Commit:** `46c7fd9 feat(media): /media image defaults to gpt-image-2-plus via gptsapi proxy`
+
+**Branch:** `codex/gptsapi-image-default` (pushed; PR pending Keith's call).
+
+**What shipped:** `/media image` in the Telegram bot now generates by default through the gptsapi.net proxy at `gpt-image-2-plus` instead of MiniMax. MiniMax stays available as the explicit `--minimax` fallback. Wraps a new bash submitter (`scripts/gptsapi-image.sh`, async submit + poll + base64 decode + magic-byte trailer check) inside a hardened TypeScript handler (`k2b-remote/src/mediaCommand.ts`), wired into `bot.ts`. On Telegram send failure the manifest is queued to the outbox so the background scanner retries instead of dropping the image.
+
+**Adversarial review history (this is the load-bearing part):**
+- Codex built. Reviewer must be non-Codex per K2B's "Two Reviewers" rule.
+- Round 1: Kimi K2.6 review at `.minimax-reviews/2026-05-06T16-37-13Z_diff.json` -- NEEDS-ATTENTION, 5 HIGH + 7 MEDIUM. Fixed 5 HIGH + 6 of 7 MEDIUM inline.
+- Round 2: Kimi review at `.minimax-reviews/2026-05-07T00-52-02Z_working-tree.json` -- NEEDS-ATTENTION, 3 new HIGH + 5 MEDIUM + 1 LOW. Triaged. Fixed all 3 HIGH + the 4 MEDIUM that were real, plus the LOW. Deferred MEDIUM #3 (python3 decoder exit-code granularity) with rationale.
+- Round 3: Kimi network-failed (`RemoteDisconnected x4`) on both `--scope diff` and `--scope working-tree`. Per the original ship instruction we do not accept Codex self-review as the gate. Opus served the second-model adversarial pass -- non-Codex, with self-review caveat disclosed because Opus authored the round-2 fix layer in this session. Opus pass APPROVED with one new MEDIUM caught (`GPTSAPI_CURL_TIMEOUT_SECONDS` was env-overridable, breaking the Node->bash timeout coupling); fixed inline by pinning the value from the spawn env.
+
+**Security hardening summary** (full list in commit body):
+- Removed env-file fallback from `gptsapi-image.sh` -- TS caller is the single source of truth for `GPTSAPI_KEY`.
+- Single atomic `realpathSync` for image path validation; `..` rejected before `resolve()`; allowed roots also realpath-resolved so symlinked vaults gate correctly.
+- Slug sanitized at parse time (`SLUG_PATTERN` + length cap) so the MiniMax positional-arg path cannot ingest shell metacharacters.
+- Lock release reordered to fire AFTER the success print; stale-lock reclaimer reduced to 2x poll budget.
+- `curl --retry 0` inside the script + Node-side `--timeout` aligned to leave one full curl `max-time + 10s` margin under the SIGTERM budget.
+- Key redaction in bash uses bash parameter substitution after stdin-fed python3 variant computation -- key never crosses a process environment.
+- `safeUserErrorMessage` switched to `split/join` for literal secret replacement (immune to regex-engine size limits + meta-character pitfalls). Secret length capped at 512 bytes. Bearer matcher tightened to require word boundary, 8-char min, and a non-letter character so prose like "Bearer of good news" survives.
+- Magic-byte PNG/JPEG check + 100-byte minimum runs in TS before `sendMedia`.
+- Outbox manifest filename uses `crypto.randomBytes(6)` instead of `Math.random()`.
+- Exit code 2 from the wrapper now surfaces the redacted stderr tail to the user as a usage hint.
+
+**Deferred:**
+- MEDIUM #9 (round 1): `MEDIA_ENV` keys load at module init; no hot reload. Single-operator scope; bot restart picks up rotation.
+- MEDIUM #3 (round 2): python3 base64-decoder maps 8 distinct exit codes to a single `emit_error` code. Redacted response is already surfaced; granular debug not worth the bash complexity.
+
+**Tests:** 103 passing in `k2b-remote` (vitest), TypeScript build clean, `bash -n` clean. Live smoke run on 2026-05-06 produced a 676 KB PNG in 33s on the original Codex pass.
+
+**Feature status change:** none. `--no-feature` infrastructure ship.
+
+---
+
 ## 2026-05-05 -- BenAI CAIO identity + Capture Stack section + voice-routing fix
 
 **Commit:** `2ab207e docs: BenAI CAIO identity + Capture Stack section + voice-routing fix`
