@@ -20,6 +20,7 @@
 # Common flags:
 #   --primary codex|minimax   default: codex
 #   --deadline N              default: 360
+#   --no-fallback             do not switch reviewers if primary fails
 #   --wait                    block with final JSON instead of background
 #
 # See scripts/lib/review_runner.py for the orchestrator.

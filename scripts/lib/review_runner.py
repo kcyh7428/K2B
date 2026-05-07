@@ -6,7 +6,9 @@ Three guarantees:
      10s later if the child still hasn't exited.
   2. Fallback: if the primary reviewer (Codex by default) exits non-zero
      or hits the deadline, automatically retry on the secondary reviewer
-     (MiniMax) for the same scope. If both fail, exit code 2.
+     (MiniMax) for the same scope. If both fail, exit code 2. Callers that
+     need a specific reviewer for model-family separation can disable this
+     with --no-fallback.
   3. Visibility: a watchdog thread injects synthetic HEARTBEAT lines into
      the unified log every --heartbeat-interval seconds (default 5s)
      regardless of vendor-side activity, and escalates to HEARTBEAT_STALE
@@ -570,9 +572,12 @@ def run_one_reviewer(
                 '"verdict"', "Review output captured",
             )
             if not any(m in log_text for m in verdict_markers):
+                no_fb = bool(state.get("no_fallback"))
+                next_action = ("no fallback (--no-fallback set)"
+                               if no_fb else "forcing fallback")
                 log_line(logf, f"[{utc_now_iso()}] QUALITY_GATE_FAIL "
                          f"reviewer={reviewer} rc=0 but no verdict marker "
-                         f"in log; forcing fallback")
+                         f"in log; {next_action}")
                 effective_rc = 125
 
         log_line(logf, f"[{utc_now_iso()}] REVIEWER_END reviewer={reviewer} "
@@ -584,6 +589,7 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                        state_path: Path, state: dict) -> int:
     primary = args.primary
     secondary = "minimax" if primary == "codex" else "codex"
+    reviewers = [primary] if args.no_fallback else [primary, secondary]
     files = ([p.strip() for p in args.files.split(",") if p.strip()]
              if args.files else None)
 
@@ -593,7 +599,7 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                                    Path(args.codex_plugin))
         return build_minimax_cmd(args.scope, files, args.plan, args.focus)
 
-    for idx, reviewer in enumerate([primary, secondary]):
+    for idx, reviewer in enumerate(reviewers):
         cmd = cmd_for(reviewer)
         state["reviewer_attempts"] = state.get("reviewer_attempts", [])
         if cmd is None:
@@ -639,12 +645,19 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                 why = "reconnect_stall"
             else:
                 why = f"exit_{rc}"
-            if idx == 0:
+            if idx == 0 and not args.no_fallback:
                 log_line(logf, f"[{utc_now_iso()}] FALLBACK triggering "
                          f"{secondary} ({reviewer} failed: {why})")
+            elif idx == 0 and args.no_fallback:
+                log_line(logf, f"[{utc_now_iso()}] NO_FALLBACK "
+                         f"primary_failed reviewer={reviewer} reason={why}; "
+                         f"stopping (matrix-clean: --no-fallback set)")
 
-    state.update({"status": "both_failed", "exit_code": 2,
-                  "ended_at": utc_now_iso()})
+    state.update({
+        "status": "primary_failed" if args.no_fallback else "both_failed",
+        "exit_code": 2,
+        "ended_at": utc_now_iso(),
+    })
     write_state(state_path, state)
     return 2
 
@@ -665,6 +678,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
                 f.seek(0)
             tail_lines = f.read().decode("utf-8", errors="replace").splitlines()[-20:]
     out = {
+        "schema_version": state.get("schema_version", 1),
         "job_id": state.get("job_id"),
         "status": state.get("status"),
         "phase": state.get("phase"),
@@ -676,6 +690,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
         "reviewer_attempts": state.get("reviewer_attempts", []),
         "primary_used": state.get("primary_used"),
         "fallback_used": state.get("fallback_used"),
+        "no_fallback": state.get("no_fallback", False),
         "exit_code": state.get("exit_code"),
         "log_path": state.get("log_path"),
         "tail": tail_lines,
@@ -693,8 +708,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path = ARCHIVE_DIR / f"{job}.log"
     state_path = ARCHIVE_DIR / f"{job}.json"
     state = {
+        # schema_version 2 (2026-05-07): added no_fallback field;
+        # status enum may be "running" | "completed" | "primary_failed" | "both_failed".
+        "schema_version": 2,
         "job_id": job, "scope": args.scope, "primary_requested": args.primary,
         "focus": args.focus, "files": args.files, "plan": args.plan,
+        "no_fallback": args.no_fallback,
         "deadline_s": args.deadline, "heartbeat_interval_s": args.heartbeat_interval,
         "reconnect_stall_threshold_s": args.reconnect_stall_threshold_s,
         "log_path": str(log_path), "state_path": str(state_path),
@@ -705,7 +724,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path.write_text(
         f"[{utc_now_iso()}] JOB_START job={job} scope={args.scope} "
         f"primary={args.primary} deadline={args.deadline}s "
-        f"reconnect_stall={args.reconnect_stall_threshold_s}s\n"
+        f"reconnect_stall={args.reconnect_stall_threshold_s}s "
+        f"no_fallback={args.no_fallback}\n"
     )
 
     if not args.wait:
@@ -765,6 +785,10 @@ def main() -> int:
                          "and triggering fallback. 0 disables. Only applied "
                          "to the codex reviewer."))
     p.add_argument("--codex-plugin", default=str(CODEX_PLUGIN_DEFAULT))
+    p.add_argument("--no-fallback", action="store_true",
+                   help=("Run only the requested primary reviewer. Use this "
+                         "when the fallback reviewer would violate the "
+                         "builder/reviewer model-family matrix."))
     p.add_argument("--wait", action="store_true",
                    help="Block until review finishes; default is background+poll")
     p.add_argument("--poll", default=None,
@@ -773,6 +797,13 @@ def main() -> int:
     args = p.parse_args()
     if args.poll:
         return cmd_poll(args)
+    if args.scope in {"diff", "files"} and not args.files:
+        p.error(
+            f"{args.scope} scope requires --files; use working-tree for a "
+            "full dirty-tree review"
+        )
+    if args.scope == "plan" and not args.plan:
+        p.error("plan scope requires --plan")
     return cmd_run(args)
 
 

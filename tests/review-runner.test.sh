@@ -546,6 +546,107 @@ print(data.get("log_path", ""))
   pass "$t"
 }
 
+# ---------- Test 10: primary MiniMax diff requires explicit files ----------
+test_primary_minimax_diff_requires_files_before_fallback() {
+  local t="test_primary_minimax_diff_requires_files_before_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --wait \
+      --codex-plugin "$plugin" --primary minimax \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2 before fallback, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q -- "--files"; then
+    fail "$t" "expected missing --files message, got: $out"
+    return
+  fi
+  if echo "$out" | grep -q "# Codex Review"; then
+    fail "$t" "Codex fallback ran despite invalid MiniMax diff args. out=$out"
+    return
+  fi
+  # Stronger negative check: prove no reviewer process spawned at all by
+  # confirming the runner did not create any state file or log archive.
+  # If any reviewer spawned, .code-reviews/<job>.json + .log would exist.
+  local archive_count
+  archive_count=$(find "$d/.code-reviews" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$archive_count" != "0" ]; then
+    fail "$t" "expected 0 archive files (no spawn), got $archive_count. archive=$(ls "$d/.code-reviews" 2>/dev/null)"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 11: --no-fallback prevents same-family fallback ----------
+test_no_fallback_stops_after_primary_failure() {
+  local t="test_no_fallback_stops_after_primary_failure"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve error)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected rc=2 with primary failure and no fallback, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+if start < 0 or end < 0:
+    print("")
+else:
+    data = json.loads(text[start:end+1])
+    print(data.get("log_path", ""))
+')
+  if [ -z "$log_path" ] || [ ! -f "$log_path" ]; then
+    fail "$t" "expected runner JSON with log_path, got: $out"
+    return
+  fi
+  state_path="${log_path%.log}.json"
+
+  # Strongest signal first: state file proves only minimax attempted.
+  local reviewers
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  if [ "$reviewers" != "minimax" ]; then
+    fail "$t" "expected only minimax attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+    return
+  fi
+  # Negative SPAWN check: log must NOT contain any spawn for codex.
+  if grep -qE 'SPAWN argv=.*codex|REVIEWER_START reviewer=codex' "$log_path"; then
+    fail "$t" "Codex was spawned despite --no-fallback. log=$(cat "$log_path")"
+    return
+  fi
+  if grep -q "# Codex Review" "$log_path"; then
+    fail "$t" "Codex review marker found despite --no-fallback. log=$(cat "$log_path")"
+    return
+  fi
+  # Confirm NO_FALLBACK log line was emitted (observability contract).
+  if ! grep -q "NO_FALLBACK primary_failed" "$log_path"; then
+    fail "$t" "expected NO_FALLBACK log line, got: $(cat "$log_path")"
+    return
+  fi
+  pass "$t"
+}
+
 # ---------- Test 9: poll unknown job returns 1 ----------
 test_poll_unknown_job_returns_1() {
   local t="test_poll_unknown_job_returns_1"
@@ -628,6 +729,8 @@ test_codex_unavailable_reason_eisdir
 test_plan_scope_always_routes_to_minimax
 test_watchdog_injects_heartbeat
 test_minimax_key_inherited_from_parent_env
+test_primary_minimax_diff_requires_files_before_fallback
+test_no_fallback_stops_after_primary_failure
 test_poll_unknown_job_returns_1
 
 echo
