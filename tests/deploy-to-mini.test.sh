@@ -262,6 +262,67 @@ echo "=== deploy-to-mini.test.sh ==="
   assert_detect "launchd + router watchdog runbook detected as scripts sync" "scripts" "$out"
 }
 
+# ---------------------------------------------------------------------------
+# Scenario 10: local-shaped target (test mode) skips ssh+install entirely
+#
+# Why this matters: 2026-05-07 dry-run inspection caught install/source
+# drift -- /sync rsynced new optimize-leaves.py to Mini but launchd kept
+# running the old installed snapshot at ~/Library/Application Support/.../
+# bin/. The fix in sync_scripts() is to ssh+install.sh after rsync.
+# This test asserts that the test-mode invariant (local-shaped target,
+# is_remote_target=false) skips the new ssh+install path entirely, so the
+# existing 9 scenarios above still pass with no SSH attempts.
+#
+# A full positive test (remote-shaped target → install.sh fires) was
+# attempted via PATH-mock ssh but is intractable without also mocking the
+# rsync-over-ssh server protocol. The positive case is smoke-tested via
+# manual /sync to Mac Mini after this lands and confirming install.sh ran
+# (visible in launchd-leaf-optimizer.err.log + install-manifest.sha256
+# updated).
+# ---------------------------------------------------------------------------
+{
+  LOCAL="$(mktmp)"
+  REMOTE="$(mktmp)"
+  build_tree "$LOCAL" "v2"
+  build_tree "$REMOTE" "v1"
+  # Install.sh present locally (gate condition for the new install step).
+  mkdir -p "$LOCAL/scripts/router-watchdog"
+  printf '#!/usr/bin/env bash\necho should-not-run\n' \
+    > "$LOCAL/scripts/router-watchdog/install.sh"
+  chmod +x "$LOCAL/scripts/router-watchdog/install.sh"
+
+  MOCK_DIR="$(mktmp)"
+  cat > "$MOCK_DIR/ssh" <<'MOCK'
+#!/bin/bash
+echo "$@" >> "$MOCK_LOG"
+exit 0
+MOCK
+  chmod +x "$MOCK_DIR/ssh"
+  MOCK_LOG="$MOCK_DIR/ssh-invocations.log"
+  : > "$MOCK_LOG"
+
+  # Local-shaped target (no colon) -- is_remote_target() returns false,
+  # so no ssh path should fire. This is what existing tests rely on.
+  EXIT=0
+  PATH="$MOCK_DIR:$PATH" \
+  K2B_LOCAL_BASE="$LOCAL" \
+  K2B_RSYNC_TARGET_PREFIX="$REMOTE" \
+  MOCK_LOG="$MOCK_LOG" \
+    bash "$SCRIPT" scripts >/dev/null 2>&1 || EXIT=$?
+
+  if [ "$EXIT" -ne 0 ]; then
+    echo "  FAIL: deploy script exited non-zero ($EXIT) before reaching the install gate."
+    FAIL=$((FAIL + 1))
+  elif [ -s "$MOCK_LOG" ]; then
+    echo "  FAIL: ssh fired on local-shaped target. ssh log:"
+    cat "$MOCK_LOG" | sed 's/^/    /'
+    FAIL=$((FAIL + 1))
+  else
+    echo "  PASS: local-shaped target skips ssh+install (test-mode invariant)"
+    PASS=$((PASS + 1))
+  fi
+}
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

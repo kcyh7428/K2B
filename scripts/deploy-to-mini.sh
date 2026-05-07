@@ -34,6 +34,20 @@ DETECT_ONLY="${K2B_DETECT_ONLY:-false}"
 DRY_RUN=false
 MODE="${1:-auto}"
 
+# Parse host + path from RSYNC_TARGET ONCE here, so reachability checks and
+# follow-up SSH (install.sh trigger) all route to the SAME machine that
+# rsync is shipping files to. Without this, K2B_RSYNC_TARGET_PREFIX
+# overrides could rsync to one host while reachability/install hit another.
+# For local-shaped RSYNC_TARGET (no colon, test mode), MINI_HOST stays
+# empty and is_remote_target() / maybe_run_remote_install() bypass.
+if [[ "$RSYNC_TARGET" == *":"* ]]; then
+    MINI_HOST="${RSYNC_TARGET%%:*}"
+    MINI_PATH="${RSYNC_TARGET#*:}"
+else
+    MINI_HOST=""
+    MINI_PATH="$RSYNC_TARGET"
+fi
+
 if [[ "$MODE" == "--dry-run" ]]; then
     DRY_RUN=true
     MODE="${2:-auto}"
@@ -178,7 +192,7 @@ sync_skills() {
     if ! $DRY_RUN; then
         log "Verifying skills on Mini..."
         local remote_count
-        remote_count=$(ssh "$MINI" "ls -d $REMOTE_BASE/.claude/skills/k2b-*/ 2>/dev/null | wc -l" | tr -d ' ')
+        remote_count=$(ssh "$MINI_HOST" "ls -d $MINI_PATH/.claude/skills/k2b-*/ 2>/dev/null | wc -l" | tr -d ' ')
         local local_count
         local_count=$(ls -d "$LOCAL_BASE/.claude/skills/k2b-"*/ 2>/dev/null | wc -l | tr -d ' ')
         if [[ "$remote_count" == "$local_count" ]]; then
@@ -203,12 +217,12 @@ sync_code() {
 
     if ! $DRY_RUN; then
         log "Building and restarting k2b-remote on Mini..."
-        ssh "$MINI" "cd $REMOTE_BASE/k2b-remote && npm run build && pm2 restart k2b-remote"
+        ssh "$MINI_HOST" "cd $MINI_PATH/k2b-remote && npm run build && pm2 restart k2b-remote"
 
         log "Verifying k2b-remote health..."
         sleep 2
         local status
-        status=$(ssh "$MINI" "pm2 jlist" 2>/dev/null | python3 -c "
+        status=$(ssh "$MINI_HOST" "pm2 jlist" 2>/dev/null | python3 -c "
 import sys, json
 procs = json.load(sys.stdin)
 for p in procs:
@@ -239,12 +253,12 @@ sync_dashboard() {
 
     if ! $DRY_RUN; then
         log "Building and restarting k2b-dashboard on Mini..."
-        ssh "$MINI" "cd $REMOTE_BASE/k2b-dashboard && npm run build && pm2 restart k2b-dashboard"
+        ssh "$MINI_HOST" "cd $MINI_PATH/k2b-dashboard && npm run build && pm2 restart k2b-dashboard"
 
         log "Verifying k2b-dashboard health..."
         sleep 2
         local status
-        status=$(ssh "$MINI" "pm2 jlist" 2>/dev/null | python3 -c "
+        status=$(ssh "$MINI_HOST" "pm2 jlist" 2>/dev/null | python3 -c "
 import sys, json
 procs = json.load(sys.stdin)
 for p in procs:
@@ -275,6 +289,38 @@ sync_scripts() {
     if [[ -f "$LOCAL_BASE/README-router-watchdog.md" ]]; then
         rsync -av $rsync_flag "$LOCAL_BASE/README-router-watchdog.md" "$RSYNC_TARGET/README-router-watchdog.md"
     fi
+}
+
+# Run router-watchdog/install.sh on the Mini so the launchd-served `bin/`
+# snapshot stays in sync with the rsynced source. Without this, /sync
+# silently produces install/source drift: source files update, but the
+# binary launchd actually invokes from `~/Library/Application Support/
+# k2b-router-watchdog/bin/` keeps running an older snapshot.
+# 2026-05-07 dry-run inspection caught exactly this -- the new
+# leaf-optimizer formula was on Mini's source path while launchd kept
+# firing the pre-fix installed snapshot.
+#
+# Runs UNCONDITIONALLY whenever target is remote (not in test mode) and
+# install.sh exists locally, regardless of whether sync_scripts() detected
+# changes. This closes the "auto mode skips when source matches but
+# installed is stale" gap that Codex flagged as the HIGH finding on the
+# 2026-05-07 review of this very fix. install.sh is idempotent (sha256
+# manifest match -> skips file copy AND launchctl bootout/bootstrap), so
+# always-running it costs only the SSH round-trip + a quick hash check
+# when nothing has changed.
+#
+# Host derivation: parse the host component from RSYNC_TARGET rather than
+# trusting $MINI alone, so a K2B_RSYNC_TARGET_PREFIX override (e.g.
+# user@otherhost:/path for a different deploy target) routes the install
+# to the SAME machine that received the rsync. If RSYNC_TARGET is purely
+# local (no colon -- test mode) the install step is skipped via
+# is_remote_target.
+maybe_run_remote_install() {
+    is_remote_target || return 0
+    $DRY_RUN && return 0
+    [[ -f "$LOCAL_BASE/scripts/router-watchdog/install.sh" ]] || return 0
+    log "Running router-watchdog install.sh on $MINI_HOST..."
+    ssh "$MINI_HOST" "bash ${MINI_PATH}/scripts/router-watchdog/install.sh"
 }
 
 # Main -- mode validation first so invalid modes exit fast (no SSH wait).
@@ -309,9 +355,11 @@ esac
 # Reachability check must happen BEFORE detect_changes: rsync's dry-run runs
 # over SSH for a remote target, so an unreachable Mini would silently report
 # "no changes" instead of failing loud. Skipped for local RSYNC_TARGET (tests).
+# Uses MINI_HOST parsed from RSYNC_TARGET, not the raw $MINI default, so
+# K2B_RSYNC_TARGET_PREFIX overrides probe the SAME host that rsync targets.
 if is_remote_target; then
-    if ! ssh -o ConnectTimeout=5 "$MINI" "echo ok" &>/dev/null; then
-        err "Cannot reach Mac Mini (ssh macmini). Is it on?"
+    if ! ssh -o ConnectTimeout=5 "$MINI_HOST" "echo ok" &>/dev/null; then
+        err "Cannot reach $MINI_HOST. Is it on?"
         exit 1
     fi
 fi
@@ -319,7 +367,14 @@ fi
 if [[ "$MODE" == "auto" ]]; then
     detect_changes
     if ! $needs_skills && ! $needs_code && ! $needs_dashboard && ! $needs_scripts; then
-        [[ "$DETECT_ONLY" != "true" ]] && warn "No changes detected. Use 'all' to force full sync."
+        if [[ "$DETECT_ONLY" != "true" ]]; then
+            warn "No changes detected. Use 'all' to force full sync."
+            # Still reconcile router-watchdog installed-vs-source drift before
+            # exiting -- source might match between machines while the launchd-
+            # served install snapshot is stale. install.sh is sha256-manifest-
+            # idempotent, so this is a cheap no-op when there is nothing to do.
+            maybe_run_remote_install
+        fi
         exit 0
     fi
 fi
@@ -348,6 +403,14 @@ $needs_skills && sync_skills
 $needs_code && sync_code
 $needs_dashboard && sync_dashboard
 $needs_scripts && sync_scripts
+
+# Always reconcile router-watchdog install snapshot, regardless of which
+# categories synced. Closes the install/source-drift class:
+# - sync_scripts() runs -> install picks up new bin/launchd
+# - sync_scripts() did NOT run (e.g. /sync skills only) -> install still
+#   reconciles any pre-existing drift left over from a previous run
+# install.sh is sha256-manifest-idempotent so the no-change case is cheap.
+maybe_run_remote_install
 
 echo ""
 if $DRY_RUN; then
