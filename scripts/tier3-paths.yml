@@ -33,6 +33,7 @@ paths:
   - "scripts/review.sh"
   - "scripts/review-poll.sh"
   - "scripts/lib/review_runner.py"
+  - ".claude/skills/k2b-ship/SKILL.md"
 
   # Single-writer mutation helpers (bug here corrupts shared logs/indexes)
   - "scripts/wiki-log-append.sh"

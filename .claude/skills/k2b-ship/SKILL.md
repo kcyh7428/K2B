@@ -142,12 +142,94 @@ For multi-ship features (e.g. `feature_mission-control-v3`), read the feature no
 
 #### 3a. Tier detection
 
-Run `scripts/ship-detect-tier.py` first to classify the uncommitted diff into Tier 0, 1, 2, or 3 per [[wiki/concepts/feature_adversarial-review-tiering]]. Classifier errors (not in a git repo, missing/malformed `scripts/tier3-paths.yml`, etc.) are **fail-safe to Tier 3** -- never silently soften the gate.
+Stage the intended commit set first, then run `scripts/ship-detect-tier.py --mode staged` to classify only the files that will actually ship. This fixes the staged-vs-working-tree conflation bug from 2026-05-04: unrelated dirty files in the checkout must not force Tier 3 or leak into review scope.
+
+The staged set is now the source of truth for Step 3 and Step 5. Build it from the files this session intends to commit, identified in Step 1. Do **not** use `git add -A`. Leave unrelated dirty files unstaged. If anything was already staged before `/ship`, treat it as stale until confirmed; unstage entries that are not part of this ship before restaging the intended set.
+
+```bash
+# 1) Write the intended commit set from Step 1, one path per line.
+# Include every file this ship owns. Exclude unrelated dirty files.
+K2B_SHIP_TMP_FILES=()
+INTENDED_FILES_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-intended-files.XXXXXX")"
+K2B_SHIP_TMP_FILES+=("$INTENDED_FILES_FILE")
+trap 'rm -f "${K2B_SHIP_TMP_FILES[@]}"' EXIT
+
+cat > "$INTENDED_FILES_FILE" <<'EOF'
+<path/from/step-1>
+<another/path/from/step-1>
+EOF
+if [ ! -s "$INTENDED_FILES_FILE" ]; then
+  echo "[fatal] intended file set is empty" >&2
+  exit 3
+fi
+
+INTENDED_SORTED_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-intended-sorted.XXXXXX")"
+STAGED_SORTED_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-staged-sorted.XXXXXX")"
+STALE_STAGED_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-stale-staged.XXXXXX")"
+K2B_SHIP_TMP_FILES+=("$INTENDED_SORTED_FILE" "$STAGED_SORTED_FILE" "$STALE_STAGED_FILE")
+sort "$INTENDED_FILES_FILE" > "$INTENDED_SORTED_FILE"
+
+# 2) Remove stale staged entries that do not belong to this ship.
+git diff --cached --name-only | sort > "$STAGED_SORTED_FILE"
+comm -23 "$STAGED_SORTED_FILE" "$INTENDED_SORTED_FILE" > "$STALE_STAGED_FILE"
+UNSTAGE_FAILED=no
+while IFS= read -r file_path; do
+  [ -z "$file_path" ] && continue
+  if ! git reset -q HEAD -- "$file_path"; then
+    echo "[fatal] failed to unstage stale path: $file_path" >&2
+    UNSTAGE_FAILED=yes
+  fi
+done < "$STALE_STAGED_FILE"
+[ "$UNSTAGE_FAILED" = "no" ] || exit 3
+
+# 3) Stage exactly the intended commit set. Re-running this is idempotent
+# for the same paths and current content. Deleted tracked files are staged
+# as deletions; typos or missing untracked files fail loudly.
+ADD_FAILED=no
+while IFS= read -r file_path; do
+  [ -z "$file_path" ] && continue
+  if ! git add -- "$file_path"; then
+    echo "[fatal] failed to stage intended path: $file_path" >&2
+    ADD_FAILED=yes
+  fi
+done < "$INTENDED_FILES_FILE"
+[ "$ADD_FAILED" = "no" ] || exit 3
+
+# 4) Enforce that the staged set exactly matches the intended set before
+# classification or review. Any mismatch means review scope would diverge
+# from commit scope, so stop and fix the intended list/staging first.
+git diff --cached --name-only | sort > "$STAGED_SORTED_FILE"
+if grep -q ',' "$STAGED_SORTED_FILE"; then
+  echo "[fatal] staged path contains comma, but reviewer --files uses comma delimiters" >&2
+  grep ',' "$STAGED_SORTED_FILE" >&2
+  exit 3
+fi
+if ! cmp -s "$INTENDED_SORTED_FILE" "$STAGED_SORTED_FILE"; then
+  echo "[fatal] staging-mismatch: intended set differs from staged set" >&2
+  echo "[fatal] --- intended-only ---" >&2
+  comm -23 "$INTENDED_SORTED_FILE" "$STAGED_SORTED_FILE" >&2 || exit 3
+  echo "[fatal] --- staged-only ---" >&2
+  comm -13 "$INTENDED_SORTED_FILE" "$STAGED_SORTED_FILE" >&2 || exit 3
+  exit 3
+fi
+```
+
+Classifier errors (not in a git repo, missing/malformed `scripts/tier3-paths.yml`, unmerged index entries, etc.) are **fail-safe to Tier 3** -- never silently soften the gate. An empty staged set after the staging block is also a fail-safe condition because it means Step 3 is not looking at the intended commit.
 
 ```bash
 set +e
-TIER_OUTPUT="$(scripts/ship-detect-tier.py 2>&1)"
-TIER_EXIT=$?
+UNMERGED_FILES="$(git ls-files -u | cut -f2 | sort -u)"
+STAGED_FILES="$(git diff --cached --name-only -z | tr '\0' ',' | sed 's/,$//')"
+if [ -n "$UNMERGED_FILES" ]; then
+  TIER_OUTPUT="unmerged index entries: $UNMERGED_FILES"
+  TIER_EXIT=1
+elif [ -z "$STAGED_FILES" ]; then
+  TIER_OUTPUT="no staged files after Step 3a staging block"
+  TIER_EXIT=1
+else
+  TIER_OUTPUT="$(scripts/ship-detect-tier.py --mode staged 2>&1)"
+  TIER_EXIT=$?
+fi
 set -e
 
 if [ "$TIER_EXIT" -ne 0 ]; then
@@ -177,10 +259,15 @@ echo "tier: $TIER -- $TIER_REASON"
 | 2 | Codex single-pass via today's background + poll pattern. `--skip-codex` routes to MiniMax `--scope diff` single-pass. Both-fail -> REFUSE (same as Tier 3). |
 | 3 | Today's iterate-until-clean flow, verbatim. See Step 3c. |
 
-**Get the safe changed-file list once** (used by Tier 1 and Tier 2 diff-scoped reviewer invocations; handles renames + spaces via `-z`):
+**Get the safe changed-file list once from the staged set** (used by Tier 1, Tier 2, and Tier 3 diff-scoped reviewer invocations; handles renames + spaces via `-z`). Do not use the full working tree here; unrelated dirty files are deliberately out of scope. Capture the reviewed file list and verify it again in Step 5 before committing.
 
 ```bash
-CHANGED_FILES=$(git diff --name-only -z HEAD | tr '\0' ',' | sed 's/,$//')
+CHANGED_FILES=$(paste -sd, "$STAGED_SORTED_FILE")
+if [ -z "$CHANGED_FILES" ]; then
+  echo "[fatal] CHANGED_FILES empty after staged-set verification" >&2
+  exit 3
+fi
+REVIEWED_FILES="$CHANGED_FILES"
 ```
 
 ##### 3b.0 Tier 0 flow
@@ -490,15 +577,29 @@ Show Keith the draft. Confirm before committing.
 
 ### 5. Stage + commit + push
 
-Stage every file this session touched, regardless of category. The category table in step 1 is for `/sync` routing decisions, not for gating staging -- a touched file in `docs/`, `allhands/`, or any other uncategorized path still gets staged if it belongs to this session. Files in the working tree that predate the session and were not touched in this session must NOT be staged.
+The intended commit set was already staged in Step 3a before tier detection and review. Do not broaden the staged set after review. If a needed file is missing from the staged set here, stop, restage the intended set in Step 3a, and rerun the review gate so classification, reviewer scope, and commit scope stay identical.
 
 ```bash
-# Stage only the files we know about -- no git add -A (active rule: sensitive file avoidance)
-git add <each file this session touched, from step 1 git status>
+# Verify the staged set still matches the reviewed commit set from Step 3b.
+CURRENT_STAGED_FILES=$(git diff --cached --name-only | sort | paste -sd, -)
+if [ "$CURRENT_STAGED_FILES" != "$REVIEWED_FILES" ]; then
+  echo "[fatal] commit-scope-mismatch: staged set changed after review" >&2
+  echo "[fatal] reviewed: $REVIEWED_FILES" >&2
+  echo "[fatal] current:  $CURRENT_STAGED_FILES" >&2
+  exit 3
+fi
 git commit -m "$(cat <<'EOF'
 <message from step 4>
 EOF
 )"
+
+COMMITTED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD | sort | paste -sd, -)
+if [ "$COMMITTED_FILES" != "$REVIEWED_FILES" ]; then
+  echo "[fatal] committed-scope-mismatch: commit files differ from reviewed files" >&2
+  echo "[fatal] reviewed:  $REVIEWED_FILES" >&2
+  echo "[fatal] committed: $COMMITTED_FILES" >&2
+  exit 3
+fi
 
 # Push only if an `origin` remote is configured. Sibling repos like K2Bi may
 # not have one yet (Phase 1), which is expected, not an error. Match by exact
