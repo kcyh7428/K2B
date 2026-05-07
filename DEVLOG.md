@@ -1,6 +1,30 @@
 # K2B Development Log
 
 ---
+## 2026-05-07 -- leaf-optimizer scoring fix (Option B multiplicative responsiveness)
+
+**Commit:** `cd813fe feat(router-watchdog): leaf-optimizer scoring formula -- Option B (multiplicative responsiveness)`
+
+**What shipped:** Replaces the latency-under-weighted scoring formula with `score = success_rate * 1000 / (1000 + avg_delay)`. Live measurements from Mac Mini → Mihomo this afternoon showed the previous formula treating latency as ~10x weaker than success_rate; with all 7 OpenAI-group candidates at 100% success, the optimizer would have proposed Singapore (435ms) → US-West (712ms) on rolling-score artifacts. New formula gives Asia 0.83 / Russia 0.79 / Singapore 0.70 / Japan 0.44 — physical Asia-bias for an Asia-located user. STATE_VERSION 1 → 2 because the old rolling-score scale would corrupt v2 averages; load_state now logs to stderr (flushed) on version mismatch so operators see the discarded data in launchd-err log. `success_rate_delta` is computed and emitted as JSONL telemetry but is NOT in the clear_better gate (score already encodes success_rate via the formula).
+
+**Origin:** Decision item #8 in `context_open-items.md` ("Live dry-run inspection of leaf optimizer + sentinel decision") triggered the inspection that found this bug. Original /ship Step 8 closeout converted item #8 → DONE with finding, raised item E ("Ready to ship E: leaf-optimizer scoring fix").
+
+**Adversarial review:** four Kimi-backed rounds, matrix-clean throughout. Round 1 found 1 CRITICAL (rank-key inversion in Codex's unprompted addition) + 1 HIGH (success_rate_delta gate bypass, also unprompted) + 4 MEDIUM. Ship Manager rewrote the spec for round 3 narrowing to "back out the unprompted extras + add log line + tighten test." Codex round 3 reverted CRITICAL + HIGH and addressed 4 follow-on findings inline. Round-4 Kimi (post-runner-fix, using `scripts/review.sh diff --primary minimax --no-fallback --wait --files`) returned 3 residual MEDIUM. Ship Manager fixed MED-2 (stderr `flush=True` for systemd capture), deferred MED-1 (test tie-breaker contrived under Option B) and MED-3 (avg_delay=0 vs None edge case essentially unreachable).
+
+**Tests:** 17 PASS in `tests/router-watchdog-leaf-optimizer.test.sh` (was 14 before this ship). New coverage: latency-dominates-tied-success, cap-regression (2500ms vs 10000ms must not tie), Asia-from-Asia outscores West-from-Asia, success-rate floor still matters, avg_delay=None backward-compat, state-version-reset operator-visible.
+
+**Sync to Mini:** runner fix landed earlier today as `a8a41b6` + DEVLOG `df738da`. Leaf-optimizer dirty file had already been pushed to Mini via prior /sync rsync (content drift, not git state) but was neutralized by the missing `~/.k2b-router-leafopt-enabled` sentinel. After this ship's /sync, the corrected formula is live on Mini AND still neutralized — Ship Manager will run a fresh `optimize-leaves.sh --dry-run` inspection to verify Asian nodes outscore Western for the Macau-located Mini before deciding whether to flip the sentinel.
+
+**Feature status change:** `Ready to ship E` in `wiki/context/context_open-items.md` → SHIPPED.
+
+**Follow-ups:**
+- Sentinel decision (`touch ~/.k2b-router-leafopt-enabled` or not) deferred to Ship Manager post-/sync inspection. Until then, optimizer remains observe-only.
+- Router-watchdog NOT on Tier 3 allowlist despite being safety-relevant production routing code. Ship classified Tier 2 by default. Worth tracking as a follow-up: should `scripts/router-watchdog/**` be on `tier3-paths.yml`? Operationally it's "bug here causes bad VPN routing decisions in production" which matches the allowlist's existing inclusion criteria.
+- Two deferred MEDIUM findings from round-4 Kimi review (test tie-breaker coverage, avg_delay=0 vs None ranking inconsistency). Both polish, not functional.
+
+**Key decisions:** Option B chosen over Option A. Round 1 Codex argued for B because the steeper-linear cap of 0.9 was just a less-bad version of the original 0.25 cap; B has no cap and degrades gracefully at high latency. Round 4 Kimi pushed back on B's "tradeoff" but the spec already chose, and `--min-success-rate=0.8` still gates unreliable leaves separately.
+
+---
 ## 2026-05-07 -- review runner gets --no-fallback flag and --files-required gate
 
 **Commit:** `a8a41b6 feat(review-runner): add --no-fallback flag and require --files for diff/files scopes`
