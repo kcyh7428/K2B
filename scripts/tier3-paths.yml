@@ -52,3 +52,14 @@ paths:
   # Production services (bug here pages Keith at 3am)
   - "k2b-remote/src/**"
   - "k2b-dashboard/src/**"
+
+  # Router watchdog -- single launchd-managed install on the Mac Mini; bugs
+  # here can corrupt mihomo selectors, leak the Telegram bot token, or
+  # wedge the alert pipeline (the only signal we have that the Mini is
+  # awake).
+  - "scripts/router-watchdog/**"
+  - "launchd/com.k2b.router-watchdog.plist"
+  - "launchd/com.k2b.router-daily-rollup.plist"
+  - "launchd/com.k2b.router-node-score.plist"
+  - "launchd/com.k2b.router-leaf-optimizer.plist"
+  - "launchd/com.k2b.router-digest.plist"

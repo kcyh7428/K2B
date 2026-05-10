@@ -132,6 +132,103 @@ fi
 
 mkdir -p "$INSTALL_BIN" "$LOG_DIR" "$LAUNCH_AGENTS_DIR"
 
+# === HIGH-3: transactional install backup ===
+# Snapshot the current installed state (bin tree + each plist file) BEFORE
+# any modification. If the launchctl bootout/bootstrap loop later fails
+# partway through, rollback_install() restores from this snapshot so the
+# fleet ends in either fully-old or fully-new state, never half-upgraded.
+INSTALL_BACKUP_DIR="$(mktemp -d "$APP_DIR/.install-backup.XXXXXX")"
+mkdir -p "$INSTALL_BACKUP_DIR/bin" "$INSTALL_BACKUP_DIR/plists"
+if [[ -d "$INSTALL_BIN" ]]; then
+  # cp -a "$INSTALL_BIN/." preserves attributes and copies contents
+  # without nesting. Empty install dir is fine -- nothing to copy. We
+  # FAIL CLOSED if the copy errors out: a partial backup would later
+  # cause the rollback rsync --delete to wipe INSTALL_BIN to whatever
+  # subset cp managed to capture, leaving the fleet worse than before
+  # the install attempt.
+  if compgen -G "$INSTALL_BIN/*" >/dev/null 2>&1 || compgen -G "$INSTALL_BIN/.*" >/dev/null 2>&1; then
+    if ! cp -a "$INSTALL_BIN/." "$INSTALL_BACKUP_DIR/bin/"; then
+      fail "could not snapshot $INSTALL_BIN to $INSTALL_BACKUP_DIR/bin -- refusing to install (rollback would be unsafe)"
+    fi
+  fi
+fi
+for plist in "${PLISTS[@]}"; do
+  if [[ -f "$LAUNCH_AGENTS_DIR/$plist" ]]; then
+    if ! cp -a "$LAUNCH_AGENTS_DIR/$plist" "$INSTALL_BACKUP_DIR/plists/$plist"; then
+      fail "could not snapshot $LAUNCH_AGENTS_DIR/$plist -- refusing to install (rollback would be unsafe)"
+    fi
+  fi
+done
+
+ROLLBACK_HAD_DEGRADATION=false
+
+cleanup_install_backup() {
+  # If rollback ran with any degradation (failed restore or failed
+  # re-bootstrap), keep the backup directory around for manual recovery
+  # rather than silently removing the only known-good copy of the prior
+  # install state. Happy-path installs always clean up.
+  if $ROLLBACK_HAD_DEGRADATION; then
+    log "leaving backup directory in place for manual recovery: $INSTALL_BACKUP_DIR"
+    return 0
+  fi
+  rm -rf "$INSTALL_BACKUP_DIR" 2>/dev/null || true
+}
+trap cleanup_install_backup EXIT
+
+rollback_install() {
+  local reason="$1"
+  log "ERROR: $reason"
+  log "rolling back to pre-install snapshot at $INSTALL_BACKUP_DIR"
+
+  # Restore bin tree. --checksum is REQUIRED here: rsync's default size+mtime
+  # comparison can falsely skip files that the just-failed install rewrote
+  # in place (same name, often same size, mtimes only seconds apart).
+  # --delete brings INSTALL_BIN back to backup state by removing extras.
+  if [[ -d "$INSTALL_BACKUP_DIR/bin" ]]; then
+    if ! rsync -a --checksum --delete "$INSTALL_BACKUP_DIR/bin/" "$INSTALL_BIN/" 2>/dev/null; then
+      log "WARNING: bin tree restore failed; install bin may be inconsistent"
+      ROLLBACK_HAD_DEGRADATION=true
+    fi
+  fi
+
+  # Restore each plist file (or remove it if it was new this install).
+  for plist in "${PLISTS[@]}"; do
+    bak="$INSTALL_BACKUP_DIR/plists/$plist"
+    dest="$LAUNCH_AGENTS_DIR/$plist"
+    if [[ -f "$bak" ]]; then
+      if ! cp -a "$bak" "$dest" 2>/dev/null; then
+        log "WARNING: failed to restore $plist from backup"
+        ROLLBACK_HAD_DEGRADATION=true
+      fi
+    else
+      # Plist did not exist before this install; remove the new one so
+      # launchctl state matches pre-install reality.
+      rm -f "$dest" 2>/dev/null || true
+    fi
+  done
+
+  # Best-effort re-bootstrap of the restored fleet. Each plist is bootout'd
+  # (tolerating "not loaded") and re-bootstrapped from its restored backup.
+  # Failures here are logged but do not abort the rollback -- rollback is
+  # already a degraded path; the goal is to leave launchd consistent with
+  # the on-disk plist files we just restored.
+  for plist in "${PLISTS[@]}"; do
+    dest="$LAUNCH_AGENTS_DIR/$plist"
+    [[ -f "$dest" ]] || continue
+    launchctl bootout "gui/$uid" "$dest" >/dev/null 2>&1 || true
+    if ! launchctl bootstrap "gui/$uid" "$dest" >/dev/null 2>&1; then
+      log "WARNING: re-bootstrap of $plist after rollback failed; manual recovery may be needed"
+      ROLLBACK_HAD_DEGRADATION=true
+    fi
+  done
+
+  # MANIFEST stays at PRIOR value (we never wrote a new one), so the next
+  # /sync's deploy-to-mini.sh -> install.sh run will detect the mismatch
+  # and retry. cleanup_install_backup runs via the EXIT trap (preserves
+  # the backup if ROLLBACK_HAD_DEGRADATION).
+  fail "install rolled back to previous state ($reason); MANIFEST unchanged; next deploy will retry"
+}
+
 before_manifest="$(
   {
     sha_manifest "$INSTALL_BIN"
@@ -242,7 +339,14 @@ if [[ "$SKIP_LAUNCHCTL" != "1" ]]; then
     for plist in "${PLISTS[@]}"; do
       dest="$LAUNCH_AGENTS_DIR/$plist"
       launchctl bootout "gui/$uid" "$dest" >/dev/null 2>&1 || true
-      launchctl bootstrap "gui/$uid" "$dest"
+      # HIGH-3: on bootstrap failure, restore previous install + revert
+      # manifest by calling rollback_install (which calls fail -> exit 1).
+      # Without this, set -e would abort with the fleet in a half-upgraded
+      # state (some plists already running new versions, others bootout'd
+      # with new files on disk but no live job).
+      if ! launchctl bootstrap "gui/$uid" "$dest"; then
+        rollback_install "launchctl bootstrap failed for $plist"
+      fi
     done
   else
     log "no-change install: skipping launchctl bootout/bootstrap (jobs already loaded, applied manifest matches disk)"
