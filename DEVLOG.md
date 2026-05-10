@@ -1,6 +1,35 @@
 # K2B Development Log
 
 ---
+## 2026-05-10 -- router-watchdog Ship 2: 4 deferred Codex findings closed
+
+**PR:** [#4](https://github.com/kcyh7428/K2B/pull/4) on branch `codex/router-watchdog-ship-2`. Single commit `60973ca`.
+
+**What shipped:** Closes the remaining cleanup from router-watchdog's 2026-05-04 ship adversarial review. HIGH-1 (deploy auto-install) was split off and shipped 2026-05-07 as `9ac2517`; this commit bundles the other four findings.
+
+- **HIGH-3** `install.sh` per-plist bootout/bootstrap is now transactional. Snapshots install bin + plists before the launchctl loop. On bootstrap failure, rollback restores from snapshot, re-bootstraps the restored fleet, leaves `$MANIFEST` at the prior value (so next /sync's `install.sh` detects the mismatch and retries), exits non-zero. Snapshot copy failures fail closed. Degraded rollback (failed restore or re-bootstrap) preserves the backup directory for manual recovery instead of auto-cleaning it.
+- **MED-4** `state.json` read-modify-write wrapped in `fcntl.flock` on a sidecar lock file inside `state-machine.py main()`. Concurrent ticks serialize their RMW. macOS-friendly (Python `fcntl` works where bash `flock(1)` does not ship by default).
+- **MED-5** `partition-queue.py apply_actions` wrapped in the same flock pattern. Drain-vs-append race no longer loses queue entries.
+- **MED-6** `send-alert.sh` stops embedding `TELEGRAM_BOT_TOKEN` in curl argv (visible in `ps -ef`). URL passed via `-K -` heredoc on stdin; payload via `--data-binary @tmpfile` (chmod 600). curl is invoked through `env -u TELEGRAM_BOT_TOKEN ...` to scrub the token from the child process environment too.
+
+`scripts/tier3-paths.yml` now lists `scripts/router-watchdog/**` and the five router launchd plists explicitly so future ship classifiers tier this path correctly.
+
+**Tests:** new `tests/router-watchdog-ship-2.test.sh` covers all four findings -- HIGH-3 rollback path + happy path, MED-4 8-tick concurrent, MED-5 append-vs-append, MED-5b drain-vs-append. MED-6 assertion added to existing `tests/router-watchdog-phase234.test.sh` Telegram-fanout test (fake curl now verifies token never reaches argv and URL arrives via `-K -` stdin). Red-then-green verified for MED-4: with flock disabled the test detects the lost-update race. All 4 router-watchdog test files green.
+
+**Adversarial review:** Codex round 1 returned NEEDS-ATTENTION with no HIGH findings. All 5 findings (2 MEDIUM, 3 LOW) addressed before commit:
+- M-1 token-in-env -> env -u scrubs curl child environment
+- M-2 backup-fail -> snapshot copy failures fail closed
+- L-1 payload-leak -> trap cleanup on EXIT/INT/TERM
+- L-2 drain-test -> added MED-5b drain-vs-append race test
+- L-3 tier3-yml -> added router-watchdog + launchd plist patterns
+
+Single round was sufficient given the bounded scope and that the post-feedback diff was mostly defensive hardening rather than new logic.
+
+**Closes:** decision item #9 (router-watchdog Ship 2 -- 4 deferred Codex findings) in `wiki/context/context_open-items.md`. Also closes decision item #5 (sentinel decision) by re-measuring on Mini and confirming MIXED / NO AUTO-FLIP -- sentinel `~/.k2b-router-leafopt-enabled` stays absent (today's dry-run had 2 of 6 selectors targeting West, including a weak-auto-selector pointing US-Vegas blocker case).
+
+**Does not close:** decision item #5 in the original sense (router-watchdog MVP fault-injection test) -- still pending a scheduled quiet-hour window.
+
+---
 ## 2026-05-07 -- deploy-to-mini.sh auto-runs install.sh; install/source drift closed
 
 **Commit:** `9ac2517 fix(deploy): auto-install router-watchdog after rsync; resolve install/source drift`
