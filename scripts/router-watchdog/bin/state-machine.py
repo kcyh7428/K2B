@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 from datetime import datetime, timezone
@@ -22,6 +24,28 @@ def parse_duration(value: str) -> int:
     if value.endswith("h"):
         return int(value[:-1]) * 3600
     return int(value)
+
+
+@contextlib.contextmanager
+def file_lock(lock_path: str):
+    """Exclusive flock on a sidecar lock file.
+
+    Blocks (does not skip) when another process holds the lock so concurrent
+    state-machine ticks serialize their read-modify-write of state.json
+    instead of racing. fcntl.flock works on macOS where bash flock(1) does
+    not ship by default.
+    """
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
 
 
 def load_json(path: str, default):
@@ -216,44 +240,51 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    state = load_json(args.state_file, {})
-    with open(args.results_file, encoding="utf-8") as f:
-        raw_results = json.load(f)
-    results = normalize_results(raw_results, state)
-    results_by_name = {item["name"]: item for item in results}
-    backoffs = [parse_duration(item) for item in args.backoff.split(",") if item.strip()]
+    # Lock the entire read-modify-write of state.json so concurrent ticks
+    # cannot lose updates by interleaving load / transition / write. The
+    # sidecar lock file lives next to state.json. Blocking flock; ticks
+    # queue rather than skip (they're cheap and infrequent).
+    state_dir = os.path.dirname(args.state_file) or "."
+    state_lock_path = os.path.join(state_dir, os.path.basename(args.state_file) + ".lock")
+    with file_lock(state_lock_path):
+        state = load_json(args.state_file, {})
+        with open(args.results_file, encoding="utf-8") as f:
+            raw_results = json.load(f)
+        results = normalize_results(raw_results, state)
+        results_by_name = {item["name"]: item for item in results}
+        backoffs = [parse_duration(item) for item in args.backoff.split(",") if item.strip()]
 
-    suppress_alerts, partition_actions = transition_partition(state, results_by_name, args.timestamp)
-    alerts = transition_checks(state, results, args.timestamp, backoffs, suppress_alerts)
+        suppress_alerts, partition_actions = transition_partition(state, results_by_name, args.timestamp)
+        alerts = transition_checks(state, results, args.timestamp, backoffs, suppress_alerts)
 
-    overall_ok = all(item.get("ok", False) for item in results)
-    health_event = {
-        "timestamp": args.timestamp,
-        "overall_ok": overall_ok,
-        "network_partition": state.get("_network_partition"),
-        "checks": {
-            item["name"]: {
-                "ok": item.get("ok", False),
-                "alertable": item.get("alertable", True),
-                "severity": item.get("severity"),
-                "latency_ms": item.get("latency_ms"),
-                "message": item.get("message"),
-                "details": item.get("details") or {},
-            }
-            for item in results
-        },
-    }
+        overall_ok = all(item.get("ok", False) for item in results)
+        health_event = {
+            "timestamp": args.timestamp,
+            "overall_ok": overall_ok,
+            "network_partition": state.get("_network_partition"),
+            "checks": {
+                item["name"]: {
+                    "ok": item.get("ok", False),
+                    "alertable": item.get("alertable", True),
+                    "severity": item.get("severity"),
+                    "latency_ms": item.get("latency_ms"),
+                    "message": item.get("message"),
+                    "details": item.get("details") or {},
+                }
+                for item in results
+            },
+        }
 
-    write_jsonl(args.alerts_file, alerts)
-    write_jsonl(args.partition_actions_file, partition_actions)
+        write_jsonl(args.alerts_file, alerts)
+        write_jsonl(args.partition_actions_file, partition_actions)
 
-    if args.dry_run:
-        print(json.dumps(health_event, ensure_ascii=False, indent=2, sort_keys=True))
+        if args.dry_run:
+            print(json.dumps(health_event, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+
+        write_atomic_json(args.state_file, state)
+        append_jsonl(args.health_log, health_event)
         return 0
-
-    write_atomic_json(args.state_file, state)
-    append_jsonl(args.health_log, health_event)
-    return 0
 
 
 if __name__ == "__main__":

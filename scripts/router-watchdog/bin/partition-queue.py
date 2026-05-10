@@ -1,8 +1,32 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 from datetime import datetime, timezone
+
+
+@contextlib.contextmanager
+def file_lock(lock_path: str):
+    """Exclusive flock on a sidecar lock file.
+
+    Blocks (does not skip) when another process holds the lock so concurrent
+    apply_actions calls serialize their read-modify-write of the partition
+    queue instead of racing. fcntl.flock works on macOS where bash flock(1)
+    does not ship by default.
+    """
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
 
 
 def parse_ts(value: str) -> datetime:
@@ -90,7 +114,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "apply":
-        apply_actions(args.queue_file, args.actions_file, args.alerts_file)
+        # Lock the queue file so concurrent apply calls serialize their
+        # read/append/truncate cycle. The actions file is per-tick (fresh
+        # tmpfile each run) so no lock needed there.
+        queue_dir = os.path.dirname(args.queue_file) or "."
+        queue_lock_path = os.path.join(queue_dir, os.path.basename(args.queue_file) + ".lock")
+        with file_lock(queue_lock_path):
+            apply_actions(args.queue_file, args.actions_file, args.alerts_file)
     return 0
 
 

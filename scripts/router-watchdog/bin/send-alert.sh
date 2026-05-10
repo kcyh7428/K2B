@@ -99,20 +99,47 @@ PY
 
 delivered_targets="$(mktemp)"
 failed_targets="$(mktemp)"
-trap 'rm -f "$delivered_targets" "$failed_targets"' EXIT
+current_payload_file=""
+cleanup_send_alert() {
+  rm -f "$delivered_targets" "$failed_targets"
+  if [[ -n "$current_payload_file" ]]; then
+    rm -f "$current_payload_file"
+  fi
+  return 0
+}
+trap cleanup_send_alert EXIT INT TERM
 
 target_index=0
 while IFS= read -r payload; do
   [[ -n "$payload" ]] || continue
   target_index=$((target_index + 1))
   set +e
+  # Pass URL via -K stdin config so TELEGRAM_BOT_TOKEN never appears in argv
+  # (visible to ps -ef otherwise). Payload is sent via --data-binary @file
+  # so JSON quoting in a curl-config "data = ..." line is not a hazard.
+  current_payload_file="$(mktemp "${TMPDIR:-/tmp}/k2b-router-alert.XXXXXX")"
+  printf '%s' "$payload" > "$current_payload_file"
+  chmod 600 "$current_payload_file" 2>/dev/null || true
+  # env -u scrubs the bot token from the curl child environment so it does
+  # not appear in /proc/<pid>/environ-style lookups. Defense in depth on
+  # top of the -K - stdin trick that already keeps it out of argv. Other
+  # script-loaded secrets (KEITH_CHAT_ID, MIHOMO_*) are not credentials
+  # for this curl call, but we drop them too for hygiene.
   response="$(
-    curl -sS -m 10 \
-      -H 'Content-Type: application/json' \
-      -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-      -d "$payload"
+    env -u TELEGRAM_BOT_TOKEN -u KEITH_CHAT_ID \
+      -u K2B_NETWORK_ALERT_CHAT_ID -u K2B_NETWORK_ALERT_THREAD_ID \
+      -u MIHOMO_API_BASE -u MIHOMO_API_SECRET -u MIHOMO_OPENAI_GROUP \
+      curl -sS -m 10 \
+        -H 'Content-Type: application/json' \
+        -X POST \
+        --data-binary "@$current_payload_file" \
+        -K - <<EOF
+url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+EOF
   )"
   curl_rc=$?
+  rm -f "$current_payload_file"
+  current_payload_file=""
   if [[ $curl_rc -eq 0 ]]; then
     printf '%s' "$response" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)'
     ok_rc=$?

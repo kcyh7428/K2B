@@ -201,11 +201,35 @@ EOF
   chmod 600 "$d/watchdog.env"
   cat > "$fakebin/curl" <<EOF
 #!/usr/bin/env bash
+# Fake curl for send-alert.sh testing. After MED-6, the real curl is invoked
+# with --data-binary @PATH for the JSON payload and -K - for the URL config
+# on stdin (so TELEGRAM_BOT_TOKEN never appears in argv). This stub mirrors
+# both pathways and writes argv to argv.log so the test can assert the token
+# never appeared in argv.
 payload=""
+data_file=""
+read_config_from_stdin=false
+all_argv="\$*"
+printf '%s\n' "\$all_argv" >> "$d/argv.log"
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
-    -d)
+    -d|--data)
       payload="\${2:-}"
+      shift 2
+      ;;
+    --data-binary)
+      arg="\${2:-}"
+      if [[ "\${arg:0:1}" == "@" ]]; then
+        data_file="\${arg:1}"
+      else
+        payload="\$arg"
+      fi
+      shift 2
+      ;;
+    -K|--config)
+      if [[ "\${2:-}" == "-" ]]; then
+        read_config_from_stdin=true
+      fi
       shift 2
       ;;
     *)
@@ -213,6 +237,12 @@ while [[ \$# -gt 0 ]]; do
       ;;
   esac
 done
+if [[ -n "\$data_file" && -f "\$data_file" ]]; then
+  payload="\$(cat "\$data_file")"
+fi
+if \$read_config_from_stdin; then
+  cat > "$d/curl-config.txt"
+fi
 printf '%s\n' "\$payload" >> "$d/payloads.jsonl"
 printf '{"ok":true,"result":{"message_id":123}}\n'
 EOF
@@ -240,6 +270,28 @@ assert events[-1]["delivered_targets"] == [
 ]
 PY
   echo "  PASS: Telegram Network topic routing"
+
+  # MED-6: TELEGRAM_BOT_TOKEN must never appear in argv (visible to ps -ef).
+  # The token MUST appear in the curl-config stdin instead.
+  if [[ -f "$d/argv.log" ]]; then
+    if grep -q 'test-token' "$d/argv.log"; then
+      echo "argv.log contained the bot token:" >&2
+      cat "$d/argv.log" >&2
+      fail "MED-6: TELEGRAM_BOT_TOKEN leaked into curl argv"
+    fi
+  else
+    fail "MED-6: argv.log not created -- fake curl was not invoked"
+  fi
+  if [[ ! -f "$d/curl-config.txt" ]]; then
+    fail "MED-6: curl was not invoked with -K - (URL not on stdin)"
+  fi
+  if ! grep -q 'test-token' "$d/curl-config.txt"; then
+    fail "MED-6: curl-config stdin did not contain the bot token"
+  fi
+  if ! grep -q '^url = "https://api.telegram.org/bottest-token/sendMessage"' "$d/curl-config.txt"; then
+    fail "MED-6: curl-config stdin did not have the expected url= line"
+  fi
+  echo "  PASS: MED-6 TELEGRAM_BOT_TOKEN not in curl argv (passed via -K - stdin)"
 }
 
 # ---------------------------------------------------------------------------
