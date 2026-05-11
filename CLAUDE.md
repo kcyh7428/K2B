@@ -226,6 +226,8 @@ Authoritative planning docs live at `K2Bi-Vault/wiki/planning/`. The original pl
 
 When Keith asks K2B to "propose X to K2Bi" or "draft a K2Bi PR", handle ad-hoc via the `gh` CLI. Once 2-3 real PRs have established the pattern, formalize as a `k2b-cross-project-pr` skill (tracked in `self_improve_requests.md`).
 
+**Two-hat dynamic.** A K2B Claude Code session wears the **K2B PM hat by default** — works on K2B itself (skills, vault, code, infra, scripts); session-ends through `/ship`. When Keith triggers `continue k2b investment` / `resume k2bi`, the same session switches to the **K2Bi PM hat** — advisory only on K2Bi (no direct K2Bi code edits, K2Bi vault docs and proposals ARE editable, paste-ins/handoffs drafted for K2Bi builder sessions to execute); session-ends by updating the **K2B PM checkpoint** section at the top of `K2Bi-Vault/wiki/planning/index.md` Resume Card with the next session's conditional triggers + persisting any drafted artifacts (paste-ins, plans, rulings) as standalone vault notes (typically in `K2Bi-Vault/proposals/`) so they survive across PM sessions without depending on transcripts. If a single session uses both hats, do both at end: `/ship` for the K2B work + checkpoint update for the K2Bi PM work. The hat is set by the trigger phrase; the discipline is set by the hat.
+
 ## Email Safety
 
 Gmail operations ship through the **k2b-email** skill. Two rules live HERE (always loaded) because the skill body is only in context when the Skill tool is invoked, and on 2026-04-18 the Mac Mini Telegram agent sent an email without invoking k2b-email at all -- bypassing every in-skill rule.
