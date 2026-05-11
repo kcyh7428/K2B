@@ -1,6 +1,15 @@
 # K2B Development Log
 
 ---
+## 2026-05-11 -- docs(claude): two-hat (K2B PM / K2Bi PM) session dynamic
+
+**Commit:** `a0117d0 docs(claude): document two-hat (K2B PM / K2Bi PM) session dynamic`
+
+**What shipped:** Codifies the dual-PM session pattern in CLAUDE.md "Subprojects" section. K2B PM hat is the default (works on K2B itself, ships via /ship); K2Bi PM hat activates on `continue k2b investment` / `resume k2bi` (advisory only on K2Bi code, vault docs/proposals editable, drafted artifacts persist as standalone notes in `K2Bi-Vault/proposals/`, session ends by updating the K2B PM checkpoint section atop K2Bi planning Resume Card). When both hats run in one session, both close-outs happen.
+
+This was an uncommitted change carried over from a previous session; reviewed, kept, committed solo with no bundled work.
+
+---
 ## 2026-05-10 -- router-watchdog Ship 2: 4 deferred Codex findings closed
 
 **PR:** [#4](https://github.com/kcyh7428/K2B/pull/4) on branch `codex/router-watchdog-ship-2`. Single commit `60973ca`.
