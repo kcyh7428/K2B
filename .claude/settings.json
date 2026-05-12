@@ -34,6 +34,7 @@
       "Bash(npm *)",
       "Bash(npx *)",
       "Bash(ssh macmini *)",
+      "Bash(ssh hostinger *)",
       "Bash(rsync *)",
       "Bash(gws *)",
       "Bash(jq *)",
