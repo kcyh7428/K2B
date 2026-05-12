@@ -1,6 +1,41 @@
 # K2B Development Log
 
 ---
+## 2026-05-12 (afternoon) -- router-watchdog: cascade-safety regex narrowing
+
+**PR:** [#8](https://github.com/kcyh7428/K2B/pull/8) on branch `fix/router-watchdog-cascade-safety`. Single commit `e16aaae` (merged rebase, no merge commit).
+
+**What shipped:** Narrows the AI profile's `selector_regex` in `scripts/router-watchdog/bin/leaf-optimizer-profiles.json` from `"^♻️ 手动切换"` to `"^♻️ 手动切换[1-9][0-9]*\Z"`. Excludes the no-number selector `♻️ 手动切换` (which cascades through `🎯 总模式` to 8 outer groups) from the AI optimizer's candidate set. Supports multi-digit numbered selectors (10, 99). End-anchored via `\Z` so suffix pollution like `♻️ 手动切换1foo` cannot bypass the gate.
+
+Test 23 added to `tests/router-watchdog-leaf-optimizer.test.sh` with 11 assertions: single-digit matches (1, 5, 9), multi-digit matches (10, 99), no-number exclusion, zero-prefix exclusion (0, 01), suffix-pollution exclusion (`1foo`, `1 (backup)`), prefix-pollution exclusion (`foo♻️ 手动切换1`, `prefix ♻️ 手动切换5`). Prefix-pollution cases make start-anchor regression detectable since `re.search` would otherwise still find a later match.
+
+**Why now:** Defensive hardening for the now-live AI leaf optimizer. Sentinel `~/.k2b-router-leafopt-enabled` was flipped on Mini at 11:53 CST today (03:53 UTC) after PR [#5](https://github.com/kcyh7428/K2B/pull/5) pre-flip dry-run returned PASS. The pre-flip dry-run (run_id `d30172bd`) had `♻️ 手动切换` (no number) at `waiting_for_consecutive_win` -- one tick from actionable. If it had triggered, the cascade through `🎯 总模式` would have moved 8 outer groups whose intended path was DIRECT or `Ⓜ️ 延迟最低` (URLTest). PR #5 already addressed structural blockers via `would_change` and `exclude_leaf_regex`; this PR closes the remaining cascade case at the `selector_regex` level.
+
+**Adversarial review:** `scripts/review.sh` Tier-3, 4 passes via Kimi K2.6. Codex deadline-timed-out on passes 1-2 (~365s each, rc=-15 effective_rc=124 -- reviewer-infra debt now 5 hits in 6 days, see open-items). Passes 3-4 used `--primary minimax` per documented workaround. Iteratively addressed: pass-1 HIGH-1 multi-digit support (widened `[1-9]` to `[1-9][0-9]*`); pass-2 HIGH-2 suffix-anchoring (added `\Z`); pass-3 HIGH-1 prefix-anchoring test coverage (added prefix-pollution assertions); pass-4 MEDIUM-3 assert messages and MEDIUM-4 file-handle hygiene (`with`-statement).
+
+Accepted despite the following findings (rationale in commit body):
+- Persistent HIGH/MEDIUM (passes 1-4): integration test with fake-mihomo no-number variant. The 11-assertion unit test exercises the same `json.load` + `re.compile` + `.search` path the optimizer uses at `optimize-leaves.py:430`.
+- NFC/NFD emoji normalization: Mihomo API has not been observed to send NFD-normalized names; defensive but out of scope.
+- `\Z` cross-language compatibility: optimizer is Python-only.
+- `re.MULTILINE` hypothetical: optimizer compiles regex without flags.
+
+Builder: Opus. Reviewer: Kimi-via-MiniMax (Codex unavailable today).
+
+**Tests:** 3 router-watchdog test suites green (40 tests total, +1 new Test 23).
+
+**Feature status change:** none. `feature_router-watchdog` stays `status: in-progress`. MVP fault-injection gate remains OPEN per L-2026-04-22-007 (this patch does not close it). 2026-05-11 23:59 Macau scheduled fault-injection window did NOT actually fire; needs re-schedule for another overnight quiet window.
+
+**Follow-ups:**
+- Re-schedule router-watchdog MVP fault-injection (overnight, ~6h `pm2 stop k2b-remote`).
+- Reviewer-infra Ship 2 (`feature_review-runner-reconnect-stall-detect`): make `reconnect_stall_threshold_s` reviewer-specific and add `RemoteDisconnected` retry-with-backoff. 5 hits in 6 days of Kimi/MiniMax/Codex reviewer failures.
+- Integration test for cascade-safety remains tracked but not promoted: if WMM Ship 2 or another router-watchdog ship touches the optimizer's selector-discovery code, fold it in then.
+
+**Key decisions:**
+- Anchor regex at both ends with `\Z` rather than `$` (immune to `re.MULTILINE` regardless of future flag changes).
+- Defer integration test rather than spiral on reviewer iterations. 4-pass review with each pass surfacing new defensive concerns reaches diminishing returns; the unit test covers the actual code path.
+- Route the merge through a PR (`fix/router-watchdog-cascade-safety` branch) per repo policy blocking direct pushes to main.
+
+---
 ## 2026-05-12 -- router-watchdog: profile-driven leaf optimizer + gate signals
 
 **PR:** [#5](https://github.com/kcyh7428/K2B/pull/5) on branch `codex/profile-driven-leaf-optimizer`. Single commit `277aee9`.
