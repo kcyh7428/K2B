@@ -388,7 +388,83 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: Router mutation code is scope-locked.
+# Test 8: install validates enabled leaf-optimizer profile env keys only.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/install-profile-env"
+  repo="$d/repo"
+  app="$d/app"
+  logs="$d/logs"
+  agents="$d/LaunchAgents"
+  env_file="$d/watchdog.env"
+  mkdir -p "$repo/scripts" "$repo/launchd"
+  cp -R "$SRC_DIR" "$repo/scripts/router-watchdog"
+  cp -R "$REPO_ROOT/launchd/." "$repo/launchd/"
+  python3 - "$repo/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["profiles"]["general"] = {
+    "enabled": True,
+    "group_env_var": "MIHOMO_GENERAL_GROUP",
+    "selector_regex": "^♻️ 手动切换",
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+    f.write("\n")
+PY
+  cat > "$env_file" <<'EOF'
+TELEGRAM_BOT_TOKEN=test-token
+KEITH_CHAT_ID=8394008217
+MIHOMO_API_BASE=http://192.168.50.1:9990
+MIHOMO_API_SECRET=test-secret
+MIHOMO_OPENAI_GROUP=🤖 OpenAI
+EOF
+  chmod 600 "$env_file"
+  git -C "$repo" init -q
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm init
+
+  set +e
+  K2B_ROUTER_WATCHDOG_APP_DIR="$app" \
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$logs" \
+  K2B_ROUTER_WATCHDOG_LAUNCH_AGENTS_DIR="$agents" \
+  K2B_ROUTER_WATCHDOG_ENV_FILE="$env_file" \
+  K2B_ROUTER_WATCHDOG_SKIP_LAUNCHCTL=1 \
+  bash "$repo/scripts/router-watchdog/install.sh" > "$d/install.out" 2> "$d/install.err"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "enabled profile missing env should fail install"
+  grep -q "MIHOMO_GENERAL_GROUP" "$d/install.err" || fail "missing profile env should be named"
+
+  python3 - "$repo/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["profiles"]["general"]["enabled"] = False
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+    f.write("\n")
+PY
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm disable-general-profile
+
+  K2B_ROUTER_WATCHDOG_APP_DIR="$app" \
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$logs" \
+  K2B_ROUTER_WATCHDOG_LAUNCH_AGENTS_DIR="$agents" \
+  K2B_ROUTER_WATCHDOG_ENV_FILE="$env_file" \
+  K2B_ROUTER_WATCHDOG_SKIP_LAUNCHCTL=1 \
+  bash "$repo/scripts/router-watchdog/install.sh" >/dev/null
+
+  echo "  PASS: install validates enabled profile env only"
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: Router mutation code is scope-locked.
 # ---------------------------------------------------------------------------
 {
   python3 - "$SRC_DIR" <<'PY' || fail "router mutation paths must stay scope locked"

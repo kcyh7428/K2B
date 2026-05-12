@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SOURCE_BIN="$SCRIPT_DIR/bin"
 SOURCE_LAUNCHD="$REPO_ROOT/launchd"
+PROFILE_FILE="$SOURCE_BIN/leaf-optimizer-profiles.json"
 PLISTS=(
   com.k2b.router-watchdog.plist
   com.k2b.router-daily-rollup.plist
@@ -40,8 +41,10 @@ load_watchdog_env() {
         value="${value:1:${#value}-2}"
       fi
     fi
+    key="${key#export }"
+    key="${key//[[:space:]]/}"
     case "$key" in
-      TELEGRAM_BOT_TOKEN|KEITH_CHAT_ID|MIHOMO_API_BASE|MIHOMO_API_SECRET|MIHOMO_OPENAI_GROUP)
+      TELEGRAM_BOT_TOKEN|KEITH_CHAT_ID|MIHOMO_*|K2B_LEAF_OPTIMIZER_*)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -71,8 +74,31 @@ sha_manifest() {
   )
 }
 
+required_profile_envs() {
+  python3 - "$PROFILE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    payload = json.load(f)
+profiles = payload.get("profiles") or {}
+if isinstance(profiles, list):
+    iterable = profiles
+else:
+    iterable = profiles.values()
+required = sorted({
+    profile.get("group_env_var", "MIHOMO_OPENAI_GROUP")
+    for profile in iterable
+    if isinstance(profile, dict) and profile.get("enabled")
+})
+for name in required:
+    print(name)
+PY
+}
+
 [[ -d "$SOURCE_BIN" ]] || fail "missing source bin dir: $SOURCE_BIN"
 [[ -d "$SOURCE_LAUNCHD" ]] || fail "missing launchd dir: $SOURCE_LAUNCHD"
+[[ -f "$PROFILE_FILE" ]] || fail "missing leaf optimizer profile file: $PROFILE_FILE"
 [[ -f "$ENV_FILE" ]] || fail "env file missing: $ENV_FILE"
 
 mode="$(stat_mode "$ENV_FILE")"
@@ -85,6 +111,10 @@ load_watchdog_env
 : "${MIHOMO_API_BASE:?env file is missing MIHOMO_API_BASE}"
 : "${MIHOMO_API_SECRET:?env file is missing MIHOMO_API_SECRET}"
 : "${MIHOMO_OPENAI_GROUP:?env file is missing MIHOMO_OPENAI_GROUP}"
+while IFS= read -r required_env; do
+  [[ -z "$required_env" ]] && continue
+  : "${!required_env:?env file is missing $required_env}"
+done < <(required_profile_envs)
 
 if [[ -e "$LEAFOPT_SENTINEL" ]]; then
   log "WARNING: $LEAFOPT_SENTINEL exists; router leaf optimizer will be allowed to mutate manual selectors after install"
