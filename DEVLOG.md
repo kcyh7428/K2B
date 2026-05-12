@@ -1,6 +1,37 @@
 # K2B Development Log
 
 ---
+## 2026-05-12 -- router-watchdog: profile-driven leaf optimizer + gate signals
+
+**PR:** [#5](https://github.com/kcyh7428/K2B/pull/5) on branch `codex/profile-driven-leaf-optimizer`. Single commit `277aee9`.
+
+**What shipped:** Refactors `optimize-leaves.py` from a single-group AI optimizer into a profile-capable engine. Single AI profile enabled by default in new `bin/leaf-optimizer-profiles.json`. Wrapper script + install.sh now iterate enabled profiles. Adds three new per-assignment gate signals: `would_change` (true only when target exists, target != current, no state-safe-mode, AND either current-invalid-with-dwell-clear OR clear-better-with-stable-wins-and-no-dwell), `change_blockers` (cumulative list — multiple blockers can be present), and `effective_min_score_improvement` (the threshold actually used). Adds `exclude_leaf_regex` profile field that filters meta-selector candidates AND marks current-leaf invalid (60-min invalid-dwell, not 12h normal) when the current value matches. AI profile sets `exclude_leaf_regex: "^🌏自动最优线路"`.
+
+**Why:** Addresses the structural blocker behind the 2026-05-10 sentinel FAIL. Two of the six dry-run "West-pointing assignments" that drove the gate FAIL were artifacts, not real moves the optimizer would have made:
+- Selector 4 reported target US-Vegas with `score_delta=0.0099` — below the 0.05 min-improvement floor, so the optimizer would never have actually swapped. The gate-review counted it as actionable anyway. With `would_change` + `change_blockers`, the gate can now filter on actionable swaps only.
+- Selector 5 reported target CH (Switzerland) — but the "current" was the meta-selector `🌏自动最优线路`, not a real leaf, scored at 0.5961 vs CH's standalone 0.7194. Apples-to-oranges comparison. With `exclude_leaf_regex` tagging the meta-selector as `excluded_reason: "excluded_leaf_regex"`, it's filtered from candidate scoring AND any selector currently pointed at it goes into the `current_invalid` path (60-min dwell, fast migration off).
+
+Both fixes are structural — no scoring-formula change, no Asia-region multiplier (deferred as Fix A if needed later). Option B multiplicative responsiveness stays as the score function.
+
+**Profile system future use:** primes the 延遲最低 (lowest-latency) optimizer for YouTube + non-AI traffic. Adding it becomes a 10-line JSON entry (`enabled: false → true`, `exclude_hk: false`, separate group_env_var + sentinel + state file) plus an env-file edit for `MIHOMO_LATENCY_GROUP`. No 6th launchd job, no second wrapper script. Single optimizer process iterates enabled profiles sequentially within one invocation; multi-profile invocations detect cross-profile selector overlap via `profile_scope_conflict` and fail closed.
+
+**Boundaries held:** no sentinel flip, no 6th launchd job, no `auto-switch.py` changes, no deploy/sync performed in this PR. Post-merge /sync to Mini + fresh dry-run inspection comes next.
+
+**Adversarial review:** both Kimi K2.6 and MiniMax-M2.7 returned `RemoteDisconnected` on 4 retries each, on both full-scope (225K chars) and reduced-scope (102K chars) prompts. Per 2026-05-07 precedent (DEVLOG: "Round 3 Kimi network-failed... Opus served the second-model adversarial pass with self-review caveat disclosed"), Opus served the second-model review with disclosed caveat (Opus drafted the diagnostic that informed Codex's spec, so not strictly independent by topic — but is independent by model). 2 MEDIUM, 0 HIGH, APPROVE WITH MINOR NOTES:
+- M1 (cosmetic): `install.sh` still hardcodes `MIHOMO_OPENAI_GROUP` validation outside the profile loop. If AI profile is disabled some day, install still requires the env var. Zero real-world impact (AI profile is baseline).
+- M2 (cosmetic): multi-profile aggregate `profile_summaries` is printed to stdout but not written to any decision log. Cross-profile correlation lost if stdout isn't captured.
+
+Behavior preservation verified: HK exclusion gated by `exclude_hk` (default True; AI profile sets True); mutation lock SHARED across profiles via `mihomo-mutation.lock` in JSON; scope-violation guard fires at discovery + mutation; STATE_VERSION 2 migration intact.
+
+Builder: Codex. Reviewer: Opus (matrix-clean by model; both external reviewers network-down).
+
+**Tests:** 4 suites pass — `tests/router-watchdog-leaf-optimizer.test.sh` (incl. 7 new profile-mode tests: HK policy, profile env indirection, sentinel behavior, overlap conflict, direct leaf-group no-op, meta exclusion, below-threshold non-actionable), `tests/router-watchdog.test.sh` (incl. "install validates enabled profile env only"), `tests/router-watchdog-ship-2.test.sh` regression, `tests/deploy-to-mini.test.sh` regression.
+
+**Closes:** the structural cause of the 2026-05-10 sentinel FAIL pattern. The sentinel decision itself remains CLOSED (NOT FLIPPED) until a post-merge dry-run inspection on Mini confirms `would_change=true` selectors are all Asian or that Western selectors only appear with delta below threshold.
+
+**Does not close:** original `feature_router-watchdog` MVP fault-injection gate (still scheduled — last night's 23:59 Macau window did not actually fire; needs a re-scheduled overnight run).
+
+---
 ## 2026-05-11 -- docs(claude): two-hat (K2B PM / K2Bi PM) session dynamic
 
 **Commit:** `a0117d0 docs(claude): document two-hat (K2B PM / K2Bi PM) session dynamic`
