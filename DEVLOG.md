@@ -2950,3 +2950,22 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 - Iterated the reviewer twice WITHIN this /ship rather than committing pass 1 and re-running /ship for pass 2. Tier 3 contract says "single pass per /ship; iteration is human-driven across /ship invocations." Pragmatic exception: pass 1's 2 HIGH findings were both clearly real (no triage needed) and fixing them was a natural continuation of the same diff. Re-running /ship would have committed an under-classifying classifier as the canonical Ship 2 commit 1, with the actual fix landing as commit 1.5. Cleaner to land the corrected version as commit 1.
 - Did not commit the feature note + index updates as part of this commit. Vault changes propagate via Syncthing per K2B's standard pattern.
 - Pre-existing dirty files in the working tree (`"K2B Agent Harness 2.png"`, plans/, scripts/k2bi-nblm-bootstrap.sh) deliberately NOT staged. These belong to other in-flight sessions and are not part of Ship 2.
+
+
+## 2026-05-12 -- plan files from vault-three-zones audit + autorebuild plan-review
+
+**Commit:** `0b22aff` docs: plan files from vault-three-zones audit + autorebuild plan-review
+
+**What shipped:** Two plan documents captured for the historical record:
+- `plans/2026-05-12_vault-three-zones-audit-respec.md` is the handoff brief used to drive a fresh session that audited the parked `feature_vault-three-zones`. Audit verdict: Path C — supersede the L-effort vault-wide migration, split out one S-effort feature for the live bug (`feature_vault-index-autorebuild`), park the lower-urgency hygiene (`feature_review-ttl-sweeper`).
+- `plans/2026-05-12_vault-index-autorebuild.md` is the implementation plan written for Codex Checkpoint 1 plan-review. Codex returned NEEDS-ATTENTION with 2 P1 + 2 P2 + 1 P3 findings; direction (extend `compile-index-update.py`) approved, implementation details required rework. Keith parked the feature after weighing impact (drift is invisible; `/lint` Check #1 already auto-fixes it) against effort (~2h) and lower priority vs WMM Ship 1B, integrated-loop Ship 3, router-watchdog MVP test.
+
+**Codex review:** Tier-0 skipped (plans-only commit). The autorebuild plan went through Codex Checkpoint 1 plan-review earlier in the session; findings captured in the feature note for revisit.
+
+**Feature status change:** none in this commit (`--no-feature`). `feature_vault-three-zones` superseded and the two split features parked via vault writes earlier in the session (Syncthing-synced).
+
+**Follow-ups:** none from this commit. Tracked debt remains: 2 writer-side raw-index bugs (knowingly accepted now that autorebuild is parked), 5 reviewer-infra failures in 6 days, Mini source-of-truth hardening from 2026-05-07.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Path C over Path A on the three-zone audit: don't migrate vault folders. The original spec's Bug 1 (Dr Lo phone) was already killed by WMM Ship 1; the surgical patch for Bug 2 (index drift) is the only live target.
+- Parked `vault-index-autorebuild` despite "high priority" frontmatter. Reason: bug is invisible to Keith's daily work (only manifests if `/lint` is not run; `/lint` Check #1 already auto-fixes when run). Higher-leverage work on the plate.
