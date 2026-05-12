@@ -1407,3 +1407,53 @@ PY
   stop_servers
   echo "  PASS: direct leaf group is explicit no-op"
 }
+
+# ---------------------------------------------------------------------------
+# Test 23: AI profile selector_regex excludes the no-number meta selector.
+# The cascade-safety patch narrowed "^♻️ 手动切换" to "^♻️ 手动切换[1-9][0-9]*\Z"
+# so the no-number selector (which cascades through 🎯 总模式 to 8 outer groups)
+# is never mutated, multi-digit numbered selectors are still matched, and
+# substring-pollution like "♻️ 手动切换1foo" cannot bypass the gate because
+# the regex is anchored at both ends. Lock the regex in via a direct match
+# test against the shipped AI profile entry.
+# ---------------------------------------------------------------------------
+{
+  python3 - "$REPO_ROOT/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'PY' || fail "AI profile selector_regex regression"
+import json
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+ai_regex = data["profiles"]["ai"]["selector_regex"]
+pat = re.compile(ai_regex)
+
+# Must match: numbered selectors 1-9
+assert pat.search("♻️ 手动切换1"), f"single-digit selector ♻️ 手动切换1 must match {ai_regex!r}"
+assert pat.search("♻️ 手动切换5"), f"single-digit selector ♻️ 手动切换5 must match {ai_regex!r}"
+assert pat.search("♻️ 手动切换9"), f"single-digit selector ♻️ 手动切换9 must match {ai_regex!r}"
+
+# Must match: multi-digit numbered selectors
+assert pat.search("♻️ 手动切换10"), f"multi-digit selector ♻️ 手动切换10 must match {ai_regex!r}"
+assert pat.search("♻️ 手动切换99"), f"multi-digit selector ♻️ 手动切换99 must match {ai_regex!r}"
+
+# Must NOT match: no-number cascade selector
+assert pat.search("♻️ 手动切换") is None, f"no-number selector ♻️ 手动切换 must NOT match {ai_regex!r} (cascade-safety)"
+
+# Must NOT match: zero-prefixed numbers (numbered selectors start at 1)
+assert pat.search("♻️ 手动切换0") is None, f"zero-suffixed selector must NOT match {ai_regex!r} (numbered selectors start at 1)"
+assert pat.search("♻️ 手动切换01") is None, f"leading-zero selector must NOT match {ai_regex!r} (numbered selectors start at 1)"
+
+# Must NOT match: suffix pollution (regex must be end-anchored via \Z)
+assert pat.search("♻️ 手动切换1foo") is None, f"suffix-polluted selector must NOT match {ai_regex!r} (regex must be end-anchored)"
+assert pat.search("♻️ 手动切换1 (backup)") is None, f"trailing-text selector must NOT match {ai_regex!r} (regex must be end-anchored)"
+
+# Must NOT match: prefix pollution (regex must be start-anchored via ^).
+# These assertions exist so start-anchor regression is detectable: without
+# the ^, re.search would still find a match later in the string.
+assert pat.search("foo♻️ 手动切换1") is None, f"prefix-polluted selector must NOT match {ai_regex!r} (regex must be start-anchored)"
+assert pat.search("prefix ♻️ 手动切换5") is None, f"leading-text selector must NOT match {ai_regex!r} (regex must be start-anchored)"
+PY
+  echo "  PASS: AI profile selector_regex excludes the no-number cascade selector"
+}

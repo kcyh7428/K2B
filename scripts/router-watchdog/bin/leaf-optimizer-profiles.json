@@ -3,7 +3,7 @@
     "ai": {
       "enabled": true,
       "group_env_var": "MIHOMO_OPENAI_GROUP",
-      "selector_regex": "^♻️ 手动切换",
+      "selector_regex": "^♻️ 手动切换[1-9][0-9]*\\Z",
       "exclude_hk": true,
       "exclude_leaf_regex": "^🌏自动最优线路",
       "targets": [
