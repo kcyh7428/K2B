@@ -358,6 +358,151 @@ PY
   [[ -s "$port_file" ]] || fail "fake Mihomo server did not start"
 }
 
+start_meta_fake_mihomo() {
+  local d="$1"
+  local port_file="$d/port"
+  local request_log="$d/requests.jsonl"
+  python3 -u - "$port_file" "$request_log" <<'PY' &
+import json
+import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port_file, request_log = sys.argv[1], sys.argv[2]
+group = "🤖 OpenAI"
+selector = "♻️ 手动切换1"
+meta = "🌏自动最优线路(AnyTLS)-网址: www.dg6.me [AP1]"
+current = "5台湾-联通/移动(AnyTLS) [AP1]"
+better = "🇸🇬15新加坡-专线(AnyTLS) [AP1]"
+delays = {meta: 10, current: 220, better: 100}
+now = {"leaf": current}
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def write_json(self, status, body):
+        payload = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def record(self, body=None):
+        parsed = urllib.parse.urlparse(self.path)
+        path = urllib.parse.unquote(parsed.path)
+        with open(request_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"method": self.command, "path": path, "query": parsed.query, "body": body}, ensure_ascii=False) + "\n")
+        return path
+
+    def do_GET(self):
+        path = self.record()
+        if path == f"/proxies/{group}":
+            self.write_json(200, {"name": group, "type": "Selector", "now": selector, "all": [selector]})
+        elif path == f"/proxies/{selector}":
+            self.write_json(200, {"name": selector, "type": "Selector", "now": now["leaf"], "all": [meta, current, better]})
+        elif path == "/proxies":
+            self.write_json(200, {"proxies": {
+                group: {"name": group, "type": "Selector", "now": selector, "all": [selector]},
+                selector: {"name": selector, "type": "Selector", "now": now["leaf"], "all": [meta, current, better]},
+                meta: {"name": meta, "type": "AnyTLS"},
+                current: {"name": current, "type": "AnyTLS"},
+                better: {"name": better, "type": "AnyTLS"},
+            }})
+        elif path.startswith("/proxies/") and path.endswith("/delay"):
+            name = path.removeprefix("/proxies/").removesuffix("/delay")
+            self.write_json(200, {"delay": delays[name]})
+        elif path.startswith("/proxies/"):
+            name = path.removeprefix("/proxies/")
+            self.write_json(200, {"name": name, "type": "AnyTLS"})
+        else:
+            self.write_json(404, {"message": "not found"})
+
+    def do_PUT(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+        body = json.loads(raw or "{}")
+        path = self.record(body)
+        if path == f"/proxies/{selector}":
+            now["leaf"] = body["name"]
+            self.write_json(204, {})
+        else:
+            self.write_json(500, {"message": "unsafe PUT"})
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(port_file, "w", encoding="utf-8") as f:
+    f.write(str(server.server_port))
+server.serve_forever()
+PY
+  SERVER_PIDS+=("$!")
+  for _ in {1..50}; do [[ -s "$port_file" ]] && break; sleep 0.1; done
+  [[ -s "$port_file" ]] || fail "fake Mihomo server did not start"
+}
+
+start_direct_leaf_group_fake_mihomo() {
+  local d="$1"
+  local port_file="$d/port"
+  local request_log="$d/requests.jsonl"
+  python3 -u - "$port_file" "$request_log" <<'PY' &
+import json
+import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port_file, request_log = sys.argv[1], sys.argv[2]
+group = "Ⓜ️ 延迟最低"
+leafs = ["🇭🇰2香港-专线(AnyTLS) [AP1]", "5台湾-联通/移动(AnyTLS) [AP1]"]
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def write_json(self, status, body):
+        payload = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def record(self, body=None):
+        parsed = urllib.parse.urlparse(self.path)
+        path = urllib.parse.unquote(parsed.path)
+        with open(request_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"method": self.command, "path": path, "query": parsed.query, "body": body}, ensure_ascii=False) + "\n")
+        return path
+
+    def do_GET(self):
+        path = self.record()
+        if path == f"/proxies/{group}":
+            self.write_json(200, {"name": group, "type": "URLTest", "now": leafs[0], "all": leafs})
+        elif path == "/proxies":
+            proxies = {group: {"name": group, "type": "URLTest", "now": leafs[0], "all": leafs}}
+            for name in leafs:
+                proxies[name] = {"name": name, "type": "AnyTLS"}
+            self.write_json(200, {"proxies": proxies})
+        elif path.startswith("/proxies/") and path.endswith("/delay"):
+            self.write_json(200, {"delay": 20})
+        elif path.startswith("/proxies/"):
+            self.write_json(200, {"name": path.removeprefix("/proxies/"), "type": "AnyTLS"})
+        else:
+            self.write_json(404, {"message": "not found"})
+
+    def do_PUT(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+        self.record(json.loads(raw or "{}"))
+        self.write_json(500, {"message": "unexpected PUT"})
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(port_file, "w", encoding="utf-8") as f:
+    f.write(str(server.server_port))
+server.serve_forever()
+PY
+  SERVER_PIDS+=("$!")
+  for _ in {1..50}; do [[ -s "$port_file" ]] && break; sleep 0.1; done
+  [[ -s "$port_file" ]] || fail "fake Mihomo server did not start"
+}
+
 echo "=== router-watchdog-leaf-optimizer.test.sh ==="
 
 # ---------------------------------------------------------------------------
@@ -496,7 +641,7 @@ import sys
 
 summary = json.load(open(sys.argv[1], encoding="utf-8"))
 assert summary["reason"] == "scope_violation"
-assert summary["scope_violation"] == "openai_group_matches_candidate_regex"
+assert summary["scope_violation"] == "group_matches_candidate_regex"
 requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()] if os.path.exists(sys.argv[2]) else []
 assert not any(req["method"] == "PUT" and req["path"] == "/proxies/🤖 OpenAI" for req in requests)
 assert not any(req["method"] == "PUT" for req in requests)
@@ -700,7 +845,7 @@ import sys
 
 summary = json.load(open(sys.argv[1], encoding="utf-8"))
 assert summary["changed"] == 0
-assert summary["assignments"][0]["reason"] == "unchanged"
+assert summary["assignments"][0]["reason"] == "below_min_score_improvement"
 assert summary["assignments"][0]["score_delta"] < 0.05
 requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
 assert not any(req["method"] == "PUT" for req in requests)
@@ -993,4 +1138,272 @@ assert len(puts) == 1, puts
 PY
   stop_servers
   echo "  PASS: PUT verification rejects false success"
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: profile can allow HK leaves without marking HK current leaf invalid.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/profile-allow-hk"
+  mkdir -p "$d"
+  start_fake_mihomo "$d"
+  cat > "$d/state.json" <<'EOF'
+{"version":2,"last_change_at":{},"consecutive_wins":{},"score_history":{}}
+EOF
+  cat > "$d/profiles.json" <<'EOF'
+{"profiles":{"allow-hk":{"enabled":true,"group_env_var":"MIHOMO_OPENAI_GROUP","exclude_hk":false}}}
+EOF
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$d/profiles.json" \
+    --profile allow-hk \
+    --decision-log "$d/leaf-optimizer.jsonl" \
+    --state-file "$d/state.json" \
+    --now "2026-05-06T00:00:00Z" \
+    --dry-run > "$d/stdout.json"
+
+  python3 - "$d/stdout.json" <<'PY' || fail "profile allow HK behavior invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assignments = {item["selector"]: item for item in summary["assignments"]}
+first = assignments["♻️ 手动切换1"]
+assert first["target_leaf"] == "🇭🇰2香港-专线(AnyTLS) [AP1]", first
+assert first["reason"] == "already_best", first
+assert first["current_invalid"] is False, first
+assert first["would_change"] is False, first
+PY
+  stop_servers
+  echo "  PASS: profile can include HK leaves"
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: named group env var is required and missing var exits clearly.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/profile-missing-env"
+  mkdir -p "$d"
+  start_fake_mihomo "$d"
+  cat > "$d/profiles.json" <<'EOF'
+{"profiles":{"missing-env":{"enabled":true,"group_env_var":"MIHOMO_GENERAL_GROUP"}}}
+EOF
+
+  set +e
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$d/profiles.json" \
+    --profile missing-env \
+    --decision-log "$d/leaf-optimizer.jsonl" \
+    --now "2026-05-06T00:00:00Z" > "$d/stdout.json"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 2 ]] || fail "missing group env should exit 2, got $rc"
+
+  python3 - "$d/stdout.json" "$d/requests.jsonl" <<'PY' || fail "missing group env output invalid"
+import json
+import os
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assert summary["reason"] == "env_missing", summary
+assert summary["missing_env_var"] == "MIHOMO_GENERAL_GROUP", summary
+requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()] if os.path.exists(sys.argv[2]) else []
+assert not any(req["method"] == "PUT" for req in requests)
+PY
+  stop_servers
+  echo "  PASS: missing profile group env fails closed"
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: profile excludes synthetic/meta leaf candidates by regex.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/profile-exclude-meta"
+  mkdir -p "$d"
+  start_meta_fake_mihomo "$d"
+  cat > "$d/profiles.json" <<'EOF'
+{"profiles":{"ai":{"enabled":true,"group_env_var":"MIHOMO_OPENAI_GROUP","exclude_leaf_regex":"^🌏自动最优线路"}}}
+EOF
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$d/profiles.json" \
+    --profile ai \
+    --decision-log "$d/leaf-optimizer.jsonl" \
+    --now "2026-05-06T00:00:00Z" \
+    --dry-run > "$d/stdout.json"
+
+  python3 - "$d/stdout.json" <<'PY' || fail "exclude meta profile behavior invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assignment = summary["assignments"][0]
+assert assignment["target_leaf"] == "🇸🇬15新加坡-专线(AnyTLS) [AP1]", assignment
+assert "🌏自动最优线路(AnyTLS)-网址: www.dg6.me [AP1]" not in summary["eligible_leaf_names"], summary
+excluded = summary["excluded_leafs"]
+assert excluded["🌏自动最优线路(AnyTLS)-网址: www.dg6.me [AP1]"] == "excluded_leaf_regex", excluded
+PY
+  stop_servers
+  echo "  PASS: profile excludes meta leaf candidates"
+}
+
+# ---------------------------------------------------------------------------
+# Test 19: sub-threshold dry-run target is reported as non-actionable.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/below-threshold"
+  mkdir -p "$d"
+  touch "$d/sentinel"
+  cat > "$d/state.json" <<'EOF'
+{"version":2,"last_change_at":{},"consecutive_wins":{"♻️ 手动切换1":{"🇸🇬15新加坡-专线(AnyTLS) [AP1]":2}},"score_history":{"♻️ 手动切换1":{"5台湾-联通/移动(AnyTLS) [AP1]":[0.8,0.8],"🇸🇬15新加坡-专线(AnyTLS) [AP1]":[0.81,0.81]}}}
+EOF
+  start_stable_fake_mihomo "$d" 250 235
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --decision-log "$d/leaf-optimizer.jsonl" \
+    --state-file "$d/state.json" \
+    --sentinel "$d/sentinel" \
+    --now "2026-05-06T00:00:00Z" > "$d/stdout.json"
+
+  python3 - "$d/stdout.json" "$d/requests.jsonl" <<'PY' || fail "below threshold behavior invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assignment = summary["assignments"][0]
+assert assignment["target_leaf"] == "🇸🇬15新加坡-专线(AnyTLS) [AP1]", assignment
+assert 0 <= assignment["score_delta"] < 0.05, assignment
+assert assignment["reason"] == "below_min_score_improvement", assignment
+assert assignment["would_change"] is False, assignment
+assert "below_min_score_improvement" in assignment["change_blockers"], assignment
+requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
+assert not any(req["method"] == "PUT" for req in requests)
+PY
+  stop_servers
+  echo "  PASS: below-threshold target is non-actionable"
+}
+
+# ---------------------------------------------------------------------------
+# Test 20: all-enabled profile mode preserves sentinel-missing skip.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/profile-sentinel-missing"
+  mkdir -p "$d"
+  start_fake_mihomo "$d"
+  cat > "$d/profiles.json" <<EOF
+{"profiles":{"ai":{"enabled":true,"group_env_var":"MIHOMO_OPENAI_GROUP","sentinel":"$d/missing-sentinel","decision_log":"$d/profile-leaf-optimizer.jsonl"}}}
+EOF
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$d/profiles.json" \
+    --all-enabled-profiles \
+    --now "2026-05-06T00:00:00Z" > "$d/stdout.json"
+
+  python3 - "$d/stdout.json" "$d/profile-leaf-optimizer.jsonl" <<'PY' || fail "profile sentinel missing behavior invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assert summary["profile"] == "ai", summary
+assert summary["reason"] == "sentinel_missing", summary
+assert summary["enabled"] is False, summary
+logged = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
+assert logged[-1]["profile"] == "ai"
+assert logged[-1]["reason"] == "sentinel_missing"
+PY
+  stop_servers
+  echo "  PASS: profile mode preserves sentinel-missing skip"
+}
+
+# ---------------------------------------------------------------------------
+# Test 21: two enabled profiles sharing selectors fail closed before mutation.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/profile-overlap"
+  mkdir -p "$d"
+  start_fake_mihomo "$d"
+  cat > "$d/profiles.json" <<EOF
+{"profiles":{
+  "ai":{"enabled":true,"group_env_var":"MIHOMO_OPENAI_GROUP","sentinel":"$d/sentinel-ai","decision_log":"$d/ai.jsonl"},
+  "general":{"enabled":true,"group_env_var":"MIHOMO_GENERAL_GROUP","sentinel":"$d/sentinel-general","decision_log":"$d/general.jsonl"}
+}}
+EOF
+  touch "$d/sentinel-ai" "$d/sentinel-general"
+
+  set +e
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  MIHOMO_GENERAL_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$d/profiles.json" \
+    --all-enabled-profiles \
+    --now "2026-05-06T00:00:00Z" > "$d/stdout.json"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 2 ]] || fail "overlapping profiles should exit 2, got $rc"
+
+  python3 - "$d/stdout.json" "$d/requests.jsonl" <<'PY' || fail "profile overlap output invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assert summary["reason"] == "profile_scope_conflict", summary
+assert summary["changed"] == 0, summary
+assert {"ai", "general"} == set(summary["profiles"]), summary
+requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
+assert not any(req["method"] == "PUT" for req in requests)
+PY
+  stop_servers
+  echo "  PASS: overlapping profiles fail closed"
+}
+
+# ---------------------------------------------------------------------------
+# Test 22: direct leaf groups report no matching manual selectors and do not PUT.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/direct-leaf-group"
+  mkdir -p "$d"
+  start_direct_leaf_group_fake_mihomo "$d"
+  cat > "$d/profiles.json" <<'EOF'
+{"profiles":{"latency":{"enabled":true,"group_env_var":"MIHOMO_LATENCY_GROUP","exclude_hk":false}}}
+EOF
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_LATENCY_GROUP="Ⓜ️ 延迟最低" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$d/profiles.json" \
+    --profile latency \
+    --decision-log "$d/latency.jsonl" \
+    --now "2026-05-06T00:00:00Z" \
+    --dry-run > "$d/stdout.json"
+
+  python3 - "$d/stdout.json" "$d/requests.jsonl" <<'PY' || fail "direct leaf group output invalid"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assert summary["reason"] == "no_matching_selectors", summary
+assert summary["selectors"] == [], summary
+assert summary["changed"] == 0, summary
+requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
+assert not any(req["method"] == "PUT" for req in requests)
+PY
+  stop_servers
+  echo "  PASS: direct leaf group is explicit no-op"
 }

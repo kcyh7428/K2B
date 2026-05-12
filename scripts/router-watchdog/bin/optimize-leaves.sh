@@ -23,7 +23,7 @@ load_watchdog_env() {
       fi
     fi
     case "$key" in
-      MIHOMO_API_BASE|MIHOMO_API_SECRET|MIHOMO_OPENAI_GROUP)
+      MIHOMO_*|K2B_LEAF_OPTIMIZER_*)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -40,5 +40,6 @@ load_watchdog_env
 
 mkdir -p "$LOG_DIR"
 python3 "$SCRIPT_DIR/optimize-leaves.py" \
-  --decision-log "$LOG_DIR/leaf-optimizer.jsonl" \
+  --profiles-file "$SCRIPT_DIR/leaf-optimizer-profiles.json" \
+  --all-enabled-profiles \
   "$@"

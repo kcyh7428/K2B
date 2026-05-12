@@ -27,6 +27,11 @@ DEFAULT_TARGETS = [
     "https://generativelanguage.googleapis.com/",
 ]
 
+DEFAULT_DECISION_LOG = "~/Library/Logs/k2b-router-watchdog/leaf-optimizer.jsonl"
+DEFAULT_STATE_FILE = "~/Library/Application Support/k2b-router-watchdog/leaf-optimizer-state.json"
+DEFAULT_LOCK_FILE = "~/Library/Application Support/k2b-router-watchdog/leaf-optimizer.lock"
+DEFAULT_MUTATION_LOCK_FILE = "~/Library/Application Support/k2b-router-watchdog/mihomo-mutation.lock"
+DEFAULT_SENTINEL = "~/.k2b-router-leafopt-enabled"
 SELECTOR_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
 MANUAL_SELECTOR_PREFIX = "♻️ 手动切换"
 HK_RE = re.compile(r"(🇭🇰|香港|hong[\s_-]*kong|(?:^|[^a-z0-9])hk(?:[^a-z0-9]|$)|hk-\d+)", re.IGNORECASE)
@@ -141,6 +146,69 @@ def load_json(path: str, default: dict) -> dict:
         return json.load(f)
 
 
+def expand_path(value: str) -> str:
+    return os.path.expanduser(os.path.expandvars(value))
+
+
+def targets_to_string(value) -> str:
+    if value is None:
+        return ",".join(DEFAULT_TARGETS)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    raise ValueError("targets must be a string or list")
+
+
+def load_profile_defs(path: str) -> dict[str, dict]:
+    payload = load_json(path, {})
+    profiles = payload.get("profiles") if isinstance(payload, dict) else None
+    if isinstance(profiles, dict):
+        return {str(name): dict(profile or {}) for name, profile in profiles.items()}
+    if isinstance(profiles, list):
+        result: dict[str, dict] = {}
+        for profile in profiles:
+            if not isinstance(profile, dict) or not profile.get("name"):
+                raise ValueError("profile list entries must be objects with a name")
+            result[str(profile["name"])] = dict(profile)
+        return result
+    raise ValueError("profiles file must contain a profiles object or list")
+
+
+def profile_runtime(args: argparse.Namespace, name: str | None, raw: dict | None = None) -> argparse.Namespace:
+    raw = raw or {}
+    runtime = argparse.Namespace(**vars(args))
+    runtime.profile = name
+    runtime.group_env_var = str(raw.get("group_env_var", args.group_env_var))
+    runtime.decision_log = expand_path(str(raw.get("decision_log", args.decision_log)))
+    runtime.state_file = expand_path(str(raw.get("state_file", args.state_file)))
+    runtime.lock_file = expand_path(str(raw.get("lock_file", args.lock_file)))
+    runtime.mutation_lock_file = expand_path(str(raw.get("mutation_lock_file", args.mutation_lock_file)))
+    runtime.sentinel = expand_path(str(raw.get("sentinel", args.sentinel)))
+    runtime.targets = targets_to_string(raw.get("targets", args.targets))
+    runtime.candidate_regex = str(raw.get("selector_regex", raw.get("candidate_regex", args.candidate_regex)))
+    runtime.exclude_hk = bool(raw.get("exclude_hk", args.exclude_hk))
+    runtime.exclude_leaf_regex = str(raw.get("exclude_leaf_regex", args.exclude_leaf_regex or ""))
+    return runtime
+
+
+def profile_error_summary(args: argparse.Namespace, now: dt.datetime, run_id: str, reason: str, extra: dict | None = None) -> dict:
+    summary = {
+        "timestamp": iso(now),
+        "run_id": run_id,
+        "profile": getattr(args, "profile", None),
+        "group": None,
+        "enabled": False,
+        "dry_run": True,
+        "reason": reason,
+        "changed": 0,
+        "assignments": [],
+    }
+    if extra:
+        summary.update(extra)
+    return summary
+
+
 def empty_state() -> dict:
     return {"version": STATE_VERSION, "last_change_at": {}, "consecutive_wins": {}, "score_history": {}}
 
@@ -208,7 +276,15 @@ def leaf_rank_key(row: dict) -> tuple[float, float, float]:
     )
 
 
-def score_leaf(base: str, secret: str, leaf: str, targets: Iterable[str], timeout_ms: int) -> dict:
+def score_leaf(
+    base: str,
+    secret: str,
+    leaf: str,
+    targets: Iterable[str],
+    timeout_ms: int,
+    exclude_hk: bool = True,
+    exclude_leaf_re: re.Pattern | None = None,
+) -> dict:
     target_results: dict[str, dict] = {}
     ok_count = 0
     delays: list[int] = []
@@ -234,13 +310,18 @@ def score_leaf(base: str, secret: str, leaf: str, targets: Iterable[str], timeou
     success_rate = ok_count / len(targets_list) if targets_list else 0.0
     avg_delay = sum(delays) / len(delays) if delays else None
     score = leaf_score(success_rate, avg_delay)
+    excluded_reason = None
+    if exclude_hk and is_hk_leaf(leaf):
+        excluded_reason = "hk_leaf"
+    elif exclude_leaf_re and exclude_leaf_re.search(leaf):
+        excluded_reason = "excluded_leaf_regex"
     return {
         "leaf": leaf,
         "targets": target_results,
         "success_rate": round(success_rate, 4),
         "avg_delay_ms": round(avg_delay, 2) if avg_delay is not None else None,
         "score": round(score, 4),
-        "excluded_reason": "hk_leaf" if is_hk_leaf(leaf) else None,
+        "excluded_reason": excluded_reason,
     }
 
 
@@ -300,17 +381,24 @@ def scope_violation(selector: str, payload: dict | None, target: str | None) -> 
     return None
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--decision-log", default=os.path.expanduser("~/Library/Logs/k2b-router-watchdog/leaf-optimizer.jsonl"))
-    parser.add_argument("--state-file", default=os.path.expanduser("~/Library/Application Support/k2b-router-watchdog/leaf-optimizer-state.json"))
-    parser.add_argument("--lock-file", default=os.path.expanduser("~/Library/Application Support/k2b-router-watchdog/leaf-optimizer.lock"))
-    parser.add_argument("--mutation-lock-file", default=os.path.expanduser("~/Library/Application Support/k2b-router-watchdog/mihomo-mutation.lock"))
-    parser.add_argument("--sentinel", default=os.path.expanduser("~/.k2b-router-leafopt-enabled"))
+    parser.add_argument("--profiles-file", default=None)
+    parser.add_argument("--profile", default=None)
+    parser.add_argument("--all-enabled-profiles", action="store_true")
+    parser.add_argument("--decision-log", default=expand_path(DEFAULT_DECISION_LOG))
+    parser.add_argument("--state-file", default=expand_path(DEFAULT_STATE_FILE))
+    parser.add_argument("--lock-file", default=expand_path(DEFAULT_LOCK_FILE))
+    parser.add_argument("--mutation-lock-file", default=expand_path(DEFAULT_MUTATION_LOCK_FILE))
+    parser.add_argument("--sentinel", default=expand_path(DEFAULT_SENTINEL))
     parser.add_argument("--now", default=None)
     parser.add_argument("--timeout-ms", type=int, default=2500)
     parser.add_argument("--targets", default=",".join(DEFAULT_TARGETS))
     parser.add_argument("--candidate-regex", default=os.environ.get("K2B_LEAF_OPTIMIZER_CANDIDATE_REGEX", r"^♻️ 手动切换"))
+    parser.add_argument("--group-env-var", default="MIHOMO_OPENAI_GROUP")
+    parser.add_argument("--exclude-hk", dest="exclude_hk", action="store_true", default=True)
+    parser.add_argument("--no-exclude-hk", dest="exclude_hk", action="store_false")
+    parser.add_argument("--exclude-leaf-regex", default="")
     parser.add_argument("--min-success-rate", type=float, default=0.8)
     parser.add_argument("--min-score-improvement", type=float, default=float(os.environ.get("K2B_LEAF_OPTIMIZER_MIN_SCORE_IMPROVEMENT", "0.05")))
     parser.add_argument("--max-workers", type=int, default=int(os.environ.get("K2B_LEAF_OPTIMIZER_MAX_WORKERS", "8")))
@@ -321,15 +409,26 @@ def main() -> int:
     parser.add_argument("--overall-timeout-seconds", type=int, default=int(os.environ.get("K2B_LEAF_OPTIMIZER_OVERALL_TIMEOUT_SECONDS", "180")))
     parser.add_argument("--scoring-timeout-seconds", type=int, default=int(os.environ.get("K2B_LEAF_OPTIMIZER_SCORING_TIMEOUT_SECONDS", "120")))
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def run_profile(args: argparse.Namespace, now: dt.datetime | None = None, run_id: str | None = None) -> tuple[int, dict]:
+    now = now or (parse_ts(args.now) if args.now else utc_now())
+    run_id = run_id or str(uuid4())
+
+    missing = next((name for name in ("MIHOMO_API_BASE", "MIHOMO_API_SECRET", args.group_env_var) if not os.environ.get(name)), None)
+    if missing:
+        summary = profile_error_summary(args, now, run_id, "env_missing", {"missing_env_var": missing})
+        append_jsonl(args.decision_log, summary)
+        print(json.dumps(summary, ensure_ascii=False))
+        return 2, summary
 
     base = os.environ["MIHOMO_API_BASE"]
     secret = os.environ["MIHOMO_API_SECRET"]
-    group = os.environ["MIHOMO_OPENAI_GROUP"]
-    now = parse_ts(args.now) if args.now else utc_now()
+    group = os.environ[args.group_env_var]
     targets = [target.strip() for target in args.targets.split(",") if target.strip()]
     candidate_re = re.compile(args.candidate_regex)
-    run_id = str(uuid4())
+    exclude_leaf_re = re.compile(args.exclude_leaf_regex) if args.exclude_leaf_regex else None
     enabled = os.path.exists(args.sentinel)
     effective_dry_run = args.dry_run or not enabled
     if args.overall_timeout_seconds > 0:
@@ -340,6 +439,7 @@ def main() -> int:
         summary = {
             "timestamp": iso(now),
             "run_id": run_id,
+            "profile": getattr(args, "profile", None),
             "group": group,
             "enabled": enabled,
             "dry_run": effective_dry_run,
@@ -350,11 +450,13 @@ def main() -> int:
         append_jsonl(args.decision_log, summary)
         print(json.dumps(summary, ensure_ascii=False))
         signal.alarm(0)
-        return 0
+        return 0, summary
     atexit.register(close_lock, lock_handle)
     mutation_lock_handle = None
 
-    def finish(summary: dict, rc: int, state_to_write: dict | None = None) -> int:
+    def finish(summary: dict, rc: int, state_to_write: dict | None = None) -> tuple[int, dict]:
+        if getattr(args, "profile", None) is not None:
+            summary.setdefault("profile", args.profile)
         try:
             if state_to_write is not None and not effective_dry_run:
                 signal.alarm(0)
@@ -376,7 +478,7 @@ def main() -> int:
             atexit.unregister(close_lock)
         except ValueError:
             pass
-        return rc
+        return rc, summary
 
     if candidate_re.search(group):
         summary = {
@@ -386,7 +488,7 @@ def main() -> int:
             "enabled": enabled,
             "dry_run": effective_dry_run,
             "reason": "scope_violation",
-            "scope_violation": "openai_group_matches_candidate_regex",
+            "scope_violation": "group_matches_candidate_regex",
             "changed": 0,
             "assignments": [],
         }
@@ -425,6 +527,19 @@ def main() -> int:
         item for item in (group_payload.get("all") or [])
         if candidate_re.search(item or "")
     ]
+    if not selectors:
+        summary = {
+            "timestamp": iso(now),
+            "run_id": run_id,
+            "group": group,
+            "enabled": enabled,
+            "dry_run": effective_dry_run,
+            "reason": "no_matching_selectors",
+            "selectors": [],
+            "changed": 0,
+            "assignments": [],
+        }
+        return finish(summary, 0)
 
     status, proxies_payload = request_json("GET", base, "/proxies", secret, timeout=5)
     if status <= 0 or status >= 400:
@@ -464,7 +579,7 @@ def main() -> int:
     executor = ThreadPoolExecutor(max_workers=max(1, args.max_workers))
     try:
         futures = {
-            executor.submit(score_leaf, base, secret, leaf, targets, args.timeout_ms): leaf
+            executor.submit(score_leaf, base, secret, leaf, targets, args.timeout_ms, args.exclude_hk, exclude_leaf_re): leaf
             for leaf in sorted(leaf_pool)
         }
         try:
@@ -494,6 +609,11 @@ def main() -> int:
     eligible = {
         leaf: row for leaf, row in leaf_scores.items()
         if not row["excluded_reason"] and row["success_rate"] >= args.min_success_rate
+    }
+    excluded_leafs = {
+        leaf: row["excluded_reason"]
+        for leaf, row in leaf_scores.items()
+        if row.get("excluded_reason")
     }
     used: set[str] = set()
     assignments: list[dict] = []
@@ -560,7 +680,7 @@ def main() -> int:
         current_invalid = (
             not current
             or current not in leaf_scores
-            or is_hk_leaf(current)
+            or (args.exclude_hk and is_hk_leaf(current))
             or not current_score
             or current_score["success_rate"] < args.min_success_rate
             or bool(current_score.get("excluded_reason"))
@@ -602,7 +722,23 @@ def main() -> int:
 
         stable_enough = consecutive_win_count >= args.min_consecutive_wins
         clear_better = score_delta is None or score_delta >= args.min_score_improvement
-        should_change = bool(
+        change_blockers: list[str] = []
+        if not target:
+            change_blockers.append("no_eligible_leaf")
+        if target == current:
+            change_blockers.append("already_best")
+        if state_safe_mode:
+            change_blockers.append(state_safe_reason)
+        if current_invalid and invalid_dwell_blocked:
+            change_blockers.append("invalid_dwell_active")
+        if not current_invalid and dwell_blocked:
+            change_blockers.append("dwell_active")
+        if not current_invalid and target and target != current and not clear_better:
+            change_blockers.append("below_min_score_improvement")
+        if not current_invalid and target and target != current and clear_better and not stable_enough:
+            change_blockers.append("waiting_for_consecutive_win")
+
+        would_change = bool(
             target
             and target != current
             and not state_safe_mode
@@ -611,6 +747,7 @@ def main() -> int:
                 or (clear_better and stable_enough and not dwell_blocked)
             )
         )
+        should_change = would_change
         reason = "unchanged"
         http_status = None
         verified_after_put = None
@@ -618,10 +755,14 @@ def main() -> int:
             reason = "no_eligible_leaf"
         elif state_safe_mode:
             reason = state_safe_reason
+        elif target == current:
+            reason = "already_best"
         elif current_invalid:
             reason = "invalid_dwell_active" if invalid_dwell_blocked else "current_invalid"
         elif dwell_blocked:
             reason = "dwell_active"
+        elif not clear_better:
+            reason = "below_min_score_improvement"
         elif target and not stable_enough:
             reason = "waiting_for_consecutive_win"
         elif should_change:
@@ -630,10 +771,14 @@ def main() -> int:
         if should_change and fatal_scope_violation:
             should_change = False
             reason = "scope_violation_present"
+            if "scope_violation_present" not in change_blockers:
+                change_blockers.append("scope_violation_present")
         elif should_change and not effective_dry_run:
             if mutation_lock_busy:
                 should_change = False
                 reason = "mutation_lock_busy"
+                if "mutation_lock_busy" not in change_blockers:
+                    change_blockers.append("mutation_lock_busy")
             else:
                 fresh_payload = latest_selector_payload(base, secret, selector)
                 scope_problem = scope_violation(selector, fresh_payload, target)
@@ -641,9 +786,13 @@ def main() -> int:
                     fatal_scope_violation = True
                     should_change = False
                     reason = "scope_violation"
+                    if "scope_violation" not in change_blockers:
+                        change_blockers.append("scope_violation")
                 elif fresh_payload and fresh_payload.get("now") != current:
                     should_change = False
                     reason = "stale_selector"
+                    if "stale_selector" not in change_blockers:
+                        change_blockers.append("stale_selector")
                 else:
                     http_status = put_selector(base, secret, selector, target)
                     if 200 <= http_status < 300:
@@ -659,8 +808,11 @@ def main() -> int:
                 else:
                     should_change = False
                     reason = "put_verify_failed"
+                    if "put_verify_failed" not in change_blockers:
+                        change_blockers.append("put_verify_failed")
             else:
                 reason = f"put_http_{http_status}"
+                change_blockers.append(reason)
         elif should_change:
             changed += 1
 
@@ -669,14 +821,18 @@ def main() -> int:
             "current_leaf": current,
             "target_leaf": target,
             "changed": should_change,
+            "would_change": would_change,
+            "change_blockers": change_blockers,
             "reason": reason,
             "score_delta": score_delta,
             "success_rate_delta": success_rate_delta,
             "current_rolling_score": round(current_rolling_score, 4) if current_rolling_score is not None else None,
             "target_rolling_score": round(target_rolling_score, 4) if target_rolling_score is not None else None,
+            "current_invalid": current_invalid,
             "consecutive_wins": consecutive_win_count,
             "dwell_blocked": dwell_blocked,
             "invalid_dwell_blocked": invalid_dwell_blocked,
+            "effective_min_score_improvement": args.min_score_improvement,
             "http_status": http_status,
             "mutation_guard": "shared_lock_fresh_get_then_verify",
         })
@@ -692,10 +848,134 @@ def main() -> int:
         "selectors": selectors,
         "scored_leafs": len(leaf_scores),
         "eligible_leafs": len(eligible),
+        "eligible_leaf_names": sorted(eligible),
+        "excluded_leafs": excluded_leafs,
         "changed": changed,
         "assignments": assignments,
     }
     return finish(summary, 2 if fatal_scope_violation else 0, state)
+
+
+def resolve_profiles(args: argparse.Namespace) -> list[argparse.Namespace]:
+    if not args.profiles_file:
+        return [profile_runtime(args, None, {})]
+
+    profile_defs = load_profile_defs(args.profiles_file)
+    if args.profile:
+        if args.profile not in profile_defs:
+            raise ValueError(f"profile not found: {args.profile}")
+        return [profile_runtime(args, args.profile, profile_defs[args.profile])]
+    if args.all_enabled_profiles:
+        profiles = [
+            profile_runtime(args, name, raw)
+            for name, raw in profile_defs.items()
+            if bool(raw.get("enabled", False))
+        ]
+        if not profiles:
+            raise ValueError("no enabled profiles found")
+        return profiles
+    raise ValueError("profiles-file requires --profile NAME or --all-enabled-profiles")
+
+
+def discover_selectors_for_profile(args: argparse.Namespace, now: dt.datetime, run_id: str) -> tuple[set[str], dict | None]:
+    missing = next((name for name in ("MIHOMO_API_BASE", "MIHOMO_API_SECRET", args.group_env_var) if not os.environ.get(name)), None)
+    if missing:
+        return set(), profile_error_summary(args, now, run_id, "env_missing", {"missing_env_var": missing})
+    base = os.environ["MIHOMO_API_BASE"]
+    secret = os.environ["MIHOMO_API_SECRET"]
+    group = os.environ[args.group_env_var]
+    candidate_re = re.compile(args.candidate_regex)
+    if candidate_re.search(group):
+        return set(), {
+            "timestamp": iso(now),
+            "run_id": run_id,
+            "profile": args.profile,
+            "group": group,
+            "enabled": os.path.exists(args.sentinel),
+            "dry_run": True,
+            "reason": "scope_violation",
+            "scope_violation": "group_matches_candidate_regex",
+            "changed": 0,
+            "assignments": [],
+        }
+    status, group_payload = request_json("GET", base, proxy_path(group), secret, timeout=3)
+    if status <= 0 or status >= 400:
+        return set(), {
+            "timestamp": iso(now),
+            "run_id": run_id,
+            "profile": args.profile,
+            "group": group,
+            "enabled": os.path.exists(args.sentinel),
+            "dry_run": True,
+            "reason": "api_unreachable",
+            "http_status": status,
+            "message": group_payload.get("message") if isinstance(group_payload, dict) else None,
+            "changed": 0,
+            "assignments": [],
+        }
+    return {
+        item for item in (group_payload.get("all") or [])
+        if candidate_re.search(item or "")
+    }, None
+
+
+def profile_scope_conflict(args_list: list[argparse.Namespace], now: dt.datetime, run_id: str) -> dict | None:
+    seen: dict[str, str] = {}
+    conflicts: list[dict] = []
+    for args in args_list:
+        selectors, error = discover_selectors_for_profile(args, now, run_id)
+        if error:
+            return error
+        for selector in selectors:
+            if selector in seen:
+                conflicts.append({"selector": selector, "profiles": sorted({seen[selector], args.profile or "default"})})
+            else:
+                seen[selector] = args.profile or "default"
+    if not conflicts:
+        return None
+    return {
+        "timestamp": iso(now),
+        "run_id": run_id,
+        "profiles": [args.profile for args in args_list],
+        "reason": "profile_scope_conflict",
+        "changed": 0,
+        "conflicts": conflicts,
+        "assignments": [],
+    }
+
+
+def main() -> int:
+    try:
+        args = parse_args()
+        profiles = resolve_profiles(args)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"leaf-optimizer: {exc}", file=sys.stderr)
+        return 2
+
+    now = parse_ts(args.now) if args.now else utc_now()
+    run_id = str(uuid4())
+    if len(profiles) > 1:
+        conflict = profile_scope_conflict(profiles, now, run_id)
+        if conflict:
+            print(json.dumps(conflict, ensure_ascii=False))
+            return 2
+
+    summaries: list[dict] = []
+    rc = 0
+    for profile_args in profiles:
+        profile_rc, summary = run_profile(profile_args, now, run_id if len(profiles) == 1 else str(uuid4()))
+        summaries.append(summary)
+        rc = max(rc, profile_rc)
+    if len(summaries) == 1:
+        return rc
+    print(json.dumps({
+        "timestamp": iso(now),
+        "run_id": run_id,
+        "reason": "completed" if rc == 0 else "profile_error",
+        "changed": sum(int(item.get("changed", 0)) for item in summaries),
+        "profile_summaries": summaries,
+    }, ensure_ascii=False))
+    return rc
 
 
 if __name__ == "__main__":

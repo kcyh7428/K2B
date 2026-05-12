@@ -143,7 +143,13 @@ If auto-switch is triggered but blocked, the watchdog emits an `auto_switch_bloc
 
 ## Leaf Optimizer
 
-The leaf optimizer is a separate 6-hour automation. It keeps the inner `♻️ 手动切换*` selectors ready for AI traffic while leaving outer failover to `auto-switch.py`.
+The leaf optimizer is a separate 6-hour automation. It keeps configured inner `♻️ 手动切换*` selector pools ready while leaving outer failover to `auto-switch.py`. Profiles live in:
+
+```text
+~/Library/Application Support/k2b-router-watchdog/bin/leaf-optimizer-profiles.json
+```
+
+The shipped `ai` profile reads `MIHOMO_OPENAI_GROUP`, scores against ChatGPT, Claude, AI Studio, NotebookLM, and the Gemini API endpoint, excludes HK leaves, and excludes synthetic/meta leaf names matching `^🌏自动最优线路`.
 
 Live leaf changes are disabled unless this file exists:
 
@@ -160,7 +166,7 @@ PUT /proxies/♻️ 手动切换N
 {"name":"<known-good-non-HK-leaf>"}
 ```
 
-It excludes HK leaves for AI-service candidates, scores leaves against ChatGPT, Claude, AI Studio, NotebookLM, and the Gemini API endpoint, and preserves diversity so the manual selectors do not all collapse onto the same fastest leaf. It does not mutate `🤖 OpenAI`, Google, YouTube, media groups, DNS, mode, provider subscriptions, or YAML rules.
+It preserves diversity so the manual selectors do not all collapse onto the same fastest leaf. It does not mutate `🤖 OpenAI`, Google, YouTube, media groups, DNS, mode, provider subscriptions, or YAML rules.
 
 To avoid route churn, live changes require a 12-hour dwell per selector and two consecutive runs where the same replacement wins. Clearly invalid current leaves, including HK or failing AI leaves, may be replaced immediately unless that selector changed in the last 60 minutes. Optimizer state is stored at:
 
@@ -184,9 +190,11 @@ The leaf optimizer holds this shared lock for the whole mutation pass after scor
 
 The scheduled job includes a 300-second launchd `ThrottleInterval` so repeated API or scope failures do not create a rapid restart loop.
 
-Use `K2B_LEAF_OPTIMIZER_CANDIDATE_REGEX` only if selector discovery needs to change. The final mutation scope is still hard-locked to literal `♻️ 手动切换*` selector names.
+Use `K2B_LEAF_OPTIMIZER_CANDIDATE_REGEX` only if selector discovery needs to change outside profile config. The final mutation scope is still hard-locked to literal `♻️ 手动切换*` selector names.
 
-`optimize-leaves.sh` parses `MIHOMO_API_BASE`, `MIHOMO_API_SECRET`, and `MIHOMO_OPENAI_GROUP` from the watchdog env file. It accepts `KEY=value`, `export KEY=value`, and matching outer quotes without sourcing the file, so the existing unquoted `MIHOMO_OPENAI_GROUP=🤖 OpenAI` format remains valid.
+`optimize-leaves.sh` parses `MIHOMO_*` and `K2B_LEAF_OPTIMIZER_*` keys from the watchdog env file without sourcing it. It accepts `KEY=value`, `export KEY=value`, and matching outer quotes, so the existing unquoted `MIHOMO_OPENAI_GROUP=🤖 OpenAI` format remains valid.
+
+To add a future optimizer profile, add a disabled profile to `leaf-optimizer-profiles.json`, set its `group_env_var`, `selector_regex`, targets, sentinel/state/log paths, HK policy, and any `exclude_leaf_regex`; add the matching `MIHOMO_*_GROUP` key to `~/.k2b-router-watchdog.env`; run `install.sh`; then inspect `optimize-leaves.sh --profile <name> --dry-run`. Only enable the profile and consider a sentinel after that dry-run proves it owns a manual-selector parent group. Direct leaf groups such as current `Ⓜ️ 延迟最低` are explicit no-ops because they do not contain `♻️ 手动切换*` children.
 
 ## Alert Rules
 
