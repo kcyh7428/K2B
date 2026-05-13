@@ -42,6 +42,8 @@ Primary capture path during the workday: **Telegram desktop on Keith's SJM work 
 
 Full reference (constraints, supported types, workarounds, what's not built yet): [[wiki/context/context_capture-stack]].
 
+Ad-hoc YouTube URLs in Claude Code messages are pre-fetched by the user-scope `UserPromptSubmit` hook at `~/.claude/settings.json` -> `scripts/hooks/youtube-transcript-prefetch.sh` -> `scripts/yt-transcript.sh`. Cascade order, cookie handling, prompt-injection fence, and the "why not the MCPs" rationale all live in the script headers and the k2b-youtube-capture skill body; CLAUDE.md only routes. Mac Mini runs the same scripts via k2b-remote/k2b-youtube-capture but without the user-scope hook.
+
 ## Mac Mini (K2B Always-On Server)
 
 - **SSH**: `ssh macmini` (Tailscale) or `ssh macmini-local` (LAN fallback)

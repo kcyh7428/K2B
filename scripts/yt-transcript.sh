@@ -10,6 +10,12 @@
 # stderr: progress messages; final line is always "METHOD: <tier>" where
 #         tier is one of: captions-en | captions-zh | groq-whisper | failed
 # exit:   0 on success, 1 on total failure
+#
+# Cookies: YouTube's bot-detection rolled out 2025-Q3 returns "Sign in to confirm
+# you're not a bot" on residential IPs even with the latest yt-dlp. We try with
+# browser cookies first; YT_DLP_COOKIE_BROWSER=chrome|firefox|safari|edge|none
+# overrides (default: auto-detect Chrome, Firefox, then Safari). Set to `none`
+# on headless servers without a logged-in browser profile.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +60,31 @@ fi
 
 mkdir -p "$TMPDIR_BASE"
 
+# Build --cookies-from-browser arg based on env override + filesystem probe.
+# Empty result means "do not pass cookies".
+build_cookies_arg() {
+  local choice="${YT_DLP_COOKIE_BROWSER:-auto}"
+  case "$choice" in
+    none|"")
+      return 0
+      ;;
+    auto)
+      if [[ -d "$HOME/Library/Application Support/Google/Chrome/Default" ]]; then
+        echo "chrome"
+      elif [[ -d "$HOME/Library/Application Support/Firefox" ]]; then
+        echo "firefox"
+      elif [[ -d "$HOME/Library/Containers/com.apple.Safari" ]]; then
+        echo "safari"
+      fi
+      ;;
+    *)
+      echo "$choice"
+      ;;
+  esac
+}
+
+COOKIE_BROWSER=$(build_cookies_arg)
+
 # Strip VTT timing/formatting into plain paragraph text.
 # YouTube auto-captions use a rolling/progressive format where consecutive cues
 # repeat the previous cue's last line. We dedupe only ADJACENT identical lines
@@ -77,24 +108,47 @@ vtt_to_text() {
 try_subs() {
   local lang="$1"
   local sub_dir="$TMPDIR_BASE/subs-$lang"
-  mkdir -p "$sub_dir"
 
-  # --skip-download so we don't fetch the video. auto-sub gets YT's auto-captions
-  # (what the MCP tool returns); --sub-langs "$lang.*" also matches en-US, en-GB.
-  if ! yt-dlp \
-      --skip-download \
-      --write-auto-sub \
-      --sub-langs "${lang},${lang}-.*" \
-      --sub-format "vtt" \
-      --output "${sub_dir}/%(id)s" \
-      "$URL" >/dev/null 2>&1; then
-    return 1
+  # Try WITHOUT cookies first (fast, no keychain access), then with cookies as
+  # fallback for when YouTube fires the bot challenge. Ordering matters on
+  # macOS: `yt-dlp --cookies-from-browser chrome` HANGS in non-interactive
+  # shells when Chrome's keychain item is locked (no GUI prompt possible).
+  # The no-cookies path errors fast with "Sign in to confirm" when challenged,
+  # so we can detect failure quickly and retry with cookies. When YouTube
+  # isn't challenging the IP, no-cookies succeeds in seconds and we never
+  # touch the keychain at all. (Tested 2026-05-13 against the Tilbury video
+  # from Macau via Oracle Cloud Singapore VPN exit -- behavior was stochastic
+  # across the same session.)
+  local attempts=("")
+  if [[ -n "$COOKIE_BROWSER" ]]; then
+    attempts+=("$COOKIE_BROWSER")
   fi
 
-  # Find the first VTT that was written.
-  local vtt
-  vtt=$(find "$sub_dir" -type f -name "*.vtt" | head -1)
-  if [[ -z "$vtt" || ! -s "$vtt" ]]; then
+  local vtt=""
+  for browser in "${attempts[@]}"; do
+    rm -rf "$sub_dir"
+    mkdir -p "$sub_dir"
+    local cookie_flag=()
+    if [[ -n "$browser" ]]; then
+      cookie_flag=(--cookies-from-browser "$browser")
+    fi
+    if yt-dlp \
+        "${cookie_flag[@]}" \
+        --skip-download \
+        --write-auto-sub \
+        --sub-langs "${lang},${lang}-.*" \
+        --sub-format "vtt" \
+        --output "${sub_dir}/%(id)s" \
+        "$URL" >/dev/null 2>&1; then
+      vtt=$(find "$sub_dir" -type f -name "*.vtt" | head -1)
+      if [[ -n "$vtt" && -s "$vtt" ]]; then
+        break
+      fi
+    fi
+    vtt=""
+  done
+
+  if [[ -z "$vtt" ]]; then
     return 1
   fi
 
