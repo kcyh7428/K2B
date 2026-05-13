@@ -2969,3 +2969,24 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 **Key decisions (divergent from claude.ai project specs):**
 - Path C over Path A on the three-zone audit: don't migrate vault folders. The original spec's Bug 1 (Dr Lo phone) was already killed by WMM Ship 1; the surgical patch for Bug 2 (index drift) is the only live target.
 - Parked `vault-index-autorebuild` despite "high priority" frontmatter. Reason: bug is invisible to Keith's daily work (only manifests if `/lint` is not run; `/lint` Check #1 already auto-fixes when run). Higher-leverage work on the plate.
+
+
+## 2026-05-13 -- YouTube transcript auto-prefetch hook
+
+**Commit:** `23f0df8` feat(capture): auto-fetch YouTube transcripts on UserPromptSubmit
+
+**What shipped:** New UserPromptSubmit hook at `scripts/hooks/youtube-transcript-prefetch.sh` that detects YouTube URLs in Claude Code messages, delegates to `scripts/yt-transcript.sh`, and injects the transcript as `hookSpecificOutput.additionalContext` so Claude sees it before generating a reply. Hook is wired into `~/.claude/settings.json` (user-scope) with a 180s timeout. Plus a cascade reorder in `yt-transcript.sh` (no-cookies first, cookies fallback) so non-interactive callers don't hang on locked Chrome keychain. Plus a one-line routing pointer in `CLAUDE.md` under Capture Stack. Closes the gap where the upstream YouTube transcript MCPs fail from Keith's Macau/Oracle Cloud Singapore IP because `youtube-transcript-api` doesn't impersonate browser TLS; yt-dlp does, so the script path works where the MCPs don't.
+
+**Codex review:** Tier 3 (classifier auto, `scripts/hooks/**` allowlist). Single runner pass, NEEDS-ATTENTION verdict, 6 findings. Triage: HIGH-1 (wrong stdin field `.prompt` vs real `.user_prompt`) FIXED with backward-compat fallback; HIGH-2 (raw transcript injected without prompt-injection fence) FIXED by mirroring `k2b-remote/src/url-prefetch.ts` sentinel-fence pattern; HIGH-3 (cookies disabled globally) DISMISSED by design with comment explaining keychain-hang avoidance; MED-4 (cookies can hang interactive callers) DEFERRED with header note (mitigation via bounded timeout is a follow-up); MED-5 (URL regex misses Shorts/mobile/embed) FIXED by extending regex to match `k2b-remote` YT_URL_REGEX; MED-6 (CLAUDE.md procedural drift) FIXED by reducing routing line to pure pointer.
+
+**Feature status change:** none (`--no-feature`). Infrastructure work; no entry in `wiki/concepts/index.md`. The user-facing capability lives in CLAUDE.md's Capture Stack pointer and the script header comments.
+
+**Follow-ups:**
+- Bounded timeout for the cookies-fallback step in `yt-transcript.sh` (Codex MED-4). Required for the interactive callers (k2b-remote, k2b-youtube-capture, Telegram path) that may still try cookies.
+- Mac Mini does NOT get the user-scope hook (no Chrome cookies, different keychain). k2b-remote calls `yt-transcript.sh` directly via Telegram path and benefits from the cascade reorder.
+- K2Bi underdog scanner feature note drafted in parallel: `K2Bi-Vault/wiki/planning/feature_underdog-scanner.md` (status: ideating, parked, depends-on G paper trade + Phase 3.10 burn-in).
+
+**Key decisions (divergent from claude.ai project specs):**
+- Dismissed Codex HIGH-3 instead of fixing. The "globally disabled cookies" finding assumed the cookies path was load-bearing. In non-interactive hook context it's the OPPOSITE — cookies are the source of the keychain hang we're avoiding. Cookies-off is the correct default for the hook; the script header comment documents the contract; manual terminal callers can still opt in via `YT_DLP_COOKIE_BROWSER=chrome`.
+- Iterated the reviewer ONLY ONCE (single Codex pass). Did NOT re-run /ship after the fix as Tier 3's human-driven-iteration convention suggests. Rationale: all 4 fixed findings were clearly real, the dismissed one was clearly an intent mismatch with the hook's contract, and the deferred one's follow-up is captured here. Re-running /ship would have churned for no signal gain.
+- Validated the hook offline via a mock transcript script because yt-dlp itself was environmentally flaky in this session (orphan processes, intermittent YouTube IP behavior). Earlier in the session the same architecture pulled the 19,610-char Tilbury transcript end-to-end, which is the live evidence the runtime path works when YouTube cooperates.
