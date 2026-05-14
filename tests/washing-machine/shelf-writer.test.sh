@@ -269,4 +269,68 @@ set -e
 printf '%s' "$RESULT" | grep -q 'newline' \
   || fail "test 9: parse() error message should mention the newline constraint (got: $RESULT)"
 
-echo "shelf-writer.test.sh: all 9 tests passed"
+# --- Test 10: duplicate dedupe_key is rejected while writer holds shelf lock ---
+DEDUP_DIR="$TMPDIR/dedupe"
+mkdir -p "$DEDUP_DIR"
+K2B_SHELVES_DIR="$DEDUP_DIR" "$WRITER" \
+  --shelf semantic --date 2026-04-21 --type fact --slug first \
+  --attr "dedupe_key:fact:thing:value" --attr "value:first" \
+  || fail "test 10: seed dedupe write failed"
+set +e
+DEDUP_ERR="$(
+  K2B_SHELVES_DIR="$DEDUP_DIR" "$WRITER" \
+    --shelf semantic --date 2026-04-22 --type fact --slug second \
+    --attr "dedupe_key:fact:thing:value" --attr "value:second" 2>&1
+)"
+DEDUP_RC=$?
+set -e
+[ "$DEDUP_RC" != "0" ] || fail "test 10: duplicate dedupe_key write succeeded"
+printf '%s' "$DEDUP_ERR" | grep -q 'duplicate dedupe_key' \
+  || fail "test 10: duplicate dedupe_key error missing (got: $DEDUP_ERR)"
+[ "$(count_rows "$DEDUP_DIR/semantic.md")" = "1" ] \
+  || fail "test 10: duplicate dedupe_key created an extra row"
+
+# --- Test 11: malformed dedupe_key is rejected when attr is present ---
+set +e
+BAD_DEDUP_ERR="$(
+  K2B_SHELVES_DIR="$DEDUP_DIR" "$WRITER" \
+    --shelf semantic --date 2026-04-22 --type fact --slug bad \
+    --attr "dedupe_key:::" --attr "value:bad" 2>&1
+)"
+BAD_DEDUP_RC=$?
+set -e
+[ "$BAD_DEDUP_RC" != "0" ] || fail "test 11: malformed dedupe_key write succeeded"
+printf '%s' "$BAD_DEDUP_ERR" | grep -q 'invalid dedupe_key' \
+  || fail "test 11: invalid dedupe_key error missing (got: $BAD_DEDUP_ERR)"
+
+# --- Test 12: dedupe_key attr is trimmed before duplicate detection ---
+set +e
+TRIM_DEDUP_ERR="$(
+  K2B_SHELVES_DIR="$DEDUP_DIR" "$WRITER" \
+    --shelf semantic --date 2026-04-22 --type fact --slug trim \
+    --attr "dedupe_key: fact:thing:value " --attr "value:trim" 2>&1
+)"
+TRIM_DEDUP_RC=$?
+set -e
+[ "$TRIM_DEDUP_RC" != "0" ] || fail "test 12: duplicate dedupe_key with spaces succeeded"
+printf '%s' "$TRIM_DEDUP_ERR" | grep -q 'duplicate dedupe_key' \
+  || fail "test 12: duplicate dedupe_key error missing (got: $TRIM_DEDUP_ERR)"
+[ "$(count_rows "$DEDUP_DIR/semantic.md")" = "1" ] \
+  || fail "test 12: trimmed duplicate dedupe_key created an extra row"
+
+# --- Test 13: escaped pipes in other values do not spoof dedupe_key fields ---
+ESC_DEDUP_DIR="$TMPDIR/escaped-dedupe"
+mkdir -p "$ESC_DEDUP_DIR"
+K2B_SHELVES_DIR="$ESC_DEDUP_DIR" "$WRITER" \
+  --shelf semantic --date 2026-04-21 --type fact --slug real \
+  --attr "evidence_quote:alpha| dedupe_key:fact:fake:value" \
+  --attr "dedupe_key:fact:real:value" --attr "value:first" \
+  || fail "test 13: seed escaped-pipe row failed"
+K2B_SHELVES_DIR="$ESC_DEDUP_DIR" "$WRITER" \
+  --shelf semantic --date 2026-04-22 --type fact --slug fake \
+  --attr "dedupe_key:fact:fake:value" --attr "value:second" \
+  || fail "test 13: escaped pipe spoofed duplicate dedupe_key"
+[ "$(count_rows "$ESC_DEDUP_DIR/semantic.md")" = "2" ] \
+  || fail "test 13: expected two rows after escaped-pipe dedupe write"
+
+echo "shelf-writer.test.sh: all 13 tests passed"

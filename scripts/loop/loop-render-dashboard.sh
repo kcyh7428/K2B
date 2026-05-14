@@ -5,9 +5,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VAULT_DEFAULT="$HOME/Projects/K2B-Vault"
+VAULT_DEFAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
 export K2B_LOOP_CANDIDATES="${K2B_LOOP_CANDIDATES:-$VAULT_DEFAULT/wiki/context/observer-candidates.md}"
 export K2B_LOOP_REVIEW_DIR="${K2B_LOOP_REVIEW_DIR:-$VAULT_DEFAULT/review}"
+export K2B_LOOP_CONFLICTS_DIR="${K2B_LOOP_CONFLICTS_DIR:-$VAULT_DEFAULT/.staging/pending-conflicts}"
 export K2B_LOOP_RESEARCH_DIR="${K2B_LOOP_RESEARCH_DIR:-$VAULT_DEFAULT/raw/research}"
 export K2B_LOOP_DEFERS="${K2B_LOOP_DEFERS:-$VAULT_DEFAULT/wiki/context/observer-defers.jsonl}"
 

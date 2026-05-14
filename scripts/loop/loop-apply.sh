@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VAULT_DEFAULT="$HOME/Projects/K2B-Vault"
+VAULT_DEFAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
 # Memory canonical home is the Syncthing-synced vault (per CLAUDE.md "Memory
 # Layer Ownership"). The Claude Code memory dir at
 # ~/.claude/projects/-Users-<user>-Projects-K2B/memory/ is just a symlink
@@ -24,6 +24,9 @@ export K2B_LOOP_DEFERS="${K2B_LOOP_DEFERS:-$VAULT_DEFAULT/wiki/context/observer-
 export K2B_LOOP_REVIEW_DIR="${K2B_LOOP_REVIEW_DIR:-$VAULT_DEFAULT/review}"
 export K2B_LOOP_REVIEW_READY_DIR="${K2B_LOOP_REVIEW_READY_DIR:-$VAULT_DEFAULT/review/Ready}"
 export K2B_LOOP_REVIEW_ARCHIVE_ROOT="${K2B_LOOP_REVIEW_ARCHIVE_ROOT:-$VAULT_DEFAULT/Archive/review-archive}"
+export K2B_LOOP_CONFLICTS_DIR="${K2B_LOOP_CONFLICTS_DIR:-$VAULT_DEFAULT/.staging/pending-conflicts}"
+export K2B_LOOP_CONFLICT_ARCHIVE_DIR="${K2B_LOOP_CONFLICT_ARCHIVE_DIR:-$VAULT_DEFAULT/.staging/conflicts.archive}"
+export K2B_VAULT_PATH="${K2B_VAULT_PATH:-$VAULT_DEFAULT}"
 export K2B_LOOP_DATE="${K2B_LOOP_DATE:-$(date '+%Y-%m-%d')}"
 export K2B_LOOP_ACTOR="${K2B_LOOP_ACTOR:-keith}"
 export K2B_LOOP_OBSERVER_RUN="${K2B_LOOP_OBSERVER_RUN:-unknown}"

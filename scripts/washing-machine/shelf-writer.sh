@@ -97,6 +97,54 @@ acquire_lock() {
   fi
 }
 
+fsync_file() {
+  "$PYTHON_BIN" - "$1" <<'PY'
+import os
+import signal
+import sys
+
+timeout = int(os.environ.get("K2B_SHELF_FSYNC_TIMEOUT_SECONDS", "10"))
+if timeout > 0:
+    def timeout_handler(_signum, _frame):
+        raise TimeoutError("fsync timed out")
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(timeout)
+fd = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    signal.alarm(0)
+    os.close(fd)
+PY
+}
+
+fsync_dir() {
+  "$PYTHON_BIN" - "$1" <<'PY'
+import os
+import signal
+import sys
+
+timeout = int(os.environ.get("K2B_SHELF_FSYNC_TIMEOUT_SECONDS", "10"))
+if timeout > 0:
+    def timeout_handler(_signum, _frame):
+        raise TimeoutError("fsync timed out")
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(timeout)
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+except OSError as exc:
+    print(f"shelf-writer: warning: could not open directory for fsync {sys.argv[1]}: {exc}", file=sys.stderr)
+    raise SystemExit(0)
+try:
+    os.fsync(fd)
+except (OSError, TimeoutError):
+    pass
+finally:
+    signal.alarm(0)
+    os.close(fd)
+PY
+}
+
 # ---- serialize the row via lib/shelf_rows.py ----
 build_serialize_cmd() {
   SERIALIZE_CMD=("$PYTHON_BIN" "$LIB" serialize --date "$DATE" --type "$TYPE" --slug "$SLUG")
@@ -242,6 +290,60 @@ read_row_count() {
   ' "$file"
 }
 
+dedupe_key_from_attrs() {
+  local a
+  for a in "${ATTRS[@]}"; do
+    case "$a" in
+      dedupe_key:*)
+        printf '%s\n' "${a#dedupe_key:}" | awk '{$1=$1; print}'
+        return
+        ;;
+    esac
+  done
+}
+
+has_dedupe_key_attr() {
+  local a
+  for a in "${ATTRS[@]}"; do
+    case "$a" in
+      dedupe_key:*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+has_dedupe_key() {
+  local file="$1" want="$2"
+  [ -f "$file" ] || return 1
+  DEDUPE_WANT="$want" SHELF_ROWS_LIB="$LIB" "$PYTHON_BIN" - "$file" <<'PY'
+import importlib.util
+import os
+import sys
+
+file_path = sys.argv[1]
+want = os.environ["DEDUPE_WANT"]
+lib_path = os.environ["SHELF_ROWS_LIB"]
+spec = importlib.util.spec_from_file_location("shelf_rows", lib_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(2)
+shelf_rows = importlib.util.module_from_spec(spec)
+sys.modules["shelf_rows"] = shelf_rows
+spec.loader.exec_module(shelf_rows)
+
+with open(file_path, encoding="utf-8") as f:
+    for line in f:
+        if not line.startswith("- "):
+            continue
+        try:
+            row = shelf_rows.parse(line)
+        except ValueError:
+            continue
+        if row.attrs.get("dedupe_key") == want:
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 # ---- initial frontmatter template for a brand-new shelf file ----
 new_shelf_template() {
   local shelf="$1"
@@ -286,14 +388,30 @@ main() {
   # Refuse to write into a file with >1 "## Rows" header: the awk rewrite
   # would append at an ambiguous location. This protects against hand-edited
   # shelves that violate the single-section invariant.
-  if [ -f "$TARGET" ]; then
-    local header_count
-    header_count="$(grep -c '^## Rows' "$TARGET" || true)"
-    if [ "${header_count:-0}" -gt 1 ]; then
-      echo "shelf-writer: $TARGET has ${header_count} '## Rows' headers; refusing to write ambiguously" >&2
-      exit 2
-    fi
-  fi
+	  if [ -f "$TARGET" ]; then
+	    local header_count
+	    header_count="$(grep -c '^## Rows' "$TARGET" || true)"
+	    if [ "${header_count:-0}" -gt 1 ]; then
+	      echo "shelf-writer: $TARGET has ${header_count} '## Rows' headers; refusing to write ambiguously" >&2
+	      exit 2
+	    fi
+	    local dedupe_key
+	    dedupe_key="$(dedupe_key_from_attrs)"
+	    if has_dedupe_key_attr; then
+	      if [[ "$dedupe_key" == *"|"* || "$dedupe_key" == *$'\n'* || "$dedupe_key" == *$'\r'* || "$dedupe_key" == *$'\t'* ]]; then
+	        echo "shelf-writer: invalid dedupe_key: $dedupe_key" >&2
+	        exit 2
+	      fi
+	      if [[ ! "$dedupe_key" =~ ^[a-z0-9][a-z0-9._-]*(:[a-z0-9][a-z0-9._-]*)+$ ]]; then
+	        echo "shelf-writer: invalid dedupe_key: $dedupe_key" >&2
+	        exit 2
+	      fi
+	      if has_dedupe_key "$TARGET" "$dedupe_key"; then
+	        echo "shelf-writer: duplicate dedupe_key: $dedupe_key" >&2
+	        exit 3
+	      fi
+	    fi
+	  fi
 
   local current_count new_count
   current_count="$(read_row_count "$TARGET")"
@@ -320,11 +438,23 @@ main() {
     exit 2
   fi
 
+  if ! fsync_file "$tmp"; then
+    rm -f "$tmp"
+    echo "shelf-writer: fsync temp file failed" >&2
+    exit 2
+  fi
+
   if ! mv "$tmp" "$TARGET"; then
     rm -f "$tmp"
     echo "shelf-writer: mv to $TARGET failed" >&2
     exit 2
   fi
+
+  if ! fsync_file "$TARGET"; then
+    echo "shelf-writer: fsync target failed" >&2
+    exit 2
+  fi
+  fsync_dir "$(dirname "$TARGET")"
 }
 
 main "$@"

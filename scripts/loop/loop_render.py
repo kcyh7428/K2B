@@ -8,6 +8,7 @@ delivery-link stays informational in Ship 2.
 Reads:
   $K2B_LOOP_CANDIDATES          observer-candidates.md
   $K2B_LOOP_REVIEW_DIR          review/ directory
+  $K2B_LOOP_CONFLICTS_DIR       .staging/pending-conflicts/ directory
   $K2B_LOOP_RESEARCH_DIR        raw/research/ directory
   $K2B_LOOP_DEFERS              observer-defers.jsonl (Ship 2)
 
@@ -69,6 +70,7 @@ def _find_research_without_delivery(research_dir: Path, today: date):
 def main() -> int:
     candidates_path = Path(os.environ["K2B_LOOP_CANDIDATES"])
     review_dir = Path(os.environ.get("K2B_LOOP_REVIEW_DIR", ""))
+    conflicts_dir = Path(os.environ.get("K2B_LOOP_CONFLICTS_DIR", ""))
     research_dir = Path(os.environ.get("K2B_LOOP_RESEARCH_DIR", ""))
     defers_path_str = os.environ.get("K2B_LOOP_DEFERS", "")
     today = date.today()
@@ -79,6 +81,9 @@ def main() -> int:
     reviews = (
         loop_lib.list_reviews(review_dir) if str(review_dir) else []
     )
+    conflicts = (
+        loop_lib.list_conflicts(conflicts_dir) if str(conflicts_dir) else []
+    )
     researches = (
         _find_research_without_delivery(research_dir, today)
         if str(research_dir)
@@ -88,15 +93,15 @@ def main() -> int:
         loop_lib.read_defers(Path(defers_path_str)) if defers_path_str else {}
     )
 
-    if not candidates and not reviews and not researches:
+    if not candidates and not reviews and not conflicts and not researches:
         return 0
 
     lines: list[str] = []
     lines.append(f"## K2B LOOP DASHBOARD -- {today.isoformat()}")
     lines.append("")
-    lines.append("Routing grammar (a N / r N / d N) -- observer candidates + review queue routable:")
-    lines.append("  a N = ACCEPT item N (observer: learning; review: move to Ready/)")
-    lines.append("  r N = REJECT item N (observer: archive; review: move to Archive/review-archive)")
+    lines.append("Routing grammar (a N / r N / d N) -- observer candidates + review queue + conflicts routable:")
+    lines.append("  a N = ACCEPT item N (observer: learning; review: move to Ready/; conflict: accept new value)")
+    lines.append("  r N = REJECT item N (observer: archive; review: move to Archive/review-archive; conflict: keep existing)")
     lines.append("  d N = DEFER item N (increments counter; auto-archive on 3rd defer)")
     lines.append(
         "Claude will call scripts/loop/loop-apply.sh with your choices before the next prompt."
@@ -123,6 +128,18 @@ def main() -> int:
             badge = f" (deferred {defer_count}x)" if defer_count else ""
             lines.append(
                 f"  [{index}] review · {review.filename}{badge}"
+            )
+        lines.append("")
+
+    if conflicts:
+        lines.append(f"### Pending conflicts ({len(conflicts)}) -- ROUTABLE")
+        for conflict in conflicts:
+            index += 1
+            badge = f" (deferred {conflict.surfaced_count}x)" if conflict.surfaced_count else ""
+            source = Path(conflict.source_session_path).name if conflict.source_session_path else "unknown"
+            lines.append(
+                f"  [{index}] conflict · {conflict.subject} {conflict.predicate} "
+                f"(existing: {conflict.existing_value}, new: {conflict.new_value}, source: {source}){badge}"
             )
         lines.append("")
 
