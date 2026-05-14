@@ -3017,3 +3017,26 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 - Did NOT re-run the reviewer after applying the 7 inline fixes. Rationale: each fix was a clearly-scoped patch in response to a specific finding; the bugs and the fixes have no architectural interplay that a second pass would catch. Tier 3's human-driven-iteration convention says one /ship per pass; this matches.
 - Kept Groq Whisper as a documented fallback rather than removing it. Same-provider consolidation has value but Groq's free tier still has cost-leverage for the high-volume Telegram-voice path. Re-evaluate if GPTsAPI ever raises Whisper pricing.
 - Branch is `codex/eod-capture-goal`, pushed there instead of `main`. Codex is mid-implementation on the end-of-day capture work (separate branch concern) and my GPTsAPI changes are unrelated; commit lands on the same branch so the eventual merge to main carries both. Loop-script and eod-capture WIP from Codex's parallel session left untouched in the working tree.
+
+
+## 2026-05-15 -- End-of-Day Capture Ship 1
+
+**Commit:** `52e587f` feat(capture): add end-of-day transcript capture
+
+**What shipped:** End-of-Day Capture current shipment landed for Claude Code and Codex Desktop transcripts. The new pipeline discovers scoped session JSONL, strips noisy tool output, calls the existing synchronous Kimi/MiniMax wrapper with prompt-enforced JSON, stages per-session extractions, reconciles high-confidence facts/decisions/learnings into canonical homes, routes low-confidence/errors to review, writes no-overwrite conflicts to `.staging/pending-conflicts/`, extends the unified loop dashboard/apply path to surface and resolve those conflicts, and adds a next-morning Telegram digest with persistent failure/cleanup audit files. The cron wrapper is shipped as an artifact only; no production crontab or Syncthing setting was changed.
+
+**Codex review:** Tier 3 (`scripts/ship-detect-tier.py --mode staged`, reason `16 files changed (>3)`). MiniMax review findings were fixed where concrete; remaining reviewer churn was accepted as non-blocking after targeted regression coverage. Verification before commit: Python compile + pytest returned `120 passed`; cron, loop, shelf-writer, wiki-log shell suites passed; staged and unstaged whitespace checks were clean.
+
+**Feature status change:** `feature_end-of-day-capture` `designed` -> `in-progress`; current shipment row marked shipped/gate-passed on 2026-05-15 with commit `52e587f`. Roadmap moved the feature from Backlog to In Progress. Ship 3 preferences and Ship 5 Kimi Batch/native JSON Mode remain deferred.
+
+**Follow-ups:**
+- Operator setup still required: add MacBook transcript directories to Syncthing and install the suggested Mac Mini cron lines when ready.
+- Run the first real overnight capture and inspect the morning digest before considering Ship 3.
+- Ship 3 preferences capture remains deferred.
+- Ship 5 Kimi Batch API + native JSON Mode optimization remains deferred.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Codex CLI ingestion stayed removed from scope.
+- Preferences were explicitly skipped rather than routed to review in Ship 1.
+- The implementation did not depend on Kimi Batch API or native JSON Mode; those remain later optimization work.
+- The binary MVP was proven in a sandbox vault, not against production, because the live vault already contains Dr. Lo rows and cannot satisfy the clean-vault precondition.
