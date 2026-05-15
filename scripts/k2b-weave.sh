@@ -609,10 +609,32 @@ lines = content.splitlines()
 in_table = False
 header_seen = False
 
+def split_row(line):
+    """Split a markdown table row on unescaped `|` only.
+
+    The digest writer escapes literal pipes inside cell content as `\\|`
+    so the table renders correctly when an evidence_span contains, e.g.,
+    a wikilink alias `[[slug|Title]]`. A naive `split("|")` ignores that
+    escape and over-splits, pushing the alias suffix into the Decision
+    column. Protect `\\|` with a sentinel before the split, then restore."""
+    protected = line.replace("\\|", "\x00")
+    return [c.replace("\x00", "|").strip() for c in protected.strip("|").split("|")]
+
 def is_header_row(line):
-    """Match '| # | From | To | ...' with any amount of internal whitespace."""
-    cells = [c.strip().lower() for c in line.strip().strip("|").split("|")]
-    return len(cells) >= 3 and cells[0] == "#" and cells[1] == "from" and cells[2] == "to"
+    """Match the proposals table header.
+
+    Both the proposals table and the trailing `## Utility scores` table
+    start with `| # | From | To |`; distinguish by requiring `Decision`
+    at column 6 (proposals-only). Without this, the utility table is
+    re-parsed and its `-` placeholders are read as decisions."""
+    cells = [c.lower() for c in split_row(line.strip())]
+    return (
+        len(cells) >= 7
+        and cells[0] == "#"
+        and cells[1] == "from"
+        and cells[2] == "to"
+        and cells[6] == "decision"
+    )
 
 def is_separator_row(line):
     """Match '| --- | --- | ...' separator rows."""
@@ -633,10 +655,10 @@ for line in lines:
             continue
         if not header_seen:
             continue
-        # Parse row: split on |, strip, handle missing trailing pipe
+        # Parse row: split on unescaped |, handle missing trailing pipe
         if not stripped.endswith("|"):
             stripped += " |"
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        cells = split_row(stripped)
         if len(cells) < 3:
             continue
         # Map by position: #, From, To, Confidence, Why, Evidence, Decision

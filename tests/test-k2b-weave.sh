@@ -608,6 +608,107 @@ fi
 cleanup_sandbox
 
 # =======================================================================
+# Test 13: wikilink-alias evidence and utility-scores table parsing
+# =======================================================================
+# Regression for two parse_decision_table bugs:
+#   Bug 1: `[[slug|Title]]` in evidence cells -- writer escapes the pipe to
+#          `\|` but the parser splits on every `|`, so the alias title was
+#          read as the Decision column. A row marked `check` was applied as
+#          `defer` against the alias title.
+#   Bug 2: After the proposals table, the digest emits a `## Utility scores`
+#          table with the same `# | From | To` lead-in. The header matcher
+#          re-engaged on that table and parsed its `-` placeholders as
+#          decisions, spamming "Unknown decision '-'" through the apply log
+#          and inflating the deferred counter.
+echo "Test 13: wikilink-alias evidence + utility-scores parse"
+setup_sandbox
+# Append wikilink-alias prose to this sandbox's copy only -- evidence_spans
+# must be substrings of the FROM page body for the verifier to keep them.
+cat >> "$SANDBOX/wiki/projects/project_alpha.md" <<'BODY'
+
+## References
+See [[reference_minimax|How MiniMax Powers Recruiting]] and [[concept_karpathy-wiki|Karpathy LLM Wiki]] for background.
+BODY
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/reference/reference_minimax.md",
+    "from_slug": "project_alpha",
+    "to_slug": "reference_minimax",
+    "confidence": 0.92,
+    "rationale": "uses MiniMax",
+    "evidence_span": "[[reference_minimax|How MiniMax Powers Recruiting]]"
+  },
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/concepts/concept_karpathy-wiki.md",
+    "from_slug": "project_alpha",
+    "to_slug": "concept_karpathy-wiki",
+    "confidence": 0.88,
+    "rationale": "inspired by Karpathy",
+    "evidence_span": "[[concept_karpathy-wiki|Karpathy LLM Wiki]]"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1
+digest_file=$(find "$SANDBOX/review" -name 'crosslinks_*.md' -type f | head -1)
+
+# Fixture sanity: the generator must produce escaped pipes inside evidence
+# cells, AND must emit a Utility scores table after the proposals table.
+# If either is absent, the test is exercising a stale generator format.
+if grep -qF '\|' "$digest_file"; then
+  pass "digest has escaped pipes inside evidence cells (fixture valid)"
+else
+  fail "digest is missing escaped pipes -- generator format changed?"
+fi
+if grep -q '## Utility scores' "$digest_file"; then
+  pass "digest emits utility-scores table (fixture valid)"
+else
+  fail "digest is missing utility-scores table -- generator format changed?"
+fi
+
+# Approve both proposals.
+python3 - "$digest_file" <<'PY'
+import sys, re
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+content = re.sub(r"\|\s*\|$", "| check |", content, flags=re.MULTILINE)
+with open(path, 'w') as f:
+    f.write(content)
+PY
+
+apply_output=$("$REPO_DIR/scripts/k2b-weave.sh" apply "$digest_file" 2>&1 || true)
+
+# Bug 1 assertions: both rows should apply, both wikilinks should land.
+applied_after=$(grep -c '"status":"applied"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" || echo 0)
+assert_equal "both wikilink-alias proposals applied" "2" "$applied_after"
+assert_contains "project_alpha gained reference_minimax link" "$SANDBOX/wiki/projects/project_alpha.md" "[[reference_minimax]]"
+assert_contains "project_alpha gained concept_karpathy-wiki link" "$SANDBOX/wiki/projects/project_alpha.md" "[[concept_karpathy-wiki]]"
+# A row that was meant as check but parsed as defer would be marked deferred.
+# Brace group + `|| true` neutralizes grep's exit-1-on-zero-matches under
+# `set -e -o pipefail`; the wc -l then yields a clean "0".
+deferred_after=$( { grep '"status":"deferred"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || true; } | wc -l | tr -d ' ')
+assert_equal "no rows incorrectly marked deferred" "0" "$deferred_after"
+
+# Bug 2 assertions: the utility-scores table must not be parsed as proposals.
+if echo "$apply_output" | grep -qF "Unknown decision '-'"; then
+  fail "utility-scores table re-parsed as proposals (Unknown decision '-' in apply log)"
+else
+  pass "utility-scores table ignored by parser"
+fi
+# Final summary line should report deferred=0; phantom defers from utility
+# table rows would inflate the counter even when ledger state stays clean.
+if echo "$apply_output" | grep -qE "Applied 2, rejected 0, deferred 0"; then
+  pass "apply summary deferred count is zero"
+else
+  fail "apply summary deferred count not zero: $(echo "$apply_output" | grep -E 'Applied [0-9]+,' || echo '(no summary line)')"
+fi
+cleanup_sandbox
+
+# =======================================================================
 # Summary
 # =======================================================================
 echo
