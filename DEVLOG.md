@@ -1,6 +1,38 @@
 # K2B Development Log
 
 ---
+## 2026-05-15 -- weave parser: alias-pipe + utility-table re-parse fixes
+
+**PR:** [#12](https://github.com/kcyh7428/K2B/pull/12) on branch `claude/goofy-chatterjee-4aa524`. Single commit `806c4d8` (merged rebase, no merge commit).
+
+**What shipped:** Hardens `parse_decision_table` in `scripts/k2b-weave.sh` against two table-parsing bugs that surfaced in the 2026-05-10 weave apply. New `split_row()` helper protects writer-escaped `\|` with a `\x00` sentinel before splitting on unescaped `|`, so wikilink aliases like `[[slug|Title]]` in evidence cells no longer over-split rows and push the alias suffix into the Decision column. Tightened `is_header_row()` to require `Decision` at column 6, so the trailing `## Utility scores` table (columns end with `High-conf`) no longer re-engages the parser. Both fixes are local to one function; commit also adds Test 13 to `tests/test-k2b-weave.sh` with 8 assertions covering both bugs. Full suite 41/41 pass.
+
+**Why now:** Bug-1 was breaking real ledger state. The 2026-05-10 run logged `person_anoop-gupta -> 2026-03-26_youtube_ai-transform-recruiting-anoop-gupta` as `deferred` even though Keith had marked the row `check`. Apply was reading `"how ai will transform recruiting by 2026]]"` as the decision (the alias suffix), normalizing to defer. Every future weave run that proposes a YouTube video would hit this since most YouTube wiki-pages use aliased wikilinks. Bug-2 was log noise: 11 phantom `Unknown decision '-'` defers per apply (6 + 5 on 2026-05-10), pollutes apply logs and forces unnecessary ledger rewrites even though the pending-only update guard prevented actual ledger corruption.
+
+**Adversarial review:** Tier-2 single-pass via `scripts/review.sh` (Codex primary, no fallback needed). Codex returned NEEDS-ATTENTION with two findings, both deferred as out-of-scope pre-existing apply-path bugs (parser fix-up was the user-stated scope):
+- HIGH `scripts/k2b-weave.sh:878-900` -- checked rows can be lost if `apply_one_proposal` returns non-zero/non-2; digest unconditionally deleted while ledger row stays pending.
+- MEDIUM `scripts/k2b-weave.sh:861-870` -- apply mutates FROM page before validating parsed pairs against the digest's pending ledger rows.
+
+Builder: Opus. Reviewer: Codex (231s, 1 pass).
+
+**Tests:** `bash tests/test-k2b-weave.sh` -- 41/41 pass. Test 13 was confirmed to fail on pre-fix code (6 of 8 assertions red) and pass on fixed code, verifying the test exercises the actual bug surface.
+
+**Commit:** `806c4d8 fix(weave): harden parse_decision_table against alias pipes and utility-table re-parse`
+
+**Feature status change:** none. This is maintenance on shipped `feature_k2b-weave-cross-link-suggestions` (no longer tracked in the index lanes). Ran with `--no-feature` flag intent.
+
+**Follow-ups:**
+- Codex HIGH (apply-path digest preservation + retryable error propagation). Real bug, pre-existing, needs its own design pass and probably a new ledger status like `apply-pending-retry`.
+- Codex MEDIUM (apply validates parsed pairs against pending ledger before mutation). Real, pre-existing, complements the HIGH fix.
+- Ownership audit drift: 5 rules, 43 offender files (advisory, pre-existing, unrelated to this commit). Worth a dedicated `/lint` follow-up.
+- Bonus duplicate-file question: `2026-04-12_research_ai-trading-bot-claude-code.md` exists in both `raw/research/` and `wiki/reference/`. Confirmed these are the intended raw+wiki pair (not an orphan) per the 3-layer architecture -- raw is the immutable full deep-research capture, wiki/reference is the compiled summary with `compiled-from:` pointer. No action needed.
+
+**Key decisions:**
+- Defer both Codex findings rather than fix inline. The user's stated scope was "Both bugs are in the same parsing function. Single fix-up session." -- the apply-path bugs are real but expand scope beyond the parser. Recording as follow-ups preserves the signal without entangling.
+- Single helper `split_row()` reused by both `is_header_row()` and the data-row parse, rather than two separate fixes. DRYs the escape logic so future edits stay consistent.
+- Test 13 augments the SANDBOX copy of `project_alpha.md` only (not the shared fixture). Other tests get a clean fixture; only Test 13's verifier needs the wikilink-alias substring in the FROM body.
+
+---
 ## 2026-05-12 (afternoon) -- router-watchdog: cascade-safety regex narrowing
 
 **PR:** [#8](https://github.com/kcyh7428/K2B/pull/8) on branch `fix/router-watchdog-cascade-safety`. Single commit `e16aaae` (merged rebase, no merge commit).
