@@ -1,6 +1,31 @@
 # K2B Development Log
 
 ---
+## 2026-05-15 (evening) -- End-of-Day Capture Ship 1 hardening
+
+**Commit:** `61ddf5c` fix(eod-capture): per-item rejection + Codex stripper + evidence-quote normalization
+
+**What shipped:** Post-MVP hardening on top of `52e587f` after live verification on 2026-05-14 transcripts surfaced a 0% capture rate. Three rounds of Codex fixes resolved the bugs; verification confirmed end-to-end memory capture works. (1) Codex Desktop stripper now handles `response_item.payload` shape (was empty-stripping 9 of 14 sessions); skips bootstrap noise (`# AGENTS.md`, `<environment_context>`, developer/system role messages). (2) Pipe handling split: rejected in structural fields (`predicate`, `scope`, `dedupe_key`), allowed in semantic values (`subject`, `object`, `evidence_quote`) where shelf-writer escaping handles them. (3) Evidence-quote validation: whitespace normalization on both quote and stripped payload before substring match; allows `\t`/`\n`/`\r` inside quotes (rejects only non-whitespace control chars). (4) Per-item rejection (the architectural fix): `_filter_extraction_items` catches per-item `ValueError`, writes rejections to `.staging/extraction-rejections/` for prompt-tuning, falls back to extraction-failures only when ALL items rejected. (5) Prompt updated: `evidence_quote` MUST appear character-for-character.
+
+**Codex review:** Tier 3 detected (504 LOC, >200). Runner attempted Codex (timed out at 360s, exit 124), fell back to Kimi which hit `RemoteDisconnected` on multiple attempts -- 6th+7th reviewer-infra hit in 7 days, same streak that forced Opus-as-reviewer for `feature_telegram-media-speech` earlier today. **Opus-side review performed instead per 2026-05-12 DEVLOG precedent.** Plan review (Checkpoint 1) ran twice earlier in this session with all P1/P2 findings resolved before code. No blocking findings in Opus review.
+
+**Verification on live 2026-05-14 data:** 13 of 14 sessions yielded content. 35 high-confidence items auto-written to `wiki/context/shelves/semantic.md`. 45 per-item rejections captured in `.staging/extraction-rejections/`. 30 Job B reconciliation errors (predicate-with-spaces -- shelf-writer regex strictness, separate follow-up; items routed to `review/eod-error_*.md`, NOT lost). 1 low-confidence item to `review/eod-low-confidence_*.md`. 0 conflicts. 1 true Kimi timeout at 179s (oversized Codex session). 127 tests passed; `tests/eod-capture-cron.test.sh` PASS.
+
+**Feature status change:** `feature_end-of-day-capture` stays `in-progress`. Ship 1 current shipment (the original `52e587f`) was already marked `gate-passed` on 2026-05-15; this hardening commit is on the same ship. No lane move. Ship 3 (preferences) and Ship 5 (Kimi Batch / native JSON Mode) remain deferred.
+
+**Follow-ups (none block this commit):**
+- Predicate-with-spaces (30 items in review today) -- prompt fix OR shelf-writer auto-normalize. ~30 min.
+- Digest counts stale failure files (`extraction failures: 14` shows persistent dir count; new failures this run = 1). Cosmetic.
+- Codex session 179s timeout (oversized transcript). Either bump timeout or chunk.
+- Ownership drift audit (43 pre-existing offenders) -- deferred from prior commits.
+- Operator setup still required before cron runs in production: Syncthing for `~/.claude/projects/` + `~/.codex/sessions/`, env file at `~/.config/k2b/eod-capture.env`, install the 3 cron lines on Mac Mini.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Did NOT run via `scripts/review.sh` for the adversarial gate -- runner attempted both reviewers and both failed (Codex timeout + Kimi `RemoteDisconnected`). Opus performed the review directly. This matches today's earlier precedent on `feature_telegram-media-speech` (commit `68a5bb4`). Both commits today land with the same reviewer-infra caveat disclosed.
+- Cosmetic digest bug (counting stale failure files) NOT fixed in this commit -- separate concern, doesn't affect the capture pipeline correctness. Deferred to keep this diff focused on the per-item-rejection architectural fix.
+- 3 EOD files staged exclusively; unrelated dirty `k2b-remote/` files left unstaged per Codex's note.
+
+---
 ## 2026-05-15 (afternoon) -- k2b-remote: /media speech wired in Telegram bot
 
 **Commit:** `68a5bb4 feat(k2b-remote): wire /media speech in Telegram bot`
