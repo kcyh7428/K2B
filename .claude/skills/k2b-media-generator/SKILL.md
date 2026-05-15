@@ -1,15 +1,15 @@
 # K2B Media Generator
 
-Generate images, speech, audio transcriptions, video, and music. Images default to GPTsAPI `gpt-image-2-plus`; MiniMax remains the explicit image fallback. Speech, video, music, and VLM routes stay on MiniMax.
+Generate images, speech, audio transcriptions, video, and music. Images and speech default to GPTsAPI (`gpt-image-2-plus`, `tts-1-hd`). Transcription defaults to GPTsAPI Whisper (`whisper-1`) with Groq Whisper as fallback. Video and music remain on MiniMax (specialty modalities).
 
 ## Commands
 
 - `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2-plus`
 - `/media image --minimax "prompt" [aspect] [slug]` -- Generate an image via MiniMax fallback
-- `/media speech "text" [voice] [emotion] [slug]` -- Generate TTS audio
-- `/media transcribe <audio-file> [slug]` -- Transcribe audio via Groq Whisper (Chinese/English/50+ languages)
-- `/media video "prompt" [slug]` -- Generate video clip (requires Max tier)
-- `/media music "description" [slug]` -- Generate music track (requires Max tier)
+- `/media speech "text" [voice] [model] [slug]` -- Generate TTS audio via GPTsAPI `tts-1-hd`
+- `/media transcribe <audio-file> [language] [slug]` -- Transcribe audio via GPTsAPI Whisper (Chinese/English/50+ languages); Groq Whisper available as fallback
+- `/media video "prompt" [slug]` -- Generate video clip (requires Max tier; MiniMax)
+- `/media music "description" [slug]` -- Generate music track (requires Max tier; MiniMax)
 - `/media for <idea-slug>` -- Auto-generate media for a content idea
 - `/media voices` -- List available voices
 
@@ -51,8 +51,8 @@ If MCP tools are unavailable, use the bash scripts:
 ```bash
 ./scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio 16:9 --slug slug
 ./scripts/minimax-image.sh "prompt" [aspect] [slug]    # only with --minimax fallback
-./scripts/minimax-speech.sh "text" [voice] [emotion] [slug]
-./scripts/minimax-transcribe.sh <audio-file> [slug]
+./scripts/gptsapi-speech.sh "text" [voice] [model] [slug]
+./scripts/gptsapi-transcribe.sh <audio-file> [language]
 ```
 
 ## Image Generation
@@ -68,7 +68,7 @@ If MCP tools are unavailable, use the bash scripts:
 - Default GPTsAPI for executive editorial images, typography, diagrams, quote cards, LinkedIn headers, and clean business visuals.
 - Use `--minimax` for stylized images, faster drafts, quota fallback, or when GPTsAPI is degraded.
 - Rollback path: `/media image --minimax "prompt" [aspect] [slug]`.
-- TTS is not routed to GPTsAPI yet. There is no current K2B voice-reply consumer, so do not add that capability until the consumer ships.
+- TTS now routes through GPTsAPI by default (see Speech section below). MiniMax TTS retired 2026-05-14 -- the Token Plan tier allocates zero TTS quota and pay-per-call MiniMax requires a separate Standard API key with Credits topped up. GPTsAPI uses the existing `GPTSAPI_KEY` and same billing as image generation.
 
 ### Workflow
 1. Default: run `scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio aspect --slug slug`
@@ -93,35 +93,39 @@ If MCP tools are unavailable, use the bash scripts:
 ## Speech (TTS)
 
 ### Parameters
-- **text**: Text to convert to speech (up to 10,000 chars; daily limit ~4,000 chars on Plus tier)
-- **voice**: Voice ID (default: `male-qn-qingse`). Use `/media voices` or MCP `list_voices` to see options
-- **emotion**: `neutral`, `happy`, `sad`, `angry`, `fearful`, `disgusted`, `surprised` (default: `neutral`)
+- **text**: Text to convert to speech (up to ~4,000 chars per call; longer text may need chunking)
+- **voice**: One of `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer` (default: `onyx`)
+- **model**: `tts-1` (faster, cheaper) or `tts-1-hd` (higher quality, default)
 - **slug**: Filename slug
-- Model: `speech-2.8-hd`
 
 ### Workflow
-1. If using MCP: call `text_to_audio` with text, voiceId, emotion
-2. If using bash: run `scripts/minimax-speech.sh "text" voice emotion slug`
-3. Asset saves to `K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3`
-4. **Send to Telegram** (if running via k2b-remote): write an outbox manifest:
+1. Run `scripts/gptsapi-speech.sh "text" [voice] [model] [slug]`
+2. Asset saves to `K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3`
+3. **Send to Telegram** (if running via k2b-remote): write an outbox manifest:
    ```bash
-   echo '{"type":"audio","path":"'$HOME'/Projects/K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3","caption":"description"}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
+   jq -n --arg path "$HOME/Projects/K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3" --arg caption "description" \
+     '{type:"audio", path:$path, caption:$caption}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
    ```
-5. Print embed: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
+4. Print embed: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
 
 ### Language Support
-40 languages including Mandarin, Cantonese, English. Set `languageBoost` to the primary language for best results, or `auto` for mixed-language text.
+GPTsAPI `tts-1` and `tts-1-hd` (OpenAI's TTS) handle 50+ languages including Mandarin, Cantonese, English, Japanese, Korean, and most European languages. Language is auto-detected from the input text; no `languageBoost` parameter needed.
+
+### MiniMax TTS retired
+`scripts/minimax-speech.sh` exists but should NOT be used. The MiniMax Token Plan allocates zero TTS character quota despite the marketing copy listing voice generation. Pay-per-call MiniMax TTS requires a separate Standard API key with Credits topped up. The 2026-05-14 audit confirmed GPTsAPI `tts-1-hd` covers all K2B voice needs using the existing `GPTSAPI_KEY`. Do not propose restoring MiniMax for TTS without a specific quality or feature reason.
 
 ## Audio Transcription (STT)
 
 ### Parameters
-- **audio-file**: Path to audio file (mp3, wav, m4a, oga, ogg, etc.)
+- **audio-file**: Path to audio file (mp3, wav, m4a, oga, ogg, flac, webm, mp4)
+- **language**: Optional ISO-639-1 hint (e.g. `en`, `zh`, `yue` for Cantonese). Auto-detected if omitted.
 - **slug**: Output filename slug
-- Supports: Mandarin, Cantonese, English, and 50+ languages via Groq Whisper
+
+Supports: Mandarin, Cantonese, English, and 50+ languages via OpenAI Whisper (`whisper-1` through GPTsAPI).
 
 ### Transcription Procedure
 
-**Always follow this procedure. No exceptions. No trying OpenAI first.**
+**Default: GPTsAPI Whisper. Groq Whisper available as fallback for high-volume / free-tier needs.**
 
 #### Step 1: Check duration and size
 ```bash
@@ -144,11 +148,20 @@ ffmpeg -i /tmp/k2b-transcribe-input.mp3 -f segment -segment_time 240 -c copy /tm
 ```
 If file is under 4 minutes AND under 20MB, skip splitting -- use the single file directly.
 
-#### Step 4: Transcribe via Groq Whisper (primary)
+#### Step 4: Transcribe via GPTsAPI Whisper (primary)
+```bash
+# For each chunk (or single file):
+~/Projects/K2B/scripts/gptsapi-transcribe.sh <chunk-file> [language]
+```
+- Model: `whisper-1` (OpenAI Whisper, exposed via GPTsAPI)
+- Uses existing `GPTSAPI_KEY` -- same billing account as image generation
+- For Cantonese/Mandarin: pass `zh` (or `yue` for Cantonese specifically) as the language argument
+- Concatenate chunk results in order with a blank line between
+
+#### Step 5: Fallback to Groq Whisper (high-volume / cost-sensitive)
 ```bash
 GROQ_KEY=$(grep GROQ_API_KEY ~/Projects/K2B/k2b-remote/.env | cut -d= -f2)
 
-# For each chunk (or single file):
 curl -s --retry 2 --retry-delay 3 \
   https://api.groq.com/openai/v1/audio/transcriptions \
   -H "Authorization: Bearer $GROQ_KEY" \
@@ -156,23 +169,10 @@ curl -s --retry 2 --retry-delay 3 \
   -F "model=whisper-large-v3" \
   -F "response_format=text"
 ```
-- Model: `whisper-large-v3` (free tier, high quality)
+- Model: `whisper-large-v3` (Groq free tier, high quality)
 - Use `--retry 2` to handle intermittent SSL resets (curl exit 35)
-- For Cantonese/Mandarin: add `-F "language=zh"` for better accuracy
-- Concatenate chunk results in order with a blank line between
-
-#### Step 5: Fallback to OpenAI Whisper (only if Groq fails)
-```bash
-WHISPER_KEY="${OPENAI_API_KEY:-$(awk -F= '$1=="OPENAI_API_KEY"{print substr($0,index($0,"=")+1); exit}' ~/Projects/K2B/k2b-remote/.env 2>/dev/null)}"
-
-curl -s --retry 1 \
-  https://api.openai.com/v1/audio/transcriptions \
-  -H "Authorization: Bearer $WHISPER_KEY" \
-  -F "file=@<chunk-or-file>" \
-  -F "model=whisper-1" \
-  -F "response_format=text"
-```
-Same pre-split logic applies. Set `transcript_method: openai-whisper`.
+- Set `transcript_method: groq-whisper`
+- Best used when GPTsAPI credit is tight or for k2b-remote Telegram voice memos (currently still on Groq)
 
 > **Note:** MiniMax does NOT have STT/transcription. Their audio APIs are TTS, voice cloning, and voice design only. Do not use `minimax-transcribe.sh` -- it calls a non-existent endpoint.
 
@@ -182,14 +182,14 @@ rm -f /tmp/k2b-transcribe-input.mp3 /tmp/k2b-transcribe-chunk_*.mp3
 ```
 
 ### API Limits
-- **Groq**: ~25MB per request, free tier. Best reliability under 4 minutes per chunk.
-- **OpenAI**: Paid fallback. Model `whisper-1`. 25MB file limit.
+- **GPTsAPI**: `whisper-1`, 25MB per request, billed against GPTsAPI balance. Primary path.
+- **Groq**: `whisper-large-v3`, ~25MB per request, free tier. Fallback / high-volume path.
 
 ### Workflow (after transcription)
 1. Transcription saves to `K2B-Vault/raw/daily/YYYY-MM-DD_transcription_slug.md`
 2. The output note includes frontmatter, the full transcript, and an embed of the source audio
 3. Keith can then process the transcription (compile to wiki/, link to meetings, extract insights)
-4. Set `transcript_method: groq-whisper` or `minimax` in frontmatter
+4. Set `transcript_method: gptsapi-whisper` (default) or `groq-whisper` (fallback) in frontmatter. MiniMax does not have transcription; do not use `minimax`.
 
 ### Use Cases
 - Transcribe Mandarin/Cantonese meetings that Fireflies might miss
@@ -269,5 +269,7 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 - GPTsAPI image cost: $0.019 per `gpt-image-2-plus` request. MiniMax Plus tier daily limits still apply when using `--minimax`.
 - For batch generation, spread across days rather than burning quota in one session
 - Always print the Obsidian embed path so Keith can paste it into notes
-- If API key is not set, tell Keith: "Set MINIMAX_API_KEY in your shell environment. Get it from minimaxi.com dashboard."
-  For the default image path, tell Keith: "Set GPTSAPI_KEY in your shell environment."
+- API key error guidance, by command:
+  - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard."
+  - `/media image --minimax`, `/media video`, `/media music` (MiniMax-only modalities) -- "Set `MINIMAX_API_KEY` in your shell environment. Get it from minimaxi.com dashboard."
+  - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in `~/Projects/K2B/k2b-remote/.env`."

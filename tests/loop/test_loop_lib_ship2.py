@@ -38,6 +38,16 @@ def test_increment_defer_first_time_returns_one(tmp_path):
     assert count == 1
 
 
+def test_increment_defer_fsyncs_parent_dir(tmp_path, monkeypatch):
+    p = tmp_path / "defers.jsonl"
+    synced: list[Path] = []
+    monkeypatch.setattr(loop_lib, "_fsync_dir", lambda path: synced.append(path))
+
+    loop_lib.increment_defer(p, item_id="abc12345", kind="observer", date_str="2026-04-24")
+
+    assert synced == [tmp_path]
+
+
 def test_increment_defer_second_time_returns_two(tmp_path):
     p = tmp_path / "defers.jsonl"
     loop_lib.increment_defer(p, item_id="abc12345", kind="observer", date_str="2026-04-24")
@@ -270,10 +280,935 @@ def test_resolve_index_review_range(tmp_path):
     assert obj.filename == "alpha.md"
 
 
+def test_list_conflicts_sorted_and_stable_ids(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    conflict_dir.mkdir()
+    (conflict_dir / "2026-05-14_b.json").write_text(
+        json.dumps(
+            {
+                "conflict_id": "b",
+                "subject": "Bravo",
+                "predicate": "phone",
+                "existing_value": "1111",
+                "new_value": "2222",
+                "source_session_path": "/tmp/b.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (conflict_dir / "2026-05-14_a.json").write_text(
+        json.dumps(
+            {
+                "conflict_id": "a",
+                "subject": "Alpha",
+                "predicate": "phone",
+                "existing_value": "3333",
+                "new_value": "4444",
+                "source_session_path": "/tmp/a.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    conflicts = loop_lib.list_conflicts(conflict_dir)
+
+    assert [c.conflict_id for c in conflicts] == ["a", "b"]
+    assert all(c.item_id and len(c.item_id) == 8 for c in conflicts)
+
+
+def test_resolve_index_conflict_range_after_observer_and_review(tmp_path):
+    items = loop_lib.parse_candidates(FIXTURE_DIR / "observer-candidates.md")
+    src_dir = tmp_path / "review"
+    src_dir.mkdir()
+    (src_dir / "alpha.md").write_text(
+        "---\nreview-action: pending\n---\n", encoding="utf-8"
+    )
+    conflict_dir = tmp_path / "pending-conflicts"
+    conflict_dir.mkdir()
+    (conflict_dir / "2026-05-14_c.json").write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "new_value": "2830 3709",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    reviews = loop_lib.list_reviews(src_dir)
+    conflicts = loop_lib.list_conflicts(conflict_dir)
+
+    kind, obj = loop_lib.resolve_index(5, items, reviews, conflicts)
+
+    assert kind == "conflict"
+    assert obj.conflict_id == "c"
+
+
+def test_defer_conflict_increments_then_auto_archives(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "new_value": "2830 3709",
+                "source_session_path": "/tmp/s1.jsonl",
+                "surfaced_count": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    new_count, archived_path = loop_lib.defer_conflict(
+        conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+    )
+
+    assert new_count == 3
+    assert archived_path is not None
+    assert archived_path.exists()
+    assert not path.exists()
+    record = json.loads(archived_path.read_text(encoding="utf-8"))
+    assert record["archive_reason"] == "deferred_threshold"
+    assert record["auto_archived_at"] == "2026-05-14"
+
+
+def test_defer_conflict_archives_existing_threshold_count_without_increment(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "new_value": "2830 3709",
+                "source_session_path": "/tmp/s1.jsonl",
+                "surfaced_count": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    new_count, archived_path = loop_lib.defer_conflict(
+        conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+    )
+
+    assert new_count == 3
+    assert archived_path is not None
+    assert not path.exists()
+    record = json.loads(archived_path.read_text(encoding="utf-8"))
+    assert record["surfaced_count"] == 3
+    assert record["archive_reason"] == "deferred_threshold"
+
+
+def test_accept_conflict_replaces_existing_value_and_deletes_conflict(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    row = "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | note:old number 2840 3709 | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone"
+    semantic.write_text("## Rows\n" + row + "\n", encoding="utf-8")
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    changed = loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert changed == semantic
+    text = semantic.read_text(encoding="utf-8")
+    assert "phone:2830 3709" in text
+    assert "phone:2840 3709" not in text
+    assert "note:old number 2840 3709" in text
+    assert not path.exists()
+
+
+def test_accept_conflict_rejects_post_write_file_corruption(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | other | name:Other | phone:1111 1111 | dedupe_key:person:other:phone\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:3",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_atomic_write = loop_lib._atomic_write
+
+    def corrupt_atomic_write(target, payload):
+        real_atomic_write(target, payload.replace("name:Other", "name:Corrupt"))
+
+    monkeypatch.setattr(loop_lib, "_atomic_write", corrupt_atomic_write)
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(RuntimeError, match="target read-back failed"):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+
+
+def test_accept_conflict_allows_unrelated_row_edit_when_value_still_matches(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    changed_row = "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | note:edited after conflict | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone"
+    semantic.write_text("## Rows\n" + changed_row + "\n", encoding="utf-8")
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    text = semantic.read_text(encoding="utf-8")
+    assert not path.exists()
+    assert "note:edited after conflict" in text
+    assert "phone:2830 3709" in text
+
+
+def test_accept_conflict_rejects_target_row_hash_mismatch(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    original_row = "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | note:old number | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone"
+    changed_row = "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | note:manual edit | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone"
+    semantic.write_text("## Rows\n" + changed_row + "\n", encoding="utf-8")
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "existing_line_hash": loop_lib._line_hash(original_row),
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="stale target row"):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    text = semantic.read_text(encoding="utf-8")
+    assert path.exists()
+    assert "note:manual edit" in text
+    assert "phone:2840 3709" in text
+
+
+def test_accept_conflict_preserves_crlf_line_endings(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\r\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\r\n",
+        encoding="utf-8",
+        newline="",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    raw = semantic.read_bytes()
+    assert b"\r\n" in raw
+    assert b"\n##" not in raw
+    assert b"phone:2830 3709" in raw
+
+
+def test_accept_conflict_uses_dedupe_key_anchor_when_multiple_values_match(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | other | name:Other | phone:2840 3709 | dedupe_key:person:other:phone\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:3",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    lines = semantic.read_text(encoding="utf-8").splitlines()
+    assert "other | name:Other | phone:2840 3709" in lines[1]
+    assert "dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2830 3709" in lines[2]
+
+
+def test_accept_conflict_deletes_pending_file_if_already_applied(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2830 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    changed = loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert changed == semantic
+    assert not path.exists()
+    assert "phone:2840 3709" not in semantic.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_tolerates_surfaced_count_change_after_render(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "existing_source": "wiki/context/shelves/semantic.md:2",
+        "new_value": "2830 3709",
+        "dedupe_key": "person:dr-lo-hak-keung:phone",
+        "source_session_path": "/tmp/s1.jsonl",
+        "surfaced_count": 0,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+    path.write_text(json.dumps({**payload, "surfaced_count": 1}), encoding="utf-8")
+
+    loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert not path.exists()
+    assert "phone:2830 3709" in semantic.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_requires_dedupe_key_anchor(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2840 3709\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+    assert "phone:2840 3709" in semantic.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_rejects_control_whitespace_in_new_value(tmp_path):
+    line = "- 2026-05-14 | contact | dr-lo | phone:2840 3709 | dedupe_key:person:dr-lo:phone"
+
+    with pytest.raises(ValueError, match="control whitespace"):
+        loop_lib._replace_pipe_field_value(
+            line,
+            predicate="phone",
+            existing_value="2840 3709",
+            new_value="2830\n3709",
+        )
+
+
+def test_pipe_field_parser_preserves_escaped_pipes():
+    line = "- 2026-05-14 | note | thing | evidence_quote:alpha\\|beta\\|gamma | phone:2840 3709 | dedupe_key:fact:thing:note"
+
+    assert loop_lib._extract_pipe_field(line, "evidence_quote") == "alpha\\|beta\\|gamma"
+    assert loop_lib._extract_pipe_field(line, "phone") == "2840 3709"
+    new_line, status = loop_lib._replace_pipe_field_value(
+        line,
+        predicate="phone",
+        existing_value="2840 3709",
+        new_value="2830 3709",
+    )
+    assert status == "replaced"
+    assert "evidence_quote:alpha\\|beta\\|gamma" in new_line
+    assert "phone:2830 3709" in new_line
+
+
+def test_accept_conflict_rejects_existing_source_outside_shelves(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "../outside.md:1",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="invalid existing_source"):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+    assert "phone:2840 3709" in semantic.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_rejects_existing_source_symlink_escape(tmp_path):
+    vault = tmp_path / "vault"
+    shelves = vault / "wiki" / "context" / "shelves"
+    shelves.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text(
+        "- 2026-05-14 | contact | dr-lo-hak-keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    (shelves / "semantic.md").symlink_to(outside)
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:1",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="outside shelves"):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+    assert "phone:2840 3709" in outside.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_rejects_symlinked_shelves_root(tmp_path):
+    vault = tmp_path / "vault"
+    context = vault / "wiki" / "context"
+    context.mkdir(parents=True)
+    outside_shelves = tmp_path / "outside-shelves"
+    outside_shelves.mkdir()
+    outside = outside_shelves / "semantic.md"
+    outside.write_text(
+        "- 2026-05-14 | contact | dr-lo-hak-keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    (context / "shelves").symlink_to(outside_shelves, target_is_directory=True)
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:1",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="symlinked shelves path"):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+    assert "phone:2840 3709" in outside.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_rejects_existing_source_line_mismatch(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | other | name:Other | phone:2840 3709 | dedupe_key:person:other:phone\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:2840 3709 | dedupe_key:person:dr-lo-hak-keung:phone\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "dedupe_key": "person:dr-lo-hak-keung:phone",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="existing_source line"):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+    assert "person:dr-lo-hak-keung:phone" in semantic.read_text(encoding="utf-8")
+
+
+def test_accept_conflict_keeps_pending_file_if_neither_value_matches(tmp_path):
+    vault = tmp_path / "vault"
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    semantic.parent.mkdir(parents=True)
+    semantic.write_text(
+        "## Rows\n"
+        "- 2026-05-14 | contact | dr-lo-hak-keung | name:Dr. Lo Hak Keung | phone:9999 9999\n",
+        encoding="utf-8",
+    )
+    conflict_dir = vault / ".staging" / "pending-conflicts"
+    conflict_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "existing_source": "wiki/context/shelves/semantic.md:2",
+                "new_value": "2830 3709",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError):
+        loop_lib.accept_conflict(conflict, vault_root=vault)
+
+    assert path.exists()
+    assert "phone:9999 9999" in semantic.read_text(encoding="utf-8")
+
+
+def test_reject_conflict_archives_before_delete(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    path = conflict_dir / "2026-05-14_c.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conflict_id": "c",
+                "subject": "Dr. Lo Hak Keung",
+                "predicate": "phone",
+                "existing_value": "2840 3709",
+                "new_value": "2830 3709",
+                "source_session_path": "/tmp/s1.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    archived = loop_lib.archive_conflict_reject(
+        conflict, archive_dir=archive_dir, date_str="2026-05-14", actor="keith"
+    )
+    loop_lib.reject_conflict(conflict)
+
+    assert archived.exists()
+    assert not path.exists()
+    record = json.loads(archived.read_text(encoding="utf-8"))
+    assert record["rejected_by"] == "keith"
+
+
+def test_defer_conflict_recovers_if_archive_exists_before_pending_delete(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    archived_dir = archive_dir / "2026-05-14"
+    archived_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "new_value": "2830 3709",
+        "source_session_path": "/tmp/s1.jsonl",
+        "surfaced_count": 2,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    archived = archived_dir / path.name
+    archived.write_text(
+        json.dumps(
+            {
+                **payload,
+                "archive_reason": "deferred_threshold",
+                "auto_archived_at": "2026-05-14",
+                "surfaced_count": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    count, recovered = loop_lib.defer_conflict(
+        conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+    )
+
+    assert count == 3
+    assert recovered == archived
+    assert not path.exists()
+
+
+def test_defer_conflict_rejects_stale_archive_count(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    archived_dir = archive_dir / "2026-05-14"
+    archived_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "new_value": "2830 3709",
+        "source_session_path": "/tmp/s1.jsonl",
+        "surfaced_count": 4,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    archived = archived_dir / path.name
+    archived.write_text(
+        json.dumps(
+            {
+                **payload,
+                "archive_reason": "deferred_threshold",
+                "auto_archived_at": "2026-05-14",
+                "surfaced_count": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="stale archive count"):
+        loop_lib.defer_conflict(
+            conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+        )
+
+    assert path.exists()
+
+
+def test_defer_conflict_rejects_archived_count_below_threshold(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    archived_dir = archive_dir / "2026-05-14"
+    archived_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "new_value": "2830 3709",
+        "source_session_path": "/tmp/s1.jsonl",
+        "surfaced_count": 2,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    archived = archived_dir / path.name
+    archived.write_text(
+        json.dumps(
+            {
+                **payload,
+                "archive_reason": "deferred_threshold",
+                "auto_archived_at": "2026-05-14",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="archive count below threshold"):
+        loop_lib.defer_conflict(
+            conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+        )
+
+
+def test_defer_conflict_rejects_premature_archive(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    archived_dir = archive_dir / "2026-05-14"
+    archived_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "new_value": "2830 3709",
+        "source_session_path": "/tmp/s1.jsonl",
+        "surfaced_count": 1,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    archived = archived_dir / path.name
+    archived.write_text(
+        json.dumps(
+            {
+                **payload,
+                "archive_reason": "deferred_threshold",
+                "auto_archived_at": "2026-05-14",
+                "surfaced_count": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="premature archive"):
+        loop_lib.defer_conflict(
+            conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+        )
+
+
+def test_defer_conflict_rejects_archive_conflict_id_mismatch(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    archived_dir = archive_dir / "2026-05-14"
+    archived_dir.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "new_value": "2830 3709",
+        "source_session_path": "/tmp/s1.jsonl",
+        "surfaced_count": 3,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    archived = archived_dir / path.name
+    archived.write_text(
+        json.dumps({**payload, "conflict_id": "other", "archive_reason": "deferred_threshold"}),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="archive conflict_id mismatch"):
+        loop_lib.defer_conflict(
+            conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+        )
+
+
+def test_defer_conflict_rejects_archive_identity_mismatch(tmp_path):
+    conflict_dir = tmp_path / "pending-conflicts"
+    archive_dir = tmp_path / "conflicts.archive"
+    conflict_dir.mkdir()
+    target = archive_dir / "2026-05-14" / "2026-05-14_c.json"
+    target.parent.mkdir(parents=True)
+    path = conflict_dir / "2026-05-14_c.json"
+    payload = {
+        "conflict_id": "c",
+        "subject": "Dr. Lo Hak Keung",
+        "predicate": "phone",
+        "existing_value": "2840 3709",
+        "new_value": "2830 3709",
+        "dedupe_key": "person:dr-lo-hak-keung:phone",
+        "source_session_path": "/tmp/session.jsonl",
+        "surfaced_count": 3,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    target.write_text(
+        json.dumps(
+            {
+                **payload,
+                "subject": "Different Person",
+                "archive_reason": "deferred_threshold",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conflict = loop_lib.list_conflicts(conflict_dir)[0]
+
+    with pytest.raises(ValueError, match="archive identity mismatch"):
+        loop_lib.defer_conflict(
+            conflict, archive_dir=archive_dir, date_str="2026-05-14", threshold=3
+        )
+
+    assert path.exists()
+
+
 def test_resolve_index_out_of_range_raises(tmp_path):
     items = loop_lib.parse_candidates(FIXTURE_DIR / "observer-candidates.md")
     reviews: list = []
     with pytest.raises(IndexError):
-        loop_lib.resolve_index(999, items, reviews)
+        loop_lib.resolve_index(999, items, reviews, [])
     with pytest.raises(IndexError):
-        loop_lib.resolve_index(0, items, reviews)
+        loop_lib.resolve_index(0, items, reviews, [])

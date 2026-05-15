@@ -15,8 +15,18 @@ const ASPECT_RATIO_PATTERN = /^\d+:\d+$/
 const DEFAULT_IMAGE_ASPECT_RATIO = '16:9'
 const MAX_IMAGE_PROMPT_LENGTH = 4000
 const MAX_IMAGE_SLUG_LENGTH = 60
+const MAX_SPEECH_TEXT_LENGTH = 4000
 const SHELL_META_PATTERN = /[`|;&<>]|\$\(|\$\{/
 const SLUG_PATTERN = /^[A-Za-z0-9._-]+$/
+const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g)$/i
+const AUDIO_EXTENSION_PATTERN = /\.mp3$/i
+const SPEECH_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'] as const
+const SPEECH_MODELS = ['tts-1', 'tts-1-hd'] as const
+const SPEECH_VOICE_SET = new Set<string>(SPEECH_VOICES)
+const SPEECH_MODEL_SET = new Set<string>(SPEECH_MODELS)
+const DEFAULT_SPEECH_VOICE = 'onyx'
+const DEFAULT_SPEECH_MODEL = 'tts-1-hd'
+const PLAIN_OPTION_TOKEN_PATTERN = /^[A-Za-z]+$/
 // Process lifetime, not a Telegram API request timeout. The bot already
 // runs longer Agent SDK handlers; sendChatAction calls stay short and
 // separate. The bash script's --timeout MUST be smaller than this minus
@@ -26,17 +36,29 @@ const GPTSAPI_IMAGE_TIMEOUT_MS = 150_000
 const GPTSAPI_CURL_TIMEOUT_S = 30
 const GPTSAPI_NODE_BUDGET_MARGIN_S = 10
 const MINIMAX_IMAGE_TIMEOUT_MS = 90_000
+const GPTSAPI_SPEECH_TIMEOUT_MS = 90_000
 
 export interface MediaImageRequest {
+  kind: 'image'
   provider: 'gptsapi' | 'minimax'
   prompt: string
   aspectRatio: string
   slug?: string
 }
 
+export interface MediaSpeechRequest {
+  kind: 'speech'
+  text: string
+  voice: typeof SPEECH_VOICES[number]
+  model: typeof SPEECH_MODELS[number]
+  slug?: string
+}
+
+type MediaRequest = MediaImageRequest | MediaSpeechRequest
+
 export interface ParsedMediaCommand {
   ok: boolean
-  request?: MediaImageRequest
+  request?: MediaRequest
   message?: string
 }
 
@@ -120,10 +142,13 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
   if (!subcommand) {
     return { ok: false, message: 'Use /media image "prompt" [aspect] [slug].' }
   }
+  if (subcommand === 'speech') {
+    return parseSpeechCommand(commandTokens.slice(2))
+  }
   if (subcommand !== 'image') {
     return {
       ok: false,
-      message: 'Only /media image is wired directly in Telegram. Use the MacBook session for speech, video, music, and transcription.',
+      message: 'Only /media image and /media speech are wired in Telegram. Use the MacBook session for video, music, and transcription.',
     }
   }
 
@@ -194,6 +219,7 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
   return {
     ok: true,
     request: {
+      kind: 'image',
       provider,
       prompt,
       aspectRatio,
@@ -202,14 +228,97 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
   }
 }
 
+function isSpeechVoice(value: string): value is MediaSpeechRequest['voice'] {
+  return SPEECH_VOICE_SET.has(value)
+}
+
+function isSpeechModel(value: string): value is MediaSpeechRequest['model'] {
+  return SPEECH_MODEL_SET.has(value)
+}
+
+function parseSpeechCommand(args: CommandToken[]): ParsedMediaCommand {
+  if (!args[0]?.quoted) {
+    return { ok: false, message: 'Quote the text when using /media speech: /media speech "text" [voice] [model] [slug]' }
+  }
+
+  const text = args[0].value.trim()
+  if (!text) {
+    return { ok: false, message: 'Speech text is missing.' }
+  }
+  if (text.length > MAX_SPEECH_TEXT_LENGTH) {
+    return { ok: false, message: `Speech text is too long. Keep it under ${MAX_SPEECH_TEXT_LENGTH} characters.` }
+  }
+  if (/[\u0000-\u001f\u007f]/.test(text) || SHELL_META_PATTERN.test(text)) {
+    return { ok: false, message: 'Speech text contains unsupported shell metacharacters.' }
+  }
+
+  let voice: MediaSpeechRequest['voice'] = DEFAULT_SPEECH_VOICE
+  let model: MediaSpeechRequest['model'] = DEFAULT_SPEECH_MODEL
+  let cursor = 1
+
+  // Parse optional fields left-to-right: voice first, model second, then
+  // slug fragments. A hyphenated token is treated as a slug, so
+  // `nova my-greeting` consumes voice while `my-greeting nova` stays a slug.
+  const maybeVoice = args[cursor]?.value
+  if (maybeVoice && isSpeechVoice(maybeVoice)) {
+    voice = maybeVoice
+    cursor += 1
+  } else if (maybeVoice && PLAIN_OPTION_TOKEN_PATTERN.test(maybeVoice)) {
+    return {
+      ok: false,
+      message: `Voice ${maybeVoice} is not supported. Choose one of: ${SPEECH_VOICES.join(', ')}.`,
+    }
+  }
+
+  const maybeModel = args[cursor]?.value
+  if (maybeModel && isSpeechModel(maybeModel)) {
+    model = maybeModel
+    cursor += 1
+  } else if (maybeModel && cursor > 1 && PLAIN_OPTION_TOKEN_PATTERN.test(maybeModel)) {
+    return {
+      ok: false,
+      message: `Model ${maybeModel} is not supported. Choose one of: ${SPEECH_MODELS.join(', ')}.`,
+    }
+  }
+
+  const slug = args.slice(cursor).map((arg) => arg.value).join('-') || undefined
+  if (slug !== undefined) {
+    if (slug.length > MAX_IMAGE_SLUG_LENGTH) {
+      return { ok: false, message: `Slug is too long. Keep it under ${MAX_IMAGE_SLUG_LENGTH} characters.` }
+    }
+    if (!SLUG_PATTERN.test(slug)) {
+      return { ok: false, message: 'Slug must be letters, numbers, dot, dash, or underscore only.' }
+    }
+  }
+
+  return {
+    ok: true,
+    request: {
+      kind: 'speech',
+      text,
+      voice,
+      model,
+      ...(slug ? { slug } : {}),
+    },
+  }
+}
+
 export function extractGeneratedImagePath(stdout: string): string | undefined {
+  return extractGeneratedPath(stdout, IMAGE_EXTENSION_PATTERN)
+}
+
+export function extractGeneratedAudioPath(stdout: string): string | undefined {
+  return extractGeneratedPath(stdout, AUDIO_EXTENSION_PATTERN)
+}
+
+function extractGeneratedPath(stdout: string, extPattern: RegExp): string | undefined {
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line) continue
     const savedMatch = line.match(/^Saved:\s*(.+)$/)
     if (savedMatch?.[1]) {
       const candidate = savedMatch[1].trim()
-      const safePath = candidatePathLooksSafe(candidate)
+      const safePath = candidatePathLooksSafeForExt(candidate, extPattern)
       if (safePath) return safePath
     }
   }
@@ -224,10 +333,10 @@ export function extractGeneratedImagePath(stdout: string): string | undefined {
 // for the right reason instead of being silently collapsed first.
 // Filesystem-level (symlink) resolution happens once, separately, in
 // resolveImagePathInsideAllowedRoots — never paired with existsSync.
-function candidatePathLooksSafe(candidate: string): string | undefined {
+function candidatePathLooksSafeForExt(candidate: string, extPattern: RegExp): string | undefined {
   if (!candidate || candidate.includes('\0')) return undefined
   if (!isAbsolute(candidate)) return undefined
-  if (!/\.(png|jpe?g)$/i.test(candidate)) return undefined
+  if (!extPattern.test(candidate)) return undefined
   if (candidate.split(/[\\/]/).includes('..')) return undefined
   const normalized = resolve(candidate)
   const allowedRoots = [K2B_VAULT_PATH, '/tmp']
@@ -245,7 +354,15 @@ function candidatePathLooksSafe(candidate: string): string | undefined {
 // string for the actual sendMedia call so symlink swaps after this
 // point cannot redirect the read.
 function resolveImagePathInsideAllowedRoots(candidate: string): string | undefined {
-  const looksSafe = candidatePathLooksSafe(candidate)
+  return resolvePathInsideAllowedRoots(candidate, IMAGE_EXTENSION_PATTERN)
+}
+
+function resolveAudioPathInsideAllowedRoots(candidate: string): string | undefined {
+  return resolvePathInsideAllowedRoots(candidate, AUDIO_EXTENSION_PATTERN)
+}
+
+function resolvePathInsideAllowedRoots(candidate: string, extPattern: RegExp): string | undefined {
+  const looksSafe = candidatePathLooksSafeForExt(candidate, extPattern)
   if (!looksSafe) return undefined
   let realPath: string
   let stat: ReturnType<typeof lstatSync>
@@ -304,6 +421,30 @@ function fileLooksLikeImage(realPath: string): boolean {
       buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
     const isJpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff
     return isPng || isJpeg
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd) } catch { /* ignore */ }
+    }
+  }
+}
+
+const MIN_AUDIO_BYTES = 256
+const MP3_FRAME_SYNC_SECOND_BYTES = new Set([0xfb, 0xf3, 0xf2, 0xfa, 0xe3, 0xe2, 0xeb, 0xea])
+
+function fileLooksLikeAudio(realPath: string): boolean {
+  let fd: number | undefined
+  try {
+    const stat = lstatSync(realPath)
+    if (!stat.isFile() || stat.size < MIN_AUDIO_BYTES) return false
+    fd = openSync(realPath, 'r')
+    const buf = Buffer.alloc(16)
+    const n = readSync(fd, buf, 0, 16, 0)
+    if (n < 3) return false
+    const hasId3Header = buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33
+    const hasFrameSync = n >= 2 && buf[0] === 0xff && MP3_FRAME_SYNC_SECOND_BYTES.has(buf[1])
+    return hasId3Header || hasFrameSync
   } catch {
     return false
   } finally {
@@ -441,6 +582,104 @@ function runImageScript(request: MediaImageRequest): Promise<{ stdout: string; s
   })
 }
 
+function runSpeechScript(request: MediaSpeechRequest): Promise<{ stdout: string; stderr: string }> {
+  const gptsapiKey = gptsapiKeyForMedia()
+
+  if (!gptsapiKey) {
+    return Promise.reject(new Error('GPTSAPI_KEY is not set in the bot environment.'))
+  }
+
+  const script = resolve(K2B_PROJECT_ROOT, 'scripts', 'gptsapi-speech.sh')
+  const args = [
+    request.text,
+    request.voice,
+    request.model,
+    ...(request.slug ? [request.slug] : []),
+  ]
+
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(script, args, {
+      cwd: K2B_PROJECT_ROOT,
+      env: {
+        ...process.env,
+        GPTSAPI_KEY: gptsapiKey,
+        K2B_VAULT_PATH,
+        K2B_VAULT: K2B_VAULT_PATH,
+      },
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let killTimeout: ReturnType<typeof setTimeout> | undefined
+
+    const clearTimers = () => {
+      clearTimeout(timeout)
+      if (killTimeout) {
+        clearTimeout(killTimeout)
+        killTimeout = undefined
+      }
+    }
+
+    const signalChild = (signal: NodeJS.Signals) => {
+      try {
+        child.kill(signal)
+      } catch {
+        // Process is already gone.
+      }
+    }
+
+    const timeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      signalChild('SIGTERM')
+      killTimeout = setTimeout(() => {
+        signalChild('SIGKILL')
+      }, 5000).unref()
+      const err = new Error(`speech generation timed out after ${GPTSAPI_SPEECH_TIMEOUT_MS / 1000}s`) as Error & {
+        stdout?: string
+        stderr?: string
+        code?: number
+      }
+      err.stdout = stdout
+      err.stderr = stderr
+      reject(err)
+    }, GPTSAPI_SPEECH_TIMEOUT_MS)
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.on('error', (err) => {
+      clearTimers()
+      if (settled) return
+      settled = true
+      reject(err)
+    })
+    child.on('close', (code) => {
+      clearTimers()
+      if (settled) return
+      settled = true
+      if (code === 0) {
+        resolvePromise({ stdout, stderr })
+      } else {
+        const err = new Error(stderr.trim() || `speech script exited ${code}`) as Error & {
+          stdout?: string
+          stderr?: string
+          code?: number
+        }
+        err.stdout = stdout
+        err.stderr = stderr
+        err.code = code ?? undefined
+        reject(err)
+      }
+    })
+  })
+}
+
 function gptsapiKeyForMedia(): string {
   return process.env.GPTSAPI_KEY || MEDIA_ENV['GPTSAPI_KEY'] || ''
 }
@@ -527,8 +766,14 @@ export async function handleMediaCommand(ctx: Context): Promise<void> {
     return
   }
 
-  const providerLabel = parsed.request.provider === 'gptsapi' ? 'gpt-image-2-plus' : 'MiniMax image-01'
-  const waitText = parsed.request.provider === 'gptsapi'
+  const request = parsed.request
+  if (request.kind === 'speech') {
+    await handleSpeechMediaCommand(ctx, chatId, request)
+    return
+  }
+
+  const providerLabel = request.provider === 'gptsapi' ? 'gpt-image-2-plus' : 'MiniMax image-01'
+  const waitText = request.provider === 'gptsapi'
     ? 'Generating image with gpt-image-2-plus. This usually takes about 40 seconds.'
     : 'Generating image with MiniMax image-01.'
   await replyText(ctx, waitText)
@@ -544,10 +789,10 @@ export async function handleMediaCommand(ctx: Context): Promise<void> {
   const uploadInterval = setInterval(sendUploadAction, TYPING_REFRESH_MS)
 
   try {
-    const { stdout, stderr } = await runImageScript(parsed.request)
+    const { stdout, stderr } = await runImageScript(request)
     if (stderr.trim()) {
       logger.info(
-        { provider: parsed.request.provider, stderr: safeUserErrorMessage(stderr).slice(0, 2000) },
+        { provider: request.provider, stderr: safeUserErrorMessage(stderr).slice(0, 2000) },
         'media image script stderr'
       )
     }
@@ -610,6 +855,88 @@ export async function handleMediaCommand(ctx: Context): Promise<void> {
       await replyText(ctx, `Image command rejected: ${trimmed}`)
     } else {
       await replyText(ctx, `Image generation failed. Provider: ${providerLabel}. Check bot logs for details.`)
+    }
+  } finally {
+    clearInterval(uploadInterval)
+  }
+}
+
+async function handleSpeechMediaCommand(ctx: Context, chatId: number, request: MediaSpeechRequest): Promise<void> {
+  const providerLabel = `GPTsAPI ${request.model}`
+  await replyText(ctx, `Generating speech with ${request.model}. This usually takes about 5 to 10 seconds.`)
+
+  const sendUploadAction = async () => {
+    try {
+      await ctx.api.sendChatAction(chatId, 'upload_voice')
+    } catch {
+      // Ignore transient chat action failures.
+    }
+  }
+  await sendUploadAction()
+  const uploadInterval = setInterval(sendUploadAction, TYPING_REFRESH_MS)
+
+  try {
+    const { stdout, stderr } = await runSpeechScript(request)
+    if (stderr.trim()) {
+      logger.info(
+        { model: request.model, voice: request.voice, stderr: safeUserErrorMessage(stderr).slice(0, 2000) },
+        'media speech script stderr'
+      )
+    }
+    const audioPath = extractGeneratedAudioPath(stdout)
+    const safeAudioPath = audioPath ? resolveAudioPathInsideAllowedRoots(audioPath) : undefined
+    if (!safeAudioPath) {
+      logger.error(
+        {
+          stdout: safeUserErrorMessage(stdout).slice(0, 2000),
+          stderr: safeUserErrorMessage(stderr).slice(0, 2000),
+        },
+        'media speech script did not produce a readable path'
+      )
+      await replyText(ctx, `Speech generation finished, but I could not find the output file. Provider: ${providerLabel}.`)
+      return
+    }
+    if (!fileLooksLikeAudio(safeAudioPath)) {
+      logger.error({ audioPath: safeUserErrorMessage(safeAudioPath) }, 'media speech file failed magic-byte check')
+      await replyText(ctx, 'Speech generation produced a file that is not a valid MP3. Skipping send.')
+      return
+    }
+    const vaultRel = toVaultRelativePath(safeAudioPath)
+    if (!vaultRel) {
+      logger.error({ audioPath: safeUserErrorMessage(safeAudioPath) }, 'media speech path outside vault')
+      await replyText(ctx, 'Speech generation finished outside the vault, so I will not send that file through Telegram.')
+      return
+    }
+
+    const obsidianRel = vaultRel.split(sep).join('/')
+    const caption = `Generated via ${providerLabel}`
+    const sent = await sendMedia(ctx.api, chatId, {
+      type: 'audio',
+      path: safeAudioPath,
+      caption,
+    })
+
+    if (sent) {
+      await replyText(ctx, `Done. Obsidian embed: ![[${obsidianRel}]]`)
+    } else {
+      const queued = enqueueOutboxManifest({ type: 'audio', path: safeAudioPath, caption })
+      const tail = queued
+        ? 'I have queued it for retry through the outbox.'
+        : 'Could not queue a retry, so please pull it from the vault.'
+      await replyText(ctx, `Generated speech but Telegram could not send it. ${tail} Obsidian embed: ![[${obsidianRel}]]`)
+    }
+  } catch (err) {
+    const detail = safeUserErrorMessage(errorMessage(err))
+    logger.error({ err: redactErrorForLog(err) }, 'media speech command failed')
+    logger.info({ detail: detail.slice(0, 1000) }, 'media speech failure detail')
+    const code = (err as { code?: number } | null)?.code
+    if (code === 2) {
+      const stderrText = (err as { stderr?: string } | null)?.stderr ?? ''
+      const hint = safeUserErrorMessage(stderrText).split('\n').filter(Boolean).slice(-1)[0] ?? detail
+      const trimmed = hint.length > 280 ? `${hint.slice(0, 280)}...` : hint
+      await replyText(ctx, `Speech command rejected: ${trimmed}`)
+    } else {
+      await replyText(ctx, `Speech generation failed. Provider: ${providerLabel}. Check bot logs for details.`)
     }
   } finally {
     clearInterval(uploadInterval)

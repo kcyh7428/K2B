@@ -101,7 +101,9 @@ Keith partners with Andrew on TalentSignals (AI automations for recruiting firms
 - Gmail (read + draft only)
 - Google Calendar
 - Fireflies (meeting transcripts)
-- MiniMax (image generation, TTS, STT, video, music)
+- GPTsAPI (image generation, TTS via `tts-1-hd`, transcription via `whisper-1`)
+- MiniMax (image fallback, VLM/OCR for washing-machine, video, music; TTS retired 2026-05-14)
+- Groq Whisper (k2b-remote Telegram voice memo transcription; `/media transcribe` fallback)
 
 ## Obsidian Vault Structure
 
@@ -191,10 +193,10 @@ K2B-Vault/
 **What gets built**:
 - `k2b-media-generator` skill -- `/media` command wrapping image, speech, transcription, video, music
 - MiniMax MCP server (`minimax-mcp-js`) in `.mcp.json` for direct Claude Code tool access
-- Bash scripts: `minimax-common.sh`, `minimax-image.sh`, `minimax-speech.sh`, `minimax-transcribe.sh`
+- Bash scripts: `minimax-common.sh`, `minimax-image.sh` (fallback only), `gptsapi-image.sh`, `gptsapi-speech.sh`, `gptsapi-transcribe.sh`
 - `Assets/` folder in vault (images/, audio/, video/) with naming convention `YYYY-MM-DD_type_slug.ext`
-- Image generation via `image-01` model (50/day on Plus tier)
-- Text-to-speech via `speech-2.8-hd` (40 languages, Mandarin/Cantonese/English, 7 emotions)
+- Image generation via GPTsAPI `gpt-image-2-plus` (default); MiniMax `image-01` as `--minimax` fallback
+- Text-to-speech via GPTsAPI `tts-1-hd` (50+ languages, 6 voices: alloy, echo, fable, onyx, nova, shimmer)
 - Audio transcription (Chinese/English STT) for meeting recordings
 - Video generation (Hailuo 2.3) and music (Music 2.5+) ready in code, requires Max tier upgrade
 - Keith's subscription: Plus (98 RMB/mo). Max tier (198 RMB/mo) unlocks video + music.
