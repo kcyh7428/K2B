@@ -3,14 +3,17 @@ import { request } from 'node:https'
 import { basename, extname, dirname, resolve } from 'node:path'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { GROQ_API_KEY, HTTP_PROXY } from './config.js'
+import { readEnvFile } from './env.js'
 import { logger } from './logger.js'
 
 const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : undefined
+const VOICE_ENV = readEnvFile(['GPTSAPI_KEY'])
 
 export function voiceCapabilities(): { stt: boolean; tts: boolean } {
+  const gptsapiKey = process.env.GPTSAPI_KEY || VOICE_ENV['GPTSAPI_KEY'] || ''
   return {
     stt: !!GROQ_API_KEY,
-    tts: false,
+    tts: !!gptsapiKey,
   }
 }
 

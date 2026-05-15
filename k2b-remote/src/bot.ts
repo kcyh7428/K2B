@@ -577,7 +577,8 @@ export function createBot(): Bot {
       '/memory - Show recent memories\n' +
       '/forget - Clear session (alias for /newchat)\n' +
       '/voice - Check voice capabilities\n' +
-      '/media image - Generate an image'
+      '/media image - Generate an image\n' +
+      '/media speech - Generate speech (TTS)'
     )
   })
 

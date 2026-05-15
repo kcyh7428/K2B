@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { K2B_VAULT_PATH } from './config.js'
-import { extractGeneratedImagePath, parseMediaCommand, safeUserErrorMessage, splitCommandArgs } from './mediaCommand.js'
+import {
+  extractGeneratedAudioPath,
+  extractGeneratedImagePath,
+  parseMediaCommand,
+  safeUserErrorMessage,
+  splitCommandArgs,
+} from './mediaCommand.js'
 
 describe('splitCommandArgs', () => {
   it('keeps quoted prompts as one argument', () => {
@@ -51,6 +57,7 @@ describe('parseMediaCommand', () => {
     expect(parseMediaCommand('/media image "Clean executive K2B logo" 1:1 logo')).toEqual({
       ok: true,
       request: {
+        kind: 'image',
         provider: 'gptsapi',
         prompt: 'Clean executive K2B logo',
         aspectRatio: '1:1',
@@ -63,6 +70,7 @@ describe('parseMediaCommand', () => {
     expect(parseMediaCommand('/media image --minimax "clean stylized sketch" 21:9 story')).toEqual({
       ok: true,
       request: {
+        kind: 'image',
         provider: 'minimax',
         prompt: 'clean stylized sketch',
         aspectRatio: '21:9',
@@ -81,6 +89,7 @@ describe('parseMediaCommand', () => {
     expect(parseMediaCommand('/media image clean executive logo')).toEqual({
       ok: true,
       request: {
+        kind: 'image',
         provider: 'gptsapi',
         prompt: 'clean executive logo',
         aspectRatio: '16:9',
@@ -88,10 +97,100 @@ describe('parseMediaCommand', () => {
     })
   })
 
-  it('rejects unsupported media subcommands', () => {
-    const parsed = parseMediaCommand('/media speech hello')
+  it('parses speech with defaults', () => {
+    expect(parseMediaCommand('/media speech "hello world"')).toEqual({
+      ok: true,
+      request: {
+        kind: 'speech',
+        text: 'hello world',
+        voice: 'onyx',
+        model: 'tts-1-hd',
+      },
+    })
+  })
+
+  it('consumes the optional speech voice', () => {
+    expect(parseMediaCommand('/media speech "hello" nova')).toEqual({
+      ok: true,
+      request: {
+        kind: 'speech',
+        text: 'hello',
+        voice: 'nova',
+        model: 'tts-1-hd',
+      },
+    })
+  })
+
+  it('consumes the optional speech voice and model', () => {
+    expect(parseMediaCommand('/media speech "hello" nova tts-1')).toEqual({
+      ok: true,
+      request: {
+        kind: 'speech',
+        text: 'hello',
+        voice: 'nova',
+        model: 'tts-1',
+      },
+    })
+  })
+
+  it('consumes the optional speech voice, model, and slug', () => {
+    expect(parseMediaCommand('/media speech "hello" nova tts-1 my-clip')).toEqual({
+      ok: true,
+      request: {
+        kind: 'speech',
+        text: 'hello',
+        voice: 'nova',
+        model: 'tts-1',
+        slug: 'my-clip',
+      },
+    })
+  })
+
+  it('keeps a bare non-voice token as the speech slug', () => {
+    expect(parseMediaCommand('/media speech "hello" my-clip')).toEqual({
+      ok: true,
+      request: {
+        kind: 'speech',
+        text: 'hello',
+        voice: 'onyx',
+        model: 'tts-1-hd',
+        slug: 'my-clip',
+      },
+    })
+  })
+
+  it('rejects unquoted speech text', () => {
+    const parsed = parseMediaCommand('/media speech hello world')
     expect(parsed.ok).toBe(false)
-    expect(parsed.message).toContain('Only /media image')
+    expect(parsed.message).toBe('Quote the text when using /media speech: /media speech "text" [voice] [model] [slug]')
+  })
+
+  it('rejects unsupported speech voices', () => {
+    const parsed = parseMediaCommand('/media speech "hello" badvoice')
+    expect(parsed.ok).toBe(false)
+    expect(parsed.message).toBe('Voice badvoice is not supported. Choose one of: alloy, echo, fable, onyx, nova, shimmer.')
+  })
+
+  it('rejects unsupported speech models', () => {
+    const parsed = parseMediaCommand('/media speech "hello" onyx badmodel')
+    expect(parsed.ok).toBe(false)
+    expect(parsed.message).toBe('Model badmodel is not supported. Choose one of: tts-1, tts-1-hd.')
+  })
+
+  it('rejects shell metacharacters in speech text before invoking wrapper scripts', () => {
+    const parsed = parseMediaCommand('/media speech "hello $(touch /tmp/x)"')
+    expect(parsed.ok).toBe(false)
+    expect(parsed.message).toBe('Speech text contains unsupported shell metacharacters.')
+  })
+
+  it('rejects unsupported media subcommands with the updated Telegram wiring message', () => {
+    for (const command of ['/media transcribe x', '/media video x', '/media music x']) {
+      const parsed = parseMediaCommand(command)
+      expect(parsed.ok).toBe(false)
+      expect(parsed.message).toBe(
+        'Only /media image and /media speech are wired in Telegram. Use the MacBook session for video, music, and transcription.'
+      )
+    }
   })
 
   it('rejects unquoted prompts when an aspect ratio token is present', () => {
@@ -104,6 +203,7 @@ describe('parseMediaCommand', () => {
     expect(parseMediaCommand('/media image "draw a 16:9 grid"')).toEqual({
       ok: true,
       request: {
+        kind: 'image',
         provider: 'gptsapi',
         prompt: 'draw a 16:9 grid',
         aspectRatio: '16:9',
@@ -147,6 +247,16 @@ describe('extractGeneratedImagePath', () => {
   it('rejects traversal paths inside allowed roots', () => {
     expect(extractGeneratedImagePath('Saved: /tmp/../etc/passwd.png\n')).toBeUndefined()
     expect(extractGeneratedImagePath(`Saved: ${K2B_VAULT_PATH}/../outside.png\n`)).toBeUndefined()
+  })
+})
+
+describe('extractGeneratedAudioPath', () => {
+  it('reads mp3 paths from the Saved line', () => {
+    expect(extractGeneratedAudioPath('Saved: /tmp/clip.mp3\nVault path: Assets/audio/clip.mp3\n')).toBe('/tmp/clip.mp3')
+  })
+
+  it('rejects non-mp3 saved paths', () => {
+    expect(extractGeneratedAudioPath('Saved: /tmp/not-audio.txt\n')).toBeUndefined()
   })
 })
 
