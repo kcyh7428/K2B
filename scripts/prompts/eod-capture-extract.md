@@ -38,7 +38,11 @@ Rules:
 - Return valid JSON, no markdown fence.
 - Use high confidence only when the evidence is explicit.
 - Every extracted item must include a dedupe_key. Use a stable lowercase key with colon separators. Each segment must start with a lowercase letter or number and may contain lowercase letters, numbers, `.`, `_`, or `-`; do not start/end with `:` or use `::`.
-- Do not put pipe characters (`|`) in any field value.
+- Do not use pipe characters (`|`) as separators or formatting. If a pipe
+  character is part of the actual source text, copy it only as part of the
+  exact source value.
+- `evidence_quote` MUST appear character-for-character in the transcript. Do
+  not paraphrase. If you cannot find an exact quote, skip that item.
 - Keep `evidence_quote` to the shortest exact span needed; do not add unrelated
   private context, secrets, or surrounding transcript text.
 - For phone numbers, preserve spacing as written.

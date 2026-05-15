@@ -38,14 +38,19 @@ DEFAULT_SHELF_WRITER_TIMEOUT_SECONDS = 30
 MIN_EVIDENCE_QUOTE_CHARS = 10
 PROJECT_SCOPE_RE = re.compile(r"(^|/)Projects/(K2B|K2Bi)(?:$|/)")
 PIPE_UNSAFE_FIELDS = (
+    "predicate",
+    "scope",
+    "dedupe_key",
+)
+CONTROL_WHITESPACE_UNSAFE_FIELDS = (
     "subject",
     "predicate",
     "object",
     "scope",
     "dedupe_key",
-    "evidence_quote",
 )
 DEDUPE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+$")
+EVIDENCE_QUOTE_UNSUPPORTED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 ExtractFunc = Callable[[str, Path], dict]
 
@@ -80,15 +85,29 @@ def _content_to_text(content: object) -> str:
     return ""
 
 
+def _is_codex_bootstrap_text(text: str) -> bool:
+    stripped = text.lstrip()
+    return (
+        stripped.startswith("# AGENTS.md instructions for ")
+        or stripped.startswith("<environment_context>")
+    )
+
+
 def _event_to_text(event: dict) -> str:
     event_type = str(event.get("type", ""))
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     item = payload.get("item") if isinstance(payload, dict) else None
     if not isinstance(item, dict):
-        item = event.get("message") if isinstance(event.get("message"), dict) else event
+        if event_type == "response_item" and isinstance(payload, dict):
+            item = payload
+        else:
+            item = event.get("message") if isinstance(event.get("message"), dict) else event
 
     item_type = str(item.get("type", event_type))
     role = str(item.get("role", event.get("role", "")))
+
+    if item_type == "message" and role in {"developer", "system"}:
+        return ""
 
     if item_type in {"function_call_output", "tool_result"}:
         raw = item.get("output", item.get("content", ""))
@@ -105,6 +124,8 @@ def _event_to_text(event: dict) -> str:
     if not text:
         text = _content_to_text(event.get("message", ""))
     if not text:
+        return ""
+    if role == "user" and _is_codex_bootstrap_text(text):
         return ""
 
     label = role or event_type or "event"
@@ -503,9 +524,7 @@ def call_kimi_extractor(payload: str, session_path: Path) -> dict:
                     time.sleep(_extractor_retry_delay(attempt))
                     continue
                 raise last_error from exc
-            validated = validate_extraction(data, session_path)
-            verify_evidence_quotes(validated, payload, session_path=session_path)
-            return validated
+            return validate_extraction_shape(data, session_path)
         last_error = RuntimeError(
             f"eod extractor failed for {session_path}: {proc.stderr.strip()}"
         )
@@ -558,32 +577,102 @@ def _extractor_retry_delay(attempt: int, *, rate_limited: bool = False) -> float
     return min(base, 30) + random.uniform(0, 1)
 
 
-def validate_extraction(data: object, session_path: Path) -> dict:
+def validate_extraction_shape(data: object, session_path: Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"extractor output for {session_path} is not an object")
     items = data.get("items", [])
     if not isinstance(items, list):
         raise ValueError(f"extractor output for {session_path} has non-list items")
-    for idx, item in enumerate(items):
-        _validate_extraction_item(item, idx=idx, source=session_path)
     data["items"] = items
     return data
 
 
+def validate_extraction(data: object, session_path: Path) -> dict:
+    data = validate_extraction_shape(data, session_path)
+    items = data.get("items", [])
+    for idx, item in enumerate(items):
+        _validate_extraction_item(item, idx=idx, source=session_path)
+    return data
+
+
+def _normalize_evidence_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _validate_evidence_quote_controls(quote: str, *, idx: int) -> None:
+    if EVIDENCE_QUOTE_UNSUPPORTED_CONTROL_RE.search(quote):
+        raise ValueError(
+            f"extractor item {idx} has unsupported control character in evidence_quote"
+        )
+
+
 def verify_evidence_quotes(data: dict, payload: str, *, session_path: Path) -> None:
+    normalized_payload = _normalize_evidence_text(payload)
     for idx, item in enumerate(data.get("items", [])):
         if not isinstance(item, dict):
             continue
-        quote = str(item.get("evidence_quote") or "").strip()
-        if quote and len(quote) < MIN_EVIDENCE_QUOTE_CHARS:
-            raise ValueError(
-                f"evidence_quote for item {idx} in {session_path} is too short"
+        _validate_item_evidence_quote(
+            item,
+            idx=idx,
+            normalized_payload=normalized_payload,
+            session_path=session_path,
+        )
+
+
+def _validate_item_evidence_quote(
+    item: dict,
+    *,
+    idx: int,
+    normalized_payload: str,
+    session_path: Path,
+) -> None:
+    quote = str(item.get("evidence_quote") or "").strip()
+    _validate_evidence_quote_controls(quote, idx=idx)
+    normalized_quote = _normalize_evidence_text(quote)
+    if normalized_quote and len(normalized_quote) < MIN_EVIDENCE_QUOTE_CHARS:
+        raise ValueError(
+            f"evidence_quote for item {idx} in {session_path} is too short"
+        )
+    if normalized_quote and normalized_quote not in normalized_payload:
+        raise ValueError(
+            f"evidence_quote for item {idx} in {session_path} is not present "
+            "in stripped transcript"
+        )
+
+
+def _filter_extraction_items(
+    data: dict, payload: str, session_path: Path
+) -> tuple[dict, list[dict]]:
+    shaped = validate_extraction_shape(data, session_path)
+    normalized_payload = _normalize_evidence_text(payload)
+    valid_items: list[dict] = []
+    rejections: list[dict] = []
+    for idx, item in enumerate(shaped.get("items", [])):
+        try:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"extractor item {idx} for {session_path} is not an object"
+                )
+            _validate_extraction_item(item, idx=idx, source=session_path)
+            _validate_item_evidence_quote(
+                item,
+                idx=idx,
+                normalized_payload=normalized_payload,
+                session_path=session_path,
             )
-        if quote and quote not in payload:
-            raise ValueError(
-                f"evidence_quote for item {idx} in {session_path} is not present "
-                "in stripped transcript"
+        except ValueError as exc:
+            rejections.append(
+                {
+                    "item_index": idx,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "item": item,
+                }
             )
+            continue
+        valid_items.append(item)
+    filtered = dict(shaped)
+    filtered["items"] = valid_items
+    return filtered, rejections
 
 
 def _validate_extraction_item(item: object, *, idx: int, source: Path) -> None:
@@ -644,10 +733,15 @@ def _validate_extraction_item(item: object, *, idx: int, source: Path) -> None:
                 raise ValueError(
                     f"extractor item {idx} has unsupported pipe delimiter in {field}"
                 )
+        for field in CONTROL_WHITESPACE_UNSAFE_FIELDS:
+            value = str(item.get(field, ""))
             if any(ch in value for ch in ("\n", "\r", "\t")):
                 raise ValueError(
                     f"extractor item {idx} has unsupported control whitespace in {field}"
                 )
+        _validate_evidence_quote_controls(
+            str(item.get("evidence_quote", "")), idx=idx
+        )
 
 
 def _existing_valid_extraction(path: Path, *, transcript_sha256: str | None = None) -> bool:
@@ -710,6 +804,21 @@ def run_job_a(
                     data.setdefault("source_app", detect_source_app(session_path))
                     data.setdefault("items", [])
                     data["transcript_sha256"] = transcript_sha256
+                    data, rejections = _filter_extraction_items(
+                        data, payload, session_path
+                    )
+                    for rejection in rejections:
+                        _write_extraction_rejection(
+                            vault_path,
+                            session_path,
+                            run_date=run_date,
+                            rejection=rejection,
+                            transcript_sha256=transcript_sha256,
+                        )
+                    if rejections and not data.get("items"):
+                        raise ValueError(
+                            f"all extractor items rejected for {session_path}"
+                        )
                     _atomic_write_json(out_path, data)
                     written.append(out_path)
                 except (
@@ -881,6 +990,38 @@ def _write_extraction_failure(
         failure["transcript_sha256"] = transcript_sha256
     path = failure_dir / f"{run_date}_{_safe_session_id(session_path)}.json"
     _atomic_write_json(path, failure)
+    return path
+
+
+def _write_extraction_rejection(
+    vault_path: Path,
+    session_path: Path,
+    *,
+    run_date: str,
+    rejection: dict,
+    transcript_sha256: str | None = None,
+) -> Path:
+    rejection_dir = vault_path / ".staging" / "extraction-rejections"
+    item_index = int(rejection.get("item_index", 0))
+    digest = hashlib.sha256(
+        json.dumps(rejection, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    payload = {
+        "rejected_at": datetime.now().isoformat(timespec="microseconds"),
+        "run_date": run_date,
+        "session_path": str(session_path),
+        "source_app": detect_source_app(session_path),
+        "item_index": item_index,
+        "error": str(rejection.get("error", "")),
+        "item": rejection.get("item"),
+    }
+    if transcript_sha256:
+        payload["transcript_sha256"] = transcript_sha256
+    path = (
+        rejection_dir
+        / f"{run_date}_{_safe_session_id(session_path)}_item-{item_index}_{digest}.json"
+    )
+    _atomic_write_json(path, payload)
     return path
 
 

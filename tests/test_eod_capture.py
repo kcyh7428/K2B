@@ -112,6 +112,85 @@ def test_strip_codex_session_keeps_user_text_and_truncates_tool_output(tmp_path)
     assert long_output not in stripped
 
 
+def test_strip_codex_session_handles_payload_as_message_item(tmp_path):
+    session = tmp_path / "rollout-real-shape.jsonl"
+    session.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "developer",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "developer instructions are not memory",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "# AGENTS.md instructions for /Users/keithmbpm2/Projects/K2B\n\n<INSTRUCTIONS>\nK2B -- Agent Onboarding Guide\n</INSTRUCTIONS>",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "tell me your understand about the '/goal'",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "K2B treats /goal as a build-time controller.",
+                                }
+                            ],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stripped = eod_capture.strip_transcript(session)
+
+    assert "tell me your understand about the '/goal'" in stripped
+    assert "K2B treats /goal as a build-time controller." in stripped
+    assert "developer instructions are not memory" not in stripped
+    assert "K2B -- Agent Onboarding Guide" not in stripped
+
+
 def test_strip_transcript_rejects_malformed_json_line(tmp_path):
     session = tmp_path / "broken.jsonl"
     session.write_text('{"type": "user", "content": "ok"}\n{not json\n', encoding="utf-8")
@@ -203,6 +282,95 @@ def test_job_a_writes_failure_marker_and_continues(tmp_path):
     ).hexdigest()
 
 
+def test_job_a_keeps_valid_items_and_rejects_bad_items_from_mixed_kimi_response(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    payload_text = (
+        "alpha fact one is true. beta fact two is true. gamma fact three is true."
+    )
+    session.write_text(
+        json.dumps({"type": "user", "content": payload_text}) + "\n",
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+
+    def fake_run(*_args, **_kwargs):
+        return eod_capture.subprocess.CompletedProcess(
+            args=["kimi"],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "items": [
+                        {
+                            "kind": "fact",
+                            "subject": "Alpha",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "alpha fact one is true",
+                            "dedupe_key": "fact:alpha:status",
+                        },
+                        {
+                            "kind": "decision",
+                            "subject": "Beta",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "beta fact two is true",
+                            "dedupe_key": "decision:beta:status",
+                        },
+                        {
+                            "kind": "learning",
+                            "subject": "Gamma",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "gamma fact three is true",
+                            "dedupe_key": "learning:gamma:status",
+                        },
+                        {
+                            "kind": "fact",
+                            "subject": "Bad quote",
+                            "predicate": "status",
+                            "object": "bad",
+                            "confidence": "high",
+                            "evidence_quote": "not present in payload",
+                            "dedupe_key": "fact:bad-quote:status",
+                        },
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+
+    written = eod_capture.run_job_a([session], vault_path=vault, run_date="2026-05-14")
+
+    rejection_files = sorted(
+        (vault / ".staging" / "extraction-rejections").glob("*.json")
+    )
+    staged = json.loads(written[0].read_text(encoding="utf-8"))
+    assert len(written) == 1
+    assert [item["dedupe_key"] for item in staged["items"]] == [
+        "fact:alpha:status",
+        "decision:beta:status",
+        "learning:gamma:status",
+    ]
+    assert len(rejection_files) == 1
+    rejection = json.loads(rejection_files[0].read_text(encoding="utf-8"))
+    assert rejection["item_index"] == 3
+    assert rejection["item"]["dedupe_key"] == "fact:bad-quote:status"
+    assert "evidence_quote" in rejection["error"]
+
+
 def test_job_a_skips_existing_valid_extraction_on_rerun(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
@@ -243,12 +411,16 @@ def test_job_a_reextracts_when_transcript_content_changes(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
-    session.write_text(json.dumps({"type": "user", "content": "old"}) + "\n", encoding="utf-8")
+    session.write_text(
+        json.dumps({"type": "user", "content": "old payload"}) + "\n",
+        encoding="utf-8",
+    )
     calls = 0
 
     def fake_extract(payload: str, _session_path: Path) -> dict:
         nonlocal calls
         calls += 1
+        value = "new payload" if "new payload" in payload else "old payload"
         return {
             "schema_version": "1.0",
             "items": [
@@ -256,8 +428,9 @@ def test_job_a_reextracts_when_transcript_content_changes(tmp_path):
                     "kind": "fact",
                     "subject": "Session payload",
                     "predicate": "value",
-                    "object": payload,
+                    "object": value,
                     "confidence": "high",
+                    "evidence_quote": value,
                     "dedupe_key": "fact:session-payload:value",
                 }
             ],
@@ -271,7 +444,10 @@ def test_job_a_reextracts_when_transcript_content_changes(tmp_path):
     first_data = json.loads(first[0].read_text(encoding="utf-8"))
     assert "old" in first_data["items"][0]["object"]
 
-    session.write_text(json.dumps({"type": "user", "content": "new"}) + "\n", encoding="utf-8")
+    session.write_text(
+        json.dumps({"type": "user", "content": "new payload"}) + "\n",
+        encoding="utf-8",
+    )
     second = eod_capture.run_job_a(
         [session], vault_path=vault, run_date="2026-05-14", extract_func=fake_extract
     )
@@ -428,7 +604,29 @@ def test_discover_session_paths_prefers_content_timestamp_over_mtime(tmp_path):
     assert found_content_day == [session]
 
 
-def test_validate_extraction_rejects_pipe_delimiter_for_semantic_values(tmp_path):
+def test_validate_extraction_allows_pipe_delimiter_in_semantic_values(tmp_path):
+    session = tmp_path / "session.jsonl"
+    data = eod_capture.validate_extraction(
+        {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Dr. Lo | St. Paul's",
+                    "predicate": "phone",
+                    "object": "2830 | 3709",
+                    "confidence": "high",
+                    "evidence_quote": "Dr. Lo | St. Paul's phone is 2830 | 3709",
+                    "dedupe_key": "person:dr-lo:phone",
+                }
+            ]
+        },
+        session,
+    )
+
+    assert data["items"][0]["object"] == "2830 | 3709"
+
+
+def test_validate_extraction_rejects_pipe_delimiter_for_structural_fields(tmp_path):
     session = tmp_path / "session.jsonl"
     with pytest.raises(ValueError, match="pipe delimiter"):
         eod_capture.validate_extraction(
@@ -437,8 +635,8 @@ def test_validate_extraction_rejects_pipe_delimiter_for_semantic_values(tmp_path
                     {
                         "kind": "fact",
                         "subject": "Dr. Lo",
-                        "predicate": "phone",
-                        "object": "2830 | 3709",
+                        "predicate": "phone|status",
+                        "object": "2830 3709",
                         "confidence": "high",
                         "dedupe_key": "person:dr-lo:phone",
                     }
@@ -461,6 +659,49 @@ def test_validate_extraction_rejects_control_whitespace_for_semantic_values(tmp_
                         "object": "2830\n3709",
                         "confidence": "high",
                         "dedupe_key": "person:dr-lo:phone",
+                    }
+                ]
+            },
+            session,
+        )
+
+
+def test_validate_extraction_allows_whitespace_controls_in_evidence_quote(tmp_path):
+    session = tmp_path / "session.jsonl"
+    data = eod_capture.validate_extraction(
+        {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "EOD capture",
+                    "predicate": "status",
+                    "object": "ready",
+                    "confidence": "high",
+                    "evidence_quote": "EOD\tcapture\nis\rready",
+                    "dedupe_key": "fact:eod-capture:status",
+                }
+            ]
+        },
+        session,
+    )
+
+    assert data["items"][0]["evidence_quote"] == "EOD\tcapture\nis\rready"
+
+
+def test_validate_extraction_rejects_non_whitespace_control_in_evidence_quote(tmp_path):
+    session = tmp_path / "session.jsonl"
+    with pytest.raises(ValueError, match="unsupported control character"):
+        eod_capture.validate_extraction(
+            {
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subject": "EOD capture",
+                        "predicate": "status",
+                        "object": "ready",
+                        "confidence": "high",
+                        "evidence_quote": "EOD capture\x00is ready",
+                        "dedupe_key": "fact:eod-capture:status",
                     }
                 ]
             },
@@ -562,6 +803,13 @@ def test_pipe_field_extractor_preserves_escaped_pipes_in_values():
 
     assert eod_capture._extract_pipe_field(line, "evidence_quote") == "alpha\\|beta\\|gamma"
     assert eod_capture._extract_pipe_field(line, "dedupe_key") == "fact:thing:note"
+
+
+def test_extractor_prompt_requires_verbatim_quotes():
+    prompt = eod_capture.PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "character-for-character" in prompt
+    assert "not paraphrase" in prompt
 
 
 def test_same_value_uses_exact_trimmed_comparison():
@@ -784,9 +1032,17 @@ def test_call_kimi_extractor_prioritizes_transient_marker_in_mixed_stderr(
     assert data["items"][0]["dedupe_key"] == "person:dr-lo:phone"
 
 
-def test_call_kimi_extractor_rejects_evidence_quote_not_in_payload(
+def test_job_a_writes_failure_when_all_items_rejected_for_bad_evidence_quote(
     tmp_path, monkeypatch
 ):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "my doctor's phone is 2830 3709"})
+        + "\n",
+        encoding="utf-8",
+    )
     wrapper = tmp_path / "minimax-json-job.sh"
     wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     wrapper.chmod(0o755)
@@ -816,13 +1072,20 @@ def test_call_kimi_extractor_rejects_evidence_quote_not_in_payload(
 
     monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
 
-    with pytest.raises(ValueError, match="evidence_quote"):
-        eod_capture.call_kimi_extractor(
-            "my doctor's phone is 2830 3709", tmp_path / "session.jsonl"
-        )
+    written = eod_capture.run_job_a([session], vault_path=vault, run_date="2026-05-14")
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert written == []
+    assert len(failures) == 1
+    assert len(rejections) == 1
+    assert "all extractor items rejected" in failures[0].read_text(encoding="utf-8")
+    assert "evidence_quote" in rejections[0].read_text(encoding="utf-8")
 
 
-def test_call_kimi_extractor_rejects_too_short_evidence_quote(tmp_path, monkeypatch):
+def test_call_kimi_extractor_accepts_evidence_quote_with_normalized_whitespace(
+    tmp_path, monkeypatch
+):
     wrapper = tmp_path / "minimax-json-job.sh"
     wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     wrapper.chmod(0o755)
@@ -837,12 +1100,12 @@ def test_call_kimi_extractor_rejects_too_short_evidence_quote(tmp_path, monkeypa
                     "items": [
                         {
                             "kind": "fact",
-                            "subject": "Status",
-                            "predicate": "answer",
-                            "object": "ok",
+                            "subject": "EOD capture",
+                            "predicate": "status",
+                            "object": "ready",
                             "confidence": "high",
-                            "evidence_quote": "ok",
-                            "dedupe_key": "status:answer",
+                            "evidence_quote": "EOD\tcapture\nis\rready",
+                            "dedupe_key": "fact:eod-capture:status",
                         }
                     ]
                 }
@@ -852,8 +1115,32 @@ def test_call_kimi_extractor_rejects_too_short_evidence_quote(tmp_path, monkeypa
 
     monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
 
+    data = eod_capture.call_kimi_extractor(
+        "Keith said EOD capture is ready", tmp_path / "session.jsonl"
+    )
+
+    assert data["items"][0]["evidence_quote"] == "EOD\tcapture\nis\rready"
+
+
+def test_verify_evidence_quotes_rejects_too_short_evidence_quote(tmp_path):
     with pytest.raises(ValueError, match="too short"):
-        eod_capture.call_kimi_extractor("ok", tmp_path / "session.jsonl")
+        eod_capture.verify_evidence_quotes(
+            {
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subject": "Status",
+                        "predicate": "answer",
+                        "object": "ok",
+                        "confidence": "high",
+                        "evidence_quote": "ok",
+                        "dedupe_key": "status:answer",
+                    }
+                ]
+            },
+            "ok",
+            session_path=tmp_path / "session.jsonl",
+        )
 
 
 def test_reconcile_auto_writes_fact_and_skips_preference(tmp_path):
@@ -1226,8 +1513,8 @@ def test_reconcile_item_error_continues_and_writes_summary(tmp_path):
                     {
                         "kind": "fact",
                         "subject": "Bad item",
-                        "predicate": "note",
-                        "object": "contains | delimiter",
+                        "predicate": "note|bad",
+                        "object": "contains invalid structural delimiter",
                         "confidence": "high",
                         "dedupe_key": "fact:bad-item:note",
                     },
