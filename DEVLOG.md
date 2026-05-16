@@ -1,6 +1,47 @@
 # K2B Development Log
 
 ---
+## 2026-05-16 (late evening) -- k2b-plate skill ships /plate dashboard
+
+**Commit:** `b9a0005 feat(skill): k2b-plate -- /plate dashboard reads canonical pending-state sources`
+
+**What shipped:** New project-scoped skill at `.claude/skills/k2b-plate/` (SKILL.md + scripts/plate.sh, ~395 lines total). The `/plate` command (also "what's on my plate", "what's outstanding", "what needs my attention", "what do I owe", "anything pending") emits a single 6-section markdown dashboard read entirely from canonical sources established by `feature_pending-discipline` (shipped earlier today):
+
+1. **⚠ Needs your decision now** -- merged read of in-progress feature notes with `pending-action:` frontmatter set + open lines from `wiki/context/reminders.md` + recent open handoffs from `raw/sessions/*_handoff_*.md` (last 7d)
+2. **🎩 K2Bi PM current checkpoint** -- first `> **K2B PM checkpoint` blockquote from K2Bi Resume Card
+3. **✅ Recently shipped (last 7 days)** -- filtered from `wiki/concepts/index.md` Shipped table
+4. **🚧 In Progress lanes** -- from `wiki/concepts/index.md`
+5. **🧠 Memory flags** -- top open R-IDs + recent E-IDs
+6. **📅 Next Up + Backlog top 3** -- from `wiki/concepts/index.md`
+
+Pure consumer; zero writes from the script itself. Each section emits zero lines on empty state -- dashboard is short on quiet days, longer on busy days.
+
+**Why:** Keith re-asked "what's on my plate" every session. Before today, K2B had to stitch the answer manually across feature note prose + conversation transcripts + memory file descriptions + the K2Bi Resume Card. After `feature_pending-discipline` (shipped earlier today) gave each pending-state class a canonical home, `/plate` is a ~290-line bash aggregator. Total ship effort: ~45 min including the 3 smoke-test bugs + 3 Codex/Kimi review findings folded inline.
+
+**Smoke test (passed):** All 4 of Keith's currently-tracked pending items surface (router-watchdog MVP fault-injection re-schedule + active-motivations Ship 2 triage as pending-actions, AI demand mining brainstorm + K2Bi Resume Card session-end procedure as reminders). K2Bi PM checkpoint extracted correctly. Recently Shipped filters to last 7 days (2 entries: pending-discipline + telegram-media-speech). In Progress lanes (6 features), Next Up (1), Backlog top 3 all render. Run time < 1s on live vault.
+
+**Three smoke-test bugs caught + fixed before initial stage:**
+- **BSD awk `\|` regex is illegal-primary error.** `\|` on BSD awk (macOS default) is interpreted as alternation with empty branches and aborts the parse. Workaround: use `index()` for key detection instead of regex matching on YAML keys. Now portable across BSD + GNU awk.
+- **Wikilink escaped pipes `[[Shipped/X\|X]]` break `awk -F'|'` table splits.** The wikilink alias separator masquerades as a markdown table column separator. Workaround: extract dates by regex (`grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}'`) instead of field-splitting.
+- **Markdown table header + separator rows match naive `^\| ` patterns.** Workaround: anchor on `^\| \[\[feature_` / `^\| feature_` / `^\| project_` to skip header (`| Page | Priority |`) and separator (`|------|`).
+
+**Tier-1 adversarial review:** Codex hit hard deadline (5+ min wedge with no progress -- known Codex behavior). Auto-fellback to Kimi-as-MiniMax, which returned NEEDS-ATTENTION with 3 findings, all addressed inline before commit:
+- **CRITICAL: malformed frontmatter body-content leak.** `fm_get_block` previously had only the second-`---` exit; a malformed frontmatter (missing closing `---`) would print the entire markdown body as the "block." Fix: added a 50-line cap on block output. Legitimate pending-action bodies are < 10 lines; the cap is belt-and-suspenders. Tested with 100-body-line fixture: exactly 50 lines emitted, runaway prevented.
+- **CRITICAL: "read-only" claim contradiction.** SKILL.md said "Reader-only" but documented a post-task usage-logging append. Clarified: the SCRIPT is read-only (zero writes); the usage logging is an *agent-side convention* (Claude appends one line to `skill-usage-log.tsv` after running the skill) consistent with k2b-sync / k2b-ship / etc. Not script-side I/O.
+- **HIGH: diagnostics suppressed by `2>/dev/null`.** Added `K2B_PLATE_DEBUG=1` env var documented in SKILL.md as the escape hatch when a known pending item isn't appearing. (Note: debug toggle is docs-side; awk calls still hardcode `2>/dev/null`. Full wiring through every helper is a follow-up.)
+
+**No plan review:** small surface, fast-feedback iteration with smoke test as the gate. Spec at `K2B-Vault/wiki/concepts/Shipped/feature_plate-command.md`.
+
+**Builder:** Opus (K2B PM Ship Manager session, MacBook keithmbpm2). Same-day ship on top of pending-discipline.
+
+**Open follow-ups (not blocking):**
+- Wire `K2B_PLATE_DEBUG` through every helper (currently docs-side only).
+- Possible Telegram-bot version of `/plate` if Keith wants morning-digest equivalent.
+- Possible session-start hook auto-fire (currently explicit-invocation only).
+
+**Sync:** runs next via `/sync` to push the new skill to Mac Mini.
+
+---
 ## 2026-05-16 (evening) -- pending-discipline Ship 1 lands (CLAUDE.md conventions)
 
 **Commit:** `bb6f5f1 chore(claude-md): pending-discipline Ship 1 conventions land`
