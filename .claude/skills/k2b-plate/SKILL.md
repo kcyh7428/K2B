@@ -53,16 +53,40 @@ bash ~/Projects/K2B/.claude/skills/k2b-plate/scripts/plate.sh
 
 ## Output format
 
-Markdown. Each section produces zero lines if empty -- the dashboard is short on quiet days, longer on busy days.
+The script (`plate.sh`) emits raw markdown. Each section produces zero lines if empty -- short on quiet days, longer on busy days.
 
 Sections in fixed order:
 
 1. **⚠ Needs your decision now** -- pending-actions + open reminders + recent open handoffs
-2. **🎩 K2Bi PM current checkpoint** -- short extract from Resume Card
-3. **✅ Recently shipped (last 7 days)** -- from concepts/index.md
+2. **🎩 K2Bi PM current checkpoint** -- raw blockquote extract from Resume Card
+3. **✅ Recently shipped (last 7 days)** -- from concepts/index.md (notes column truncated to 150 chars)
 4. **🚧 In Progress lanes** -- from concepts/index.md
 5. **🧠 Memory flags** -- open R-IDs + recent E-IDs
 6. **📅 Next Up + Backlog top 3** -- from concepts/index.md
+
+## Rendering convention (the Hybrid -- agent-side display layer)
+
+The agent (Claude Code) does NOT show the raw script output verbatim by default. It renders into the **Hybrid format** below, established 2026-05-16 after Keith compared three options (Raw, Curated, Hybrid) and picked Hybrid. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
+
+**Per-section rule:**
+
+| Section | Treatment |
+|---|---|
+| ⚠ Pending actions | **Full body verbatim** -- do NOT truncate or summarize. Keith needs the Close: condition and the "how to" in one glance to act on it. |
+| 🔔 Open reminders | **Full body verbatim** -- same reason. |
+| 🎩 K2Bi PM checkpoint | **One-paragraph summary** the agent extracts from the multi-paragraph blockquote. Capture: ship state, next concrete action, binding constraints. Skip the numbered conditional triggers + discipline list unless Keith asks. |
+| ✅ Recently shipped | **Title + date + one-line tag** per item. Skip the long Shipped-table notes. |
+| 🚧 In Progress | **2-column markdown table** (feature / updated date). No commentary column. |
+| 📅 Pipeline | **Compact one-line** Next Up + Backlog top 3 (e.g. "Next Up: feature_X · Backlog top 3: A · B · C"). |
+| 🧠 Memory flags | **Omit entirely when empty**. When populated, render as a 1-line summary per R-ID/E-ID. |
+
+**Why this shape:** pending stuff is what Keith ACTS on -- needs full context. Lanes/snapshots are reference -- need to be visible but not loud. The compression on lanes/checkpoint/shipped is bias-managed (the script still has the full data; agent just narrows the display).
+
+**Override -- "raw plate":** if Keith says "raw plate", "show me raw", "raw output", or "full plate", the agent skips the Hybrid rendering and dumps `plate.sh` stdout verbatim. Use when Keith needs the complete K2Bi Resume Card text, the full Shipped-table notes, or wants to audit what the script actually emits.
+
+**Override -- "summarize plate":** if Keith says "summarize plate" or "tighter plate", compress further into Bulleted-Curated form (1-line per pending item, all references reduced to slug names, no K2Bi paragraph -- just one sentence).
+
+**Default behavior:** Hybrid unless an override phrase appears in the same message.
 
 ## Implementation notes
 
