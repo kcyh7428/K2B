@@ -1,6 +1,35 @@
 # K2B Development Log
 
 ---
+## 2026-05-16 (evening) -- pending-discipline Ship 1 lands (CLAUDE.md conventions)
+
+**Commit:** `bb6f5f1 chore(claude-md): pending-discipline Ship 1 conventions land`
+
+**What shipped:** Four small CLAUDE.md edits formalize pending-state ownership without new infrastructure:
+
+1. **Feature note frontmatter schema** gains `pending-action: |` + `pending-action-since:` -- the canonical home for "Keith owes a manual gate on this in-progress feature" (replaces prose markers like "**MVP gate NOT YET PASSED**" buried in body). Documents that `/plate` (Ship 2) MUST use a frontmatter-aware parser; naive grep on `^pending-action: ` matches YAML example blocks in feature bodies (verified by smoke test on this very spec).
+
+2. **File Conventions / Raw captures** gains `raw/sessions/YYYY-MM-DD_handoff_<slug>.md` -- builder paste-ins save here so paused agent state survives across sessions. Reuses existing folder; no new directory.
+
+3. **File Conventions / Other** gains `wiki/context/reminders.md` as canonical reminders home -- replaces scattered "REMIND KEITH" markers in memory file descriptions. The existing demand-mining brainstorm REMIND was migrated as part of this ship.
+
+4. **Two-hat dynamic paragraph** adds "exactly ONE current K2B PM checkpoint at any time" constraint with archive-previous-before-replacing pattern. Full session-end procedure delegated to the K2Bi Resume Card itself per Project Resume Handles doctrine -- CLAUDE.md only routes. Stops the nested "earlier checkpoint preserved for context" stack from accumulating in the K2Bi Resume Card.
+
+Initial population done in vault (Syncthing-carried): `K2B-Vault/wiki/context/reminders.md` created with one open reminder; MEMORY.md + `project_demand_mining_brainstorm.md` description updated to point at it; two real in-progress features (`feature_router-watchdog` MVP fault-injection re-schedule + `feature_active-motivations` Ship 2 triage) got `pending-action:` populated as the smoke test data.
+
+**Why:** Conversation today started with Keith asking for a `/plate` slash command to surface "what's outstanding." After 3 rounds of plan review on the elaborate first attempt (`feature_pending-state-ownership` -- new parallel `pending/` directory, PND-IDs, migration script, validator, class-differentiated TTL, atomic two-phase backup -- 22KB spec, 29 findings across rounds), Keith reframed the problem: "this is a discipline + convention gap, not an infrastructure gap. fix the schemas where the scatter starts." This commit is the result. Effort dropped from M (multi-day) to S (~1 hour for all 4 fixes). Elaborate version stays parked-superseded.
+
+**Review:** Codex Tier-1 adversarial review on the staged CLAUDE.md diff returned NEEDS-ATTENTION with 2 medium findings, both addressed inline before commit:
+- **Finding 1:** line 314 originally told Ship 2 to read pending-actions via naive grep -- but our own smoke test had already proven that approach false-positives on YAML example blocks. Rewrote to explicitly require a frontmatter-aware parser.
+- **Finding 2:** Two-hat paragraph contained too much operational detail for CLAUDE.md's "routing only" doctrine. Trimmed to a constraint statement + brief impl note with full procedure delegated to the Resume Card (open reminder added for K2Bi PM hat to document it next session).
+
+**Builder:** Opus (K2B PM Ship Manager session, MacBook keithmbpm2). Same-day ship.
+
+**Open follow-ups:**
+- `feature_plate-command` (Ship 2) is now unblocked -- it consumes the 4 canonical sources this ship landed. Currently in Backlog as medium/S/medium.
+- K2Bi Resume Card to document its own session-end procedure under the next K2Bi PM hat session (reminder in `K2B-Vault/wiki/context/reminders.md`).
+
+---
 ## 2026-05-16 (afternoon) -- close agent-path TTS fallback to dead MiniMax backend
 
 **Commit:** `d3649d8 fix(media): close agent-path TTS fallback to dead MiniMax backend`
