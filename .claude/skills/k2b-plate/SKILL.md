@@ -29,7 +29,7 @@ Runs `~/Projects/K2B/.claude/skills/k2b-plate/scripts/plate.sh` and shows the ou
 
 | Section | Source | Filter |
 |---|---|---|
-| Pending actions on in-progress features | `wiki/concepts/feature_*.md` | frontmatter has `status: in-progress` AND `pending-action:` set |
+| Pending actions on in-progress features or active projects | `wiki/concepts/feature_*.md` + `wiki/concepts/project_*.md` + `wiki/projects/project_*.md` | frontmatter has `status: in-progress` (feature_*) OR `status: active` (project_*) AND `pending-action:` set |
 | Open reminders | `wiki/context/reminders.md` | lines matching `^- \[open\]` |
 | Recent open handoffs | `raw/sessions/*_handoff_*.md` | frontmatter `status: open`, mtime within last 7 days |
 | K2Bi PM current checkpoint | `K2Bi-Vault/wiki/planning/index.md` Resume Card | first `## K2B PM checkpoint` blockquote (top = most recent) |

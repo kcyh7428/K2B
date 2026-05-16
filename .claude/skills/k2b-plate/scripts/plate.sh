@@ -111,12 +111,17 @@ echo ""
 
 has_anything=0
 
-# 1a. Pending-actions on in-progress features
-for f in "$VAULT"/wiki/concepts/feature_*.md; do
+# 1a. Pending-actions on in-progress features (feature_*.md) and active projects (project_*.md)
+for f in \
+    "$VAULT"/wiki/concepts/feature_*.md \
+    "$VAULT"/wiki/concepts/project_*.md \
+    "$VAULT"/wiki/projects/project_*.md; do
   [[ -f "$f" ]] || continue
   skip_conflict "$f" && continue
   status=$(fm_get_scalar "$f" "status")
-  [[ "$status" == "in-progress" ]] || continue
+  # feature_*.md uses status: in-progress; project_*.md uses status: active.
+  # Both signal "currently being worked" and should surface pending-actions.
+  [[ "$status" == "in-progress" || "$status" == "active" ]] || continue
   pa=$(fm_get_block "$f" "pending-action")
   [[ -n "$pa" ]] || continue
   has_anything=1
