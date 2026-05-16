@@ -228,7 +228,7 @@ Authoritative planning docs live at `K2Bi-Vault/wiki/planning/`. The original pl
 
 When Keith asks K2B to "propose X to K2Bi" or "draft a K2Bi PR", handle ad-hoc via the `gh` CLI. Once 2-3 real PRs have established the pattern, formalize as a `k2b-cross-project-pr` skill (tracked in `self_improve_requests.md`).
 
-**Two-hat dynamic.** A K2B Claude Code session wears the **K2B PM hat by default** — works on K2B itself (skills, vault, code, infra, scripts); session-ends through `/ship`. When Keith triggers `continue k2b investment` / `resume k2bi`, the same session switches to the **K2Bi PM hat** — advisory only on K2Bi (no direct K2Bi code edits, K2Bi vault docs and proposals ARE editable, paste-ins/handoffs drafted for K2Bi builder sessions to execute); session-ends by updating the **K2B PM checkpoint** section at the top of `K2Bi-Vault/wiki/planning/index.md` Resume Card with the next session's conditional triggers + persisting any drafted artifacts (paste-ins, plans, rulings) as standalone vault notes (typically in `K2Bi-Vault/proposals/`) so they survive across PM sessions without depending on transcripts. If a single session uses both hats, do both at end: `/ship` for the K2B work + checkpoint update for the K2Bi PM work. The hat is set by the trigger phrase; the discipline is set by the hat.
+**Two-hat dynamic.** A K2B Claude Code session wears the **K2B PM hat by default** — works on K2B itself (skills, vault, code, infra, scripts); session-ends through `/ship`. When Keith triggers `continue k2b investment` / `resume k2bi`, the same session switches to the **K2Bi PM hat** — advisory only on K2Bi (no direct K2Bi code edits, K2Bi vault docs and proposals ARE editable, paste-ins/handoffs drafted for K2Bi builder sessions to execute); session-ends by updating the **K2B PM checkpoint** section at the top of `K2Bi-Vault/wiki/planning/index.md` Resume Card with the next session's conditional triggers. **Constraint: exactly ONE current K2B PM checkpoint at any time** -- archive the previous one to `K2Bi-Vault/archive/checkpoints/YYYY-MM-DD_<slug>.md` before replacing (full session-end procedure owned by the K2Bi Resume Card itself per the **Project Resume Handles** doctrine; CLAUDE.md only routes). Also persist any drafted artifacts (paste-ins, plans, rulings) as standalone vault notes (typically in `K2Bi-Vault/proposals/`) so they survive across PM sessions without depending on transcripts. If a single session uses both hats, do both at end: `/ship` for the K2B work + checkpoint update for the K2Bi PM work. The hat is set by the trigger phrase; the discipline is set by the hat. Single-checkpoint constraint added per `feature_pending-discipline` (shipped 2026-05-16); the K2Bi Resume Card itself will document its own session-end procedure on the next K2Bi PM session per the open reminder.
 
 ## Email Safety
 
@@ -266,6 +266,7 @@ Use `[[filename_without_extension]]` for all internal links. Every note should h
 - Research: `raw/research/YYYY-MM-DD_research_topic.md`
 - TLDRs: `raw/tldrs/YYYY-MM-DD_tldr-topic.md`
 - Daily extracts: `raw/daily/YYYY-MM-DD_daily-extract.md`
+- Builder handoffs (paste-ins to Codex/Kimi/agents): `raw/sessions/YYYY-MM-DD_handoff_<slug>.md` with frontmatter `class: handoff`, `status: open|closed`, `linked-feature:`, `agent:`. Per `feature_pending-discipline`, when K2B drafts a paste-in for a builder, save the body to this file so the paused state survives across sessions. `/plate` lists `raw/sessions/*_handoff_*.md` with `status: open` from the last 7 days.
 
 ### Wiki pages (compiled)
 - Projects: `wiki/projects/project_name.md`
@@ -281,6 +282,7 @@ Use `[[filename_without_extension]]` for all internal links. Every note should h
 - Daily notes: `Daily/YYYY-MM-DD.md`
 - Content ideas (unadopted): `review/content_short-slug.md`
 - Decisions go inside their parent project/work notes, not standalone
+- Reminders (canonical home for surface-at-session-start items): `wiki/context/reminders.md` -- ONE flat file, manual edits, format `- [open|closed] <text> (added YYYY-MM-DD)`. Per `feature_pending-discipline`, do NOT bury "REMIND KEITH" markers in memory file description fields anymore -- those scatter and only surface by luck. New reminders go directly to this file.
 
 ## Roadmap & Feature Notes
 
@@ -301,9 +303,15 @@ effort: S | M | L | XL
 impact: high | medium | low
 mvp: "one sentence -- the smallest version that delivers value"
 shipped-date: YYYY-MM-DD  # only when shipped
-depends-on: [slug1, slug2]  # optional
+pending-action: |                  # optional; set when status: in-progress AND Keith owes a manual gate (MVP probe, audio listen test, manual UAT, scheduled run, etc.)
+  Multi-line body describing what Keith needs to do.
+  End with a "Close:" line stating the binary signal that resolves this action.
+pending-action-since: YYYY-MM-DD   # required when pending-action is set
+depends-on: [slug1, slug2]         # optional
 up: "[[index]]"
 ```
+
+The `pending-action:` field is the canonical home for "Keith owes a manual action on this in-progress feature" -- replaces the old prose pattern of "**MVP gate NOT YET PASSED**" inside the body. Per `feature_pending-discipline`, `/plate` (Ship 2) MUST use a **frontmatter-aware parser** that reads only the YAML block between the file's first two `---` lines -- naive `grep '^pending-action: '` produces false positives by matching YAML example blocks in feature-note bodies (verified by smoke test 2026-05-16; the spec body had a `pending-action: |` schema example and a flat grep counted it as a real pending item). Do NOT bury pending actions in feature-note body prose -- they will not surface in `/plate` or session-start.
 
 Every feature spec must define `mvp:` as a **binary named-bug test**: a specific user-visible problem that must die, with a pass/fail criterion written BEFORE any code is written. The doctor-phone test in [[feature_washing-machine-memory]] line 84 is the template -- named bug, numbered pass conditions, single binary verdict.
 
