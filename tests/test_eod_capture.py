@@ -503,6 +503,55 @@ def test_job_a_reextracts_when_transcript_content_changes(tmp_path):
     assert "new" in data["items"][0]["object"]
 
 
+def test_job_a_removes_stale_extraction_before_slow_skip(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "old payload"}) + "\n",
+        encoding="utf-8",
+    )
+    calls = 0
+
+    def fake_extract(payload: str, _session_path: Path) -> dict | None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return None
+        return {
+            "schema_version": "1.0",
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Session payload",
+                    "predicate": "value",
+                    "object": "old payload" if "old payload" in payload else "new payload",
+                    "confidence": "high",
+                    "evidence_quote": "old payload" if "old payload" in payload else "new payload",
+                    "dedupe_key": "fact:session-payload:value",
+                }
+            ],
+        }
+
+    first = eod_capture.run_job_a(
+        [session], vault_path=vault, run_date="2026-05-14", extract_func=fake_extract
+    )
+    assert len(first) == 1
+    assert first[0].exists()
+
+    session.write_text(
+        json.dumps({"type": "user", "content": "new payload"}) + "\n",
+        encoding="utf-8",
+    )
+    second = eod_capture.run_job_a(
+        [session], vault_path=vault, run_date="2026-05-14", extract_func=fake_extract
+    )
+
+    assert second == []
+    assert calls == 2
+    assert not first[0].exists()
+
+
 def test_job_a_reextracts_when_cached_schema_version_is_stale(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
@@ -863,7 +912,135 @@ def test_same_value_uses_exact_trimmed_comparison():
     assert not eod_capture._same_value("2830  3709", "2830 3709")
 
 
-def test_call_kimi_extractor_retries_transient_timeout(tmp_path, monkeypatch):
+def test_call_kimi_extractor_timeout_writes_slow_skip_no_failure(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "ae936545-df11-40b0-93d8-bc9da9cdc7f4.jsonl"
+    session.write_text("large transcript\n", encoding="utf-8")
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+    monkeypatch.setattr(eod_capture, "_post_telegram_alert", lambda *_args, **_kwargs: None, raising=False)
+    calls: list[int] = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append(1)
+        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
+
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
+
+    result = eod_capture.call_kimi_extractor(
+        "payload",
+        session,
+        vault_path=vault,
+        run_date="2026-05-16",
+        transcript_sha256="payload-sha",
+    )
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert result is None
+    assert len(calls) == 1
+    assert len(skips) == 1
+    assert failures == []
+    skip = json.loads(skips[0].read_text(encoding="utf-8"))
+    assert skip["reason"] == "slow_extraction"
+    assert skip["session_path"] == str(session)
+    assert skip["transcript_sha256"] == "payload-sha"
+
+
+def test_call_kimi_extractor_timeout_posts_telegram_alert(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "ae936545-df11-40b0-93d8-bc9da9cdc7f4.jsonl"
+    session.write_text("x" * 1024, encoding="utf-8")
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+    alerts: list[tuple[str, Path]] = []
+
+    def fake_post(message: str, *, session_path: Path) -> None:
+        alerts.append((message, session_path))
+
+    def fake_run(*_args, **_kwargs):
+        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
+
+    monkeypatch.setattr(eod_capture, "_post_telegram_alert", fake_post, raising=False)
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
+
+    eod_capture.call_kimi_extractor(
+        "payload", session, vault_path=vault, run_date="2026-05-16"
+    )
+
+    assert len(alerts) == 1
+    message, alert_session_path = alerts[0]
+    assert alert_session_path == session
+    assert "ae936545" in message
+    assert "re-run /eod-capture 2026-05-16 locally" in message
+
+
+def test_call_kimi_extractor_telegram_alert_failure_does_not_crash(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text("large transcript\n", encoding="utf-8")
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+
+    def fake_post(*_args, **_kwargs) -> None:
+        raise RuntimeError("telegram unavailable")
+
+    def fake_run(*_args, **_kwargs):
+        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
+
+    monkeypatch.setattr(eod_capture, "_post_telegram_alert", fake_post, raising=False)
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
+
+    result = eod_capture.call_kimi_extractor(
+        "payload", session, vault_path=vault, run_date="2026-05-16"
+    )
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert result is None
+    assert len(skips) == 1
+    assert failures == []
+
+
+def test_call_kimi_extractor_360s_default_timeout(tmp_path, monkeypatch):
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+    timeouts: list[int] = []
+
+    def fake_run(_cmd, *, timeout):
+        timeouts.append(timeout)
+        return eod_capture.SimpleNamespace(
+            args=["kimi"],
+            returncode=0,
+            stdout=json.dumps({"items": []}),
+            stderr="",
+            stdout_size=len(json.dumps({"items": []})),
+        )
+
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
+
+    data = eod_capture.call_kimi_extractor("payload", tmp_path / "session.jsonl")
+
+    assert data["items"] == []
+    assert timeouts == [360]
+
+
+def test_call_kimi_extractor_transient_api_error_still_retries_3x(
+    tmp_path, monkeypatch
+):
     wrapper = tmp_path / "minimax-json-job.sh"
     wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     wrapper.chmod(0o755)
@@ -874,34 +1051,91 @@ def test_call_kimi_extractor_retries_transient_timeout(tmp_path, monkeypatch):
     def fake_run(*_args, **_kwargs):
         nonlocal calls
         calls += 1
-        if calls == 1:
-            raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=180)
-        return eod_capture.subprocess.CompletedProcess(
+        if calls < 3:
+            return eod_capture.SimpleNamespace(
+                args=["kimi"],
+                returncode=1,
+                stdout="",
+                stderr="429 too many requests",
+                stdout_size=0,
+            )
+        stdout = json.dumps(
+            {
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subject": "Dr. Lo",
+                        "predicate": "phone",
+                        "object": "2830 3709",
+                        "confidence": "high",
+                        "dedupe_key": "person:dr-lo:phone",
+                    }
+                ]
+            }
+        )
+        return eod_capture.SimpleNamespace(
             args=["kimi"],
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "items": [
-                        {
-                            "kind": "fact",
-                            "subject": "Dr. Lo",
-                            "predicate": "phone",
-                            "object": "2830 3709",
-                            "confidence": "high",
-                            "dedupe_key": "person:dr-lo:phone",
-                        }
-                    ]
-                }
-            ),
+            stdout=stdout,
             stderr="",
+            stdout_size=len(stdout),
         )
 
-    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
 
     data = eod_capture.call_kimi_extractor("payload", tmp_path / "session.jsonl")
 
-    assert calls == 2
+    assert calls == 3
     assert data["items"][0]["dedupe_key"] == "person:dr-lo:phone"
+
+
+def test_main_returns_0_when_only_outcome_is_slow_skip(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(json.dumps({"type": "user", "content": "large transcript"}) + "\n", encoding="utf-8")
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+    monkeypatch.setattr(eod_capture, "_post_telegram_alert", lambda *_args, **_kwargs: None, raising=False)
+
+    def fake_run(*_args, **_kwargs):
+        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
+
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-16",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    assert rc == 0
+    assert sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+
+
+def test_write_extraction_skip_accepts_reason_parameter(tmp_path):
+    vault = tmp_path / "vault"
+    session = tmp_path / "session.jsonl"
+    path = eod_capture._write_extraction_skip(
+        vault,
+        session,
+        run_date="2026-05-16",
+        reason="slow_extraction",
+        error=RuntimeError("timed out"),
+    )
+
+    skip = json.loads(path.read_text(encoding="utf-8"))
+    assert skip["reason"] == "slow_extraction"
+    assert skip["error"] == "RuntimeError: timed out"
 
 
 def test_call_kimi_extractor_retries_invalid_json_from_success_exit(tmp_path, monkeypatch):
@@ -1900,6 +2134,50 @@ def test_digest_message_summarizes_run(tmp_path):
     assert "log append failures: 1" in message
     assert "Dr. Lo Hak Keung phone" in message
     assert "unreadable conflicts: 1" in message
+
+
+def test_digest_message_includes_slow_extraction_skips(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "ae936545-df11-40b0-93d8-bc9da9cdc7f4.jsonl"
+    session.write_text("large transcript\n", encoding="utf-8")
+    eod_capture._write_extraction_skip(
+        vault,
+        session,
+        run_date="2026-05-14",
+        reason="slow_extraction",
+        error=RuntimeError("timed out"),
+    )
+
+    message = eod_capture.build_digest_message(
+        vault, run_date="2026-05-14", summary={"errors": 0}
+    )
+
+    assert "slow extraction skips: 1" in message
+    assert "ae936545" in message
+    assert "slow_extraction" in message
+
+
+def test_digest_health_issues_include_slow_extraction_skips(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
+        json.dumps({"processed_files": 1, "errors": 0}),
+        encoding="utf-8",
+    )
+    session = tmp_path / "session.jsonl"
+    eod_capture._write_extraction_skip(
+        vault,
+        session,
+        run_date="2026-05-14",
+        reason="slow_extraction",
+        error=RuntimeError("timed out"),
+    )
+
+    assert "slow extraction skips: 1" in eod_capture._digest_health_issues(
+        vault, "2026-05-14"
+    )
 
 
 def test_digest_message_warns_when_summary_missing(tmp_path):

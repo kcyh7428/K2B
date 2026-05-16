@@ -33,6 +33,7 @@ SHELF_WRITER = REPO_ROOT / "scripts" / "washing-machine" / "shelf-writer.sh"
 EXTRACTION_SCHEMA_VERSION = "1.0"
 MAX_EXTRACTOR_STDOUT_BYTES = 1_000_000
 MAX_EXTRACTOR_STDERR_BYTES = 200_000
+EXTRACTOR_TIMEOUT_SECONDS = 360
 MAX_TELEGRAM_DIGEST_BYTES = 3900
 DEFAULT_SHELF_WRITER_TIMEOUT_SECONDS = 30
 MIN_EVIDENCE_QUOTE_CHARS = 10
@@ -52,7 +53,7 @@ CONTROL_WHITESPACE_UNSAFE_FIELDS = (
 DEDUPE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+$")
 EVIDENCE_QUOTE_UNSUPPORTED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
-ExtractFunc = Callable[[str, Path], dict]
+ExtractFunc = Callable[[str, Path], dict | None]
 
 
 def _truncate(text: str, *, head: int, tail: int = 0, limit: int) -> str:
@@ -464,7 +465,14 @@ def _run_extractor_process(cmd: list[str], *, timeout: int):
         )
 
 
-def call_kimi_extractor(payload: str, session_path: Path) -> dict:
+def call_kimi_extractor(
+    payload: str,
+    session_path: Path,
+    *,
+    vault_path: Path | None = None,
+    run_date: str | None = None,
+    transcript_sha256: str | None = None,
+) -> dict | None:
     """Call existing synchronous Kimi wrapper through minimax-json-job.sh."""
     if not MINIMAX_JSON_JOB.is_file():
         raise RuntimeError(f"missing JSON job wrapper: {MINIMAX_JSON_JOB}")
@@ -492,9 +500,36 @@ def call_kimi_extractor(payload: str, session_path: Path) -> dict:
                         "--max-tokens",
                         "4000",
                     ],
-                    timeout=180,
+                    timeout=EXTRACTOR_TIMEOUT_SECONDS,
                 )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            if vault_path is None or run_date is None:
+                raise RuntimeError(
+                    f"eod extractor timed out for {session_path}: {exc}"
+                ) from exc
+            _write_extraction_skip(
+                vault_path,
+                session_path,
+                run_date=run_date,
+                reason="slow_extraction",
+                error=exc,
+                transcript_sha256=transcript_sha256,
+            )
+            try:
+                message = _build_slow_extraction_alert_message(
+                    session_path,
+                    run_date=run_date,
+                    timeout_seconds=EXTRACTOR_TIMEOUT_SECONDS,
+                )
+                _post_telegram_alert(message, session_path=session_path)
+            except Exception as alert_exc:
+                print(
+                    "eod-capture: slow_extraction telegram alert skipped "
+                    f"for {session_path}: {alert_exc}",
+                    file=sys.stderr,
+                )
+            return None
+        except OSError as exc:
             last_error = RuntimeError(f"eod extractor failed for {session_path}: {exc}")
             if attempt < 2:
                 time.sleep(_extractor_retry_delay(attempt))
@@ -570,6 +605,39 @@ def call_kimi_extractor(payload: str, session_path: Path) -> dict:
             continue
         raise last_error
     raise last_error or RuntimeError(f"eod extractor failed for {session_path}")
+
+
+def _build_slow_extraction_alert_message(
+    session_path: Path, *, run_date: str, timeout_seconds: int
+) -> str:
+    try:
+        size_mb = session_path.stat().st_size / 1_000_000
+    except OSError:
+        size_mb = 0.0
+    session_id = _safe_session_id(session_path)
+    return (
+        "K2B Mini: EOD capture skipped session "
+        f"{session_id} ({size_mb:.1f}MB, timed out at {timeout_seconds}s "
+        "extraction budget). MacBook should re-run "
+        f"/eod-capture {run_date} locally to extract this session.\n"
+        f"Session path: {session_path}"
+    )
+
+
+def _post_telegram_alert(message: str, *, session_path: Path) -> None:
+    env = os.environ.copy()
+    if "K2B_TELEGRAM_BOT_TOKEN" in env and "K2B_BOT_TOKEN" not in env:
+        env["K2B_BOT_TOKEN"] = env["K2B_TELEGRAM_BOT_TOKEN"]
+    if "K2B_TELEGRAM_CHAT_ID" in env and "K2B_CHAT_ID" not in env:
+        env["K2B_CHAT_ID"] = env["K2B_TELEGRAM_CHAT_ID"]
+    if not (env.get("K2B_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")):
+        raise RuntimeError("telegram env missing: K2B_BOT_TOKEN/TELEGRAM_BOT_TOKEN")
+    subprocess.run(
+        [str(REPO_ROOT / "scripts" / "send-telegram.sh"), message],
+        check=True,
+        timeout=60,
+        env=env,
+    )
 
 
 def _extractor_retry_delay(attempt: int, *, rate_limited: bool = False) -> float:
@@ -786,6 +854,7 @@ def run_job_a(
                             vault_path,
                             session_path,
                             run_date=run_date,
+                            reason="empty_stripped_transcript",
                             error=ValueError("empty stripped transcript"),
                         )
                         continue
@@ -794,7 +863,21 @@ def run_job_a(
                         out_path, transcript_sha256=transcript_sha256
                     ):
                         continue
-                    data = extract(payload, session_path)
+                    if out_path.exists():
+                        out_path.unlink()
+                        _fsync_dir(out_path.parent)
+                    if extract is call_kimi_extractor:
+                        data = call_kimi_extractor(
+                            payload,
+                            session_path,
+                            vault_path=vault_path,
+                            run_date=run_date,
+                            transcript_sha256=transcript_sha256,
+                        )
+                    else:
+                        data = extract(payload, session_path)
+                    if data is None:
+                        continue
                     data.setdefault("schema_version", EXTRACTION_SCHEMA_VERSION)
                     if data.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
                         raise ValueError(
@@ -998,6 +1081,7 @@ def _write_extraction_skip(
     session_path: Path,
     *,
     run_date: str,
+    reason: str,
     error: Exception,
     transcript_sha256: str | None = None,
 ) -> Path:
@@ -1007,7 +1091,7 @@ def _write_extraction_skip(
         "run_date": run_date,
         "session_path": str(session_path),
         "source_app": detect_source_app(session_path),
-        "reason": "empty_stripped_transcript",
+        "reason": reason,
         "error": f"{type(error).__name__}: {error}",
     }
     if transcript_sha256:
@@ -1578,6 +1662,22 @@ def _build_digest_message_unlocked(
                 f"- {Path(str(failure.get('session_path', path.name))).name}: "
                 f"{failure.get('error', 'unknown error')}"
             )
+    slow_skips = _run_date_extraction_skips(
+        vault_path, run_date, reason="slow_extraction"
+    )
+    if slow_skips:
+        lines.append(f"slow extraction skips: {len(slow_skips)}")
+        for path in slow_skips[:3]:
+            try:
+                skip = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                lines.append(f"- {path.name}: slow_extraction")
+                continue
+            lines.append(
+                f"- {Path(str(skip.get('session_path', path.name))).name}: "
+                f"{skip.get('reason', 'slow_extraction')} "
+                f"{skip.get('error', 'unknown error')}"
+            )
     log_failure_dir = vault_path / ".staging" / "eod-log-failures"
     log_failures = sorted(log_failure_dir.glob("*.jsonl")) if log_failure_dir.is_dir() else []
     if log_failures:
@@ -1637,6 +1737,26 @@ def _failure_file_fingerprints(failure_dir: Path, run_date: str) -> dict[Path, s
     return out
 
 
+def _run_date_extraction_skips(
+    vault_path: Path, run_date: str, *, reason: str | None = None
+) -> list[Path]:
+    skip_dir = vault_path / ".staging" / "extraction-skips"
+    if not skip_dir.is_dir():
+        return []
+    paths = sorted(skip_dir.glob(f"{run_date}_*.json"))
+    if reason is None:
+        return paths
+    matched: list[Path] = []
+    for path in paths:
+        try:
+            skip = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if skip.get("reason") == reason:
+            matched.append(path)
+    return matched
+
+
 def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
     issues: list[str] = []
     summary_path = vault_path / ".staging" / f"eod-capture-summary-{run_date}.json"
@@ -1662,6 +1782,11 @@ def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
     )
     if failures:
         issues.append(f"extraction failures: {len(failures)}")
+    slow_skips = _run_date_extraction_skips(
+        vault_path, run_date, reason="slow_extraction"
+    )
+    if slow_skips:
+        issues.append(f"slow extraction skips: {len(slow_skips)}")
     log_failure_dir = vault_path / ".staging" / "eod-log-failures"
     log_failures = (
         sorted(log_failure_dir.glob("*.jsonl"))
