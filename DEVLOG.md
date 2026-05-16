@@ -1,6 +1,46 @@
 # K2B Development Log
 
 ---
+## 2026-05-16 (afternoon) -- close agent-path TTS fallback to dead MiniMax backend
+
+**Commit:** `d3649d8 fix(media): close agent-path TTS fallback to dead MiniMax backend`
+
+**What shipped:** Closed the 2026-05-15 16:55 incident where the bot agent, responding to a natural-language voice request ("introduce yourself in a voice clip" or similar) rather than `/media speech`, called `mcp__minimax__text_to_audio` and got `status_code 2049 invalid api key`; then the agent fell through to `scripts/minimax-speech.sh` which uses the same dead `MINIMAX_API_KEY` for TTS and failed identically. The user-visible artifact was the Telegram message *"MiniMax API key is rejecting (status 2049 invalid api key). Both the MCP and the local minimax-speech.sh script fail with the same error..."*. The follow-up Keith ran via `/media speech` a minute later hit a separate transient `SSL_ERROR_SYSCALL` on `api.gptsapi.net` that resolved on its own (same call worked today at 16:09).
+
+This commit closes the bash-fallback half of the gap:
+
+- **Deleted `scripts/minimax-speech.sh`.** Zero active callers verified (grep across .sh, .ts, .js, .py, .json, .md excluding node_modules / .git / dist / .claude/projects / .code-reviews / .claude/worktrees). The only remaining mentions are historical: DEVLOG entries, archived plans, a stale `.claude/worktrees/loving-galileo-2c33e6/` checkout. None on the runtime path.
+- **CLAUDE.md MiniMax bullet rewritten.** Strips "TTS, audio transcription" from MiniMax's claimed capabilities. Explicitly routes ALL speech to `scripts/gptsapi-speech.sh` and ALL transcription to `scripts/gptsapi-transcribe.sh` (Groq Whisper as fallback). Bans `mcp__minimax__text_to_audio` outright and prohibits future creation of `scripts/minimax-transcribe.sh` (MiniMax has no STT endpoint).
+- **k2b-media-generator SKILL.md Paths section** now enumerates the live scripts (`minimax-image.sh`, `minimax-vlm.sh` for non-TTS modalities; `gptsapi-speech.sh`, `gptsapi-transcribe.sh` for audio) plus an explicit retired-list block. Replaces the misleading `scripts/minimax-*.sh` glob that Kimi flagged as a stale-reference / resurrection hazard.
+- **k2b-media-generator SKILL.md TTS-retired section** updated with the full incident trace (MCP tool path + bash fallback path both failing on the dead key) and a strengthened "Always invoke `scripts/gptsapi-speech.sh` via Bash for ANY TTS request, regardless of how the user phrases it" rule.
+
+**Why:** The `/media speech` slash command path is healthy (verified 2026-05-16 16:09: full audio delivery to Telegram in 6s, `model=tts-1-hd voice=onyx`). But the bot's agent path was untouched by the 2026-05-15 `/media speech` wiring ship (`68a5bb4`) — the agent still saw both `mcp__minimax__text_to_audio` in its tool list and `scripts/minimax-speech.sh` on disk. Natural-language requests hit those paths instead of the new GPTsAPI wiring. This commit closes the bash-fallback half so the agent can no longer use `minimax-speech.sh` at all; the MCP-tool half remains as documented follow-up (see Open Items).
+
+**Builder:** Opus (Ship Manager session, MacBook keithmbpm2).
+
+**Adversarial review:** Kimi K2.6 via `scripts/review.sh diff --primary minimax --no-fallback --wait` (reviewer infra recovered today after yesterday's `RemoteDisconnected` outage; 37s round trip on a 63K-char prompt). 6 findings: 2 HIGH, 3 MEDIUM, 1 LOW. APPROVE WITH MINOR NOTES after dispositions.
+
+Accepted + fixed inline:
+- **HIGH-2** (stale `minimax-*.sh` glob in SKILL.md Paths) → replaced glob with explicit per-script enumeration + retired-list block.
+- **LOW-6** (proactive guard against creating `scripts/minimax-transcribe.sh`) → both CLAUDE.md and SKILL.md now say "MUST NOT be created" with the dead-backend reason.
+
+Deferred with rationale (logged for next k2b-remote touch):
+- **HIGH-1 + MEDIUM-3 + MEDIUM-5** (runtime guard / single-entrypoint wrapper / MCP-server tool denylist): all ask for code-level prevention of the `mcp__minimax__text_to_audio` call. The original three-option proposal explicitly scoped the MCP-filter option as a separate follow-up because `minimax-mcp-js` doesn't document a tool-level disable mechanism, and Claude Agent SDK tool-denylist config requires investigation. This commit is the doc-and-deletion half by design.
+- **MEDIUM-4** (normalize natural-language voice requests to `/media speech` before tool selection): requires agent-routing change (intent detection in the bot's pre-agent step). Bigger lift, separate ship.
+
+**Tests:** 31/31 `mediaCommand.test.ts` still pass (sanity check — no bot code changed; the slash-command path was never touching `minimax-speech.sh`). Typecheck N/A.
+
+**Open items / follow-ups:**
+- **MCP-tool denylist for `mcp__minimax__text_to_audio`.** Investigate whether `minimax-mcp-js` supports a tool allowlist via env vars, or whether the Claude Agent SDK config exposed by k2b-remote can filter MCP tools client-side. If neither, write a small wrapper MCP server that re-exposes only the still-working MiniMax tools (image, video, music, VLM). Without this, a future agent could still try `mcp__minimax__text_to_audio` despite the prose guardrails; the doc-only rule survived ~24 hours before being violated yesterday.
+- **Natural-language voice request routing.** Add either a pre-agent intent classifier in `k2b-remote/src/bot.ts` that maps "voice", "read aloud", "generate audio" intents to `/media speech` before the agent sees them, OR a CLAUDE.md / k2b-media-generator SKILL.md rule strong enough to make the agent reliably reach for the Bash script. Prose-only rules have a poor track record here.
+- **`/media speech` MVP gate fully verified.** Test run today (16:09) confirms condition 1 (progress message) and condition 2 (audio delivered via sendAudio). Keith should still run the rejection variants (`/media video x`, `/media music x`, `/media transcribe x`) to confirm condition 4. Once all four conditions pass on the same bot process, `feature_telegram-media-speech.md` transitions to Shipped.
+
+**Key decisions:**
+- Kept this commit deliberately doc + deletion only. The runtime guards Kimi flagged as HIGH/MEDIUM are real but out of scope for closing the bash-fallback half. Bundling them would have ballooned the scope from 3 files to a multi-file MCP-server / agent-routing change. Separate ship.
+- Did NOT touch the `.claude/worktrees/loving-galileo-2c33e6/` stale checkout. Worktrees are isolated and don't affect the runtime tree; they get garbage-collected when their parent agents finish. Cleaning them up is out of scope.
+- Did NOT touch historical references in DEVLOG / `plans/2026-04-21_minimax-offload-v2-consolidated.md`. Those are point-in-time records and should not be retconned.
+
+---
 ## 2026-05-15 (evening) -- End-of-Day Capture Ship 1 hardening
 
 **Commit:** `61ddf5c` fix(eod-capture): per-item rejection + Codex stripper + evidence-quote normalization
