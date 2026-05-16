@@ -782,7 +782,7 @@ def run_job_a(
                 try:
                     payload = strip_transcript(session_path)
                     if not payload:
-                        _write_extraction_failure(
+                        _write_extraction_skip(
                             vault_path,
                             session_path,
                             run_date=run_date,
@@ -990,6 +990,30 @@ def _write_extraction_failure(
         failure["transcript_sha256"] = transcript_sha256
     path = failure_dir / f"{run_date}_{_safe_session_id(session_path)}.json"
     _atomic_write_json(path, failure)
+    return path
+
+
+def _write_extraction_skip(
+    vault_path: Path,
+    session_path: Path,
+    *,
+    run_date: str,
+    error: Exception,
+    transcript_sha256: str | None = None,
+) -> Path:
+    skip_dir = vault_path / ".staging" / "extraction-skips"
+    skip = {
+        "skipped_at": datetime.now().isoformat(timespec="microseconds"),
+        "run_date": run_date,
+        "session_path": str(session_path),
+        "source_app": detect_source_app(session_path),
+        "reason": "empty_stripped_transcript",
+        "error": f"{type(error).__name__}: {error}",
+    }
+    if transcript_sha256:
+        skip["transcript_sha256"] = transcript_sha256
+    path = skip_dir / f"{run_date}_{_safe_session_id(session_path)}.json"
+    _atomic_write_json(path, skip)
     return path
 
 

@@ -282,6 +282,51 @@ def test_job_a_writes_failure_marker_and_continues(tmp_path):
     ).hexdigest()
 
 
+def test_job_a_writes_skip_not_failure_for_empty_stripped_transcript(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "empty.jsonl"
+    session.write_text("", encoding="utf-8")
+
+    written = eod_capture.run_job_a(
+        [session], vault_path=vault, run_date="2026-05-16"
+    )
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert written == []
+    assert len(skips) == 1
+    assert failures == []
+    skip = json.loads(skips[0].read_text(encoding="utf-8"))
+    assert skip["session_path"] == str(session)
+    assert skip["reason"] == "empty_stripped_transcript"
+    assert skip["error"] == "ValueError: empty stripped transcript"
+    assert "transcript_sha256" not in skip
+
+
+def test_job_a_main_returns_zero_when_only_empty_stripped_sessions_skip(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "empty.jsonl"
+    session.write_text("", encoding="utf-8")
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-16",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    assert rc == 0
+    assert sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+
+
 def test_job_a_keeps_valid_items_and_rejects_bad_items_from_mixed_kimi_response(
     tmp_path, monkeypatch
 ):
