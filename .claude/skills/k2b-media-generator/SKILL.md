@@ -15,7 +15,9 @@ Generate images, speech, audio transcriptions, video, and music. Images and spee
 
 ## Paths
 
-- Scripts: `~/Projects/K2B/scripts/minimax-*.sh`
+- Scripts (image/video/music/VLM): `~/Projects/K2B/scripts/minimax-image.sh`, `minimax-vlm.sh`, plus the MiniMax MCP for video/music
+- Scripts (speech + transcription): `~/Projects/K2B/scripts/gptsapi-speech.sh`, `~/Projects/K2B/scripts/gptsapi-transcribe.sh`
+- **Retired (do NOT call):** `scripts/minimax-speech.sh` deleted 2026-05-16. `mcp__minimax__text_to_audio` MCP tool still exists in the agent's tool list but its backend is dead (status_code 2049). `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created — MiniMax has no STT endpoint.
 - Assets: `~/Projects/K2B-Vault/Assets/` (images/, audio/, video/)
 - Vault: `~/Projects/K2B-Vault`
 
@@ -112,7 +114,7 @@ If MCP tools are unavailable, use the bash scripts:
 GPTsAPI `tts-1` and `tts-1-hd` (OpenAI's TTS) handle 50+ languages including Mandarin, Cantonese, English, Japanese, Korean, and most European languages. Language is auto-detected from the input text; no `languageBoost` parameter needed.
 
 ### MiniMax TTS retired
-`scripts/minimax-speech.sh` exists but should NOT be used. The MiniMax Token Plan allocates zero TTS character quota despite the marketing copy listing voice generation. Pay-per-call MiniMax TTS requires a separate Standard API key with Credits topped up. The 2026-05-14 audit confirmed GPTsAPI `tts-1-hd` covers all K2B voice needs using the existing `GPTSAPI_KEY`. Do not propose restoring MiniMax for TTS without a specific quality or feature reason.
+`scripts/minimax-speech.sh` was **deleted 2026-05-16** after the 2026-05-15 agent-path incident, where the agent (responding to a natural-language voice request rather than `/media speech`) fell through to MiniMax TTS via `mcp__minimax__text_to_audio` and then `scripts/minimax-speech.sh`, both of which failed with `status_code 2049 invalid api key`. The MiniMax Token Plan allocates zero TTS character quota despite the marketing copy listing voice generation. Pay-per-call MiniMax TTS requires a separate Standard API key with Credits topped up. The 2026-05-14 audit confirmed GPTsAPI `tts-1-hd` covers all K2B voice needs using the existing `GPTSAPI_KEY`. **The `mcp__minimax__text_to_audio` MCP tool is still in the agent's tool list (the MCP server exposes all its tools by default), but its backend is dead — never call it. Always invoke `scripts/gptsapi-speech.sh` via Bash for ANY TTS request, regardless of how the user phrases it.** Do not propose restoring MiniMax for TTS without a specific quality or feature reason.
 
 ## Audio Transcription (STT)
 
