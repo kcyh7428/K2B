@@ -1,6 +1,30 @@
 # K2B Development Log
 
 ---
+## 2026-05-16 (very late evening) -- plate rendering convention (Hybrid) documented in SKILL.md
+
+**Commit:** `fbdc333 docs(plate): document Hybrid rendering convention in SKILL.md`
+
+**What shipped:** SKILL.md `## Output format` section expanded with explicit per-section rendering rules for the agent-side display layer:
+
+- **⚠ Pending actions + 🔔 Open reminders:** full body verbatim
+- **🎩 K2Bi PM checkpoint:** one-paragraph summary the agent extracts (ship state + next action + binding constraints; skip the numbered conditional triggers + discipline list)
+- **✅ Recently shipped:** title + date + one-line tag
+- **🚧 In Progress:** 2-column markdown table
+- **📅 Pipeline:** compact one-line Next Up + Backlog top 3
+- **🧠 Memory flags:** omit when empty
+
+Plus two documented overrides: "raw plate" dumps stdout verbatim; "summarize plate" compresses further to bulleted-curated.
+
+**Why:** Earlier today the first `/plate` of the session was Hybrid by accident and the second was raw verbatim. Keith called out the inconsistency. After comparing three options (Raw / Curated / Hybrid) side-by-side he picked Hybrid. This commit ends the drift by making the rule durable in SKILL.md instead of relying on agent memory.
+
+The script (`plate.sh`) stays unchanged -- still emits raw markdown as the source of truth. The Hybrid rules describe how the agent renders the script's output for the user. Keeps the script as a clean data layer with no rendering opinions baked in.
+
+**Builder:** Opus (K2B PM session). Tier 1 docs-only commit; no adversarial review needed.
+
+**Sync deferred:** working tree has uncommitted Agent B-continuation EOD changes (scripts/eod-capture-cron.sh + scripts/lib/eod_capture.py + 5 others). Next /sync that carries the EOD work will also pick up this SKILL.md change.
+
+---
 ## 2026-05-16 (very late evening) -- plate.sh project_*.md follow-up
 
 **Commit:** `93191a5 feat(plate): scan project_*.md alongside feature_*.md for pending-actions`
