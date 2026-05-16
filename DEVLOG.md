@@ -1,6 +1,19 @@
 # K2B Development Log
 
 ---
+## 2026-05-16 (very late evening) -- plate.sh project_*.md follow-up
+
+**Commit:** `93191a5 feat(plate): scan project_*.md alongside feature_*.md for pending-actions`
+
+**What shipped:** One-line glob extension + status filter loosening so /plate scans project_*.md from wiki/concepts/ and wiki/projects/ alongside feature_*.md, accepting status: active (project schema) OR status: in-progress (feature schema). SKILL.md canonical-sources row updated.
+
+**Why:** Post-pending-discipline migration survey caught the gap at 2026-05-16 ~23:35 CST -- project_minimax-offload is in the In Progress lane with real pending Keith-decisions (Tracks C + D), but /plate would miss any pending-action: set on it.
+
+**Smoke test:** Sandbox vault with 5 fixture files; all assertions passed (feature_*.md surfaces, project_*.md status:active surfaces, no-pending-action excluded, status:parked excluded).
+
+**Builder:** Codex (handoff from K2B PM session via .codex/job.md).
+
+---
 ## 2026-05-16 (late evening) -- k2b-plate skill ships /plate dashboard
 
 **Commit:** `b9a0005 feat(skill): k2b-plate -- /plate dashboard reads canonical pending-state sources`
