@@ -52,8 +52,55 @@ CONTROL_WHITESPACE_UNSAFE_FIELDS = (
 )
 DEDUPE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+$")
 EVIDENCE_QUOTE_UNSUPPORTED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+PREDICATE_WHITESPACE_RE = re.compile(r"\s+")
 
 ExtractFunc = Callable[[str, Path], dict | None]
+
+
+def _normalize_predicate_value(value: object) -> str:
+    text = str(value)
+    if PREDICATE_WHITESPACE_RE.search(text):
+        return PREDICATE_WHITESPACE_RE.sub("_", text.strip())
+    return text.strip()
+
+
+def _normalize_item_predicate(item: dict, *, log: bool) -> None:
+    original = str(item.get("predicate", ""))
+    if not PREDICATE_WHITESPACE_RE.search(original):
+        item["predicate"] = original.strip()
+        return
+    normalized = _normalize_predicate_value(original)
+    item["predicate"] = normalized
+    if log:
+        sys.stderr.write(
+            "[shelf-writer] predicate-normalized: "
+            f"{json.dumps(original, ensure_ascii=False)} -> "
+            f"{json.dumps(normalized, ensure_ascii=False)}\n"
+        )
+        sys.stderr.flush()
+
+
+def _dedupe_key_aliases(dedupe_key: str) -> set[str]:
+    parts = dedupe_key.split(":")
+    if len(parts) < 2:
+        return {dedupe_key}
+    predicate_segment = parts[-1]
+    predicate_aliases = {predicate_segment}
+    if "_" in predicate_segment:
+        predicate_aliases.add(predicate_segment.replace("_", "-"))
+    if "-" in predicate_segment:
+        predicate_aliases.add(predicate_segment.replace("-", "_"))
+    prefix = ":".join(parts[:-1])
+    return {f"{prefix}:{predicate}" for predicate in predicate_aliases}
+
+
+def _predicate_key_aliases(predicate: str) -> set[str]:
+    aliases = {predicate}
+    if "_" in predicate:
+        aliases.add(predicate.replace("_", "-"))
+    if "-" in predicate:
+        aliases.add(predicate.replace("-", "_"))
+    return aliases
 
 
 def _truncate(text: str, *, head: int, tail: int = 0, limit: int) -> str:
@@ -1183,15 +1230,32 @@ def _find_existing_fact(semantic_path: Path, item: dict) -> tuple[str, int, str]
     dedupe_key = str(item.get("dedupe_key", "")).strip()
     if not dedupe_key:
         return None
-    predicate = str(item.get("predicate", "")).strip() or "value"
+    dedupe_key_aliases = _dedupe_key_aliases(dedupe_key)
+    raw_predicate = str(item.get("predicate", "")).strip() or "value"
+    predicate = _normalize_predicate_value(raw_predicate) or "value"
+    compatible_predicates = _predicate_key_aliases(raw_predicate) | _predicate_key_aliases(predicate)
     matches: list[tuple[str, int, str]] = []
     for lineno, line in enumerate(
         semantic_path.read_text(encoding="utf-8").splitlines(), 1
     ):
         if not line.startswith("- "):
             continue
-        if dedupe_key and _extract_pipe_field(line, "dedupe_key") == dedupe_key:
-            existing = _extract_attr(line, predicate) or ""
+        line_dedupe_key = _extract_pipe_field(line, "dedupe_key")
+        row_predicate = _extract_pipe_field(line, "predicate")
+        row_predicate_normalized = _normalize_predicate_value(row_predicate or "")
+        exact_dedupe_match = line_dedupe_key == dedupe_key
+        compatible_alias_match = (
+            line_dedupe_key in dedupe_key_aliases
+            and row_predicate_normalized in compatible_predicates
+        )
+        if line_dedupe_key and (exact_dedupe_match or compatible_alias_match):
+            existing = _extract_attr(line, predicate)
+            if existing is None and raw_predicate != predicate:
+                existing = _extract_attr(line, raw_predicate)
+            if existing is None:
+                if row_predicate:
+                    existing = _extract_attr(line, row_predicate)
+            existing = existing or ""
             matches.append((line, lineno, existing))
     if len(matches) > 1:
         raise RuntimeError(f"duplicate dedupe_key in semantic.md: {dedupe_key}")
@@ -1218,7 +1282,9 @@ def _slugify(value: str) -> str:
 
 
 def _write_semantic_item(vault_path: Path, item: dict, *, run_date: str) -> bool:
+    item = dict(item)
     _validate_extraction_item(item, idx=0, source=Path("semantic-write"))
+    _normalize_item_predicate(item, log=True)
     dedupe_key = str(item.get("dedupe_key", "")).strip()
     semantic_path = vault_path / "wiki" / "context" / "shelves" / "semantic.md"
     attrs = [
@@ -1271,6 +1337,11 @@ def _write_semantic_item(vault_path: Path, item: dict, *, run_date: str) -> bool
         raise RuntimeError(proc.stderr.strip() or "shelf-writer duplicate dedupe_key")
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "shelf-writer failed")
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+        if not proc.stderr.endswith("\n"):
+            sys.stderr.write("\n")
+        sys.stderr.flush()
     _fsync_dir(vault_path / "wiki" / "context" / "shelves")
     return True
 
@@ -1521,6 +1592,7 @@ def _reconcile_extractions_locked(vault_path: Path, *, run_date: str) -> dict:
                     summary["skipped_preferences"] += 1
                     continue
                 _validate_extraction_item(item, idx=idx, source=path)
+                _normalize_item_predicate(item, log=True)
                 confidence = str(item.get("confidence", "")).lower()
                 if confidence != "high":
                     _write_low_confidence(vault_path, item, run_date=run_date)

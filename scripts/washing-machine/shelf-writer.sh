@@ -344,6 +344,61 @@ raise SystemExit(1)
 PY
 }
 
+normalize_predicate_attrs() {
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/shelf-writer-attrs.XXXXXX")"
+  if ! printf '%s\0' "${ATTRS[@]}" | "$PYTHON_BIN" -c '
+import json
+import re
+import sys
+
+raw = sys.stdin.buffer.read().split(b"\0")
+attrs = [item.decode("utf-8") for item in raw if item]
+predicate = None
+for attr in attrs:
+    if ":" not in attr:
+        continue
+    key, value = attr.split(":", 1)
+    if key == "predicate":
+        predicate = value
+        break
+
+if predicate is not None and re.search(r"\s", predicate):
+    normalized = re.sub(r"\s+", "_", predicate.strip())
+    print(
+        f"[shelf-writer] predicate-normalized: {json.dumps(predicate)} -> {json.dumps(normalized)}",
+        file=sys.stderr,
+    )
+    stripped = predicate.strip()
+    out = []
+    for attr in attrs:
+        if ":" not in attr:
+            out.append(attr)
+            continue
+        key, value = attr.split(":", 1)
+        if key == "predicate":
+            out.append(f"predicate:{normalized}")
+        elif key == predicate or key.strip() == stripped:
+            out.append(f"{normalized}:{value}")
+        else:
+            out.append(attr)
+else:
+    out = attrs
+
+for attr in out:
+    print(attr)
+' >"$tmp"; then
+    rm -f "$tmp"
+    echo "shelf-writer: predicate normalization failed" >&2
+    exit 65
+  fi
+  ATTRS=()
+  while IFS= read -r attr; do
+    ATTRS+=("$attr")
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
 # ---- initial frontmatter template for a brand-new shelf file ----
 new_shelf_template() {
   local shelf="$1"
@@ -371,6 +426,7 @@ EOF
 
 # ---- main ----
 main() {
+  normalize_predicate_attrs
   build_serialize_cmd
   local new_row
   if ! new_row="$("${SERIALIZE_CMD[@]}")"; then

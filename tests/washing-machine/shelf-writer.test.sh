@@ -4,6 +4,8 @@
 # Plan: plans/2026-04-21_washing-machine-ship-1.md Commit 1.
 
 set -euo pipefail
+export LC_ALL=C
+export LANG=C
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WRITER="$REPO_ROOT/scripts/washing-machine/shelf-writer.sh"
@@ -333,4 +335,83 @@ K2B_SHELVES_DIR="$ESC_DEDUP_DIR" "$WRITER" \
 [ "$(count_rows "$ESC_DEDUP_DIR/semantic.md")" = "2" ] \
   || fail "test 13: expected two rows after escaped-pipe dedupe write"
 
-echo "shelf-writer.test.sh: all 13 tests passed"
+# --- Test 14: predicate values with spaces are normalized before serialize ---
+PRED_DIR="$TMPDIR/predicate-normalize"
+mkdir -p "$PRED_DIR"
+set +e
+PRED_ERR="$(
+  K2B_SHELVES_DIR="$PRED_DIR" "$WRITER" \
+    --shelf semantic --date 2026-05-16 --type fact --slug keith \
+    --attr "subject:Keith" --attr "predicate:works at" --attr "works at:K2B" \
+    --attr "dedupe_key:person:keith:works-at" 2>&1
+)"
+PRED_RC=$?
+set -e
+[ "$PRED_RC" = "0" ] || fail "test 14: predicate with space was not normalized (rc=$PRED_RC err=$PRED_ERR)"
+printf '%s' "$PRED_ERR" | grep -Fq '[shelf-writer] predicate-normalized: "works at" -> "works_at"' \
+  || fail "test 14: predicate normalization log missing (got: $PRED_ERR)"
+grep -Fq 'predicate:works_at' "$PRED_DIR/semantic.md" \
+  || fail "test 14: normalized predicate attr missing"
+grep -Fq 'works_at:K2B' "$PRED_DIR/semantic.md" \
+  || fail "test 14: normalized predicate value key missing"
+! grep -Fq 'predicate:works at' "$PRED_DIR/semantic.md" \
+  || fail "test 14: unnormalized predicate stored"
+
+# --- Test 15: predicates without spaces are unchanged and do not log ---
+set +e
+PHONE_ERR="$(
+  K2B_SHELVES_DIR="$PRED_DIR" "$WRITER" \
+    --shelf semantic --date 2026-05-16 --type fact --slug keith-phone \
+    --attr "subject:Keith" --attr "predicate:phone" --attr "phone:2830 3709" \
+    --attr "dedupe_key:person:keith:phone" 2>&1
+)"
+PHONE_RC=$?
+set -e
+[ "$PHONE_RC" = "0" ] || fail "test 15: predicate without space failed (rc=$PHONE_RC err=$PHONE_ERR)"
+[ -z "$PHONE_ERR" ] || fail "test 15: predicate without space should not log normalization (got: $PHONE_ERR)"
+grep -Fq 'predicate:phone' "$PRED_DIR/semantic.md" \
+  || fail "test 15: unchanged predicate attr missing"
+grep -Fq 'phone:2830 3709' "$PRED_DIR/semantic.md" \
+  || fail "test 15: unchanged predicate value key missing"
+
+# --- Test 16: multiple internal spaces collapse to one underscore ---
+MULTI_DIR="$TMPDIR/predicate-multiple-spaces"
+mkdir -p "$MULTI_DIR"
+set +e
+MULTI_ERR="$(
+  K2B_SHELVES_DIR="$MULTI_DIR" "$WRITER" \
+    --shelf semantic --date 2026-05-16 --type fact --slug keith \
+    --attr "subject:Keith" --attr "predicate:works   at" --attr "works   at:K2B" \
+    --attr "dedupe_key:person:keith:works-at" 2>&1
+)"
+MULTI_RC=$?
+set -e
+[ "$MULTI_RC" = "0" ] || fail "test 16: multiple-space predicate failed (rc=$MULTI_RC err=$MULTI_ERR)"
+printf '%s' "$MULTI_ERR" | grep -Fq '[shelf-writer] predicate-normalized: "works   at" -> "works_at"' \
+  || fail "test 16: multiple-space normalization log missing (got: $MULTI_ERR)"
+grep -Fq 'predicate:works_at' "$MULTI_DIR/semantic.md" \
+  || fail "test 16: multiple-space predicate not normalized"
+grep -Fq 'works_at:K2B' "$MULTI_DIR/semantic.md" \
+  || fail "test 16: multiple-space predicate value key not normalized"
+
+# --- Test 17: leading/trailing predicate whitespace is stripped ---
+TRIM_PRED_DIR="$TMPDIR/predicate-trim"
+mkdir -p "$TRIM_PRED_DIR"
+set +e
+TRIM_PRED_ERR="$(
+  K2B_SHELVES_DIR="$TRIM_PRED_DIR" "$WRITER" \
+    --shelf semantic --date 2026-05-16 --type fact --slug keith \
+    --attr "subject:Keith" --attr "predicate:  works at  " --attr "  works at  :K2B" \
+    --attr "dedupe_key:person:keith:works-at" 2>&1
+)"
+TRIM_PRED_RC=$?
+set -e
+[ "$TRIM_PRED_RC" = "0" ] || fail "test 17: trimmed predicate failed (rc=$TRIM_PRED_RC err=$TRIM_PRED_ERR)"
+printf '%s' "$TRIM_PRED_ERR" | grep -Fq '[shelf-writer] predicate-normalized: "  works at  " -> "works_at"' \
+  || fail "test 17: trimmed predicate normalization log missing (got: $TRIM_PRED_ERR)"
+grep -Fq 'predicate:works_at' "$TRIM_PRED_DIR/semantic.md" \
+  || fail "test 17: trimmed predicate not normalized"
+grep -Fq 'works_at:K2B' "$TRIM_PRED_DIR/semantic.md" \
+  || fail "test 17: trimmed predicate value key not normalized"
+
+echo "shelf-writer.test.sh: all 17 tests passed"

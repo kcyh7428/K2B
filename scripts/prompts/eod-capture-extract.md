@@ -22,7 +22,7 @@ Return this JSON shape:
       "kind": "fact|decision|learning",
       "subtype": "person_contact|project_status|correction|other",
       "subject": "short canonical subject",
-      "predicate": "short predicate such as phone or status",
+      "predicate": "short snake_case predicate such as phone, works_at, lives_in, or status",
       "object": "value",
       "scope": "K2B|K2Bi",
       "confidence": "high|medium|low",
@@ -38,6 +38,8 @@ Rules:
 - Return valid JSON, no markdown fence.
 - Use high confidence only when the evidence is explicit.
 - Every extracted item must include a dedupe_key. Use a stable lowercase key with colon separators. Each segment must start with a lowercase letter or number and may contain lowercase letters, numbers, `.`, `_`, or `-`; do not start/end with `:` or use `::`.
+- For dedupe_key relation phrase segments, preserve the existing hyphenated slug style even when the predicate is snake_case. Example: predicate `works_at` should use a dedupe_key segment like `works-at`, not `works_at`.
+- Predicate values MUST be snake_case, no internal whitespace, no punctuation other than underscore. Examples: `phone`, `works_at`, `lives_in`, `status`. NEVER use `works at`, `lives in`, `has phone`, or preference predicates such as `prefers`.
 - Do not use pipe characters (`|`) as separators or formatting. If a pipe
   character is part of the actual source text, copy it only as part of the
   exact source value.

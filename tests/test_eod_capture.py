@@ -1480,6 +1480,448 @@ def test_reconcile_auto_writes_fact_and_skips_preference(tmp_path):
     assert "plain English over jargon" not in review_text
 
 
+def _write_staged_item(vault: Path, item: dict, *, filename: str = "2026-05-14_s1.json") -> None:
+    staging = vault / ".staging" / "extractions"
+    staging.mkdir(parents=True)
+    (staging / filename).write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "session_path": "/tmp/s1.jsonl",
+                "source_app": "claude_code",
+                "items": [item],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_staged_high_confidence_fact(vault: Path, *, predicate: str) -> None:
+    normalized_key = "-".join(predicate.strip().split())
+    _write_staged_item(
+        vault,
+        {
+            "kind": "fact",
+            "subtype": "project_status",
+            "subject": "Keith",
+            "predicate": predicate,
+            "object": "K2B",
+            "scope": "K2B",
+            "confidence": "high",
+            "evidence_quote": "Keith works at K2B",
+            "speaker_source": "keith",
+            "dedupe_key": f"person:keith:{normalized_key}",
+            "canonical_home": "wiki/context/shelves/semantic.md",
+        },
+    )
+
+
+def _write_staged_profile_fact(
+    vault: Path,
+    *,
+    subject: str,
+    predicate: str,
+    object_value: str,
+    dedupe_key: str,
+    quote: str,
+) -> None:
+    _write_staged_item(
+        vault,
+        {
+            "kind": "fact",
+            "subtype": "profile",
+            "subject": subject,
+            "predicate": predicate,
+            "object": object_value,
+            "scope": "Personal",
+            "confidence": "high",
+            "evidence_quote": quote,
+            "speaker_source": "keith",
+            "dedupe_key": dedupe_key,
+            "canonical_home": "wiki/context/shelves/semantic.md",
+        },
+    )
+
+
+def test_predicate_with_space_normalized(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    _write_staged_high_confidence_fact(vault, predicate="works at")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    captured = capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert summary["errors"] == 0
+    assert "predicate:works_at" in semantic
+    assert "works_at:K2B" in semantic
+    assert "predicate:works at" not in semantic
+    assert not list((vault / "review").glob("eod-error_*.md"))
+    assert '[shelf-writer] predicate-normalized: "works at" -> "works_at"' in captured.err
+
+
+def test_predicate_with_space_normalized_rerun_dedupes_without_conflict(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    _write_staged_high_confidence_fact(vault, predicate="works at")
+
+    first = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+    second = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert first["auto_written"] == 1
+    assert second["auto_written"] == 0
+    assert second["deduped"] == 1
+    assert second["conflicts"] == 0
+    assert second["errors"] == 0
+    assert semantic.count("dedupe_key:person:keith:works-at") == 1
+    assert not list((vault / ".staging" / "pending-conflicts").glob("*.json"))
+    assert not list((vault / "review").glob("eod-error_*.md"))
+
+
+def test_legacy_predicate_with_space_dedupes_against_normalized(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | project_status | keith | subject:Keith | "
+            "predicate:works at | works at:K2B | dedupe_key:person:keith:works-at"
+        ],
+    )
+    _write_staged_high_confidence_fact(vault, predicate="works_at")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    assert summary["auto_written"] == 0
+    assert summary["deduped"] == 1
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+    assert not list((vault / ".staging" / "pending-conflicts").glob("*.json"))
+    assert not list((vault / "review").glob("eod-error_*.md"))
+
+
+def test_legacy_predicate_with_multiple_spaces_dedupes_against_normalized(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | project_status | keith | subject:Keith | "
+            "predicate:works   at | works   at:K2B | dedupe_key:person:keith:works-at"
+        ],
+    )
+    _write_staged_high_confidence_fact(vault, predicate="works_at")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    assert summary["auto_written"] == 0
+    assert summary["deduped"] == 1
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+
+
+def test_snake_case_dedupe_key_dedupes_preexisting_hyphen_key(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | project_status | keith | subject:Keith | "
+            "predicate:works_at | works_at:K2B | dedupe_key:person:keith:works-at"
+        ],
+    )
+    _write_staged_high_confidence_fact(vault, predicate="works_at")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 0
+    assert summary["deduped"] == 1
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+    assert semantic.count("dedupe_key:person:keith:works-at") == 1
+    assert "dedupe_key:person:keith:works_at" not in semantic
+
+
+def test_legacy_predicate_with_hyphen_dedupes_against_underscore(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | project_status | keith | subject:Keith | "
+            "predicate:works-at | works-at:K2B | dedupe_key:person:keith:works-at"
+        ],
+    )
+    _write_staged_high_confidence_fact(vault, predicate="works_at")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    assert summary["auto_written"] == 0
+    assert summary["deduped"] == 1
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+    assert not list((vault / ".staging" / "pending-conflicts").glob("*.json"))
+
+
+def test_non_predicate_segment_hyphen_does_not_alias(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | profile | dr-lo-hak-keung | "
+            "subject:Dr Lo Hak Keung | predicate:phone | phone:+85211112222 | "
+            "dedupe_key:person:dr-lo-hak-keung:phone"
+        ],
+    )
+    staging = vault / ".staging" / "extractions"
+    staging.mkdir(parents=True)
+    (staging / "2026-05-14_s1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "session_path": "/tmp/s1.jsonl",
+                "source_app": "claude_code",
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subtype": "profile",
+                        "subject": "Dr Lo Hak Keung",
+                        "predicate": "phone",
+                        "object": "+85233334444",
+                        "scope": "Personal",
+                        "confidence": "high",
+                        "evidence_quote": "Dr Lo Hak Keung phone is +85233334444",
+                        "speaker_source": "keith",
+                        "dedupe_key": "person:dr_lo_hak_keung:phone",
+                        "canonical_home": "wiki/context/shelves/semantic.md",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert summary["deduped"] == 0
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+    assert "dedupe_key:person:dr-lo-hak-keung:phone" in semantic
+    assert "dedupe_key:person:dr_lo_hak_keung:phone" in semantic
+
+
+def test_non_predicate_segment_underscore_does_not_alias_reverse(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | profile | dr_lo_hak_keung | "
+            "subject:Dr Lo Hak Keung | predicate:phone | phone:+85211112222 | "
+            "dedupe_key:person:dr_lo_hak_keung:phone"
+        ],
+    )
+    _write_staged_profile_fact(
+        vault,
+        subject="Dr Lo Hak Keung",
+        predicate="phone",
+        object_value="+85233334444",
+        quote="Dr Lo Hak Keung phone is +85233334444",
+        dedupe_key="person:dr-lo-hak-keung:phone",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert summary["deduped"] == 0
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+    assert "dedupe_key:person:dr_lo_hak_keung:phone" in semantic
+    assert "dedupe_key:person:dr-lo-hak-keung:phone" in semantic
+
+
+def test_predicate_alias_with_hyphenated_subject_still_dedupes(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | profile | dr-lo-hak-keung | "
+            "subject:Dr Lo Hak Keung | predicate:works-at | works-at:CUHK | "
+            "dedupe_key:person:dr-lo-hak-keung:works-at"
+        ],
+    )
+    _write_staged_profile_fact(
+        vault,
+        subject="Dr Lo Hak Keung",
+        predicate="works_at",
+        object_value="CUHK",
+        quote="Dr Lo Hak Keung works at CUHK",
+        dedupe_key="person:dr-lo-hak-keung:works_at",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    assert summary["auto_written"] == 0
+    assert summary["deduped"] == 1
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+
+
+def test_predicate_segment_aliasing_still_works(tmp_path, capsys):
+    for legacy_predicate in ("lives in", "lives-in"):
+        vault = tmp_path / legacy_predicate.replace(" ", "_")
+        _write_minimal_vault(
+            vault,
+            semantic_rows=[
+                "- 2026-05-13 | project_status | keith | subject:Keith | "
+                f"predicate:{legacy_predicate} | {legacy_predicate}:K2B | "
+                "dedupe_key:person:keith:lives-in"
+            ],
+        )
+        _write_staged_high_confidence_fact(vault, predicate="lives_in")
+
+        summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+        capsys.readouterr()
+        semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+            encoding="utf-8"
+        )
+        assert summary["auto_written"] == 0
+        assert summary["deduped"] == 1
+        assert summary["conflicts"] == 0
+        assert summary["errors"] == 0
+        assert semantic.count("dedupe_key:person:keith:lives-in") == 1
+
+
+def test_dedupe_key_aliases_scope_to_predicate_segment():
+    aliases = eod_capture._dedupe_key_aliases("person:dr-lo-hak-keung:works_at")
+
+    assert "person:dr-lo-hak-keung:works-at" in aliases
+    assert "person:dr_lo_hak_keung:works_at" not in aliases
+    assert "person:dr_lo_hak_keung:works-at" not in aliases
+
+
+def test_dedupe_key_alias_requires_compatible_row_predicate(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(
+        vault,
+        semantic_rows=[
+            "- 2026-05-13 | project_status | keith | subject:Keith | "
+            "predicate:foo | foo:old | dedupe_key:person:keith:foo-bar"
+        ],
+    )
+    staging = vault / ".staging" / "extractions"
+    staging.mkdir(parents=True)
+    (staging / "2026-05-14_s1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "session_path": "/tmp/s1.jsonl",
+                "source_app": "claude_code",
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subtype": "project_status",
+                        "subject": "Keith",
+                        "predicate": "foo_bar",
+                        "object": "new",
+                        "scope": "K2B",
+                        "confidence": "high",
+                        "evidence_quote": "Keith foo bar new",
+                        "speaker_source": "keith",
+                        "dedupe_key": "person:keith:foo_bar",
+                        "canonical_home": "wiki/context/shelves/semantic.md",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert summary["deduped"] == 0
+    assert summary["conflicts"] == 0
+    assert summary["errors"] == 0
+    assert "dedupe_key:person:keith:foo-bar" in semantic
+    assert "dedupe_key:person:keith:foo_bar" in semantic
+
+
+def test_predicate_without_space_unchanged(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    _write_staged_high_confidence_fact(vault, predicate="phone")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    captured = capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert "predicate:phone" in semantic
+    assert "phone:K2B" in semantic
+    assert "predicate-normalized" not in captured.err
+
+
+def test_predicate_multiple_spaces_normalized(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    _write_staged_high_confidence_fact(vault, predicate="works   at")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    captured = capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert "predicate:works_at" in semantic
+    assert "works_at:K2B" in semantic
+    assert '[shelf-writer] predicate-normalized: "works   at" -> "works_at"' in captured.err
+
+
+def test_predicate_leading_trailing_whitespace_stripped(tmp_path, capsys):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    _write_staged_high_confidence_fact(vault, predicate="  works at  ")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    captured = capsys.readouterr()
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert summary["auto_written"] == 1
+    assert "predicate:works_at" in semantic
+    assert "works_at:K2B" in semantic
+    assert '[shelf-writer] predicate-normalized: "  works at  " -> "works_at"' in captured.err
+
+
 def test_binary_mvp_sandbox_fact_preference_and_conflict(tmp_path):
     run_date = "2026-05-14"
     preference_text = "I prefer plain English over jargon"
