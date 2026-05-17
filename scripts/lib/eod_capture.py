@@ -31,6 +31,7 @@ MINIMAX_JSON_JOB = REPO_ROOT / "scripts" / "minimax-json-job.sh"
 WIKI_LOG_APPEND = REPO_ROOT / "scripts" / "wiki-log-append.sh"
 SHELF_WRITER = REPO_ROOT / "scripts" / "washing-machine" / "shelf-writer.sh"
 EXTRACTION_SCHEMA_VERSION = "1.0"
+ALL_ITEMS_REJECTED_SKIP_REASON = "all_items_rejected_after_validation"
 MAX_EXTRACTOR_STDOUT_BYTES = 1_000_000
 MAX_EXTRACTOR_STDERR_BYTES = 200_000
 EXTRACTOR_TIMEOUT_SECONDS = 360
@@ -55,6 +56,10 @@ EVIDENCE_QUOTE_UNSUPPORTED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f
 PREDICATE_WHITESPACE_RE = re.compile(r"\s+")
 
 ExtractFunc = Callable[[str, Path], dict | None]
+
+
+class AllItemsRejectedError(ValueError):
+    """Raised when Kimi returned items but every item failed validation."""
 
 
 def _normalize_predicate_value(value: object) -> str:
@@ -790,6 +795,13 @@ def _filter_extraction_items(
     return filtered, rejections
 
 
+def _all_rejections_are_unsupported_canonical_home(rejections: list[dict]) -> bool:
+    return bool(rejections) and all(
+        "unsupported canonical_home" in str(rejection.get("error", ""))
+        for rejection in rejections
+    )
+
+
 def _validate_extraction_item(item: object, *, idx: int, source: Path) -> None:
     if not isinstance(item, dict):
         raise ValueError(f"extractor item {idx} for {source} is not an object")
@@ -946,11 +958,25 @@ def run_job_a(
                             transcript_sha256=transcript_sha256,
                         )
                     if rejections and not data.get("items"):
-                        raise ValueError(
-                            f"all extractor items rejected for {session_path}"
-                        )
+                        message = f"all extractor items rejected for {session_path}"
+                        if _all_rejections_are_unsupported_canonical_home(rejections):
+                            raise AllItemsRejectedError(message)
+                        raise ValueError(message)
                     _atomic_write_json(out_path, data)
                     written.append(out_path)
+                except AllItemsRejectedError as exc:
+                    print(
+                        f"eod-capture: extraction skipped for {session_path}: {exc}",
+                        file=sys.stderr,
+                    )
+                    _write_extraction_skip(
+                        vault_path,
+                        session_path,
+                        run_date=run_date,
+                        reason=ALL_ITEMS_REJECTED_SKIP_REASON,
+                        error=exc,
+                        transcript_sha256=transcript_sha256,
+                    )
                 except (
                     OSError,
                     RuntimeError,
@@ -1750,6 +1776,22 @@ def _build_digest_message_unlocked(
                 f"{skip.get('reason', 'slow_extraction')} "
                 f"{skip.get('error', 'unknown error')}"
             )
+    all_rejected_skips = _run_date_extraction_skips(
+        vault_path, run_date, reason=ALL_ITEMS_REJECTED_SKIP_REASON
+    )
+    if all_rejected_skips:
+        lines.append(f"all-items-rejected skips: {len(all_rejected_skips)}")
+        for path in all_rejected_skips[:3]:
+            try:
+                skip = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                lines.append(f"- {path.name}: {ALL_ITEMS_REJECTED_SKIP_REASON}")
+                continue
+            lines.append(
+                f"- {Path(str(skip.get('session_path', path.name))).name}: "
+                f"{skip.get('reason', ALL_ITEMS_REJECTED_SKIP_REASON)} "
+                f"{skip.get('error', 'unknown error')}"
+            )
     log_failure_dir = vault_path / ".staging" / "eod-log-failures"
     log_failures = sorted(log_failure_dir.glob("*.jsonl")) if log_failure_dir.is_dir() else []
     if log_failures:
@@ -1859,6 +1901,11 @@ def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
     )
     if slow_skips:
         issues.append(f"slow extraction skips: {len(slow_skips)}")
+    all_rejected_skips = _run_date_extraction_skips(
+        vault_path, run_date, reason=ALL_ITEMS_REJECTED_SKIP_REASON
+    )
+    if all_rejected_skips:
+        issues.append(f"all-items-rejected skips: {len(all_rejected_skips)}")
     log_failure_dir = vault_path / ".staging" / "eod-log-failures"
     log_failures = (
         sorted(log_failure_dir.glob("*.jsonl"))

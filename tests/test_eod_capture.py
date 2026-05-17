@@ -327,9 +327,7 @@ def test_job_a_main_returns_zero_when_only_empty_stripped_sessions_skip(tmp_path
     assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
 
 
-def test_job_a_keeps_valid_items_and_rejects_bad_items_from_mixed_kimi_response(
-    tmp_path, monkeypatch
-):
+def test_partial_items_rejected_still_succeeds(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -372,15 +370,6 @@ def test_job_a_keeps_valid_items_and_rejects_bad_items_from_mixed_kimi_response(
                             "dedupe_key": "decision:beta:status",
                         },
                         {
-                            "kind": "learning",
-                            "subject": "Gamma",
-                            "predicate": "status",
-                            "object": "true",
-                            "confidence": "high",
-                            "evidence_quote": "gamma fact three is true",
-                            "dedupe_key": "learning:gamma:status",
-                        },
-                        {
                             "kind": "fact",
                             "subject": "Bad quote",
                             "predicate": "status",
@@ -402,16 +391,21 @@ def test_job_a_keeps_valid_items_and_rejects_bad_items_from_mixed_kimi_response(
     rejection_files = sorted(
         (vault / ".staging" / "extraction-rejections").glob("*.json")
     )
+    skip_files = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failure_files = sorted(
+        (vault / ".staging" / "extraction-failures").glob("*.json")
+    )
     staged = json.loads(written[0].read_text(encoding="utf-8"))
     assert len(written) == 1
     assert [item["dedupe_key"] for item in staged["items"]] == [
         "fact:alpha:status",
         "decision:beta:status",
-        "learning:gamma:status",
     ]
     assert len(rejection_files) == 1
+    assert skip_files == []
+    assert failure_files == []
     rejection = json.loads(rejection_files[0].read_text(encoding="utf-8"))
-    assert rejection["item_index"] == 3
+    assert rejection["item_index"] == 2
     assert rejection["item"]["dedupe_key"] == "fact:bad-quote:status"
     assert "evidence_quote" in rejection["error"]
 
@@ -906,6 +900,16 @@ def test_extractor_prompt_requires_verbatim_quotes():
     assert "not paraphrase" in prompt
 
 
+def test_prompt_forbids_feature_canonical_home():
+    prompt = eod_capture.PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "canonical_home MUST be one of" in prompt
+    assert "wiki/context/shelves/semantic.md" in prompt
+    assert "NEVER use as canonical_home" in prompt
+    assert "wiki/concepts/feature_*.md" in prompt
+    assert "wiki/concepts/Shipped/*.md" in prompt
+
+
 def test_same_value_uses_exact_trimmed_comparison():
     assert eod_capture._same_value("2830 3709 ", "2830 3709")
     assert not eod_capture._same_value("Dr. Lo", "dr. lo")
@@ -1311,7 +1315,81 @@ def test_call_kimi_extractor_prioritizes_transient_marker_in_mixed_stderr(
     assert data["items"][0]["dedupe_key"] == "person:dr-lo:phone"
 
 
-def test_job_a_writes_failure_when_all_items_rejected_for_bad_evidence_quote(
+def test_all_items_rejected_writes_skip_not_failure(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"})
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+
+    def fake_run(*_args, **_kwargs):
+        return eod_capture.subprocess.CompletedProcess(
+            args=["kimi"],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "items": [
+                        {
+                            "kind": "fact",
+                            "subject": "Alpha",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "alpha fact one is true",
+                            "dedupe_key": "fact:alpha:status",
+                            "canonical_home": "wiki/concepts/feature_end-of-day-capture.md",
+                        },
+                        {
+                            "kind": "decision",
+                            "subject": "Beta",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "alpha fact one is true",
+                            "dedupe_key": "decision:beta:status",
+                            "canonical_home": "wiki/concepts/Shipped/feature_old.md",
+                        },
+                        {
+                            "kind": "learning",
+                            "subject": "Gamma",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "alpha fact one is true",
+                            "dedupe_key": "learning:gamma:status",
+                            "canonical_home": "wiki/concepts/feature_cron-readiness.md",
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+
+    written = eod_capture.run_job_a([session], vault_path=vault, run_date="2026-05-14")
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert written == []
+    assert len(skips) == 1
+    assert failures == []
+    assert len(rejections) == 3
+    skip = json.loads(skips[0].read_text(encoding="utf-8"))
+    assert skip["reason"] == "all_items_rejected_after_validation"
+    assert "all extractor items rejected" in skip["error"]
+    assert all("unsupported canonical_home" in p.read_text(encoding="utf-8") for p in rejections)
+
+
+def test_all_items_rejected_for_bad_evidence_quote_still_fails(
     tmp_path, monkeypatch
 ):
     vault = tmp_path / "vault"
@@ -1353,13 +1431,136 @@ def test_job_a_writes_failure_when_all_items_rejected_for_bad_evidence_quote(
 
     written = eod_capture.run_job_a([session], vault_path=vault, run_date="2026-05-14")
 
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert written == []
+    assert skips == []
     assert len(failures) == 1
     assert len(rejections) == 1
     assert "all extractor items rejected" in failures[0].read_text(encoding="utf-8")
     assert "evidence_quote" in rejections[0].read_text(encoding="utf-8")
+
+
+def test_main_returns_0_when_all_items_rejected(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+
+    def fake_run(*_args, **_kwargs):
+        return eod_capture.subprocess.CompletedProcess(
+            args=["kimi"],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "items": [
+                        {
+                            "kind": "fact",
+                            "subject": "Alpha",
+                            "predicate": "status",
+                            "object": "true",
+                            "confidence": "high",
+                            "evidence_quote": "alpha fact one is true",
+                            "dedupe_key": "fact:alpha:status",
+                            "canonical_home": "wiki/concepts/feature_end-of-day-capture.md",
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    assert rc == 0
+    assert sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+
+
+def test_all_items_rejected_skip_preserves_transcript_sha(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def invalid_extract(_payload: str, _session_path: Path) -> dict:
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/concepts/feature_end-of-day-capture.md",
+                }
+            ]
+        }
+
+    written = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        extract_func=invalid_extract,
+    )
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert written == []
+    assert len(skips) == 1
+    skip = json.loads(skips[0].read_text(encoding="utf-8"))
+    assert skip["transcript_sha256"] == hashlib.sha256(
+        eod_capture.strip_transcript(session).encode("utf-8")
+    ).hexdigest()
+
+
+def test_other_value_errors_still_fail(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(json.dumps({"type": "user", "content": "ok"}) + "\n", encoding="utf-8")
+
+    def malformed_extract(_payload: str, _session_path: Path) -> dict:
+        return {"items": "not-a-list"}
+
+    written = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        extract_func=malformed_extract,
+    )
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert written == []
+    assert skips == []
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
+    assert "non-list items" in failure["error"]
 
 
 def test_call_kimi_extractor_accepts_evidence_quote_with_normalized_whitespace(
@@ -2620,6 +2821,48 @@ def test_digest_health_issues_include_slow_extraction_skips(tmp_path):
     assert "slow extraction skips: 1" in eod_capture._digest_health_issues(
         vault, "2026-05-14"
     )
+
+
+def test_digest_health_issues_include_all_items_rejected_skips(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
+        json.dumps({"processed_files": 1, "errors": 0}),
+        encoding="utf-8",
+    )
+    session = tmp_path / "session.jsonl"
+    eod_capture._write_extraction_skip(
+        vault,
+        session,
+        run_date="2026-05-14",
+        reason="all_items_rejected_after_validation",
+        error=RuntimeError("all extractor items rejected"),
+    )
+
+    assert "all-items-rejected skips: 1" in eod_capture._digest_health_issues(
+        vault, "2026-05-14"
+    )
+
+
+def test_digest_message_includes_all_items_rejected_skips(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    eod_capture._write_extraction_skip(
+        vault,
+        session,
+        run_date="2026-05-14",
+        reason="all_items_rejected_after_validation",
+        error=RuntimeError("all extractor items rejected"),
+    )
+
+    message = eod_capture.build_digest_message(
+        vault, run_date="2026-05-14", summary={"errors": 0}
+    )
+
+    assert "all-items-rejected skips: 1" in message
+    assert "all_items_rejected_after_validation" in message
 
 
 def test_digest_message_warns_when_summary_missing(tmp_path):

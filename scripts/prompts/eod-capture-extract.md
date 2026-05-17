@@ -34,6 +34,11 @@ Return this JSON shape:
   ]
 }
 
+Canonical home rules:
+- canonical_home MUST be one of: wiki/context/shelves/semantic.md
+- If NO allowed home matches the fact, SKIP the item entirely -- do NOT route it to wiki/concepts/feature_*.md, wiki/concepts/Shipped/*.md, or any path not in the whitelist.
+- NEVER use as canonical_home: wiki/concepts/feature_*.md, wiki/concepts/Shipped/*.md, anything matching the wiki/concepts/feature_* pattern. These are K2B internal feature notes, not semantic memory homes.
+
 Rules:
 - Return valid JSON, no markdown fence.
 - Use high confidence only when the evidence is explicit.
