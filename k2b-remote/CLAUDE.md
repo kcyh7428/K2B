@@ -45,25 +45,38 @@ CRITICAL: NEVER use Claude Code's built-in scheduling tools (CronCreate, schedul
 
 ALWAYS use the persistent SQLite-backed scheduler via schedule-cli.js:
 
-### One-time reminders
+### One-time reminders (Keith's DM)
 ```bash
 cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create-once "<prompt>" "YYYY-MM-DD HH:MM" 8394008217
 ```
 
-### Recurring tasks
+### Recurring tasks (Keith's DM)
 ```bash
 cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create "<prompt>" "<cron>" 8394008217
 ```
 
+### Recurring K2B-internal automation (post to K2B Alerts -> Automation topic, NOT DM)
+For tasks like `/weave`, `/lint`, memory promotion, usage reports, recurring `/research` jobs -- anything whose output is "K2B did X on its own, here's the result". Route to the Automation topic so the DM stays for interactive replies + user-set reminders only.
+
+```bash
+cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create "<prompt>" "<cron>" -1003966532428 --thread 55
+```
+
 ### Other commands
 ```bash
-node dist/schedule-cli.js list          # List all tasks
+node dist/schedule-cli.js list          # List all tasks (shows chat + thread)
 node dist/schedule-cli.js delete <id>   # Delete a task
 node dist/schedule-cli.js pause <id>    # Pause a task
 node dist/schedule-cli.js resume <id>   # Resume a task
 ```
 
-- Chat ID for Keith: `8394008217`
+### Routing decision rule
+- **User-set reminders** ("remind me to call mum at 5pm") -> DM, chat_id `8394008217`, no `--thread`.
+- **K2B-internal automation** ("run /weave thrice weekly", "memory promotion every Sunday") -> Automation topic, chat_id `-1003966532428`, `--thread 55`.
+- When in doubt: did Keith ask for THIS particular thing right now? -> DM. Was this K2B's idea to run on a timer? -> Automation topic.
+
+- Chat ID for Keith's DM: `8394008217`
+- K2B Alerts supergroup: `-1003966532428` (thread `55` = Automation, thread `53` = EOD Capture used by `scripts/lib/eod_capture.py`)
 - Datetime format: "YYYY-MM-DD HH:MM" in HKT (UTC+8)
 - The prompt is what the scheduler will execute via Claude agent when the time comes
 - For reminders, use a simple prompt like: "Send Keith a Telegram message: Reminder -- [description]"
