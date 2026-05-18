@@ -151,9 +151,32 @@ python3 "$SCRIPT_DIR/auto-switch.py" \
   --now "$timestamp"
 
 if [[ -s "$alerts_file" ]]; then
+  confirm_file="$tmpdir/confirm.jsonl"
+  confirm_failures_log="${K2B_ROUTER_WATCHDOG_CONFIRM_FAILURES_LOG:-$LOG_DIR/confirm-failures.jsonl}"
   while IFS= read -r alert; do
     [[ -n "$alert" ]] || continue
-    if ! printf '%s\n' "$alert" | "$SCRIPT_DIR/send-alert.sh" --event-json -; then
+    if printf '%s\n' "$alert" | "$SCRIPT_DIR/send-alert.sh" --event-json -; then
+      # Delivery confirmed: advance per-check alert counters via state-machine.py
+      # --confirm-delivered. Non-per-check alert types (auto-switch, partition,
+      # digest) are no-ops in apply_confirmed and pass through harmlessly.
+      # Defers per the 2026-05-18 silent-drop fix: state was previously mutated
+      # at alert-generation time, so failed deliveries left state advanced
+      # without Keith ever seeing the alert.
+      printf '%s\n' "$alert" > "$confirm_file"
+      if ! python3 "$SCRIPT_DIR/state-machine.py" --confirm-delivered \
+        --state-file "$STATE_FILE" \
+        --alert-file "$confirm_file"; then
+        # --confirm-delivered failure after a successful Telegram send is the
+        # rare-but-real divergence path Codex flagged (2026-05-18 review). The
+        # alert reached Keith but state did not advance, so the next tick will
+        # regenerate + re-send (Keith gets one duplicate). Make it visible so
+        # operator can detect drift instead of swallowing it to stderr only.
+        mkdir -p "$LOG_DIR"
+        printf '{"timestamp":"%s","kind":"confirm_failed_after_send","alert":%s}\n' \
+          "$timestamp" "$alert" >> "$confirm_failures_log"
+        echo "WATCHDOG-CONFIRM-FAILED: state did not advance after successful send (see $confirm_failures_log)" >&2
+      fi
+    else
       echo "failed to send watchdog alert" >&2
     fi
   done < "$alerts_file"

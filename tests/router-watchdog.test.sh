@@ -93,6 +93,9 @@ echo "=== router-watchdog.test.sh ==="
   run_state_machine "$state" "$results" "2026-05-03T00:20:00Z" "$d/a3.jsonl" "$d/p3.jsonl" "$health"
   [[ "$(count_lines "$d/a3.jsonl")" = 1 ]] || fail "third failure should alert once"
   grep -q '"type":"failure"' "$d/a3.jsonl" || fail "third alert should be a failure alert"
+  # Simulate successful delivery so the next tick's recovery branch sees count>0
+  # (per the 2026-05-18 deferred-state fix, count is no longer auto-incremented).
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/a3.jsonl"
 
   write_results "$results" ""
   run_state_machine "$state" "$results" "2026-05-03T00:30:00Z" "$d/a4.jsonl" "$d/p4.jsonl" "$health"
@@ -124,12 +127,19 @@ echo "=== router-watchdog.test.sh ==="
     "2026-05-03T00:35:00Z"; do
     alerts="$d/alerts-${ts//[:T-]/}.jsonl"
     run_state_machine "$state" "$results" "$ts" "$alerts" "$d/actions-${ts//[:T-]/}.jsonl" "$health"
-    [[ -f "$alerts" ]] && cat "$alerts" >> "$all_alerts"
+    if [[ -s "$alerts" ]]; then
+      # Simulate successful delivery so subsequent ticks advance through the backoff schedule.
+      python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$alerts"
+      cat "$alerts" >> "$all_alerts"
+    fi
   done
 
   write_results "$results" ""
   run_state_machine "$state" "$results" "2026-05-03T00:36:00Z" "$d/recovery.jsonl" "$d/recovery-actions.jsonl" "$health"
-  cat "$d/recovery.jsonl" >> "$all_alerts"
+  if [[ -s "$d/recovery.jsonl" ]]; then
+    python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/recovery.jsonl"
+    cat "$d/recovery.jsonl" >> "$all_alerts"
+  fi
 
   [[ "$(count_lines "$all_alerts")" = 5 ]] || fail "compressed outage should produce exactly 5 total alerts"
   echo "  PASS: outage backoff cap"
@@ -520,6 +530,419 @@ EOF
     fail "rollup leaked tempfile"
   fi
   echo "  PASS: rollup output"
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: alert state mutations defer until delivery is confirmed.
+# Reproduces the silent-drop bug verified in the 2026-05-18 MVP fault-injection
+# re-test: first-alert delivery to Telegram failed, send-alert.sh used to exit 1
+# before alerts.jsonl was written AND state-machine.py incremented
+# alert_count_in_outage as if delivery succeeded. Result: Keith got no initial
+# alert, watchdog waited the full +30m backoff before the next attempt.
+# Fix: state-machine.py only generates the alert dict; check.sh calls
+# state-machine.py --confirm-delivered after successful send-alert.sh.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-machine-defer"
+  mkdir -p "$d"
+  state="$d/state.json"
+  health="$d/health.jsonl"
+  results="$d/results.json"
+
+  write_results "$results" "pm2_services"
+  # Ticks 1-2: failing, no alert, count stays 0.
+  run_state_machine "$state" "$results" "2026-05-03T00:00:00Z" "$d/a1.jsonl" "$d/p1.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:10:00Z" "$d/a2.jsonl" "$d/p2.jsonl" "$health"
+
+  # Tick 3: third consecutive failure, generates initial 'failure' alert.
+  # NEW BEHAVIOR: state.alert_count_in_outage MUST stay 0 until confirmation.
+  run_state_machine "$state" "$results" "2026-05-03T00:20:00Z" "$d/a3.jsonl" "$d/p3.jsonl" "$health"
+  [[ "$(count_lines "$d/a3.jsonl")" = 1 ]] || fail "tick 3 should generate one failure alert"
+  grep -q '"type":"failure"' "$d/a3.jsonl" || fail "tick 3 alert type should be failure"
+  count_after_3="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  [[ "$count_after_3" = "0" ]] || fail "alert_count_in_outage should stay 0 until delivery confirmed (got $count_after_3)"
+  last_after_3="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"].get("last_alert_at"))')"
+  [[ "$last_after_3" = "None" ]] || fail "last_alert_at should stay None until delivery confirmed (got $last_after_3)"
+
+  # Simulate delivery FAILURE: do NOT call --confirm-delivered.
+
+  # Tick 4: still failing. Because count is still 0, state-machine.py should
+  # re-generate the initial 'failure' alert (this is the retry).
+  run_state_machine "$state" "$results" "2026-05-03T00:30:00Z" "$d/a4.jsonl" "$d/p4.jsonl" "$health"
+  [[ "$(count_lines "$d/a4.jsonl")" = 1 ]] || fail "tick 4 should re-generate failure alert (delivery never confirmed)"
+  grep -q '"type":"failure"' "$d/a4.jsonl" || fail "tick 4 alert type should still be failure (retry)"
+
+  # Now simulate delivery SUCCESS for the tick-4 alert: call --confirm-delivered.
+  python3 "$STATE_MACHINE" --confirm-delivered \
+    --state-file "$state" \
+    --alert-file "$d/a4.jsonl"
+
+  count_after_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  [[ "$count_after_confirm" = "1" ]] || fail "alert_count_in_outage should be 1 after confirmation (got $count_after_confirm)"
+  last_after_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["last_alert_at"])')"
+  [[ "$last_after_confirm" = "2026-05-03T00:30:00Z" ]] || fail "last_alert_at should be tick-4 ts after confirmation (got $last_after_confirm)"
+
+  # Tick 5: 15s after tick 4. Failing. No alert (30s backoff threshold not yet elapsed).
+  run_state_machine "$state" "$results" "2026-05-03T00:30:15Z" "$d/a5.jsonl" "$d/p5.jsonl" "$health"
+  [[ "$(count_lines "$d/a5.jsonl")" = 0 ]] || fail "tick 5 should not alert (still under backoff threshold)"
+
+  # Tick 6: 30s after tick 4. Failing. +30s backoff threshold elapsed -> repeat_failure alert.
+  run_state_machine "$state" "$results" "2026-05-03T00:30:30Z" "$d/a6.jsonl" "$d/p6.jsonl" "$health"
+  [[ "$(count_lines "$d/a6.jsonl")" = 1 ]] || fail "tick 6 should generate repeat_failure alert (+30s elapsed)"
+  grep -q '"type":"repeat_failure"' "$d/a6.jsonl" || fail "tick 6 alert type should be repeat_failure"
+
+  # Idempotency: confirming the same alert twice must not double-increment.
+  python3 "$STATE_MACHINE" --confirm-delivered \
+    --state-file "$state" \
+    --alert-file "$d/a6.jsonl"
+  count_after_first_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  python3 "$STATE_MACHINE" --confirm-delivered \
+    --state-file "$state" \
+    --alert-file "$d/a6.jsonl"
+  count_after_second_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  [[ "$count_after_first_confirm" = "$count_after_second_confirm" ]] || fail "duplicate --confirm-delivered must be idempotent (was $count_after_first_confirm, became $count_after_second_confirm)"
+  [[ "$count_after_first_confirm" = "2" ]] || fail "alert_count_in_outage should be 2 after tick-6 confirmation (got $count_after_first_confirm)"
+
+  # Recovery: recovery alert generation also defers state reset until confirmed.
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T00:31:00Z" "$d/a7.jsonl" "$d/p7.jsonl" "$health"
+  [[ "$(count_lines "$d/a7.jsonl")" = 1 ]] || fail "tick 7 (ok) should generate recovery alert"
+  grep -q '"type":"recovery"' "$d/a7.jsonl" || fail "tick 7 alert type should be recovery"
+
+  # NEW BEHAVIOR: status should still be 'fail' until recovery confirmed.
+  status_before_recovery_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  [[ "$status_before_recovery_confirm" = "fail" ]] || fail "status should stay fail until recovery confirmed (got $status_before_recovery_confirm)"
+
+  # Confirm recovery delivery: state resets.
+  python3 "$STATE_MACHINE" --confirm-delivered \
+    --state-file "$state" \
+    --alert-file "$d/a7.jsonl"
+  status_after_recovery_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  [[ "$status_after_recovery_confirm" = "ok" ]] || fail "status should reset to ok after recovery confirmed (got $status_after_recovery_confirm)"
+  count_after_recovery_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  [[ "$count_after_recovery_confirm" = "0" ]] || fail "alert_count_in_outage should reset to 0 after recovery confirmed (got $count_after_recovery_confirm)"
+
+  echo "  PASS: alert state defers until delivery confirmed (silent-drop fix)"
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: --confirm-delivered rejects stale alerts across outage epochs.
+# Codex 2026-05-18 review HIGH-2: apply_confirmed previously matched only on
+# alert.type, so a replayed old recovery could reset a NEW outage's failing
+# state, or an old failure-confirm after recovery could overwrite ok-state
+# counters. Alerts now carry outage_since pinning them to one epoch.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-machine-stale-epoch"
+  mkdir -p "$d"
+  state="$d/state.json"
+  health="$d/health.jsonl"
+  results="$d/results.json"
+
+  # Outage 1: ticks 1-3 fail, generate + confirm initial alert, then recover + confirm.
+  write_results "$results" "pm2_services"
+  run_state_machine "$state" "$results" "2026-05-03T00:00:00Z" "$d/a1.jsonl" "$d/p1.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:10:00Z" "$d/a2.jsonl" "$d/p2.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:20:00Z" "$d/a3.jsonl" "$d/p3.jsonl" "$health"
+
+  # Capture the OLD outage's initial alert (carries outage_since=tick1_ts) before confirming.
+  cp "$d/a3.jsonl" "$d/old_failure_alert.jsonl"
+  grep -q '"outage_since":"2026-05-03T00:00:00Z"' "$d/a3.jsonl" \
+    || fail "initial failure alert should embed outage_since from outage start"
+
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/a3.jsonl"
+
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T00:30:00Z" "$d/a4.jsonl" "$d/p4.jsonl" "$health"
+  grep -q '"outage_since":"2026-05-03T00:00:00Z"' "$d/a4.jsonl" \
+    || fail "recovery alert should embed outage_since from the outage that's recovering"
+
+  # Capture OLD outage's recovery alert before confirming.
+  cp "$d/a4.jsonl" "$d/old_recovery_alert.jsonl"
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/a4.jsonl"
+
+  status_after_outage_1="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  [[ "$status_after_outage_1" = "ok" ]] || fail "outage 1 should fully resolve to ok (got $status_after_outage_1)"
+
+  # Outage 2 starts at tick 5 with a NEW outage_since.
+  write_results "$results" "pm2_services"
+  run_state_machine "$state" "$results" "2026-05-03T01:00:00Z" "$d/a5.jsonl" "$d/p5.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T01:10:00Z" "$d/a6.jsonl" "$d/p6.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T01:20:00Z" "$d/a7.jsonl" "$d/p7.jsonl" "$health"
+  grep -q '"outage_since":"2026-05-03T01:00:00Z"' "$d/a7.jsonl" \
+    || fail "outage 2 initial alert should embed the NEW outage_since"
+
+  # STALE-CONFIRM SCENARIO 1: replay OLD outage's recovery alert during outage 2.
+  # Without the epoch guard, this would reset state to ok and lose the active outage.
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/old_recovery_alert.jsonl"
+  status_after_stale_recovery="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  [[ "$status_after_stale_recovery" = "fail" ]] \
+    || fail "stale recovery alert from prior outage must NOT reset current outage state (got $status_after_stale_recovery)"
+
+  # STALE-CONFIRM SCENARIO 2: replay OLD outage's failure alert during outage 2.
+  # Without the epoch guard, this would overwrite the (still-zero) alert_count_in_outage
+  # of outage 2 to 1 with last_alert_at from the OLD outage's tick3 -- corrupting
+  # the backoff schedule for the current outage.
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/old_failure_alert.jsonl"
+  count_after_stale_failure="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  last_after_stale_failure="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"].get("last_alert_at"))')"
+  [[ "$count_after_stale_failure" = "0" ]] \
+    || fail "stale failure alert from prior outage must NOT bump count of current outage (got $count_after_stale_failure)"
+  [[ "$last_after_stale_failure" = "None" ]] \
+    || fail "stale failure alert must NOT write last_alert_at of current outage (got $last_after_stale_failure)"
+
+  # Confirm CURRENT outage's failure alert (a7 carries the matching epoch) works.
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/a7.jsonl"
+  count_after_current_confirm="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  [[ "$count_after_current_confirm" = "1" ]] \
+    || fail "current-outage failure alert SHOULD apply (got $count_after_current_confirm)"
+
+  # STALE-CONFIRM SCENARIO 3: replay OLD failure alert AFTER outage 2 recovers.
+  # State is then ok with state.since=ok_ts; old alert.outage_since=tick1_ts.
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T01:30:00Z" "$d/a8.jsonl" "$d/p8.jsonl" "$health"
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/a8.jsonl"
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/old_failure_alert.jsonl"
+  status_final="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  count_final="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["alert_count_in_outage"])')"
+  [[ "$status_final" = "ok" ]] || fail "stale failure-confirm after recovery must NOT flip status back to fail (got $status_final)"
+  [[ "$count_final" = "0" ]] || fail "stale failure-confirm after recovery must NOT bump count (got $count_final)"
+
+  echo "  PASS: --confirm-delivered rejects stale alerts across outage epochs"
+}
+
+# ---------------------------------------------------------------------------
+# Test 12: threshold-crossed outage that recovers before delivery is confirmed
+# still produces a recovery alert. Codex 2026-05-18 second-pass review HIGH:
+# the deferred-state fix introduced a new silent-drop class — if the initial
+# failure alert was generated but never delivered (Telegram blip), AND the
+# check recovered before the next tick could retry, the recovery branch would
+# previously skip (count==0) AND state would reset silently. Watchdog passes
+# threshold, no Telegram at all, zero trace. Fix: recovery fires when
+# consecutive_fails>=3 even if count==0, with a "briefly failed" message
+# that includes the missed-outage context.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-machine-missed-outage"
+  mkdir -p "$d"
+  state="$d/state.json"
+  health="$d/health.jsonl"
+  results="$d/results.json"
+
+  # Tick 1, 2, 3: failing. Tick 3 generates initial failure alert.
+  write_results "$results" "pm2_services"
+  run_state_machine "$state" "$results" "2026-05-03T00:00:00Z" "$d/a1.jsonl" "$d/p1.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:10:00Z" "$d/a2.jsonl" "$d/p2.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:20:00Z" "$d/a3.jsonl" "$d/p3.jsonl" "$health"
+  [[ "$(count_lines "$d/a3.jsonl")" = 1 ]] || fail "tick 3 should generate failure alert"
+  grep -q '"type":"failure"' "$d/a3.jsonl" || fail "tick 3 should be a failure alert"
+
+  # Simulate delivery FAILURE: do NOT call --confirm-delivered.
+  # State stays count=0, status=fail, consecutive_fails=3, since=tick1_ts.
+
+  # Tick 4: check recovers. Without the missed-outage branch, recovery would
+  # be skipped (count==0) AND state would reset silently — the watchdog passed
+  # its threshold and produced zero Telegram alerts. The fix fires recovery.
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T00:30:00Z" "$d/a4.jsonl" "$d/p4.jsonl" "$health"
+  [[ "$(count_lines "$d/a4.jsonl")" = 1 ]] || fail "tick 4 (ok after silent-dropped failure) MUST generate a recovery alert"
+  grep -q '"type":"recovery"' "$d/a4.jsonl" || fail "tick 4 alert should be type=recovery"
+  grep -q '"outage_since":"2026-05-03T00:00:00Z"' "$d/a4.jsonl" || fail "missed-outage recovery should carry outage_since from outage start"
+  grep -q "briefly failed" "$d/a4.jsonl" || fail "missed-outage recovery should use the 'briefly failed' message"
+  grep -q "Initial failure alert delivery was not confirmed" "$d/a4.jsonl" \
+    || fail "missed-outage recovery message should mention undelivered initial alert"
+
+  # Confirm the recovery: state resets to ok.
+  python3 "$STATE_MACHINE" --confirm-delivered --state-file "$state" --alert-file "$d/a4.jsonl"
+  status_after="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  [[ "$status_after" = "ok" ]] || fail "missed-outage recovery confirmation should reset state to ok (got $status_after)"
+
+  # Boundary: a 2-tick failure that recovers (NOT crossing the 3-tick threshold)
+  # should NOT generate a recovery alert — there was nothing to recover from
+  # the user's perspective. State just resets.
+  write_results "$results" "pm2_services"
+  run_state_machine "$state" "$results" "2026-05-03T01:00:00Z" "$d/b1.jsonl" "$d/q1.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T01:10:00Z" "$d/b2.jsonl" "$d/q2.jsonl" "$health"
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T01:20:00Z" "$d/b3.jsonl" "$d/q3.jsonl" "$health"
+  [[ "$(count_lines "$d/b3.jsonl")" = 0 ]] || fail "2-tick failure recovery should NOT generate a recovery alert (under threshold)"
+  status_after_blip="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["pm2_services"]["status"])')"
+  [[ "$status_after_blip" = "ok" ]] || fail "2-tick failure should reset state immediately (got $status_after_blip)"
+
+  echo "  PASS: threshold-crossed undelivered outage still fires recovery alert (missed-outage branch)"
+}
+
+# ---------------------------------------------------------------------------
+# Test 13: full network partition does NOT emit misleading missed-outage
+# recoveries when it clears. Codex 2026-05-18 third-pass MED: the missed-outage
+# branch was too permissive — partition suppress_alerts kept count at 0 while
+# consecutive_fails accumulated, so on partition clear my code would have
+# emitted "briefly failed... delivery not confirmed" recoveries for EACH
+# external check, in addition to the (correct) network_partition_recovered
+# alert from the partition queue. Fix: pending_initial_alert flag is set ONLY
+# inside the `not suppress_alerts` branch, so partition-suppressed alerts
+# don't trigger missed-outage recovery.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-machine-partition-no-missed-recovery"
+  mkdir -p "$d"
+  state="$d/state.json"
+  queue="$d/pending-partition-events.jsonl"
+  health="$d/health.jsonl"
+  results="$d/results.json"
+  failures="chatgpt_https,chatgpt_ws,claude_https,telegram_api"
+
+  # Ticks 1-4: full partition, all 4 external checks failing. suppress_alerts
+  # kicks in on tick 2 (2 consecutive partition ticks). Per-check failure alerts
+  # are suppressed; pending_initial_alert MUST stay False for these checks.
+  write_results "$results" "$failures"
+  for ts in "2026-05-03T00:00:00Z" "2026-05-03T00:10:00Z" "2026-05-03T00:20:00Z" "2026-05-03T00:30:00Z"; do
+    alerts="$d/alerts-${ts//[:T-]/}.jsonl"
+    actions="$d/actions-${ts//[:T-]/}.jsonl"
+    run_state_machine "$state" "$results" "$ts" "$alerts" "$actions" "$health"
+    python3 "$PARTITION_QUEUE" apply --queue-file "$queue" --actions-file "$actions" --alerts-file "$alerts"
+  done
+
+  # By tick 4, each per-check has consecutive_fails=4 BUT suppress_alerts has
+  # been suppressing per-check alerts since tick 2. Verify pending_initial_alert
+  # stayed False for each external check despite consecutive_fails >= 3.
+  for chk in chatgpt_https chatgpt_ws claude_https telegram_api; do
+    pending="$(python3 -c 'import json; s=json.load(open("'"$state"'")).get("'"$chk"'") or {}; print(s.get("pending_initial_alert"))')"
+    [[ "$pending" = "False" ]] || fail "$chk should have pending_initial_alert=False during partition (got $pending)"
+    consec="$(python3 -c 'import json; s=json.load(open("'"$state"'")).get("'"$chk"'") or {}; print(s.get("consecutive_fails"))')"
+    [[ "$consec" -ge 3 ]] || fail "$chk should have consecutive_fails>=3 by tick 4 (got $consec)"
+  done
+
+  # Tick 5: partition clears. All 4 external checks recover. Per-check recovery
+  # branch sees pending_initial_alert=False AND count==0, so missed-outage
+  # condition is FALSE -- no per-check "briefly failed" recoveries emitted.
+  # Partition queue handles the recovery via network_partition_recovered.
+  write_results "$results" ""
+  ts="2026-05-03T00:40:00Z"
+  alerts="$d/alerts-${ts//[:T-]/}.jsonl"
+  actions="$d/actions-${ts//[:T-]/}.jsonl"
+  run_state_machine "$state" "$results" "$ts" "$alerts" "$actions" "$health"
+  python3 "$PARTITION_QUEUE" apply --queue-file "$queue" --actions-file "$actions" --alerts-file "$alerts"
+
+  # Per-check "briefly failed" recoveries MUST NOT appear in the alert stream.
+  if grep -q "briefly failed" "$alerts"; then
+    fail "partition recovery must NOT emit per-check 'briefly failed' recoveries (got: $(cat "$alerts"))"
+  fi
+  for chk in chatgpt_https chatgpt_ws claude_https telegram_api; do
+    if grep -E "\"check\":\"$chk\".*\"type\":\"recovery\"" "$alerts"; then
+      fail "$chk should NOT emit per-check recovery during partition clear (partition queue handles it)"
+    fi
+  done
+
+  # Verify the partition queue DID emit its recovery alert (the proper channel).
+  grep -q '"type":"network_partition_recovered"' "$alerts" \
+    || fail "partition recovery alert MUST be emitted via partition queue"
+
+  echo "  PASS: full partition recovery does not emit misleading per-check missed-outage recoveries"
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: partition tick-1 carry-in does not leak a per-check missed-outage
+# recovery. Codex 2026-05-18 fourth-pass MED: if telegram_api was at
+# consecutive_fails=2 BEFORE all 4 external checks went down, then tick 1 of
+# partition (where suppress_alerts is still False) would generate a failure
+# alert AND set pending_initial_alert=True for telegram_api. Later partition
+# ticks suppress alerts, but pending stays True. On partition clear, recovery
+# branch fires per-check 'briefly failed' alongside network_partition_recovered.
+# Fix part A: transition_checks gets partition_now arg; on partition_now=True
+# tick, the failure alert is still emitted (suppress_alerts is False yet) but
+# pending_initial_alert is NOT set for external checks. Fix part B:
+# transition_partition clears carry-in pending_initial_alert for the 4 external
+# checks at the moment partition is queued.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-machine-partition-tick1-carryin"
+  mkdir -p "$d"
+  state="$d/state.json"
+  queue="$d/pending-partition-events.jsonl"
+  health="$d/health.jsonl"
+  results="$d/results.json"
+
+  # Seed: 2 ticks where ONLY telegram_api fails. After tick 2, telegram_api
+  # is at consecutive_fails=2, pending=False (threshold not yet crossed).
+  write_results "$results" "telegram_api"
+  run_state_machine "$state" "$results" "2026-05-03T00:00:00Z" "$d/a1.jsonl" "$d/p1.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:10:00Z" "$d/a2.jsonl" "$d/p2.jsonl" "$health"
+  consec_pre="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["telegram_api"]["consecutive_fails"])')"
+  [[ "$consec_pre" = "2" ]] || fail "seeding failed: telegram_api consecutive_fails should be 2 (got $consec_pre)"
+
+  # Tick 3: ALL 4 external checks fail (partition begins). For telegram_api,
+  # consecutive_fails goes 2->3, crossing threshold. partition_now=True but
+  # this is tick 1 of partition so suppress_alerts is still False.
+  # OLD behavior would: append failure alert AND set pending=True.
+  # NEW behavior: append failure alert BUT pending stays False (carry-in fix).
+  write_results "$results" "chatgpt_https,chatgpt_ws,claude_https,telegram_api"
+  run_state_machine "$state" "$results" "2026-05-03T00:20:00Z" "$d/a3.jsonl" "$d/p3.jsonl" "$health"
+  pending_tick3="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["telegram_api"]["pending_initial_alert"])')"
+  [[ "$pending_tick3" = "False" ]] \
+    || fail "tick 3 (partition_now=True) MUST NOT set telegram_api pending_initial_alert (got $pending_tick3)"
+
+  # Tick 4: partition continues (consecutive_fails=2 for partition state ->
+  # suppress_alerts=True, queued=True). The carry-in clear fires here as a
+  # belt-and-suspenders: if pending was somehow True, it would be cleared now.
+  run_state_machine "$state" "$results" "2026-05-03T00:30:00Z" "$d/a4.jsonl" "$d/p4.jsonl" "$health"
+  python3 "$PARTITION_QUEUE" apply --queue-file "$queue" --actions-file "$d/p4.jsonl" --alerts-file "$d/a4.jsonl"
+  pending_tick4="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["telegram_api"]["pending_initial_alert"])')"
+  [[ "$pending_tick4" = "False" ]] \
+    || fail "tick 4 (queued partition) MUST keep/clear telegram_api pending_initial_alert to False (got $pending_tick4)"
+
+  # Tick 5: partition clears. Expect: network_partition_recovered alert ONLY.
+  # NO per-check 'briefly failed' for telegram_api (which had crossed threshold).
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T00:40:00Z" "$d/a5.jsonl" "$d/p5.jsonl" "$health"
+  python3 "$PARTITION_QUEUE" apply --queue-file "$queue" --actions-file "$d/p5.jsonl" --alerts-file "$d/a5.jsonl"
+  if grep -q "briefly failed" "$d/a5.jsonl"; then
+    fail "partition recovery with telegram_api carry-in MUST NOT emit 'briefly failed' per-check recovery (got: $(cat "$d/a5.jsonl"))"
+  fi
+  grep -q '"type":"network_partition_recovered"' "$d/a5.jsonl" \
+    || fail "partition recovery alert MUST be emitted via partition queue"
+
+  # Counterpoint: a non-external check (e.g., syncthing_process) that crossed
+  # threshold INDEPENDENTLY of partition should STILL fire missed-outage
+  # recovery on its own recovery tick. The carry-in fix is scoped to the 4
+  # external partition checks.
+  echo "  PASS: partition tick-1 carry-in does not leak per-check missed-outage recovery"
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: non-external check (syncthing_process) carry-in is NOT affected by
+# the partition guard. Regression for the scoping of Codex MED-1's fix.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/state-machine-non-external-carryin"
+  mkdir -p "$d"
+  state="$d/state.json"
+  queue="$d/pending-partition-events.jsonl"
+  health="$d/health.jsonl"
+  results="$d/results.json"
+
+  # Tick 1, 2, 3: syncthing_process failing. Tick 3 generates failure alert.
+  # Even if partition is happening simultaneously, syncthing_process is NOT
+  # one of EXTERNAL_PARTITION_CHECKS so the carry-in fix should not apply.
+  # We verify by having ONLY syncthing_process failing (no partition).
+  write_results "$results" "syncthing_process"
+  run_state_machine "$state" "$results" "2026-05-03T00:00:00Z" "$d/a1.jsonl" "$d/p1.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:10:00Z" "$d/a2.jsonl" "$d/p2.jsonl" "$health"
+  run_state_machine "$state" "$results" "2026-05-03T00:20:00Z" "$d/a3.jsonl" "$d/p3.jsonl" "$health"
+  pending_syncthing="$(python3 -c 'import json; print(json.load(open("'"$state"'"))["syncthing_process"]["pending_initial_alert"])')"
+  [[ "$pending_syncthing" = "True" ]] \
+    || fail "syncthing_process initial failure SHOULD set pending_initial_alert=True (got $pending_syncthing)"
+
+  # Simulate delivery failure: no --confirm-delivered.
+  # Tick 4: syncthing recovers. Missed-outage recovery should fire.
+  write_results "$results" ""
+  run_state_machine "$state" "$results" "2026-05-03T00:30:00Z" "$d/a4.jsonl" "$d/p4.jsonl" "$health"
+  grep -q '"type":"recovery"' "$d/a4.jsonl" \
+    || fail "syncthing_process missed-outage recovery MUST fire (non-external check unaffected by partition guard)"
+  grep -q "briefly failed" "$d/a4.jsonl" \
+    || fail "syncthing_process recovery should use 'briefly failed' missed-outage message"
+
+  echo "  PASS: non-external check missed-outage recovery still works (partition guard scoped correctly)"
 }
 
 echo "router-watchdog.test.sh: all tests passed"
