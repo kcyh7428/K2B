@@ -1,6 +1,19 @@
 # K2B Development Log
 
 ---
+## 2026-05-18 -- feature_ship-review-triage Ship 1 deployment contract
+
+**Commit:** `a16d5d8` feat(review): ship feature_ship-review-triage Ship 1
+
+**What shipped:** Added an inline `## Deployment Contract` block to `scripts/lib/adversarial-review.md` before the adversarial attack-surface priorities. The prompt now distinguishes K2B's in-scope personal-use deployment shape from out-of-contract enterprise concerns. In scope stays single-user/single-vault, macOS-only, MacBook-to-Mac-Mini sync/deploy, Syncthing-backed vault or memory writes, single-Mini rsync/build/pm2 restart/manual recovery, cron/manual overlap, delayed-tail operational failures, and env/keychain secrets. Out of scope is limited to multi-tenant isolation, unrelated production-node distributed races, blue-green or active-active release orchestration, sub-millisecond timing, regulatory compliance, non-macOS/container targets, and HA redundancy.
+
+**MVP gate:** Historical EOD pre-round-2 state was not cleanly reconstructable from `9ba6629`, so the handoff-approved synthetic gate was used. Final gate log: `.code-reviews/2026-05-18T04-46-55Z_bfad75.log`. Kimi classified the synthetic future multi-vault lock concern as out-of-contract and non-blocking, returned `APPROVE`, and produced no findings.
+
+**Review loop:** Mandatory pre-commit review ran 3 rounds. Round 1 caught overbroad distributed-race wording; fixed by keeping MacBook/Mac-Mini sync and Syncthing-backed writes in scope. Round 2 caught overbroad rollback wording; fixed by keeping single-Mini deploy/recovery in scope and narrowing out-of-scope to blue-green/active-active release orchestration. Round 3 caught two remaining wording contradictions; Keith provided architect-specified replacements under G4 override, so no fourth adversarial pass was run: the Syncthing-conflict example became multi-tenant vault separation across unrelated users, and the 24-hour scope boundary became normal-operation delayed-tail scope.
+
+**Feature status:** Ship 1 hypothesis held. Ships 2-5 are not triggered. Vault spec moved to `K2B-Vault/wiki/concepts/Shipped/feature_ship-review-triage.md`; concepts index and wiki log updated.
+
+---
 ## 2026-05-18 -- Router-watchdog silent-drop fix (deferred-state architecture)
 
 **Commit:** `9dfc19e` fix(router-watchdog): defer alert state until delivery confirmed (silent-drop fix)
