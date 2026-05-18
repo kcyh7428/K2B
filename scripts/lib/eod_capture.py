@@ -676,6 +676,33 @@ def _build_slow_extraction_alert_message(
     )
 
 
+def _build_send_telegram_cmd(
+    *,
+    message: str | None = None,
+    file_path: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Build send-telegram.sh argv, injecting K2B Alerts routing flags when configured.
+
+    Reads K2B_ALERTS_CHAT_ID + K2B_EOD_THREAD_ID from `env` (or os.environ).
+    Both must be set to enable topic routing; otherwise falls back to the
+    default chat (K2B main DM) for backward compatibility.
+    """
+    e = env if env is not None else os.environ
+    cmd = [str(REPO_ROOT / "scripts" / "send-telegram.sh")]
+    alerts_chat = (e.get("K2B_ALERTS_CHAT_ID") or "").strip()
+    eod_thread = (e.get("K2B_EOD_THREAD_ID") or "").strip()
+    if alerts_chat and eod_thread:
+        cmd.extend(["--chat-id", alerts_chat, "--thread-id", eod_thread])
+    if file_path is not None:
+        cmd.extend(["--file", str(file_path)])
+    elif message is not None:
+        cmd.append(message)
+    else:
+        raise ValueError("_build_send_telegram_cmd: message or file_path required")
+    return cmd
+
+
 def _post_telegram_alert(message: str, *, session_path: Path) -> None:
     env = os.environ.copy()
     if "K2B_TELEGRAM_BOT_TOKEN" in env and "K2B_BOT_TOKEN" not in env:
@@ -685,7 +712,7 @@ def _post_telegram_alert(message: str, *, session_path: Path) -> None:
     if not (env.get("K2B_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")):
         raise RuntimeError("telegram env missing: K2B_BOT_TOKEN/TELEGRAM_BOT_TOKEN")
     subprocess.run(
-        [str(REPO_ROOT / "scripts" / "send-telegram.sh"), message],
+        _build_send_telegram_cmd(message=message, env=env),
         check=True,
         timeout=60,
         env=env,
@@ -1994,11 +2021,7 @@ def main(argv: list[str] | None = None) -> int:
                 for attempt in range(3):
                     try:
                         subprocess.run(
-                            [
-                                str(REPO_ROOT / "scripts" / "send-telegram.sh"),
-                                "--file",
-                                str(tmp),
-                            ],
+                            _build_send_telegram_cmd(file_path=tmp),
                             check=True,
                             timeout=60,
                         )

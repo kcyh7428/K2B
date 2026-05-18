@@ -3079,3 +3079,59 @@ def test_failure_file_fingerprints_detect_same_path_content_change(tmp_path):
     after = eod_capture._failure_file_fingerprints(failure_dir, "2026-05-14")
 
     assert before[failure] != after[failure]
+
+
+def test_build_send_telegram_cmd_no_env_falls_back_to_dm():
+    cmd = eod_capture._build_send_telegram_cmd(message="hi", env={})
+    assert cmd[-1] == "hi"
+    assert "--chat-id" not in cmd
+    assert "--thread-id" not in cmd
+
+
+def test_build_send_telegram_cmd_with_alerts_env_injects_flags():
+    env = {"K2B_ALERTS_CHAT_ID": "-1003966532428", "K2B_EOD_THREAD_ID": "53"}
+    cmd = eod_capture._build_send_telegram_cmd(message="hi", env=env)
+    assert "--chat-id" in cmd
+    assert cmd[cmd.index("--chat-id") + 1] == "-1003966532428"
+    assert "--thread-id" in cmd
+    assert cmd[cmd.index("--thread-id") + 1] == "53"
+    assert cmd[-1] == "hi"
+
+
+def test_build_send_telegram_cmd_partial_env_falls_back_to_dm():
+    # Only one of the two vars set -- treat as misconfigured, fall back to DM
+    cmd = eod_capture._build_send_telegram_cmd(
+        message="hi", env={"K2B_ALERTS_CHAT_ID": "-1003966532428"}
+    )
+    assert "--chat-id" not in cmd
+    assert "--thread-id" not in cmd
+
+    cmd = eod_capture._build_send_telegram_cmd(
+        message="hi", env={"K2B_EOD_THREAD_ID": "53"}
+    )
+    assert "--chat-id" not in cmd
+    assert "--thread-id" not in cmd
+
+
+def test_build_send_telegram_cmd_file_path_includes_flags_when_env_set(tmp_path):
+    digest = tmp_path / "digest.txt"
+    digest.write_text("body", encoding="utf-8")
+    env = {"K2B_ALERTS_CHAT_ID": "-1003966532428", "K2B_EOD_THREAD_ID": "53"}
+    cmd = eod_capture._build_send_telegram_cmd(file_path=digest, env=env)
+    assert "--chat-id" in cmd
+    assert "--thread-id" in cmd
+    assert "--file" in cmd
+    assert cmd[cmd.index("--file") + 1] == str(digest)
+
+
+def test_build_send_telegram_cmd_whitespace_env_treated_as_unset():
+    cmd = eod_capture._build_send_telegram_cmd(
+        message="hi",
+        env={"K2B_ALERTS_CHAT_ID": "  ", "K2B_EOD_THREAD_ID": "53"},
+    )
+    assert "--chat-id" not in cmd
+
+
+def test_build_send_telegram_cmd_requires_message_or_file():
+    with pytest.raises(ValueError):
+        eod_capture._build_send_telegram_cmd(env={})

@@ -4,10 +4,12 @@
 # available boundary (blank line, then newline, then character) and FAILS
 # loudly on any non-2xx response so /schedule runs cannot silently drop.
 #
-# Usage: scripts/send-telegram.sh "message text"
-#        scripts/send-telegram.sh --file path/to/message.txt
+# Usage: scripts/send-telegram.sh [--chat-id ID] [--thread-id ID] "message text"
+#        scripts/send-telegram.sh [--chat-id ID] [--thread-id ID] --file path/to/message.txt
 # Env:   K2B_BOT_TOKEN (falls back to TELEGRAM_BOT_TOKEN, required)
 #        K2B_CHAT_ID   (falls back to ALLOWED_CHAT_ID, defaults to 8394008217)
+# Flags: --chat-id ID   override chat target (e.g. K2B Alerts supergroup)
+#        --thread-id ID post to a specific topic (forum_topic) inside the chat
 
 set -euo pipefail
 
@@ -15,13 +17,41 @@ TOKEN="${K2B_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
 [[ -n "$TOKEN" ]] || { echo "K2B_BOT_TOKEN / TELEGRAM_BOT_TOKEN env var not set" >&2; exit 1; }
 
 CHAT_ID="${K2B_CHAT_ID:-${ALLOWED_CHAT_ID:-8394008217}}"
+THREAD_ID=""
+TEXT=""
 
-if [[ "${1:-}" == "--file" ]]; then
-  [[ -f "${2:-}" ]] || { echo "file not found: ${2:-}" >&2; exit 1; }
-  TEXT="$(cat "$2")"
-else
-  TEXT="${1:?message text required}"
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --chat-id)
+      CHAT_ID="${2:?--chat-id needs a value}"
+      shift 2
+      ;;
+    --thread-id)
+      THREAD_ID="${2:?--thread-id needs a value}"
+      shift 2
+      ;;
+    --file)
+      [[ -f "${2:-}" ]] || { echo "file not found: ${2:-}" >&2; exit 1; }
+      TEXT="$(cat "$2")"
+      shift 2
+      ;;
+    --)
+      shift
+      TEXT="${1:?message text required after --}"
+      shift
+      ;;
+    -*)
+      echo "unknown flag: $1" >&2
+      exit 1
+      ;;
+    *)
+      TEXT="$1"
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$TEXT" ]] || { echo "message text required" >&2; exit 1; }
 
 # Telegram hard limit per sendMessage call. Stay well under 4096 to leave
 # room for any URL-encoding overhead and message-numbering suffixes.
@@ -78,11 +108,15 @@ PY
 # Iterate chunks (NUL-terminated) and POST each. Fail fast on first non-2xx.
 RC=0
 while IFS= read -r -d '' CHUNK; do
-  HTTP_STATUS=$(curl -sS -o /tmp/k2b_tg_resp.$$ -w '%{http_code}' \
-    -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    -d "chat_id=${CHAT_ID}" \
-    --data-urlencode "text=${CHUNK}" \
-    -d "disable_web_page_preview=false") || HTTP_STATUS="000"
+  CURL_OPTS=(-sS -o /tmp/k2b_tg_resp.$$ -w '%{http_code}'
+    -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage"
+    -d "chat_id=${CHAT_ID}"
+    --data-urlencode "text=${CHUNK}"
+    -d "disable_web_page_preview=false")
+  if [[ -n "$THREAD_ID" ]]; then
+    CURL_OPTS+=(-d "message_thread_id=${THREAD_ID}")
+  fi
+  HTTP_STATUS=$(curl "${CURL_OPTS[@]}") || HTTP_STATUS="000"
   if [[ "$HTTP_STATUS" != 2* ]]; then
     echo "telegram sendMessage failed: HTTP $HTTP_STATUS" >&2
     cat /tmp/k2b_tg_resp.$$ >&2
