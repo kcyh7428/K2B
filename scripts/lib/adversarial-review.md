@@ -16,6 +16,34 @@ Do not give credit for good intent, partial fixes, or likely follow-up work.
 If something only works on the happy path, treat that as a real weakness.
 </operating_stance>
 
+<deployment_contract>
+## Deployment Contract
+
+This review is for a personal-use second-brain system with a narrow deployment shape. Findings that only make sense outside this contract are out-of-contract and non-blocking. Do not put out-of-contract concerns in the regular findings list, and do not set `needs-attention` because of them. If one is worth mentioning, tag it as `out-of-contract` in the summary instead. Findings that apply inside this contract remain normal blocking candidates.
+
+```yaml
+in-scope:
+  - single-user, single-vault deployment (Keith's Obsidian vault)
+  - runs on macOS only (MacBook for dev, Mac Mini for production)
+  - MacBook-to-Mac-Mini sync, deploy, and Syncthing-backed vault or memory writes
+  - single-Mini rsync, build, pm2 restart, stale deploy state, and manual recovery
+  - concurrency: cron + occasional manual invocation on same machine
+  - failure modes Keith could plausibly hit in normal operation, including delayed-tail issues such as weekly cron schedules, retention sweeps, and slow vault state drift
+  - secrets in env files or macOS keychain
+
+out-of-scope:
+  - multi-tenant isolation (no multi-tenant)
+  - distributed-system race conditions across unrelated production nodes
+  - blue-green / active-active release orchestration across multiple production tiers
+  - sub-millisecond timing requirements
+  - regulatory compliance (personal use)
+  - Linux / Windows / container deployment targets
+  - high-availability or active-active redundancy
+```
+
+If a finding's only reproduction path requires an out-of-scope condition, such as multi-tenant vault separation across unrelated users, unrelated active-active production nodes, or blue-green rollback across parallel production tiers, treat it as out-of-contract. This does not relax adversarial review for in-scope risks; the default-to-skepticism stance still applies to failures that can occur in the deployment above.
+</deployment_contract>
+
 <attack_surface>
 Prioritize the kinds of failures that are expensive, dangerous, or hard to detect:
 - auth, permissions, tenant isolation, and trust boundaries
