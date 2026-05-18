@@ -1,6 +1,30 @@
 # K2B Development Log
 
 ---
+## 2026-05-18 -- Router-watchdog silent-drop fix (deferred-state architecture)
+
+**Commit:** `9dfc19e` fix(router-watchdog): defer alert state until delivery confirmed (silent-drop fix)
+
+**What shipped:** Closed the silent-drop bug verified in the 2026-05-18 MVP fault-injection re-test on Mac Mini. The 2026-05-17 health-check.sh overlap fix worked correctly (watchdog saw 4+ consecutive failed ticks at 01:02, 01:12, 01:22, 01:32 CST) but the initial alert at 01:22 silent-dropped: send-alert.sh's first-target curl to Telegram briefly failed (network blip), the early `exit 1` skipped the alerts.jsonl write, and state-machine.py had already incremented `alert_count_in_outage` as if delivered. Result: Keith's first alert arrived at 01:52 CST (52 min after fault) as a `repeat_failure`, not the initial `failure`. Five of six MVP gate conditions passed; condition 1 (transition alert ≤30 min) failed because of this. The fix re-architects per-check alert state to defer mutation until check.sh calls `state-machine.py --confirm-delivered` after a successful send-alert.sh. Failed deliveries naturally re-fire on the next tick. Alerts embed `outage_since` to reject stale-epoch confirmations. New `pending_initial_alert` flag distinguishes "alert was actually emitted" from "consecutive_fails crossed threshold" so partition-suppressed outages don't fire misleading recoveries.
+
+**Codex review:** 5 adversarial passes via `scripts/review.sh` with Codex primary. Passes 1-4 returned `needs-attention`; pass 5 approved. **Findings addressed inline (all 7 fixed before commit):** Pass 1 HIGH-1 (silent-drop hole — the originating bug), HIGH-2 (stale epoch confirmation). Pass 2 HIGH (recovery erases undelivered failure when check recovers before retry — introduced by the deferred-state fix itself; mitigated by missed-outage recovery branch with "briefly failed" message including consec/since context). Pass 3 MED (partition-suppressed outages emit misleading recoveries on partition clear). Pass 4 MED (tick-1 partition carry-in: check at consec=2 entering partition would still set pending before suppress kicks in; fixed by clearing carry-in pending on partition queue + passing partition_now to transition_checks). Pass 5: approved, no material findings. **Deferred (tracked in `wiki/context/reminders.md`):** full send-alert.sh restructure for telegram-send/log/state-mutate atomicity (pass 1 HIGH-1 part 2 — low-frequency disk-failure edge case, separate ship). confirm-failures.jsonl surfacing in digest/rollup (pass 2 MED — drift detection visibility, ship with the atomicity work).
+
+**Feature status change:** none in this commit. `feature_router-watchdog` stays `in-progress`. `pending-action` updated to reschedule MVP fault-injection test for 2026-05-19 01:00→07:00 CST. Plists rewritten + bootstrapped on Mini. Will flip `shipped` if all 6 conditions met tomorrow morning.
+
+**Tests:** 16 main suite + 9 phase234 + 5 ship-2 + 15 leaf-optimizer = 45 watchdog tests green. New Tests 10-15 cover: deferred-state happy path + idempotent confirm (10), stale-epoch rejection (11), threshold-crossed undelivered outage still fires recovery (12), full partition recovery does NOT emit per-check misleading recoveries (13), partition tick-1 carry-in does NOT leak per-check missed-outage on clear (14), non-external check missed-outage recovery still works = partition guard scoped correctly (15). Tests 1, 2 updated to call --confirm-delivered after each generation (matches production check.sh flow).
+
+**Deploy:** `deploy-to-mini.sh auto` synced k2b-remote + scripts + launchd, ran install.sh on Mini, promoted new bin/ to `~/Library/Application Support/k2b-router-watchdog/`. Mailbox entry from 2026-05-16 (k2b-plate ship deferred sync) consumed in same run.
+
+**Follow-ups:**
+- Architectural overlap router-watchdog vs com.k2b-remote.health — decide post-MVP-gate-close (a) retire health-check.sh, (b) keep both with shorter watchdog threshold, (c) keep both unchanged. Tracked as reminder.
+- Confirm-failures.jsonl drift visibility — promote into surfaced digest channel. Tracked as reminder.
+- Full send-alert.sh atomicity restructure — telegram-send/log/state-mutate as one transaction. Tracked as reminder.
+
+**Key decisions (divergent from claude.ai project specs):**
+- Kept the early `exit 1` in send-alert.sh on first-target failure unchanged in this ship. The state-machine.py deferred-state fix closes the user-visible silent-drop without touching send-alert.sh; the audit-trail completeness improvement (always write alerts.jsonl + exit non-zero at end) is bundled with the atomicity restructure follow-up.
+- Five review iterations rather than one. The deferred-state refactor introduced new edge cases (silent-drop displacement, partition interaction, carry-in) that only surfaced under successive adversarial passes. This is the expected pattern for a load-bearing state-machine change; ship 5 rather than ship 1-with-known-holes was the correct call.
+
+---
 ## 2026-05-16 (very late evening) -- plate rendering convention (Hybrid) documented in SKILL.md
 
 **Commit:** `fbdc333 docs(plate): document Hybrid rendering convention in SKILL.md`
