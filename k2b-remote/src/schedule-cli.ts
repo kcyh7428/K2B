@@ -6,23 +6,48 @@ import { computeNextRun } from './scheduler.js'
 function usage(): void {
   console.log(`
 Usage:
-  schedule create "<prompt>" "<cron>" <chat_id>        Create a recurring task
-  schedule create-once "<prompt>" "<datetime>" <chat_id>  Create a one-time reminder
-  schedule list                                         List all tasks
-  schedule delete <id>                                  Delete a task
-  schedule pause <id>                                   Pause a task
-  schedule resume <id>                                  Resume a task
+  schedule create "<prompt>" "<cron>" <chat_id> [--thread <id>]        Create a recurring task
+  schedule create-once "<prompt>" "<datetime>" <chat_id> [--thread <id>]  Create a one-time reminder
+  schedule list                                                        List all tasks
+  schedule delete <id>                                                 Delete a task
+  schedule pause <id>                                                  Pause a task
+  schedule resume <id>                                                 Resume a task
+
+Flags:
+  --thread <id>   Telegram supergroup topic (forum_topic) thread id; when
+                  set, task results post to that topic instead of the DM.
+                  Use with chat_id of the supergroup (e.g. K2B Alerts).
 
 Examples:
-  schedule create "Give me a daily briefing" "0 9 * * *" 123456789
-  schedule create-once "Bring driving license" "2026-04-02 18:00" 123456789
+  schedule create "Give me a daily briefing" "0 9 * * *" 8394008217
+  schedule create-once "Bring driving license" "2026-04-02 18:00" 8394008217
+  schedule create "run /weave" "0 20 * * 0,2,4" -1003966532428 --thread 55
 `)
+}
+
+/**
+ * Pull `--thread <value>` out of an args array. Returns the value (or null)
+ * and a copy of args with both tokens removed. Tolerates the flag anywhere
+ * in argv so callers can keep using positional args for the existing
+ * prompt/cron/chat_id slots.
+ */
+function extractThreadFlag(args: string[]): { threadId: string | null; rest: string[] } {
+  const idx = args.indexOf('--thread')
+  if (idx === -1) return { threadId: null, rest: args }
+  if (idx + 1 >= args.length) {
+    console.error('--thread requires a value')
+    process.exit(1)
+  }
+  const value = args[idx + 1]
+  const rest = [...args.slice(0, idx), ...args.slice(idx + 2)]
+  return { threadId: value, rest }
 }
 
 function main(): void {
   initDatabase()
 
-  const args = process.argv.slice(2)
+  const rawArgs = process.argv.slice(2)
+  const { threadId, rest: args } = extractThreadFlag(rawArgs)
   const command = args[0]
 
   switch (command) {
@@ -32,7 +57,7 @@ function main(): void {
       const chatId = args[3]
 
       if (!prompt || !cron || !chatId) {
-        console.error('Missing arguments. Usage: create "<prompt>" "<cron>" <chat_id>')
+        console.error('Missing arguments. Usage: create "<prompt>" "<cron>" <chat_id> [--thread <id>]')
         process.exit(1)
       }
 
@@ -46,12 +71,13 @@ function main(): void {
 
       const id = randomUUID().slice(0, 8)
       const nextRun = computeNextRun(cron)
-      createTask(id, chatId, prompt, cron, nextRun)
+      createTask(id, chatId, prompt, cron, nextRun, 'recurring', threadId)
 
       console.log(`Task created:`)
       console.log(`  ID:       ${id}`)
       console.log(`  Prompt:   ${prompt}`)
       console.log(`  Schedule: ${cron}`)
+      if (threadId) console.log(`  Thread:   ${threadId} (chat ${chatId})`)
       console.log(`  Next run: ${new Date(nextRun).toLocaleString()}`)
       break
     }
@@ -62,7 +88,7 @@ function main(): void {
       const chatId = args[3]
 
       if (!prompt || !datetime || !chatId) {
-        console.error('Missing arguments. Usage: create-once "<prompt>" "<datetime>" <chat_id>')
+        console.error('Missing arguments. Usage: create-once "<prompt>" "<datetime>" <chat_id> [--thread <id>]')
         console.error('Datetime format: "YYYY-MM-DD HH:MM" in local time (HKT)')
         process.exit(1)
       }
@@ -80,11 +106,12 @@ function main(): void {
       }
 
       const id = randomUUID().slice(0, 8)
-      createTask(id, chatId, prompt, 'once', fireAt, 'one-time')
+      createTask(id, chatId, prompt, 'once', fireAt, 'one-time', threadId)
 
       console.log(`One-time reminder created:`)
       console.log(`  ID:       ${id}`)
       console.log(`  Prompt:   ${prompt}`)
+      if (threadId) console.log(`  Thread:   ${threadId} (chat ${chatId})`)
       console.log(`  Fire at:  ${parsed.toLocaleString()}`)
       break
     }
@@ -105,6 +132,7 @@ function main(): void {
         console.log(`  Schedule: ${t.type === 'one-time' ? 'once' : t.schedule}`)
         console.log(`  ${t.type === 'one-time' ? 'Fire at' : 'Next run'}: ${new Date(t.next_run).toLocaleString()}`)
         console.log(`  Prompt:   ${t.prompt.slice(0, 100)}`)
+        console.log(`  Chat:     ${t.chat_id}${t.thread_id ? ` (thread ${t.thread_id})` : ''}`)
         if (t.last_run) {
           console.log(`  Last run: ${new Date(t.last_run).toLocaleString()}`)
         }

@@ -128,6 +128,14 @@ export function initDatabase(): void {
     logger.info('Migrated scheduled_tasks: added type column')
   }
 
+  // Migration: add thread_id column for Telegram topic routing
+  // (e.g. K2B Alerts supergroup -> Automation topic for internal K2B
+  // automation results; NULL = post to chat_id default, i.e. DM)
+  if (!cols.some(c => c.name === 'thread_id')) {
+    db.exec("ALTER TABLE scheduled_tasks ADD COLUMN thread_id TEXT")
+    logger.info('Migrated scheduled_tasks: added thread_id column')
+  }
+
   // Migration v3 -> v4: drop the youtube_agent_state table created by the
   // retired YouTube agent. The table held in-process loop state for the
   // Telegram-driven YouTube curation pipeline that was retired in Phase 4 of
@@ -285,13 +293,14 @@ export function createTask(
   prompt: string,
   schedule: string,
   nextRun: number,
-  type: 'recurring' | 'one-time' = 'recurring'
+  type: 'recurring' | 'one-time' = 'recurring',
+  threadId: string | null = null
 ): void {
   getDb()
     .prepare(
-      'INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, status, created_at, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, status, created_at, type, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(id, chatId, prompt, schedule, nextRun, 'active', Date.now(), type)
+    .run(id, chatId, prompt, schedule, nextRun, 'active', Date.now(), type, threadId)
 }
 
 export function getDueTasks(): Array<{
@@ -300,11 +309,12 @@ export function getDueTasks(): Array<{
   prompt: string
   schedule: string
   type: string
+  thread_id: string | null
 }> {
   const now = Date.now()
   return getDb()
     .prepare(
-      `SELECT id, chat_id, prompt, schedule, type
+      `SELECT id, chat_id, prompt, schedule, type, thread_id
        FROM scheduled_tasks
        WHERE status = 'active' AND next_run <= ?`
     )
@@ -314,6 +324,7 @@ export function getDueTasks(): Array<{
     prompt: string
     schedule: string
     type: string
+    thread_id: string | null
   }>
 }
 
@@ -367,9 +378,10 @@ export function listAllTasks(): Array<{
   last_run: number | null
   status: string
   type: string
+  thread_id: string | null
 }> {
   return getDb()
-    .prepare('SELECT id, chat_id, prompt, schedule, next_run, last_run, status, type FROM scheduled_tasks ORDER BY created_at')
+    .prepare('SELECT id, chat_id, prompt, schedule, next_run, last_run, status, type, thread_id FROM scheduled_tasks ORDER BY created_at')
     .all() as Array<{
     id: string
     chat_id: string
@@ -379,6 +391,7 @@ export function listAllTasks(): Array<{
     last_run: number | null
     status: string
     type: string
+    thread_id: string | null
   }>
 }
 

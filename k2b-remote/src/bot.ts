@@ -802,15 +802,20 @@ export function createBot(): Bot {
 
 export async function sendTelegramMessage(
   chatId: string,
-  text: string
+  text: string,
+  threadId?: string | null
 ): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) return
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`
-  const body = JSON.stringify({
+  const payload: Record<string, unknown> = {
     chat_id: chatId,
     text: formatForTelegram(text),
     parse_mode: 'HTML',
-  })
+  }
+  if (threadId) {
+    payload.message_thread_id = Number(threadId)
+  }
+  const body = JSON.stringify(payload)
 
   return new Promise((resolvePromise, reject) => {
     const req = httpsRequest(

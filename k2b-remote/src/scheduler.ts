@@ -4,7 +4,7 @@ import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 import { markObservationStart, logObservations } from './observe.js'
 
-type Sender = (chatId: string, text: string) => Promise<void>
+type Sender = (chatId: string, text: string, threadId?: string | null) => Promise<void>
 
 let sendFn: Sender
 let pollInterval: ReturnType<typeof setInterval>
@@ -47,7 +47,7 @@ async function runDueTasks(): Promise<void> {
       }
 
       const label = task.type === 'one-time' ? 'Reminder' : 'Scheduled task'
-      await sendFn(task.chat_id, `[${label} running: ${task.prompt.slice(0, 80)}...]`)
+      await sendFn(task.chat_id, `[${label} running: ${task.prompt.slice(0, 80)}...]`, task.thread_id)
 
       const obsMarker = markObservationStart()
       const { text } = await runAgent(task.prompt)
@@ -61,13 +61,13 @@ async function runDueTasks(): Promise<void> {
         updateTaskAfterRun(task.id, computeNextRun(task.schedule), result)
       }
 
-      await sendFn(task.chat_id, result)
+      await sendFn(task.chat_id, result, task.thread_id)
 
       logger.info({ taskId: task.id }, `${label} completed`)
     } catch (err) {
       logger.error({ err, taskId: task.id }, 'Scheduled task failed')
       try {
-        await sendFn(task.chat_id, `Scheduled task failed: ${(err as Error).message}`)
+        await sendFn(task.chat_id, `Scheduled task failed: ${(err as Error).message}`, task.thread_id)
       } catch {
         // ignore send failure
       }
