@@ -185,6 +185,12 @@ echo "=== router-watchdog.test.sh ==="
   d="$TMPROOT/check-parsers"
   fakebin="$d/fakebin"
   mkdir -p "$fakebin"
+  health_file="$d/health.json"
+  python3 - "$health_file" <<'PY'
+import json, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"epoch": int(time.time() * 1000)}, f)
+PY
   cat > "$fakebin/pm2" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "jlist" ]]; then
@@ -207,6 +213,7 @@ fi
 EOF
   chmod +x "$fakebin/pm2" "$fakebin/tailscale"
 
+  K2B_REMOTE_HEALTH_FILE="$health_file" \
   PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
   python3 - "$d/pm2.jsonl" <<'PY' || fail "pm2 parser should report daemon and services ok"
 import json
@@ -222,6 +229,281 @@ PY
   grep -q '"name":"tailscale_direct","ok":true' "$d/tailscale.jsonl" || fail "tailscale parser should report direct path ok"
   grep -q '"direct_addrs":1' "$d/tailscale.jsonl" || fail "tailscale parser should count direct addrs"
   echo "  PASS: command-output parsers"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4b: pm2 check self-heals k2b-remote when it is stopped before the
+# state machine sees a failure tick.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/pm2-self-heal-stopped"
+  fakebin="$d/fakebin"
+  mkdir -p "$fakebin" "$d/logs"
+  state_file="$d/status"
+  health_file="$d/health.json"
+  printf 'stopped' > "$state_file"
+  # Pre-restart heartbeat is 5 min old -- still fresh per MAX_AGE 600s, but
+  # the post-restart heartbeat MUST be strictly newer (HIGH-2 gate). Writing
+  # a current pre-restart heartbeat would race the gate at sub-second
+  # precision; backdating by 300s makes the test deterministic.
+  python3 - "$health_file" <<'PY'
+import json, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"epoch": int((time.time() - 300) * 1000)}, f)
+PY
+  cat > "$fakebin/pm2" <<EOF
+#!/usr/bin/env bash
+state_file="$state_file"
+health_file="$health_file"
+if [[ "\${1:-}" == "jlist" ]]; then
+  status="\$(<"\$state_file")"
+  cat <<JSON
+[
+  {"name":"k2b-remote","pm2_env":{"status":"\$status","restart_time":1}},
+  {"name":"k2b-dashboard","pm2_env":{"status":"online","restart_time":2}},
+  {"name":"k2b-observer-loop","pm2_env":{"status":"online","restart_time":3}}
+]
+JSON
+elif [[ "\${1:-}" == "restart" && "\${2:-}" == "k2b-remote" ]]; then
+  printf 'online' > "\$state_file"
+  # Production behavior: a restarted bot writes a fresh heartbeat on startup.
+  # Simulate that here so the HIGH-2 heartbeat-advance gate sees the new epoch.
+  python3 - "\$health_file" <<'PY'
+import json, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"epoch": int(time.time() * 1000)}, f)
+PY
+  exit 0
+fi
+EOF
+  chmod +x "$fakebin/pm2"
+
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$d/logs" \
+  K2B_REMOTE_HEALTH_FILE="$health_file" \
+  K2B_REMOTE_RESTART_SETTLE_SECONDS=0 \
+  PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
+
+  python3 - "$d/pm2.jsonl" <<'PY' || fail "pm2 self-heal should return pm2_services ok after restarting stopped k2b-remote"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+by_name = {row["name"]: row for row in rows}
+svc = by_name["pm2_services"]
+assert svc["ok"] is True, svc
+assert svc["details"]["auto_restart"]["mode"] == "stopped", svc
+assert svc["details"]["auto_restart"]["result"] == "success", svc
+PY
+  grep -q '"mode":"stopped"' "$d/logs/restarts.jsonl" || fail "stopped self-heal should log restart event"
+  echo "  PASS: pm2 self-heals stopped k2b-remote"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4c: pm2 check also catches the zombie-bot case where pm2 says online
+# but the k2b-remote heartbeat is stale.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/pm2-self-heal-zombie"
+  fakebin="$d/fakebin"
+  mkdir -p "$fakebin" "$d/logs"
+  health_file="$d/health.json"
+  python3 - "$health_file" <<'PY'
+import json, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"epoch": int((time.time() - 1200) * 1000)}, f)
+PY
+  cat > "$fakebin/pm2" <<EOF
+#!/usr/bin/env bash
+health_file="$health_file"
+if [[ "\${1:-}" == "jlist" ]]; then
+  cat <<'JSON'
+[
+  {"name":"k2b-remote","pm2_env":{"status":"online","restart_time":1}},
+  {"name":"k2b-dashboard","pm2_env":{"status":"online","restart_time":2}},
+  {"name":"k2b-observer-loop","pm2_env":{"status":"online","restart_time":3}}
+]
+JSON
+elif [[ "\${1:-}" == "restart" && "\${2:-}" == "k2b-remote" ]]; then
+  python3 - "\$health_file" <<'PY'
+import json, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"epoch": int(time.time() * 1000)}, f)
+PY
+  exit 0
+fi
+EOF
+  chmod +x "$fakebin/pm2"
+
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$d/logs" \
+  K2B_REMOTE_HEALTH_FILE="$health_file" \
+  K2B_REMOTE_HEARTBEAT_MAX_AGE_SECONDS=600 \
+  K2B_REMOTE_RESTART_SETTLE_SECONDS=0 \
+  PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
+
+  python3 - "$d/pm2.jsonl" <<'PY' || fail "pm2 self-heal should return pm2_services ok after restarting stale-heartbeat k2b-remote"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+by_name = {row["name"]: row for row in rows}
+svc = by_name["pm2_services"]
+assert svc["ok"] is True, svc
+assert svc["details"]["auto_restart"]["mode"] == "zombie", svc
+assert svc["details"]["auto_restart"]["result"] == "success", svc
+PY
+  grep -q '"mode":"zombie"' "$d/logs/restarts.jsonl" || fail "zombie self-heal should log restart event"
+  echo "  PASS: pm2 self-heals stale k2b-remote heartbeat"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4d: missing/corrupt heartbeat is a watchdog-visible failure, not an
+# invisible ok state. This keeps router-watchdog a real replacement candidate
+# for the older com.k2b-remote.health check.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/pm2-missing-health-fails"
+  fakebin="$d/fakebin"
+  mkdir -p "$fakebin" "$d/logs"
+  missing_health="$d/missing-health.json"
+  cat > "$fakebin/pm2" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "jlist" ]]; then
+  cat <<'JSON'
+[
+  {"name":"k2b-remote","pm2_env":{"status":"online","restart_time":1}},
+  {"name":"k2b-dashboard","pm2_env":{"status":"online","restart_time":2}},
+  {"name":"k2b-observer-loop","pm2_env":{"status":"online","restart_time":3}}
+]
+JSON
+elif [[ "${1:-}" == "restart" ]]; then
+  exit 9
+fi
+EOF
+  chmod +x "$fakebin/pm2"
+
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$d/logs" \
+  K2B_REMOTE_HEALTH_FILE="$missing_health" \
+  PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
+
+  python3 - "$d/pm2.jsonl" <<'PY' || fail "pm2 should fail when k2b-remote heartbeat file is missing"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+svc = {row["name"]: row for row in rows}["pm2_services"]
+assert svc["ok"] is False, svc
+assert "health_file_missing" in svc["message"], svc
+assert "auto_restart" not in svc["details"], svc
+PY
+  [[ ! -e "$d/logs/restarts.jsonl" ]] || fail "missing heartbeat should not call pm2 restart"
+  echo "  PASS: missing k2b-remote heartbeat is visible as pm2_services failure"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4f: valid-but-non-dict JSON heartbeat files are visible as pm2_services
+# failure, not as a Python crash. Covers `null`, `[]`, bare string. Without
+# this guard the entire pm2.sh tick would AttributeError and produce no
+# output for the state machine -- now critical because router-watchdog is
+# the sole watchdog after Phase 3 retired com.k2b-remote.health.
+# ---------------------------------------------------------------------------
+{
+  for variant in null array string; do
+    d="$TMPROOT/pm2-non-dict-health-$variant"
+    fakebin="$d/fakebin"
+    mkdir -p "$fakebin" "$d/logs"
+    health_file="$d/health.json"
+    case "$variant" in
+      null)   echo 'null' > "$health_file" ;;
+      array)  echo '[1,2,3]' > "$health_file" ;;
+      string) echo '"bare-string"' > "$health_file" ;;
+    esac
+    cat > "$fakebin/pm2" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "jlist" ]]; then
+  cat <<'JSON'
+[
+  {"name":"k2b-remote","pm2_env":{"status":"online","restart_time":1}},
+  {"name":"k2b-dashboard","pm2_env":{"status":"online","restart_time":2}},
+  {"name":"k2b-observer-loop","pm2_env":{"status":"online","restart_time":3}}
+]
+JSON
+elif [[ "${1:-}" == "restart" ]]; then
+  exit 9
+fi
+EOF
+    chmod +x "$fakebin/pm2"
+
+    K2B_ROUTER_WATCHDOG_LOG_DIR="$d/logs" \
+    K2B_REMOTE_HEALTH_FILE="$health_file" \
+    PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
+
+    python3 - "$d/pm2.jsonl" "$variant" <<'PY' || fail "pm2 should fail (not crash) when k2b-remote health is non-dict JSON ($variant)"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+svc = {row["name"]: row for row in rows}["pm2_services"]
+variant = sys.argv[2]
+assert svc["ok"] is False, (variant, svc)
+assert "health_file_not_object" in svc["message"] or "not_object" in svc["message"], (variant, svc)
+assert "auto_restart" not in svc["details"], (variant, svc)
+PY
+    [[ ! -e "$d/logs/restarts.jsonl" ]] || fail "non-dict heartbeat should not call pm2 restart ($variant)"
+  done
+  echo "  PASS: non-dict heartbeat JSON visible as failure (null + array + string)"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4e: pm2 check refuses to declare recovery if the heartbeat hasn't
+# advanced past the pre-restart epoch. Catches the false-recovery case where
+# a restarted bot crashes during init and the stale-but-not-yet-stale
+# heartbeat masks the failure.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/pm2-heartbeat-gate"
+  fakebin="$d/fakebin"
+  mkdir -p "$fakebin" "$d/logs"
+  state_file="$d/status"
+  health_file="$d/health.json"
+  printf 'stopped' > "$state_file"
+  # Pre-restart heartbeat: 200s old (within 600s MAX_AGE, so a naive recovery
+  # would have called this ok). After "restart" the fake pm2 leaves the file
+  # alone -- simulating a crashed-during-init bot that never wrote a fresh
+  # heartbeat. The check MUST report failure with "heartbeat not yet advanced".
+  python3 - "$health_file" <<'PY'
+import json, sys, time
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"epoch": int((time.time() - 200) * 1000)}, f)
+PY
+  cat > "$fakebin/pm2" <<EOF
+#!/usr/bin/env bash
+state_file="$state_file"
+if [[ "\${1:-}" == "jlist" ]]; then
+  status="\$(<"\$state_file")"
+  cat <<JSON
+[
+  {"name":"k2b-remote","pm2_env":{"status":"\$status","restart_time":1}},
+  {"name":"k2b-dashboard","pm2_env":{"status":"online","restart_time":2}},
+  {"name":"k2b-observer-loop","pm2_env":{"status":"online","restart_time":3}}
+]
+JSON
+elif [[ "\${1:-}" == "restart" && "\${2:-}" == "k2b-remote" ]]; then
+  # Simulate a restart that brings pm2 online but the bot crashes before
+  # writing a fresh heartbeat. status flips to online, health file unchanged.
+  printf 'online' > "\$state_file"
+  exit 0
+fi
+EOF
+  chmod +x "$fakebin/pm2"
+
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$d/logs" \
+  K2B_REMOTE_HEALTH_FILE="$health_file" \
+  K2B_REMOTE_RESTART_SETTLE_SECONDS=0 \
+  PATH="$fakebin:$PATH" bash "$SRC_DIR/bin/checks/pm2.sh" > "$d/pm2.jsonl"
+
+  python3 - "$d/pm2.jsonl" <<'PY' || fail "pm2 should refuse recovery when heartbeat hasn't advanced past pre-restart epoch"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+svc = {row["name"]: row for row in rows}["pm2_services"]
+assert svc["ok"] is False, svc
+assert "heartbeat not yet advanced" in svc["message"], svc
+assert svc["details"]["auto_restart"]["heartbeat_gate_failed"] is True, svc
+assert svc["details"]["auto_restart"]["result"] == "failed", svc
+PY
+  grep -q '"heartbeat_gate_failed":true' "$d/logs/restarts.jsonl" || fail "restart log should record heartbeat gate failure"
+  echo "  PASS: pm2 heartbeat gate refuses false recovery"
 }
 
 # ---------------------------------------------------------------------------
@@ -943,6 +1225,99 @@ EOF
     || fail "syncthing_process recovery should use 'briefly failed' missed-outage message"
 
   echo "  PASS: non-external check missed-outage recovery still works (partition guard scoped correctly)"
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: daily digest surfaces confirm-delivered drift counts from
+# confirm-failures.jsonl for the last 24 hours.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/digest-confirm-drift"
+  mkdir -p "$d"
+  cat > "$d/confirm-failures.jsonl" <<'EOF'
+{"timestamp":"2026-05-19T01:00:00Z","kind":"confirm_failed_after_send","alert":{"type":"failure"}}
+{"timestamp":"2026-05-19T02:00:00Z","kind":"confirm_failed_after_send","alert":{"type":"recovery"}}
+{"timestamp":"2026-05-17T01:00:00Z","kind":"confirm_failed_after_send","alert":{"type":"failure"}}
+EOF
+  python3 "$SRC_DIR/bin/digest.py" \
+    --health-log "$d/missing-health.jsonl" \
+    --score-log "$d/missing-score.jsonl" \
+    --confirm-failures-log "$d/confirm-failures.jsonl" \
+    --now "2026-05-19T12:00:00Z" > "$d/digest.out"
+
+  grep -q 'Drift events (last 24h): 2.' "$d/digest.out" \
+    || fail "digest should count only confirm drift rows from last 24h"
+  grep -q 'Drift types: confirm_failed_after_send x2.' "$d/digest.out" \
+    || fail "digest should summarize confirm drift kind"
+  echo "  PASS: digest surfaces confirm-delivered drift count"
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: digest tolerates malformed lines + bad timestamps in
+# confirm-failures.jsonl. The drift log is written on error paths, so a
+# corrupted line MUST NOT crash the digest -- it must skip and surface the
+# unreadable count alongside the parseable count.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/digest-malformed-drift"
+  mkdir -p "$d"
+  cat > "$d/confirm-failures.jsonl" <<'EOF'
+{"timestamp":"2026-05-19T01:00:00Z","kind":"confirm_failed_after_send"}
+{this is not valid JSON at all
+{"timestamp":"2026-05-19T02:00:00Z","kind":"confirm_failed_after_send"}
+{"timestamp":"not-a-real-iso-timestamp","kind":"bad_ts"}
+[1,2,3]
+null
+EOF
+  python3 "$SRC_DIR/bin/digest.py" \
+    --health-log "$d/missing-health.jsonl" \
+    --score-log "$d/missing-score.jsonl" \
+    --confirm-failures-log "$d/confirm-failures.jsonl" \
+    --now "2026-05-19T12:00:00Z" > "$d/digest.out" 2> "$d/digest.err"
+
+  # Digest must NOT crash on malformed rows.
+  grep -q 'Drift events (last 24h): 2.' "$d/digest.out" \
+    || fail "digest should count only parseable + in-window rows when malformed lines are present"
+  # 1 invalid JSON + 1 bad-ts + 1 array-not-dict + 1 null-not-dict = 4 unreadable
+  grep -q 'Drift rows unreadable (last 24h): 4.' "$d/digest.out" \
+    || fail "digest should surface unreadable row count covering JSON-malformed + bad-ts + non-dict JSON"
+  echo "  PASS: digest tolerates malformed confirm-failures rows (incl. non-dict JSON)"
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: digest tolerates malformed rows + bad timestamps in health.jsonl
+# and node-score.jsonl too. Without this guard a single corrupted entry in
+# either log would crash the entire daily digest -- which is exactly when
+# Keith needs the recommendation surface most.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/digest-malformed-health-score"
+  mkdir -p "$d"
+  # health.jsonl: 1 valid recent row, 1 invalid JSON, 1 array-not-dict, 1 bad-ts.
+  cat > "$d/health.jsonl" <<'EOF'
+{"timestamp":"2026-05-19T03:00:00Z","checks":{"router_reachable":{"ok":true},"openai_node":{"details":{"selected_node":"node-x"}}}}
+{not valid JSON
+[1,2,3]
+{"timestamp":"not-iso","checks":{}}
+EOF
+  # node-score.jsonl: 1 valid recent row, 1 missing-ts, 1 string-not-dict.
+  cat > "$d/node-score.jsonl" <<'EOF'
+{"timestamp":"2026-05-19T04:00:00Z","candidate":"node-x","score":0.9,"success_rate":1.0,"latency_p50":50}
+{"candidate":"missing-ts-row","score":0.5}
+"i-am-a-bare-string"
+EOF
+
+  python3 "$SRC_DIR/bin/digest.py" \
+    --health-log "$d/health.jsonl" \
+    --score-log "$d/node-score.jsonl" \
+    --confirm-failures-log "$d/missing-confirm.jsonl" \
+    --now "2026-05-19T12:00:00Z" > "$d/digest.out" 2> "$d/digest.err"
+
+  # Digest must NOT crash and MUST still emit the recommendation surface.
+  [[ -s "$d/digest.out" ]] || fail "digest must still produce output when health/score logs have malformed rows"
+  grep -q 'Router watchdog digest' "$d/digest.out" \
+    || fail "digest must still produce its standard message when health/score logs have malformed rows"
+  echo "  PASS: digest tolerates malformed health + score rows"
 }
 
 echo "router-watchdog.test.sh: all tests passed"

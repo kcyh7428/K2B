@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${K2B_ROUTER_WATCHDOG_LOG_DIR:-$HOME/Library/Logs/k2b-router-watchdog}"
 HEALTH_LOG="${K2B_ROUTER_WATCHDOG_HEALTH_LOG:-$LOG_DIR/health.jsonl}"
 SCORE_LOG="${K2B_ROUTER_WATCHDOG_NODE_SCORE_LOG:-$LOG_DIR/node-score.jsonl}"
+CONFIRM_FAILURES_LOG="${K2B_ROUTER_WATCHDOG_CONFIRM_FAILURES_LOG:-$LOG_DIR/confirm-failures.jsonl}"
 SEND=false
 
 if [[ "${1:-}" == "--send" ]]; then
@@ -12,7 +13,7 @@ if [[ "${1:-}" == "--send" ]]; then
   shift
 fi
 
-message="$(python3 "$SCRIPT_DIR/digest.py" --health-log "$HEALTH_LOG" --score-log "$SCORE_LOG" "$@")"
+message="$(python3 "$SCRIPT_DIR/digest.py" --health-log "$HEALTH_LOG" --score-log "$SCORE_LOG" --confirm-failures-log "$CONFIRM_FAILURES_LOG" "$@")"
 
 if ! $SEND; then
   printf '%s\n' "$message"
