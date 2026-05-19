@@ -1,6 +1,37 @@
 # K2B Development Log
 
 ---
+## 2026-05-19 -- feature_router-watchdog + feature_end-of-day-capture both SHIPPED (MVP-gate verification, no code)
+
+**Commit:** this DEVLOG entry only (no code commit upstream -- both features are vault state transitions after production verification).
+
+**What shipped:** Two features flipped `in-progress -> shipped` after their respective MVP gates passed on the 2026-05-19 production fire window. No new code in this ship.
+
+- **feature_router-watchdog**: 2026-05-19 01:00→07:00 CST fault-injection re-run PASSED all 6 MVP gate conditions. First transition alert at 01:24 CST (+20 min from outage_since 01:04, inside the 30-min envelope -- the 2026-05-18 silent-drop fix `9dfc19e` did its job). 4 total alerts under the ≤5 cap (1 failure + 2 repeat_failure + 1 recovery). Recovery alert 6 min after START fire. Direct curl bypass of k2b-remote bot confirmed (`source: direct-curl` in all alerts.jsonl). `com.k2b-remote.health` correctly bootout'd at 01:00 (no auto-restart masking, k2b-remote stayed offline the full 6h). health.jsonl timestamps cross-verified with alerts.jsonl. Live Telegram API verification today (16:35 HKT): `message_id: 73` returned, confirming thread 6 = "Network" topic. Subtle finding: Keith initially missed all 4 alerts because the Network topic was on silent notifications on his phone -- not a code bug; reminder added to `wiki/context/reminders.md` to un-mute Network/Automation/EOD-Capture topics.
+
+- **feature_end-of-day-capture**: 2026-05-19 02:00 HKT cron auto-fired clean (job-a rc=0 -> job-b rc=0, strictly serial with 58ms gap, `processed_files: 0` because no Claude Code/Codex sessions matched K2B/K2Bi cwd scope yesterday). Doctor-phone MVP previously passed manual fire 2026-05-17 (semantic.md grew 37 -> 55 with Dr. Lo Hak Keung row + `tel:2830 3709`). Two ride-along bugs found + fixed mid-session: (1) Missing 08:00 digest-send crontab entry -- only `00 02 * * * job-a-then-b` was installed; appended `0 8 * * * digest-send` line to Mini crontab. (2) Env var name mismatch -- `eod-capture.env` exports `K2B_TELEGRAM_BOT_TOKEN` but `send-telegram.sh` expects `K2B_BOT_TOKEN`; appended alias lines to `~/.config/k2b/eod-capture.env` on Mini (backup at `.bak-2026-05-19`). Manual `digest-send` post-fix returned rc=0 and delivered the standard 8-line summary to EOD Capture topic (chat -1003966532428 thread 53); Keith visually confirmed receipt. **Closes R-2026-05-16-004** (Telegram delivery unconfirmed). Open residuals R-2026-05-16-003, R-2026-05-17-001, R-2026-05-17-002 still tracked separately, NOT blockers.
+
+**MVP gate:** Both features satisfied the binary named-bug test discipline per k2b-ship step 6:
+- Router-watchdog: 6 numbered conditions, each with per-condition pass evidence (alerts.jsonl timestamps, health.jsonl cross-references, Telegram API message_id), artifacts cited (alerts.jsonl + health.jsonl + getChat response).
+- EOD-capture: 3 conditions (cron clean, digest received, doctor-phone bug stays dead), each with per-condition pass evidence (eod-capture-cron.log timestamps, Telegram visual confirmation, semantic.md row), artifacts cited.
+
+**Review:** Tier 0 (vault-only state transitions, no code in K2B repo). No adversarial review needed.
+
+**Feature status changes:**
+- `feature_router-watchdog`: in-progress -> shipped (shipped-date: 2026-05-19), pending-action removed, file moved to `wiki/concepts/Shipped/`
+- `feature_end-of-day-capture`: in-progress -> shipped (shipped-date: 2026-05-19), pending-action removed, file moved to `wiki/concepts/Shipped/`
+
+**Follow-ups:**
+- Architectural overlap between router-watchdog and `com.k2b-remote.health` still tracked in `wiki/context/reminders.md` (3 options: retire health, keep both with shortened watchdog threshold, document masking as intentional).
+- `confirm-delivered` drift visibility (Codex 2026-05-18 second-pass MED) -- promote `confirm-failures.jsonl` into daily digest or direct Telegram alert. Pairs with deferred `send-alert.sh` transactional restructure.
+- Telegram topic mute audit on Keith's phone (Network + Automation + EOD Capture).
+- Un-mute decision should hit all 3 topics, then retest router-watchdog by injecting a fault and confirming push notification fires on phone.
+
+**Key decisions:**
+- Decided to ship EOD-capture today (rather than wait for tomorrow's 08:00 auto-fire to fully prove the new cron line) because the underlying mechanism is proven via manual fire and any auto-fire failure becomes a fresh /plate item, not a blocker.
+- Decided architectural overlap decision is a separate ship, not part of router-watchdog close-out.
+
+---
 ## 2026-05-18 -- feature_ship-review-triage Ship 1 deployment contract
 
 **Commit:** `a16d5d8` feat(review): ship feature_ship-review-triage Ship 1
