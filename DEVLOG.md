@@ -1,6 +1,57 @@
 # K2B Development Log
 
 ---
+## 2026-05-19 -- feature_router-watchdog-v2 SHIPPED (self-heal + drift visibility + Phase 3 retirement)
+
+**Commit:** `45bfba2` feat(router-watchdog): v2 self-heal + drift visibility + Phase 3 retirement
+
+**What shipped:** Folds k2b-remote auto-restart capability into router-watchdog's `pm2_services` check (inside `pm2.sh`, before the alert state machine sees the failure tick — transient stops/zombies get fixed silently). Daily digest now reads `confirm-failures.jsonl` and surfaces `Drift events (last 24h)` + types breakdown + unreadable-row count. Phase 3 retirement collapsed in: `com.k2b-remote.health` plist bootout'd on Mini + removed, legacy `health-check.sh` deleted from source. New `restarts.jsonl` log records every auto-restart event with mode + reason + pm2 exit + post-restart status + pre-restart heartbeat epoch.
+
+Architectural call worth recording: Codex made the right design call versus the original spec — instead of adding `auto_restart_attempted` state to `state-machine.py` and racing the alert state machine, the self-heal lives inside `pm2.sh` and emits the POST-restart status to the state machine. The state machine never sees the transient stop. No new state flags. Same external contract.
+
+**MVP gate:** 4 binary tests defined. Live MVP Test 1 (STOPPED-BOT) PASSED on Mini:
+- 15:57:18Z UTC: `ssh macmini 'pm2 stop k2b-remote'` -> status stopped
+- 16:03:49Z UTC: next router-watchdog tick fires (~6.5 min after fault)
+- 16:03:53Z UTC: `restarts.jsonl` entry written -- `mode: "stopped"`, `pm2_exit_code: 0`, `result: "success"`, `heartbeat_gate_failed: false`, `pre_restart_heartbeat_epoch: 1779206017` (15:53:37Z)
+- pm2 status: k2b-remote `online`, fresh pid, age_seconds 5 / status fresh
+- alerts.jsonl during fault window (15:57:00Z onwards): 0 entries
+
+The state machine never saw a failure tick. Self-heal was silent + clean. HIGH-2 heartbeat-advance gate held (post-restart file epoch was strictly newer than pre-restart epoch). Other 3 MVP conditions covered by synthetic tests:
+- Test 4c (zombie heartbeat -> restart -> heartbeat advances)
+- Test 4d (missing health file is visible failure, NO restart)
+- Test 4e (heartbeat gate refuses false recovery)
+- Test 4f (non-dict heartbeat JSON: null/array/string visible as failure, NO crash)
+- Test 16 (drift count surfaces in digest)
+- Test 17 (malformed drift rows incl. non-dict JSON: defensive load, counts unreadable)
+- Test 18 (malformed health + score rows: digest still produces output)
+
+**Codex review:** Tier 3 adversarial review via `scripts/review.sh diff --primary codex`. 3 rounds.
+- Pass 1 (`66ad58`): NEEDS-ATTENTION. 2 HIGH (overlap restart race; false-recovery from stale-but-not-yet-stale heartbeat) + 3 MED (restart log abort; digest.sh missing flag; malformed row kills digest). All 5 fixed inline. HIGH-1 fix: Phase 3 collapsed into this ship (Keith's explicit go-ahead) — delete legacy script + bootout plist. HIGH-2 fix: capture pre-restart file epoch, require post-restart file epoch to be strictly newer. Used `heartbeat_epoch_seconds()` helper to read FILE'S epoch directly, not derive from `time.time()` (which would drift with wall-clock between the two reads).
+- Pass 2 (`8fda27`): NEEDS-ATTENTION. 1 MED (non-dict JSON not guarded in `load_jsonl_with_errors`). Fixed inline + new `filter_log_by_recent_timestamp` applied to all 3 logs uniformly.
+- Pass 3 (`cbfb8c`): NEEDS-ATTENTION. 1 HIGH (non-dict heartbeat JSON crashes pm2.sh — critical since router-watchdog is now sole watchdog post Phase 3) + 1 MED (nested schema drift in digest's `.get()` chains for `checks`/`openai_node.details`). HIGH fixed inline + Test 4f covering null/array/string heartbeat files. MED accepted as deferred follow-up (rows are written by router-watchdog's own code so practical drift risk is low).
+
+**Feature status change:** `feature_router-watchdog-v2` designed -> shipped (shipped-date: 2026-05-19). Moved to `wiki/concepts/Shipped/`. Backlog row removed from `concepts/index.md`. New row at top of inline Shipped table.
+
+**Phase 3 retirement (executed in this ship, not deferred):**
+- Source: `k2b-remote/scripts/health-check.sh` deleted (in commit)
+- Mini: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b-remote.health.plist` -> success
+- Mini: `~/Library/LaunchAgents/com.k2b-remote.health.plist` removed
+- Mini: `~/Projects/K2B/k2b-remote/scripts/health-check.sh` removed
+- Verified `launchctl list` shows only `com.k2b.router-watchdog` for k2b-remote liveness
+
+**Reminders closed** (in `wiki/context/reminders.md`):
+- router-watchdog / com.k2b-remote.health overlap (chose option (a): retire)
+- router-watchdog confirm-delivered drift visibility (digest now surfaces count)
+
+**Follow-ups (deferred, NOT in this ship):**
+- `send-alert.sh` transactional restructure (Telegram-send + alerts.jsonl-write + state-mutate atomic; Codex 2026-05-18 pass-1 HIGH-1 second half)
+- digest.py nested-schema defensive parsing: `checks` dict guards, `openai_node.details` dict guards, score numeric-field coercion (Codex pass-3 MED)
+
+**Key decisions:**
+- Collapsed Phase 3 into this ship instead of waiting for 7-day bake (Keith's call after Codex pass-1 HIGH-1 flagged the overlap-restart race).
+- Accepted Codex pass-3 MED as deferred rather than chase another review round (diminishing returns on tiny edge cases in our own data).
+
+---
 ## 2026-05-19 -- feature_router-watchdog + feature_end-of-day-capture both SHIPPED (MVP-gate verification, no code)
 
 **Commit:** this DEVLOG entry only (no code commit upstream -- both features are vault state transitions after production verification).
