@@ -18,6 +18,21 @@
 **Key decisions (if divergent from claude.ai project specs):** Ship as `--no-feature` rather than re-opening `feature_end-of-day-capture` (already in Shipped/). Backtick regex broadened beyond the MiniMax-suggested narrow form (`` `date[^`]*%Y-%m-%d['"`] `` instead of `` `date[^`]*%Y-%m-%d` ``) so it catches `` `date '+%Y-%m-%d'` `` (the user's own example) and not only the no-quotes variant.
 
 ---
+## 2026-05-20 -- eod-capture round-2 follow-ups: naive-ts warning + partial-miss detector + audit-script docs (816abd6)
+
+**Commit:** `816abd6` fix(eod-capture): land MiniMax round-2 deferred follow-ups
+
+**What shipped:** Resolves 3 of 4 NEEDS-ATTENTION items from the MiniMax round-2 review of `3eb84f9` (the original E-2026-05-20-001/-002 cron + TZ-naive fix). (1) `_parse_event_date` now emits a process-deduplicated stderr warning per unique naive-timestamp shape (digits replaced with D), making convention Rule 4 violations visible instead of silently UTC-coerced. (2) `_digest_health_issues` flags "partial-miss suspected" when `processed_files > 0 AND processed_files < len(discover_session_paths)` — catches the case where job-a partially fails (timeouts, validation skips) and the zero-floor check wouldn't fire. (3) `scripts/audit-date-handling.sh` header now documents the two known false-negative edge cases for its comment-split heuristic (tab-hash comment separator, hash-in-string preceded by space); both validated as zero-occurrence across K2B's scripts on 2026-05-20, so the simpler heuristic stays. 4 new pytest cases cover the partial-miss flagging branches plus the stderr-dedup behavior.
+
+**Codex review:** skipped — round-2 follow-ups on a feature whose underlying ship (`3eb84f9`) already passed adversarial review (Tier 3 Codex pass on the original commit). The MEDIUM-3 finding "regex extensions shipped without test coverage" was closed by the next commit (`73cfb32`), not this one.
+
+**Feature status change:** none. `feature_end-of-day-capture` already shipped (Ship 1, archived in `wiki/concepts/Shipped/`). This is hardening on a shipped feature — same shape as `61ddf5c` (per-item rejection + Codex stripper hardening on the same feature).
+
+**Follow-ups:** MiniMax round-2 task chips fully drained between this commit and `73cfb32`. The audit-script comment-split heuristic ships with documented limitations rather than a quote-aware parser; if either edge case is introduced later, the documentation block routes the maintainer to "fix the source line, don't grow the parser."
+
+**Key decisions (if divergent from claude.ai project specs):** Chose documentation over quote-aware parsing for the audit script's comment-split heuristic. Validation pass on 2026-05-20 showed zero occurrences of either edge case in any K2B script (eod-capture-cron, eod-capture.py, eod_capture.py, all other cron/daily/eod/nightly/morning matches). The cost of adding a quote-state-tracking parser outweighed the false-negative risk on hypothetical future patterns. The pure-comment tab-indent case (`\t# foo`) was already handled by the existing `sed -E 's/^[[:space:]]+//'` pre-trim at line 71 — the reviewer's concern there conflated pure-comment lines (handled) with mixed code+comment lines using tab-hash (not handled, doesn't exist).
+
+---
 ## 2026-05-20 -- cleanup: router-watchdog v1 MVP test fixtures removed from Mini
 
 Removed orphan launchd plists left behind from the feature_router-watchdog v1 fault-injection MVP probe:
