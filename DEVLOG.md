@@ -1,6 +1,20 @@
 # K2B Development Log
 
 ---
+## 2026-05-20 -- cleanup: router-watchdog v1 MVP test fixtures removed from Mini
+
+Removed orphan launchd plists left behind from the feature_router-watchdog v1 fault-injection MVP probe:
+
+- `~/Library/LaunchAgents/com.k2b.mvp-test-start.plist` (07:00 HKT daily, re-bootstrapped `com.k2b-remote.health` + started k2b-remote via pm2, then bootouted self)
+- `~/Library/LaunchAgents/com.k2b.mvp-test-stop.plist` (01:00 HKT daily, bootouted `com.k2b-remote.health` + stopped k2b-remote via pm2, then bootouted self)
+
+The per-fire `launchctl bootout` only removed the jobs from the live launchd session; the plists on disk continued to auto-reload on Mini login/restart and fire daily through 2026-05-19 07:00 HKT (last entry in `/tmp/router-watchdog-mvp-test.log`). Self-cleanup script never removed the plist files.
+
+After v2 shipped (`45bfba2`, 2026-05-19) and Phase 3 retired `com.k2b-remote.health` permanently, these fixtures had no consumer. Verified before deletion: `launchctl list | grep -i mvp` returned empty, no references in K2B repo, only historical mentions in vault. Live router-* plists (watchdog, digest, daily-rollup, leaf-optimizer, node-score) untouched.
+
+No code change. Plists deleted on Mini, repo unchanged.
+
+---
 ## 2026-05-19 -- feature_router-watchdog-v2 SHIPPED (self-heal + drift visibility + Phase 3 retirement)
 
 **Commit:** `45bfba2` feat(router-watchdog): v2 self-heal + drift visibility + Phase 3 retirement
@@ -3394,3 +3408,29 @@ Archives: `.code-reviews/2026-04-21T13-49-24Z_9d8495.log` (pass 1) + `T13-55-24Z
 - Preferences were explicitly skipped rather than routed to review in Ship 1.
 - The implementation did not depend on Kimi Batch API or native JSON Mode; those remain later optimization work.
 - The binary MVP was proven in a sandbox vault, not against production, because the live vault already contains Dr. Lo rows and cannot satisfy the clean-vault precondition.
+
+
+## 2026-05-20 -- E-2026-05-20-001/-002 EOD cron data-day mismatch + class TZ-naive handling
+
+**Commit:** `3eb84f9` fix(eod-capture): cron data-day mismatch + class-level TZ-naive handling
+
+**What shipped:** Resolved two related errors. E-001: the End-of-Day Capture cron at 02:00 HKT had been silently processing zero sessions for at least three consecutive days because `RUN_DATE` defaulted to `$(date '+%Y-%m-%d')` — at 02:00 HKT this returns the NEW HKT calendar day, but the data being processed belongs to the day that just ended. Result: ~65 sessions across 2026-05-17/-18/-19 sat unextracted in `~/.claude/projects/` until Keith flagged a clean-zeros digest this morning. E-002 generalized the root cause into a class-level TZ-naive date handling issue across K2B scripts and locked the K2B=HKT / K2Bi=NYT / VPS=UTC convention. Fixes applied: crontab on Mac Mini patched (Option A, with `\%` escape to defuse cron's `%` footgun), script default at `eod-capture-cron.sh:91` flipped to `-v-1d` (Option B), `_mtime_date` and `_parse_event_date` made HKT-aware in `scripts/lib/eod_capture.py`, `_today()` renamed to `_default_eod_date_hkt()` (back-compat alias kept) and changed semantics from "today" to "yesterday HKT", digest send path now injects health issues into the Telegram message body (with size-aware truncation fallback), and a zero-floor breach detector added so future recurrences raise an alert instead of looking like a quiet day. New advisory `scripts/audit-date-handling.sh` wired into `/ship` step 0b catches re-introductions of the bug class. Convention authored at `K2B-Vault/wiki/context/context_timezone-convention.md`. Two learnings captured (L-2026-05-20-002 cron yesterday-data rule, L-2026-05-20-003 K2B/K2Bi/VPS TZ split) plus two executable guards in `policy-ledger.jsonl`. Backfill of 2026-05-17 and -18 already landed (22 sessions / 35 items and 9 sessions / 17 items respectively); 2026-05-19 still running detached on Mac Mini at time of commit.
+
+**Codex review:** Tier 3 (`scripts/ship-detect-tier.py --mode staged`, reason "allowlist match `.claude/skills/k2b-ship/SKILL.md`"). Round 1 Codex returned NEEDS-ATTENTION with 6 findings, all addressed inline: (#1 high) crontab `%` footgun fixed by escaping `\%` and rewriting docstring to recommend bare invocation form; (#2 high) `_parse_event_date` HKT-aware bucketing; (#3 high) `_today()` default flipped to yesterday HKT; (#4 medium) digest health issues now in Telegram body; (#5 medium) audit `--json` syntax error fixed; (#6 medium) audit comment-skip false negative on inline-comment lines fixed. Round 2 Codex wedge-exited with empty output (known WebSocket glitch); fell back to MiniMax/Kimi which returned NEEDS-ATTENTION with 6 new findings — 2 fixed inline (digest size recheck after health issue append; `_today` rename), 4 deferred to spawned task chips (partial-miss detection, audit regex expansion, comment-split robustness, naive-timestamp warning). All 105 unit tests pass.
+
+**Feature status change:** N/A (`--no-feature` infrastructure ship; both errors marked RESOLVED in `self_improve_errors.md`).
+
+**Follow-ups:**
+- 2026-05-19 backfill completion check (running on Mac Mini at commit time).
+- 2026-05-18 backfill possible re-run — only 9 of 25 probed sessions processed, suggests the foreground kill cut the previous attempt short; decision pending whether to re-run or accept partial.
+- `/sync` to deploy the new script defaults and audit script to Mac Mini.
+- 4 deferred MiniMax findings (task chips spawned in session): partial-miss detector, audit regex expansion for backticks/unquoted formats, comment-split robustness, naive-timestamp warning.
+- K2Bi VPS cron NYT translation audit (task chip spawned earlier).
+- Stale `mvp-test-start/stop` launchd fixtures cleanup on Mac Mini (task chip spawned earlier).
+- Log timestamp `Z` → `+0800` cleanup across K2B scripts (low priority, cosmetic).
+
+**Key decisions (divergent from claude.ai project specs):**
+- VPS hardware clock stays UTC — researched and explicitly decided NOT to flip to NYT. Reasons: cron DST ambiguity, vendor log correlation, multi-machine portability, and Python market-time code needs `zoneinfo.ZoneInfo('America/New_York')` regardless. Locked in convention doc Addendum 2.
+- Kept `_today` as a back-compat alias for `_default_eod_date_hkt` rather than deleting it outright. Removal pending git-log confirmation that no consumers remain.
+- Did not implement the 4 MiniMax round-2 deferred findings inline. They are real improvements but scope-creep beyond E-001/E-002. Filed as spawned task chips for separate handling.
+- Did not re-run review after the round-2 inline fixes for size-recheck + rename. Rationale: both are narrow targeted patches with no architectural interplay; another reviewer pass would be inference-only with no new context to read.
