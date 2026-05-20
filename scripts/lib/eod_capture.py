@@ -60,6 +60,11 @@ CONTROL_WHITESPACE_UNSAFE_FIELDS = (
 DEDUPE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)+$")
 EVIDENCE_QUOTE_UNSUPPORTED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 PREDICATE_WHITESPACE_RE = re.compile(r"\s+")
+NAIVE_TIMESTAMP_DIGIT_RE = re.compile(r"\d")
+# Process-scoped dedup: emit at most one stderr warning per unique format shape
+# (digits replaced with 'D'). Rate-limits the convention-violation log so a
+# producer emitting many naive timestamps does not flood stderr.
+_NAIVE_TIMESTAMP_WARNED_FORMATS: set[str] = set()
 
 ExtractFunc = Callable[[str, Path], dict | None]
 
@@ -375,6 +380,17 @@ def _parse_event_date(value: object) -> str:
     if dt.tzinfo is None:
         # Naive timestamps are FORBIDDEN by Rule 4 but we degrade gracefully:
         # treat as UTC (matches how Python normally interprets bare ISO).
+        # Emit a stderr audit so a producer leaking naive timestamps is visible
+        # instead of silently UTC-coerced. Rate-limited to one warning per
+        # unique format shape per process to avoid stderr flooding.
+        format_key = NAIVE_TIMESTAMP_DIGIT_RE.sub("D", text)
+        if format_key not in _NAIVE_TIMESTAMP_WARNED_FORMATS:
+            _NAIVE_TIMESTAMP_WARNED_FORMATS.add(format_key)
+            print(
+                f"eod-capture: warning: naive timestamp treated as UTC "
+                f"(convention Rule 4 violation): {text}",
+                file=sys.stderr,
+            )
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(HKT).date().isoformat()
 
@@ -1947,16 +1963,24 @@ def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
                 processed_files = int(summary.get("processed_files", 0))
             except (TypeError, ValueError):
                 processed_files = -1
-            if processed_files == 0:
+            if processed_files >= 0:
                 try:
                     candidate_sessions = discover_session_paths(run_date=run_date)
                 except (OSError, ValueError):
                     candidate_sessions = []
-                if candidate_sessions:
+                candidate_count = len(candidate_sessions)
+                if processed_files == 0 and candidate_sessions:
                     issues.append(
                         f"zero-floor breach: 0 sessions processed but "
-                        f"{len(candidate_sessions)} JSONL(s) match {run_date} "
+                        f"{candidate_count} JSONL(s) match {run_date} "
                         "(likely cron/data-day TZ mismatch; see E-2026-05-20-001)"
+                    )
+                elif processed_files > 0 and candidate_count > processed_files:
+                    issues.append(
+                        f"partial-miss suspected: {processed_files} processed, "
+                        f"{candidate_count} candidates "
+                        "(likely wrong run_date filter or extraction skip pattern; "
+                        "see E-2026-05-20-001 follow-up)"
                     )
     failure_dir = vault_path / ".staging" / "extraction-failures"
     failures = (

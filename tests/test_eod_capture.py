@@ -2885,6 +2885,49 @@ def test_digest_health_issues_no_zero_floor_breach_on_quiet_day(tmp_path, monkey
     assert not any("zero-floor breach" in i for i in issues), issues
 
 
+def test_digest_health_issues_flags_partial_miss(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-19.json").write_text(
+        json.dumps({"processed_files": 3, "errors": 0}),
+        encoding="utf-8",
+    )
+    fake_sessions = [tmp_path / f"fake-{i}.jsonl" for i in range(25)]
+    for session in fake_sessions:
+        session.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        eod_capture, "discover_session_paths", lambda **_: fake_sessions
+    )
+
+    issues = eod_capture._digest_health_issues(vault, "2026-05-19")
+    assert any("partial-miss suspected" in i for i in issues), issues
+    assert any("3 processed" in i for i in issues), issues
+    assert any("25 candidates" in i for i in issues), issues
+    assert not any("zero-floor breach" in i for i in issues), issues
+
+
+def test_digest_health_issues_no_partial_miss_when_fully_processed(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-19.json").write_text(
+        json.dumps({"processed_files": 5, "errors": 0}),
+        encoding="utf-8",
+    )
+    fake_sessions = [tmp_path / f"fake-{i}.jsonl" for i in range(5)]
+    for session in fake_sessions:
+        session.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        eod_capture, "discover_session_paths", lambda **_: fake_sessions
+    )
+
+    issues = eod_capture._digest_health_issues(vault, "2026-05-19")
+    assert not any("partial-miss suspected" in i for i in issues), issues
+
+
 def test_parse_event_date_buckets_by_hkt_for_utc_z_timestamp():
     # 16:30 UTC on 2026-05-19 = 00:30 HKT on 2026-05-20. Per the HKT convention,
     # this session belongs to the 2026-05-20 HKT bucket, not 2026-05-19.
@@ -2895,6 +2938,30 @@ def test_parse_event_date_buckets_by_hkt_for_naive_timestamp_treated_as_utc():
     # Naive ISO string without offset is treated as UTC (degrade-gracefully).
     # 17:00 UTC = 01:00 HKT next day.
     assert eod_capture._parse_event_date("2026-05-19T17:00:00") == "2026-05-20"
+
+
+def test_parse_event_date_naive_timestamp_emits_stderr_warning_and_dedupes(capsys):
+    # Naive timestamps violate convention Rule 4. We degrade gracefully (treat
+    # as UTC) but emit a stderr audit so leaks are visible. Rate-limited to one
+    # warning per unique format shape per process.
+    eod_capture._NAIVE_TIMESTAMP_WARNED_FORMATS.clear()
+    capsys.readouterr()  # drop any pre-test stderr
+
+    eod_capture._parse_event_date("2026-05-19T17:00:00")
+    first = capsys.readouterr().err
+    assert "naive timestamp treated as UTC" in first
+    assert "Rule 4 violation" in first
+    assert "2026-05-19T17:00:00" in first
+
+    # Second call with same format shape -> no new warning (dedup).
+    eod_capture._parse_event_date("2026-05-20T18:30:00")
+    assert capsys.readouterr().err == ""
+
+    # Different format shape (microseconds) -> new warning.
+    eod_capture._parse_event_date("2026-05-20T18:30:00.123456")
+    third = capsys.readouterr().err
+    assert "naive timestamp treated as UTC" in third
+    assert "2026-05-20T18:30:00.123456" in third
 
 
 def test_parse_event_date_passes_through_date_only_string():

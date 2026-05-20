@@ -21,7 +21,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPTS_DIR="$REPO_ROOT/scripts"
+# K2B_AUDIT_SCRIPTS_DIR override is for tests/audit-date-handling.test.sh to
+# point the scan at a fixture directory. Production calls leave it unset.
+SCRIPTS_DIR="${K2B_AUDIT_SCRIPTS_DIR:-$REPO_ROOT/scripts}"
 FORMAT="text"
 
 if [[ "${1:-}" == "--json" ]]; then
@@ -79,15 +81,40 @@ for f in "${CANDIDATES[@]}"; do
     # Heuristic: split on the first occurrence of " #" (space-hash). Bash
     # comments are unambiguous when preceded by whitespace; embedded "#" in
     # strings without a leading space (e.g. printf '#') is not a comment.
+    #
+    # Known false-negative cases (validated against K2B 2026-05-20: zero
+    # occurrences across all cron/daily/eod scripts, so the simpler heuristic
+    # stays in place rather than adding quote-aware parsing):
+    #   1. Tab between code and comment marker: `code<TAB># comment` -- the
+    #      "%% #*" split misses tab-hash, so the comment text gets included in
+    #      code_portion. Only matters if the comment contains -v-1d while the
+    #      code does not (false negative on the audit).
+    #   2. Hash inside a quoted string preceded by a space:
+    #      `echo 'foo # bar' "$(date '+%Y-%m-%d')"` -- the split truncates at
+    #      the in-string " #" so code_portion loses the date call. Only matters
+    #      if the chopped-off portion is the only place -v-1d appears (false
+    #      positive, the line gets flagged though it is fine).
+    # If either pattern is ever introduced, prefer fixing the source line
+    # (move the comment to its own line, or quote the "#" differently) over
+    # making this parser quote-aware.
     code_portion="${full_line%% #*}"
     if echo "$code_portion" | grep -qE -- "-v-1d|--date=[\"']yesterday[\"']|-d [\"']yesterday[\"']|-v-7d|-v-30d|--date=[\"']7 days ago[\"']"; then
       continue
     fi
     printf '%s\n' "$match" >> "$FINDINGS_FILE"
-  # Match ONLY date-bucketing format strings (%Y-%m-%d followed by closing quote),
-  # NOT full ISO log timestamps (%Y-%m-%dT%H:...). The bug class is "wrong calendar day,"
-  # not "log format cosmetics."
-  done < <(grep -nE "\\\$\\(date[[:space:]][^)]*%Y-%m-%d['\"]" "$f" 2>/dev/null || true)
+  # Match ONLY date-bucketing format strings (%Y-%m-%d immediately followed by a
+  # bucket-terminator), NOT full ISO log timestamps (%Y-%m-%dT%H:...). The bug
+  # class is "wrong calendar day," not "log format cosmetics."
+  #
+  # Three forms we catch, all silently hit the cron-after-midnight bug:
+  #   1. $(date ... %Y-%m-%d['"] ...)   classic quoted-format command sub
+  #   2. $(date +%Y-%m-%d)              command sub with UNQUOTED format string
+  #   3. `date ... %Y-%m-%d['"`] ...`   backtick command sub (any quoting style)
+  done < <(grep -nE \
+    -e "\\\$\\(date[[:space:]][^)]*%Y-%m-%d['\"]" \
+    -e "\\\$\\(date[[:space:]][^)]*%Y-%m-%d\\)" \
+    -e "\`date[^\`]*%Y-%m-%d['\"\`]" \
+    "$f" 2>/dev/null || true)
 done
 
 FINDINGS_COUNT="$(wc -l < "$FINDINGS_FILE" | tr -d ' ')"
