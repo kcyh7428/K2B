@@ -100,6 +100,20 @@ When the script IS present, it exits non-zero when it finds known rule phrases o
 
 Keith decides fix-inline or defer. When he defers, append the drift summary to the ship commit body under a "Deferred:" trailer so the next session sees it.
 
+### 0b. Date-handling audit (advisory)
+
+Run (skip gracefully if absent):
+
+```bash
+if [ -x scripts/audit-date-handling.sh ]; then
+  scripts/audit-date-handling.sh || true
+else
+  echo "date-handling-audit: skipped (no scripts/audit-date-handling.sh in $(pwd))"
+fi
+```
+
+This flags bare `$(date '+%Y-%m-%d')` calls in scripts whose filename suggests calendar-boundary scheduling (cron / daily / eod / nightly / morning). The bug class: scripts firing after HKT midnight that process "yesterday's data" silently use today's date and process the wrong calendar day. See [[wiki/context/context_timezone-convention]] Rule 1. The script is **advisory** -- drift does not block `/ship`. Surface offenders to Keith inline so he can decide fix-inline or defer.
+
 ### 1. Scope detection
 
 Run in parallel:

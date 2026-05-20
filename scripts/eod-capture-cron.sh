@@ -12,9 +12,25 @@ usage() {
   cat <<'EOF'
 Usage: scripts/eod-capture-cron.sh <job-a|job-b|job-a-then-b|digest|digest-send> [YYYY-MM-DD]
 
-Suggested Mac Mini crontab lines, after transcript dirs are synced:
+Suggested Mac Mini crontab lines, after transcript dirs are synced.
+
+Form A (preferred -- bare invocation, relies on the script default):
   0 2 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh job-a-then-b
-  0 8 * * *  cd ~/Projects/K2B && scripts/eod-capture-cron.sh digest-send
+  0 8 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh digest-send
+
+The script default at line 91 is `$(date -v-1d '+%Y-%m-%d')` which returns
+yesterday HKT. Cron fires at 02:00 / 08:00 HKT (already the new HKT calendar
+day) and the script default correctly resolves to the day whose work we want
+to process.
+
+Form B (explicit -- ONLY if you want the schedule layer to declare intent):
+  0 2 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh job-a-then-b "$(date -v-1d '+\%Y-\%m-\%d')"
+  0 8 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh digest-send    "$(date -v-1d '+\%Y-\%m-\%d')"
+
+CRITICAL when using Form B: the `%` characters MUST be escaped as `\%`. cron
+treats unescaped `%` as newline-to-stdin, which truncates the command into
+"\$(date -v-1d '+" and the rest becomes stdin to the truncated command.
+Form A avoids this footgun entirely.
 
 Manual ad-hoc split mode remains available:
   scripts/eod-capture-cron.sh job-a
@@ -75,7 +91,7 @@ if [[ -z "$MODE" || "$MODE" == "-h" || "$MODE" == "--help" ]]; then
 fi
 shift || true
 
-RUN_DATE="${1:-${K2B_EOD_DATE:-$(date '+%Y-%m-%d')}}"
+RUN_DATE="${1:-${K2B_EOD_DATE:-$(date -v-1d '+%Y-%m-%d')}}"
 if [[ ! "$RUN_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
   echo "eod-capture-cron: invalid date: $RUN_DATE (expected YYYY-MM-DD)" >&2
   exit 2

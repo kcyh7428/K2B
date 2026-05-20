@@ -19,10 +19,16 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterable
+
+
+# Canonical K2B timezone. See wiki/context/context_timezone-convention.md.
+# K2B reasons in HKT (UTC+8). All date bucketing and "today/yesterday" defaults
+# resolve to HKT calendar boundaries regardless of host system clock.
+HKT = timezone(timedelta(hours=8))
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -339,24 +345,38 @@ def _is_k2b_scope(session_path: Path) -> bool:
 
 
 def _mtime_date(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+    # Bucket by HKT calendar day, not the host's local TZ. A file mtime carries
+    # an absolute UTC epoch; the right question is "which HKT day did this
+    # event belong to," which is `astimezone(HKT).date()`.
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=HKT).date().isoformat()
 
 
 def _parse_event_date(value: object) -> str:
+    # All session-event dates bucket by HKT calendar day. Sessions whose
+    # timestamps are early-morning HKT (00:00-07:59) carry UTC dates from the
+    # previous calendar day, so naive `.date()` would silently exclude them
+    # from the intended HKT run_date filter. Convert to HKT before bucketing.
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(value).date().isoformat()
+            return datetime.fromtimestamp(value, tz=HKT).date().isoformat()
         except (OSError, OverflowError, ValueError):
             return ""
     if not isinstance(value, str) or not value.strip():
         return ""
     text = value.strip()
     if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        # Already a date-only string. By convention these are HKT-bucketed
+        # already (per context_timezone-convention.md Rule 1). Pass through.
         return text
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return ""
+    if dt.tzinfo is None:
+        # Naive timestamps are FORBIDDEN by Rule 4 but we degrade gracefully:
+        # treat as UTC (matches how Python normally interprets bare ISO).
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(HKT).date().isoformat()
 
 
 def _event_date(event: dict) -> str:
@@ -1862,8 +1882,16 @@ def _default_vault() -> Path:
     ).expanduser()
 
 
-def _today() -> str:
-    return date.today().isoformat()
+def _default_eod_date_hkt() -> str:
+    # K2B convention (context_timezone-convention.md Rule 1): EOD CLI subcommands
+    # process "the day that just ended." Default to yesterday HKT, not today, so
+    # direct invocations without --date match the cron wrapper's behavior.
+    return (datetime.now(HKT) - timedelta(days=1)).date().isoformat()
+
+
+# Deprecated alias kept for back-compat with any external caller. Removed once
+# git log confirms no consumers remain.
+_today = _default_eod_date_hkt
 
 
 def _failure_file_fingerprints(failure_dir: Path, run_date: str) -> dict[Path, str]:
@@ -1915,6 +1943,21 @@ def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
                 error_count = 1
             if error_count > 0:
                 issues.append(f"reconciliation errors: {error_count}")
+            try:
+                processed_files = int(summary.get("processed_files", 0))
+            except (TypeError, ValueError):
+                processed_files = -1
+            if processed_files == 0:
+                try:
+                    candidate_sessions = discover_session_paths(run_date=run_date)
+                except (OSError, ValueError):
+                    candidate_sessions = []
+                if candidate_sessions:
+                    issues.append(
+                        f"zero-floor breach: 0 sessions processed but "
+                        f"{len(candidate_sessions)} JSONL(s) match {run_date} "
+                        "(likely cron/data-day TZ mismatch; see E-2026-05-20-001)"
+                    )
     failure_dir = vault_path / ".staging" / "extraction-failures"
     failures = (
         sorted(failure_dir.glob(f"{run_date}_*.json"))
@@ -1952,16 +1995,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="K2B end-of-day capture")
     sub = parser.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("job-a")
-    a.add_argument("--date", default=_today())
+    a.add_argument("--date", default=_default_eod_date_hkt())
     a.add_argument("--vault", type=Path, default=_default_vault())
     a.add_argument("--session", action="append", type=Path, default=[])
     a.add_argument("--claude-root", type=Path, default=None)
     a.add_argument("--codex-root", type=Path, default=None)
     b = sub.add_parser("job-b")
-    b.add_argument("--date", default=_today())
+    b.add_argument("--date", default=_default_eod_date_hkt())
     b.add_argument("--vault", type=Path, default=_default_vault())
     d = sub.add_parser("digest")
-    d.add_argument("--date", default=_today())
+    d.add_argument("--date", default=_default_eod_date_hkt())
     d.add_argument("--vault", type=Path, default=_default_vault())
     d.add_argument("--send", action="store_true")
     args = parser.parse_args(argv)
@@ -2001,6 +2044,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "digest":
         message = build_digest_message(args.vault, run_date=args.date)
         health_issues = _digest_health_issues(args.vault, args.date)
+        if health_issues:
+            # Surface health issues IN the Telegram digest body, not only in
+            # stderr after a successful send. Otherwise a zero-floor recurrence
+            # (E-2026-05-20-001 class) would deliver a normal-looking "0 sessions
+            # processed" message and the warning would hide in cron logs.
+            #
+            # Size discipline: if appending the full issue list would push us
+            # past MAX_TELEGRAM_DIGEST_BYTES, fall back to a single summary
+            # line. Better to deliver a truncated warning than to bail the
+            # whole send and lose the digest entirely.
+            full_block = (
+                "\n\n[!] digest health issues:\n- "
+                + "\n- ".join(health_issues)
+            )
+            summary_block = f"\n\n[!] {len(health_issues)} digest health issue(s) (truncated; see cron log)"
+            if len((message + full_block).encode("utf-8")) <= MAX_TELEGRAM_DIGEST_BYTES:
+                message = message + full_block
+            else:
+                message = message + summary_block
         if args.send:
             failure_path = _digest_failure_path(args.vault, args.date)
             _atomic_write_text(failure_path, message + "\n")

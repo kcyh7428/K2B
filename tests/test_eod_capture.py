@@ -627,7 +627,11 @@ def test_discover_session_paths_filters_to_k2b_and_run_date(tmp_path):
         json.dumps(
             {
                 "type": "session_meta",
-                "timestamp": "2026-05-13T23:59:00Z",
+                # HKT-bucketed: 10:00 UTC on 5/13 = 18:00 HKT on 5/13, well
+                # within HKT 5/13. Earlier value 23:59 UTC equals 07:59 HKT
+                # next day, which the new HKT-aware bucketing (correctly)
+                # treats as 5/14 -- not stale, not filtered.
+                "timestamp": "2026-05-13T10:00:00Z",
                 "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"},
             }
         )
@@ -670,7 +674,10 @@ def test_discover_session_paths_prefers_content_timestamp_over_mtime(tmp_path):
         json.dumps(
             {
                 "cwd": "/Users/keithmbpm2/Projects/K2B",
-                "timestamp": "2026-05-13T23:59:00Z",
+                # HKT-bucketed: 10:00 UTC on 5/13 = 18:00 HKT on 5/13. With the
+                # new HKT-aware bucketing, this content stamp puts the session
+                # firmly in HKT 5/13, distinguishing it from the mtime below.
+                "timestamp": "2026-05-13T10:00:00Z",
                 "type": "user",
                 "content": "x",
             }
@@ -2843,6 +2850,79 @@ def test_digest_health_issues_include_all_items_rejected_skips(tmp_path):
     assert "all-items-rejected skips: 1" in eod_capture._digest_health_issues(
         vault, "2026-05-14"
     )
+
+
+def test_digest_health_issues_flags_zero_floor_breach(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-19.json").write_text(
+        json.dumps({"processed_files": 0, "errors": 0}),
+        encoding="utf-8",
+    )
+    fake_session = tmp_path / "fake-session.jsonl"
+    fake_session.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        eod_capture, "discover_session_paths", lambda **_: [fake_session]
+    )
+
+    issues = eod_capture._digest_health_issues(vault, "2026-05-19")
+    assert any("zero-floor breach" in i for i in issues), issues
+    assert any("E-2026-05-20-001" in i for i in issues), issues
+
+
+def test_digest_health_issues_no_zero_floor_breach_on_quiet_day(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-19.json").write_text(
+        json.dumps({"processed_files": 0, "errors": 0}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
+
+    issues = eod_capture._digest_health_issues(vault, "2026-05-19")
+    assert not any("zero-floor breach" in i for i in issues), issues
+
+
+def test_parse_event_date_buckets_by_hkt_for_utc_z_timestamp():
+    # 16:30 UTC on 2026-05-19 = 00:30 HKT on 2026-05-20. Per the HKT convention,
+    # this session belongs to the 2026-05-20 HKT bucket, not 2026-05-19.
+    assert eod_capture._parse_event_date("2026-05-19T16:30:00Z") == "2026-05-20"
+
+
+def test_parse_event_date_buckets_by_hkt_for_naive_timestamp_treated_as_utc():
+    # Naive ISO string without offset is treated as UTC (degrade-gracefully).
+    # 17:00 UTC = 01:00 HKT next day.
+    assert eod_capture._parse_event_date("2026-05-19T17:00:00") == "2026-05-20"
+
+
+def test_parse_event_date_passes_through_date_only_string():
+    # Date-only strings are assumed to already be HKT-bucketed (per the
+    # canonical YYYY-MM-DD shape) and pass through unchanged.
+    assert eod_capture._parse_event_date("2026-05-19") == "2026-05-19"
+
+
+def test_parse_event_date_buckets_epoch_int_by_hkt():
+    # Epoch 1779206400 = 2026-05-19 16:00:00 UTC = 2026-05-20 00:00:00 HKT.
+    assert eod_capture._parse_event_date(1779206400) == "2026-05-20"
+
+
+def test_default_eod_date_hkt_returns_yesterday_hkt():
+    # K2B convention: EOD CLI subcommands process "the day that just ended."
+    # Default to yesterday HKT, not today, so direct invocations without --date
+    # match the cron wrapper's behavior.
+    from datetime import datetime, timedelta
+
+    actual = eod_capture._default_eod_date_hkt()
+    expected = (datetime.now(eod_capture.HKT) - timedelta(days=1)).date().isoformat()
+    assert actual == expected
+
+
+def test_today_alias_preserved_for_back_compat():
+    # _today is a deprecated alias kept until external callers are confirmed
+    # absent. Should return identical value to _default_eod_date_hkt().
+    assert eod_capture._today() == eod_capture._default_eod_date_hkt()
 
 
 def test_digest_message_includes_all_items_rejected_skips(tmp_path):
