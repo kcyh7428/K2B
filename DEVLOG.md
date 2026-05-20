@@ -1,6 +1,23 @@
 # K2B Development Log
 
 ---
+## 2026-05-20 -- audit-date-handling test harness + test_eod_capture monkeypatch (73cfb32)
+
+**Commit:** `73cfb32` test(eod-capture): bash test harness for audit-date-handling + monkeypatch fix
+
+**What shipped:** Closes the MEDIUM-3 MiniMax round-2 finding on commit `816abd6` (regex extensions for backtick + unquoted date forms shipped without test coverage). Adds `tests/audit-date-handling.test.sh` (4-test JSON-based suite, 5 tests total inc. exit-0 OK path) plus 6 fixture scripts in `tests/fixtures/audit-date/` covering the three bug-class forms the audit must catch (classic quoted, $()+unquoted, backtick with any quoting) and the two negative forms it must NOT flag (`date -v-1d/-v-7d`, ISO log timestamps `%Y-%m-%dT%H:...`). Verified the old single-pattern regex misses all three new forms when run against the same fixtures, proving the test is meaningfully testing the bug fix. Also rolls in three `test_eod_capture.py` monkeypatch calls (`discover_session_paths -> []` on digest_send tests) that prevent the partial-miss detector landed in `816abd6` from polluting expected-issues lists; this fixes intermittent test-order flakiness.
+
+**Codex review:** skipped (parallel /ship-followup session committed before this session's Step 3 tier classifier ran; staged set was empty at tier-detection time because the follow-up workflow consumed and committed the work). MiniMax round-2 review on `3eb84f9` had already flagged the test-coverage gap which is exactly what this commit closes. No additional reviewer pass on the test commit itself.
+
+**Feature status change:** none (--no-feature infrastructure; test coverage follow-up to already-shipped `feature_end-of-day-capture`)
+
+**Follow-ups:**
+- `audit-date-handling.sh` text/JSON output still drops the file prefix from each finding line (only `<lineno>:<text>` not `<file>:<lineno>:<text>` as the comment block at lines 53-55 promises). Pre-existing; not in scope for this commit.
+- Pre-existing ownership-drift warnings flagged by step 0a (49 offender files across 5 rules) — defer; none introduced by this ship.
+
+**Key decisions (if divergent from claude.ai project specs):** Ship as `--no-feature` rather than re-opening `feature_end-of-day-capture` (already in Shipped/). Backtick regex broadened beyond the MiniMax-suggested narrow form (`` `date[^`]*%Y-%m-%d['"`] `` instead of `` `date[^`]*%Y-%m-%d` ``) so it catches `` `date '+%Y-%m-%d'` `` (the user's own example) and not only the no-quotes variant.
+
+---
 ## 2026-05-20 -- cleanup: router-watchdog v1 MVP test fixtures removed from Mini
 
 Removed orphan launchd plists left behind from the feature_router-watchdog v1 fault-injection MVP probe:
