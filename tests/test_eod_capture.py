@@ -3091,6 +3091,7 @@ def test_digest_send_removes_failure_copy_after_success(tmp_path, monkeypatch):
         return eod_capture.subprocess.CompletedProcess(args=["send"], returncode=0)
 
     monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
 
     rc = eod_capture.main(
         ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
@@ -3125,6 +3126,7 @@ def test_digest_send_cleanup_failure_records_warning_and_returns_distinct_code(
 
     monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
     monkeypatch.setattr(eod_capture.Path, "unlink", fake_unlink)
+    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
 
     rc = eod_capture.main(
         ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
@@ -3165,6 +3167,7 @@ def test_digest_send_returns_nonzero_after_successful_unhealthy_digest(
         return eod_capture.subprocess.CompletedProcess(args=["send"], returncode=0)
 
     monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
 
     rc = eod_capture.main(
         ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
