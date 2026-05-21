@@ -1,6 +1,25 @@
 # K2B Development Log
 
 ---
+## 2026-05-22 -- YouTube Option A2 Firefox cookies-from-browser + Whisper Bash 3.2 fix (afc59a6)
+
+**Commit:** `afc59a6` feat(youtube): Firefox cookies-from-browser path + Whisper Bash 3.2 fix
+
+**What shipped:** Follow-up to `8e16517`. After the static cookie file approach (Option A1) proved to die within ~30 min on Mac Mini regardless of whether the Google account was personal or dedicated -- parallel signed-in sessions elsewhere rotate SAPISID server-side -- pivoted to Option A2: yt-dlp reads cookies live from a Mac Mini Firefox profile via `--cookies-from-browser`. Firefox's plain SQLite cookie store needs no keychain access, which makes it the only browser that works on headless macOS. New `build_cookie_browser()` helper in `scripts/yt-playlist-poll.sh` mirrors the one in `scripts/yt-transcript.sh` and wires `--cookies-from-browser` into both extract-audio and playlist-list call sites. `scripts/yt-transcribe-whisper.sh` got a Bash 3.2 empty-array fix on its curl `lang_args[@]` expansion (same pattern as the original `yt-transcript.sh` crash). Mac Mini runtime config now: `K2B_YT_COOKIES_FILE=none` + `YT_DLP_COOKIE_BROWSER=firefox` in `k2b-remote/.env`. Dead static cookie file renamed to `.dead-*` on Mini.
+
+**Codex review:** tier-2 (3 files, 114 LOC, no allowlist hit). Codex skipped (already timed out earlier this session on `8e16517`); Kimi primary returned NEEDS-ATTENTION with 9 findings. 2 [CRITICAL] claims about Bash 3.2 array expansion syntax DISPROVEN by running a synthetic test on Mini's actual `/bin/bash 3.2.57` (argc=0 for both shipped pattern and Kimi's proposed alternative -- the shipped syntax is correct). 1 [HIGH] (Whisper second call site) Kimi self-corrected to "REMOVE THIS FINDING". Remaining 6 (silent fail-open in auto-detect, cookie cascade merge semantics, missing list-mode test for browser cookies, missing both-set merge test, auto-detect picks Chrome first, Firefox profile dir check too broad) are real but not load-bearing because Mini sets `YT_DLP_COOKIE_BROWSER` explicitly. Deferred to `feature_youtube-transcript-hardening` follow-up list.
+
+**Feature status change:** `feature_youtube-transcript-hardening` MVP test now passes via the Firefox path. End-to-end verified after deploy + pm2 restart: canary `jNQXAC9IVRw` returns `METHOD=captions-en exit 0`, Keith's previously-failing Chinese video `PeqDWP_2zPE` (no captions) downloaded audio via Firefox cookies (got past bot wall), split into 4 chunks, full Chinese transcript returned via Groq Whisper, `METHOD=groq-whisper exit 0`. The 7-day green-canary `pending-action` remains open -- Firefox profile session longevity on headless Mini is empirically unknown; canary will catch any regression.
+
+**Follow-ups:**
+- Monitor canary for 7 days. If Firefox cookies hold without manual refresh, flip feature to `shipped`.
+- Auto-detect order in both yt-transcript.sh + yt-playlist-poll.sh prefers Chrome on MacBook (correct for Keith) but means a Mini deploy with the env var lost would silently fail. Consider environment-aware default (SSH_CONNECTION check or hostname pattern) as a future hardening.
+- PO Token provider remains parked until either (a) Firefox-cookie path fails for specific videos with valid sessions, or (b) the 7-day canary window introduces sporadic failures.
+- 6 deferred Kimi findings tracked in feature note for future hardening passes.
+
+**Key decisions (if divergent from claude.ai project specs):** Did not change the auto-detect browser order in yt-transcript.sh despite Kimi finding #8 -- MacBook usage on Chrome is the common case, and Mini sets the env var explicitly. Skipped list-mode browser-cookie regression test (Kimi #6) because k2b-remote does not currently run yt-playlist-poll in list mode; if a future feature wires playlist polling on Mini, the test will be added then. Empirical Bash 3.2 verification was the right call versus chasing Kimi's theoretical critical-finding fix.
+
+---
 ## 2026-05-21 -- YouTube transcript cookie-file path + daily canary (8e16517)
 
 **Commit:** `8e16517` feat(youtube): cookie-file path + daily canary for transcript stability
