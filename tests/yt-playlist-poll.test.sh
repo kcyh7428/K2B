@@ -92,6 +92,48 @@ SH
 }
 
 {
+  d="$TMPROOT/extract-audio-browser-cookies"
+  fakebin="$d/bin"
+  outdir="$d/audio"
+  mkdir -p "$fakebin"
+
+  cat > "$fakebin/yt-dlp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+browser=""
+cookies_file=""
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cookies-from-browser) browser="$2"; shift 2 ;;
+    --cookies) cookies_file="$2"; shift 2 ;;
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$browser" != "firefox" ]]; then
+  echo "expected --cookies-from-browser firefox, got '$browser'" >&2
+  exit 2
+fi
+if [[ -n "$cookies_file" ]]; then
+  echo "expected no --cookies file when K2B_YT_COOKIES_FILE=none, got '$cookies_file'" >&2
+  exit 3
+fi
+mp3="${out//%(ext)s/mp3}"
+mkdir -p "$(dirname "$mp3")"
+printf 'fake mp3 from firefox cookies\n' > "$mp3"
+SH
+  chmod +x "$fakebin/yt-dlp"
+
+  output=$(PATH="$fakebin:$PATH" \
+    K2B_YT_COOKIES_FILE=none \
+    YT_DLP_COOKIE_BROWSER=firefox \
+    /bin/bash "$SCRIPT" --extract-audio "https://youtu.be/fakeBrowser123" "$outdir" 2>"$d/err.txt")
+  [[ "$output" == "$outdir/fakeBrowser123.mp3" ]] || fail "expected mp3 path, got $output (err: $(cat "$d/err.txt"))"
+  echo "  PASS: extract-audio honors YT_DLP_COOKIE_BROWSER (firefox path)"
+}
+
+{
   d="$TMPROOT/extract-audio-timeout"
   fakebin="$d/bin"
   outdir="$d/audio"

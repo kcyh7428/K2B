@@ -31,6 +31,32 @@ build_cookies_file() {
   return 0
 }
 
+# YT_DLP_COOKIE_BROWSER controls --cookies-from-browser. Mirrors the
+# yt-transcript.sh helper exactly (Chrome > Firefox > Safari in auto order
+# because MacBook users typically sign in to YouTube on Chrome). On headless
+# Mac Mini, set YT_DLP_COOKIE_BROWSER=firefox explicitly -- Firefox cookies
+# live in plain SQLite and don't need keychain access.
+build_cookie_browser() {
+  local choice="${YT_DLP_COOKIE_BROWSER:-auto}"
+  case "$choice" in
+    none|"")
+      return 0
+      ;;
+    auto)
+      if [[ -d "$HOME/Library/Application Support/Google/Chrome/Default" ]]; then
+        echo "chrome"
+      elif [[ -d "$HOME/Library/Application Support/Firefox/Profiles" ]]; then
+        echo "firefox"
+      elif [[ -d "$HOME/Library/Containers/com.apple.Safari" ]]; then
+        echo "safari"
+      fi
+      ;;
+    *)
+      echo "$choice"
+      ;;
+  esac
+}
+
 prepare_cookies_file() {
   local source_file
   source_file=$(build_cookies_file)
@@ -131,18 +157,23 @@ if [[ "${1:-}" == "--extract-audio" ]]; then
     exit 2
   fi
 
+  # Build cookie args: prefer the temp cookie file copy (mutation-safe) if a
+  # source file is configured, plus --cookies-from-browser when YT_DLP_COOKIE_BROWSER
+  # is set. yt-dlp merges both when present.
+  COOKIE_ARGS=()
   COOKIE_FILE=$(prepare_cookies_file)
-
-  # Download and convert to mp3
   if [[ -n "$COOKIE_FILE" ]]; then
-    run_yt_dlp_with_timeout --cookies "$COOKIE_FILE" -x --audio-format mp3 --audio-quality 5 \
-      -o "${OUTPUT_DIR}/${VIDEO_ID}.%(ext)s" \
-      "$VIDEO_URL" >&2
-  else
-    run_yt_dlp_with_timeout -x --audio-format mp3 --audio-quality 5 \
-      -o "${OUTPUT_DIR}/${VIDEO_ID}.%(ext)s" \
-      "$VIDEO_URL" >&2
+    COOKIE_ARGS+=(--cookies "$COOKIE_FILE")
   fi
+  COOKIE_BROWSER=$(build_cookie_browser)
+  if [[ -n "$COOKIE_BROWSER" ]]; then
+    COOKIE_ARGS+=(--cookies-from-browser "$COOKIE_BROWSER")
+  fi
+
+  run_yt_dlp_with_timeout "${COOKIE_ARGS[@]+"${COOKIE_ARGS[@]}"}" \
+    -x --audio-format mp3 --audio-quality 5 \
+    -o "${OUTPUT_DIR}/${VIDEO_ID}.%(ext)s" \
+    "$VIDEO_URL" >&2
 
   MP3_PATH="${OUTPUT_DIR}/${VIDEO_ID}.mp3"
   if [[ -f "$MP3_PATH" ]]; then
@@ -183,18 +214,21 @@ done
 touch "$PROCESSED_LOG"
 
 # Fetch playlist metadata as JSON lines
+COOKIE_ARGS=()
 COOKIE_FILE=$(prepare_cookies_file)
 if [[ -n "$COOKIE_FILE" ]]; then
-  PLAYLIST_JSON=$(run_yt_dlp_with_timeout --cookies "$COOKIE_FILE" --flat-playlist -j "$PLAYLIST_URL" 2>/dev/null) || {
-    echo "ERROR: Failed to fetch playlist: ${PLAYLIST_URL}" >&2
-    exit 1
-  }
-else
-  PLAYLIST_JSON=$(run_yt_dlp_with_timeout --flat-playlist -j "$PLAYLIST_URL" 2>/dev/null) || {
-    echo "ERROR: Failed to fetch playlist: ${PLAYLIST_URL}" >&2
-    exit 1
-  }
+  COOKIE_ARGS+=(--cookies "$COOKIE_FILE")
 fi
+COOKIE_BROWSER=$(build_cookie_browser)
+if [[ -n "$COOKIE_BROWSER" ]]; then
+  COOKIE_ARGS+=(--cookies-from-browser "$COOKIE_BROWSER")
+fi
+
+PLAYLIST_JSON=$(run_yt_dlp_with_timeout "${COOKIE_ARGS[@]+"${COOKIE_ARGS[@]}"}" \
+  --flat-playlist -j "$PLAYLIST_URL" 2>/dev/null) || {
+  echo "ERROR: Failed to fetch playlist: ${PLAYLIST_URL}" >&2
+  exit 1
+}
 
 # Filter to new videos, extract fields, cap at --max
 # Use process substitution to avoid subshell variable scope issues

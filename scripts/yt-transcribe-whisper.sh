@@ -106,7 +106,7 @@ transcribe_chunk() {
     -F "file=@${chunk_file}" \
     -F "model=whisper-large-v3" \
     -F "response_format=text" \
-    "${lang_args[@]}"
+    "${lang_args[@]+"${lang_args[@]}"}"
 }
 
 if [[ "$DURATION" -le "$MAX_DURATION" ]]; then
