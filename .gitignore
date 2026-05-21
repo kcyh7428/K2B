@@ -1,6 +1,12 @@
 # Secrets
 .env
 *.env
+youtube-cookies.txt
+*youtube*cookie*.txt
+*youtube*cookies*.txt
+www_youtube_com_cookies*.json
+*youtube*cookie*.json
+*youtube*cookies*.json
 
 # Dependencies
 node_modules/

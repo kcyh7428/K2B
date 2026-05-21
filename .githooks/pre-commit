@@ -9,15 +9,99 @@ LOG_DIRECT=$(git diff --cached | grep -E '^\+.*>>[[:space:]]*\S*wiki/log\.md' ||
 if [ -n "$LOG_DIRECT" ]; then
   if [ "${K2B_ALLOW_LOG_APPEND:-}" = "1" ]; then
     echo "warning: direct >> wiki/log.md append, K2B_ALLOW_LOG_APPEND override acknowledged"
-    exit 0
+  else
+    echo "error: direct >> append to wiki/log.md detected."
+    echo "Use scripts/wiki-log-append.sh (audit Fix #1) as the single writer."
+    echo ""
+    echo "Offending lines:"
+    echo "$LOG_DIRECT"
+    echo ""
+    echo "Override (rewriting the helper itself only): K2B_ALLOW_LOG_APPEND=1 git commit ..."
+    exit 1
   fi
-  echo "error: direct >> append to wiki/log.md detected."
-  echo "Use scripts/wiki-log-append.sh (audit Fix #1) as the single writer."
+fi
+
+COOKIE_SECRET_VIOLATIONS=$(python3 <<'PY'
+import json
+import subprocess
+
+allowed_domains = ("youtube.com", "youtube-nocookie.com", "googlevideo.com")
+
+
+def staged_files() -> list[str]:
+    raw = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"]
+    )
+    return [p.decode("utf-8", "replace") for p in raw.split(b"\0") if p]
+
+
+def staged_text(path: str) -> str:
+    data = subprocess.check_output(["git", "show", f":{path}"], stderr=subprocess.DEVNULL)
+    return data.decode("utf-8", "ignore")
+
+
+def is_allowed_domain(domain: object) -> bool:
+    if not isinstance(domain, str):
+        return False
+    d = domain.removeprefix("#HttpOnly_").lstrip(".").lower()
+    return d in allowed_domains or any(d.endswith(f".{allowed}") for allowed in allowed_domains)
+
+
+def json_cookie_violation(text: str) -> bool:
+    try:
+        data = json.loads(text)
+    except Exception:
+        return False
+    if isinstance(data, dict) and isinstance(data.get("cookies"), list):
+        data = data["cookies"]
+    if not isinstance(data, list):
+        return False
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if is_allowed_domain(item.get("domain")):
+            return True
+    return False
+
+
+def netscape_cookie_violation(text: str) -> bool:
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 7 and is_allowed_domain(parts[0]):
+            return True
+    return False
+
+
+# Tight allowlist for files that legitimately contain Netscape/JSON cookie
+# fixtures as test data. The fixtures use obvious-fake values (e.g. `SID
+# secret`, `PREF hl=en`) and never carry real session credentials.
+EXEMPT_PATHS = {
+    "tests/pre-commit.test.sh",
+}
+
+
+violations: list[str] = []
+for path in staged_files():
+    if path in EXEMPT_PATHS:
+        continue
+    try:
+        text = staged_text(path)
+    except subprocess.CalledProcessError:
+        continue
+    if netscape_cookie_violation(text) or json_cookie_violation(text):
+        violations.append(path)
+
+if violations:
+    print("\n".join(violations))
+PY
+)
+
+if [ -n "$COOKIE_SECRET_VIOLATIONS" ]; then
+  echo "error: staged YouTube cookie secret material detected."
+  echo "Cookie exports and Netscape cookie jars must stay outside git."
   echo ""
-  echo "Offending lines:"
-  echo "$LOG_DIRECT"
-  echo ""
-  echo "Override (rewriting the helper itself only): K2B_ALLOW_LOG_APPEND=1 git commit ..."
+  echo "Offending staged files:"
+  echo "$COOKIE_SECRET_VIOLATIONS"
   exit 1
 fi
 

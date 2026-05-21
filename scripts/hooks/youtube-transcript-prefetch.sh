@@ -16,11 +16,10 @@
 
 set -uo pipefail  # NOT -e: a failed fetch must not abort the hook
 
-# Skip Chrome cookies in the hook's yt-dlp calls. The hook runs non-interactively
+# Skip browser cookies in the hook's yt-dlp calls. The hook runs non-interactively
 # on every UserPromptSubmit; macOS keychain prompts (Chrome Safe Storage) would
-# block Keith mid-keystroke. Failed caption fetches fall through to Groq Whisper,
-# which does not need cookies. Manual `scripts/yt-transcript.sh` runs from a
-# terminal keep their full cookie cascade (this export is scoped to the hook).
+# block Keith mid-keystroke. A dedicated K2B cookie file is still allowed because
+# it is non-interactive and is the stable daemon path.
 export YT_DLP_COOKIE_BROWSER=none
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

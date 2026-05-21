@@ -11,19 +11,23 @@
 #         tier is one of: captions-en | captions-zh | groq-whisper | failed
 # exit:   0 on success, 1 on total failure
 #
-# Cookies: YouTube's bot-detection rolled out 2025-Q3 returns "Sign in to confirm
-# you're not a bot" on residential IPs even with the latest yt-dlp. We try with
-# browser cookies first; YT_DLP_COOKIE_BROWSER=chrome|firefox|safari|edge|none
-# overrides (default: auto-detect Chrome, Firefox, then Safari). Set to `none`
-# on headless servers without a logged-in browser profile.
+# Cookies: YouTube's bot-detection returns "Sign in to confirm you're not a bot"
+# on some IPs even with the latest yt-dlp. K2B prefers a dedicated Netscape cookie
+# file so background daemons never need macOS keychain/browser prompts:
+#   K2B_YT_COOKIES_FILE=~/.config/k2b/youtube-cookies.txt
+# The default is $HOME/.config/k2b/youtube-cookies.txt when present. As a final
+# manual fallback, YT_DLP_COOKIE_BROWSER=chrome|firefox|safari|edge|none controls
+# --cookies-from-browser (default: auto-detect Chrome, Firefox, then Safari).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TMPDIR_BASE="${TMPDIR:-/tmp}/yt-transcript-$$"
+TMPDIR_BASE=""
 LANGUAGE_HINT=""
 
 cleanup() {
-  rm -rf "$TMPDIR_BASE"
+  if [[ -n "$TMPDIR_BASE" ]]; then
+    rm -rf "$TMPDIR_BASE"
+  fi
 }
 trap cleanup EXIT
 
@@ -58,11 +62,32 @@ if [[ "$URL" != http* ]]; then
   exit 1
 fi
 
-mkdir -p "$TMPDIR_BASE"
+TMPDIR_BASE=$(mktemp -d "${TMPDIR:-/tmp}/yt-transcript.XXXXXX")
+chmod 700 "$TMPDIR_BASE"
+
+# Resolve the dedicated K2B cookie file. Empty result means "do not pass a file".
+build_cookies_file() {
+  local choice="${K2B_YT_COOKIES_FILE:-$HOME/.config/k2b/youtube-cookies.txt}"
+  case "$choice" in
+    none|"")
+      return 0
+      ;;
+    "~/"*)
+      choice="$HOME/${choice#~/}"
+      ;;
+  esac
+
+  if [[ -r "$choice" && -s "$choice" ]]; then
+    echo "$choice"
+  elif [[ -n "${K2B_YT_COOKIES_FILE:-}" ]]; then
+    echo "WARN: K2B_YT_COOKIES_FILE is set but not readable/non-empty: $choice" >&2
+  fi
+  return 0
+}
 
 # Build --cookies-from-browser arg based on env override + filesystem probe.
-# Empty result means "do not pass cookies".
-build_cookies_arg() {
+# Empty result means "do not pass browser cookies".
+build_cookie_browser() {
   local choice="${YT_DLP_COOKIE_BROWSER:-auto}"
   case "$choice" in
     none|"")
@@ -83,7 +108,116 @@ build_cookies_arg() {
   esac
 }
 
-COOKIE_BROWSER=$(build_cookies_arg)
+run_yt_dlp_with_timeout() {
+  local timeout_s="${K2B_YT_DLP_ATTEMPT_TIMEOUT:-45}"
+  case "$timeout_s" in
+    ''|*[!0-9]*)
+      timeout_s=45
+      ;;
+  esac
+  if [[ "$timeout_s" -le 0 ]]; then
+    timeout_s=45
+  fi
+
+  set +e
+  python3 - "$timeout_s" yt-dlp "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+argv = sys.argv[2:]
+
+try:
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+except FileNotFoundError:
+    raise SystemExit(127)
+
+try:
+    raise SystemExit(proc.wait(timeout=timeout_s))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    raise SystemExit(124)
+PY
+  local rc=$?
+  set -e
+  if [[ "$rc" -eq 124 ]]; then
+    echo "WARN: yt-dlp caption attempt timed out after ${timeout_s}s" >&2
+  fi
+  return "$rc"
+}
+
+run_command_with_timeout() {
+  local timeout_s="$1"
+  shift
+  case "$timeout_s" in
+    ''|*[!0-9]*)
+      timeout_s=600
+      ;;
+  esac
+  if [[ "$timeout_s" -le 0 ]]; then
+    timeout_s=600
+  fi
+
+  set +e
+  python3 - "$timeout_s" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+argv = sys.argv[2:]
+
+try:
+    proc = subprocess.Popen(argv, start_new_session=True)
+except FileNotFoundError:
+    raise SystemExit(127)
+
+try:
+    raise SystemExit(proc.wait(timeout=timeout_s))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    raise SystemExit(124)
+PY
+  local rc=$?
+  set -e
+  if [[ "$rc" -eq 124 ]]; then
+    echo "WARN: command timed out after ${timeout_s}s: $*" >&2
+  fi
+  return "$rc"
+}
+
+COOKIE_SOURCE_FILE=$(build_cookies_file)
+COOKIE_BROWSER=$(build_cookie_browser)
 
 # Strip VTT timing/formatting into plain paragraph text.
 # YouTube auto-captions use a rolling/progressive format where consecutive cues
@@ -119,27 +253,39 @@ try_subs() {
   # touch the keychain at all. (Tested 2026-05-13 against the Tilbury video
   # from Macau via Oracle Cloud Singapore VPN exit -- behavior was stochastic
   # across the same session.)
-  local attempts=("")
+  local attempts=("none")
+  if [[ -n "$COOKIE_SOURCE_FILE" ]]; then
+    attempts+=("file")
+  fi
   if [[ -n "$COOKIE_BROWSER" ]]; then
-    attempts+=("$COOKIE_BROWSER")
+    attempts+=("browser:$COOKIE_BROWSER")
   fi
 
   local vtt=""
-  for browser in "${attempts[@]}"; do
+  for attempt in "${attempts[@]}"; do
     rm -rf "$sub_dir"
     mkdir -p "$sub_dir"
-    local cookie_flag=()
-    if [[ -n "$browser" ]]; then
-      cookie_flag=(--cookies-from-browser "$browser")
-    fi
-    if yt-dlp \
-        "${cookie_flag[@]}" \
-        --skip-download \
-        --write-auto-sub \
-        --sub-langs "${lang},${lang}-.*" \
-        --sub-format "vtt" \
-        --output "${sub_dir}/%(id)s" \
-        "$URL" >/dev/null 2>&1; then
+    local yt_dlp_args=(
+      --skip-download
+      --write-auto-sub
+      --sub-langs "${lang},${lang}-.*"
+      --sub-format "vtt"
+      --output "${sub_dir}/%(id)s"
+    )
+    case "$attempt" in
+      none)
+        ;;
+      file)
+        local cookie_copy="$sub_dir/youtube-cookies.txt"
+        cp "$COOKIE_SOURCE_FILE" "$cookie_copy"
+        chmod 600 "$cookie_copy"
+        yt_dlp_args=(--cookies "$cookie_copy" "${yt_dlp_args[@]}")
+        ;;
+      browser:*)
+        yt_dlp_args=(--cookies-from-browser "${attempt#browser:}" "${yt_dlp_args[@]}")
+        ;;
+    esac
+    if run_yt_dlp_with_timeout "${yt_dlp_args[@]}" "$URL"; then
       vtt=$(find "$sub_dir" -type f -name "*.vtt" | head -1)
       if [[ -n "$vtt" && -s "$vtt" ]]; then
         break
@@ -185,7 +331,7 @@ fi
 
 # --- Tier 2: Groq Whisper (audio download + ASR) ---
 echo "No captions. Falling back to Groq Whisper (downloading audio)..." >&2
-WHISPER_HELPER="$SCRIPT_DIR/yt-transcribe-whisper.sh"
+WHISPER_HELPER="${K2B_YT_WHISPER_HELPER:-$SCRIPT_DIR/yt-transcribe-whisper.sh}"
 if [[ ! -x "$WHISPER_HELPER" ]]; then
   echo "ERROR: $WHISPER_HELPER not executable" >&2
   echo "METHOD: failed" >&2
@@ -204,7 +350,7 @@ fi
 # problem; if we hid it, the user sees only "all transcript methods failed".
 # Use an || branch to capture exit status while letting stderr pass.
 set +e
-OUTPUT=$("$WHISPER_HELPER" "${WHISPER_ARGS[@]}")
+OUTPUT=$(run_command_with_timeout "${K2B_YT_WHISPER_TIMEOUT:-600}" "$WHISPER_HELPER" "${WHISPER_ARGS[@]}")
 WHISPER_EXIT=$?
 set -e
 

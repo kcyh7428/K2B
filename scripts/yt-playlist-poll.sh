@@ -3,6 +3,102 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TMPDIR_BASE=""
+
+cleanup() {
+  if [[ -n "$TMPDIR_BASE" ]]; then
+    rm -rf "$TMPDIR_BASE"
+  fi
+}
+trap cleanup EXIT
+
+build_cookies_file() {
+  local choice="${K2B_YT_COOKIES_FILE:-$HOME/.config/k2b/youtube-cookies.txt}"
+  case "$choice" in
+    none|"")
+      return 0
+      ;;
+    "~/"*)
+      choice="$HOME/${choice#~/}"
+      ;;
+  esac
+
+  if [[ -r "$choice" && -s "$choice" ]]; then
+    echo "$choice"
+  elif [[ -n "${K2B_YT_COOKIES_FILE:-}" ]]; then
+    echo "WARN: K2B_YT_COOKIES_FILE is set but not readable/non-empty: $choice" >&2
+  fi
+  return 0
+}
+
+prepare_cookies_file() {
+  local source_file
+  source_file=$(build_cookies_file)
+  if [[ -z "$source_file" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$TMPDIR_BASE" ]]; then
+    TMPDIR_BASE=$(mktemp -d "${TMPDIR:-/tmp}/yt-playlist-poll.XXXXXX")
+    chmod 700 "$TMPDIR_BASE"
+  fi
+
+  local copy_file="$TMPDIR_BASE/youtube-cookies.txt"
+  cp "$source_file" "$copy_file"
+  chmod 600 "$copy_file"
+  echo "$copy_file"
+}
+
+run_yt_dlp_with_timeout() {
+  local timeout_s="${K2B_YT_DLP_ATTEMPT_TIMEOUT:-180}"
+  case "$timeout_s" in
+    ''|*[!0-9]*)
+      timeout_s=180
+      ;;
+  esac
+  if [[ "$timeout_s" -le 0 ]]; then
+    timeout_s=180
+  fi
+
+  set +e
+  python3 - "$timeout_s" yt-dlp "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+argv = sys.argv[2:]
+
+try:
+    proc = subprocess.Popen(argv, start_new_session=True)
+except FileNotFoundError:
+    raise SystemExit(127)
+
+try:
+    raise SystemExit(proc.wait(timeout=timeout_s))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    raise SystemExit(124)
+PY
+  local rc=$?
+  set -e
+  if [[ "$rc" -eq 124 ]]; then
+    echo "WARN: yt-dlp attempt timed out after ${timeout_s}s" >&2
+  fi
+  return "$rc"
+}
 
 # --- Extract-audio mode ---
 if [[ "${1:-}" == "--extract-audio" ]]; then
@@ -35,10 +131,18 @@ if [[ "${1:-}" == "--extract-audio" ]]; then
     exit 2
   fi
 
+  COOKIE_FILE=$(prepare_cookies_file)
+
   # Download and convert to mp3
-  yt-dlp -x --audio-format mp3 --audio-quality 5 \
-    -o "${OUTPUT_DIR}/${VIDEO_ID}.%(ext)s" \
-    "$VIDEO_URL" >&2
+  if [[ -n "$COOKIE_FILE" ]]; then
+    run_yt_dlp_with_timeout --cookies "$COOKIE_FILE" -x --audio-format mp3 --audio-quality 5 \
+      -o "${OUTPUT_DIR}/${VIDEO_ID}.%(ext)s" \
+      "$VIDEO_URL" >&2
+  else
+    run_yt_dlp_with_timeout -x --audio-format mp3 --audio-quality 5 \
+      -o "${OUTPUT_DIR}/${VIDEO_ID}.%(ext)s" \
+      "$VIDEO_URL" >&2
+  fi
 
   MP3_PATH="${OUTPUT_DIR}/${VIDEO_ID}.mp3"
   if [[ -f "$MP3_PATH" ]]; then
@@ -79,10 +183,18 @@ done
 touch "$PROCESSED_LOG"
 
 # Fetch playlist metadata as JSON lines
-PLAYLIST_JSON=$(yt-dlp --flat-playlist -j "$PLAYLIST_URL" 2>/dev/null) || {
-  echo "ERROR: Failed to fetch playlist: ${PLAYLIST_URL}" >&2
-  exit 1
-}
+COOKIE_FILE=$(prepare_cookies_file)
+if [[ -n "$COOKIE_FILE" ]]; then
+  PLAYLIST_JSON=$(run_yt_dlp_with_timeout --cookies "$COOKIE_FILE" --flat-playlist -j "$PLAYLIST_URL" 2>/dev/null) || {
+    echo "ERROR: Failed to fetch playlist: ${PLAYLIST_URL}" >&2
+    exit 1
+  }
+else
+  PLAYLIST_JSON=$(run_yt_dlp_with_timeout --flat-playlist -j "$PLAYLIST_URL" 2>/dev/null) || {
+    echo "ERROR: Failed to fetch playlist: ${PLAYLIST_URL}" >&2
+    exit 1
+  }
+fi
 
 # Filter to new videos, extract fields, cap at --max
 # Use process substitution to avoid subshell variable scope issues
