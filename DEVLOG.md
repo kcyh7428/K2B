@@ -1,6 +1,24 @@
 # K2B Development Log
 
 ---
+## 2026-05-21 -- YouTube transcript cookie-file path + daily canary (8e16517)
+
+**Commit:** `8e16517` feat(youtube): cookie-file path + daily canary for transcript stability
+
+**What shipped:** Closes the silent-failure cycle where Mac Mini Telegram YouTube URL fetches were returning "Sign in to confirm you're not a bot" with no monitor catching it. New `scripts/yt-canary.sh` runs daily at 09:00 HKT against a known-stable canary video (jNQXAC9IVRw) and posts a Telegram alert when METHOD is anything other than the expected `captions-en`. Caught a real cookie rotation 16 min after deploy, empirically proving its value before the cron's first scheduled fire. Companion `scripts/yt-cookies-json-to-netscape.py` converts Chrome-extension JSON cookie exports to yt-dlp's Netscape format with domain allowlist + atomic write + 600 perms. `yt-transcript.sh` and `yt-playlist-poll.sh` learned a dedicated `K2B_YT_COOKIES_FILE` path (default `~/.config/k2b/youtube-cookies.txt`) with a no-cookies -> file -> browser cascade and per-attempt timeouts. Apple Bash 3.2 empty-array crash also fixed. New `.githooks/pre-commit` cookie-secret guard scans staged files for Netscape/JSON cookie shapes (tight allowlist exempts `tests/pre-commit.test.sh` which legitimately contains synthetic fixtures). 12 new/updated tests, all green.
+
+**Codex review:** tier-3 review attempted via `scripts/review.sh diff`. Codex hit HARD_DEADLINE at 360s (REVIEWER_END rc=-15 effective_rc=124). Kimi fallback ran and returned NEEDS-ATTENTION with 10 findings. Triage: 1 fixed inline (STDERR_TAIL injection into canary alert heredoc -- swapped heredoc for printf so yt-dlp stderr can never shell-expand). 9 deferred (--no-verify pre-commit bypass is a pre-existing client-hook limit; cookie temp-copy race is by-design immutable source behavior; set -e style in timeout wrappers; .env IFS guard; yt-dlp stderr suppression; SIGKILL cookie cleanup; timeout test wall-clock margin; binary/large-file scan; Telegram path leak -- all defense-in-depth not load-bearing for the MVP bugs).
+
+**Feature status change:** new `feature_youtube-transcript-hardening` added to In Progress lane in `wiki/concepts/index.md`. Status `in-progress` with `pending-action:` set: 7-day green-canary window required before flipping to `shipped`. Option A1 cookies (incognito-close trick) rotated within 16 min on first deploy because parallel signed-in YouTube sessions kept rotating SAPISID server-side. Pivoting next to Option A2 (Mini Chrome profile + `--cookies-from-browser`). A dedicated YouTube account (separate from Keith's personal one) cookie set is live on Mini and currently green.
+
+**Follow-ups:**
+- Option A2 implementation: log a real Chrome profile in on Mini, switch `YT_DLP_COOKIE_BROWSER` to `chrome` so yt-dlp reads live cookies from SQLite instead of a static file. Eliminates rotation races. Next session.
+- PO Token provider (`bgutil-ytdlp-pot-provider` Docker container) only if Option A2 still leaves coverage gaps after 7 days.
+- 9 Kimi findings tracked in `feature_youtube-transcript-hardening` follow-up list; consider promotion to standalone hardening features if any recur.
+
+**Key decisions (if divergent from claude.ai project specs):** Used `K2B_ALLOW_LOG_APPEND=1` override on commit because `tests/pre-commit.test.sh` contains the literal `>> wiki/log.md` string inside a synthetic-bad-script heredoc fixture -- the override path is the documented bypass for exactly this case. Cookie scanner exemption path-allowlisted instead of regex-based content sniffing to keep the guard tight.
+
+---
 ## 2026-05-20 -- audit-date-handling test harness + test_eod_capture monkeypatch (73cfb32)
 
 **Commit:** `73cfb32` test(eod-capture): bash test harness for audit-date-handling + monkeypatch fix
