@@ -13,7 +13,19 @@ export const TELEGRAM_OUTBOX_DIR = resolve(PROJECT_ROOT, 'workspace', 'telegram-
 
 // K2B paths (relative: k2b-remote sits inside K2B/)
 export const K2B_PROJECT_ROOT = env['CLAUDE_PROJECT_ROOT'] ?? resolve(__dirname, '../..')
-export const K2B_VAULT_PATH = env['VAULT_PATH'] ?? resolve(K2B_PROJECT_ROOT, '..', 'K2B-Vault')
+
+// Vault path precedence (per Codex Tier 3 round 2 review): the code-side
+// name `K2B_VAULT_PATH` should match the env-var name operators set. Honor
+// (in order): process.env.K2B_VAULT_PATH, .env K2B_VAULT_PATH, process.env
+// VAULT_PATH (legacy), .env VAULT_PATH (legacy), default sibling K2B-Vault.
+// The legacy VAULT_PATH lookups keep existing .env files working without
+// changes; new deployments should set K2B_VAULT_PATH.
+export const K2B_VAULT_PATH =
+  process.env['K2B_VAULT_PATH'] ??
+  env['K2B_VAULT_PATH'] ??
+  process.env['VAULT_PATH'] ??
+  env['VAULT_PATH'] ??
+  resolve(K2B_PROJECT_ROOT, '..', 'K2B-Vault')
 
 // Telegram
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''

@@ -16,7 +16,7 @@ import {
 import { getSession, setSession, clearSession, getRecentMemoriesForDisplay, getMemoryCount, getKv, setKv } from './db.js'
 import { runAgent } from './agent.js'
 import { saveConversationTurn, loadPreferenceProfile } from './memory.js'
-import { injectMemoryFromShelves } from './memoryInject.js'
+import { injectMemoryFromShelves, injectVaultContext } from './memoryInject.js'
 import { normalizationGate } from './washingMachine.js'
 import { ingestAttachment } from './attachmentIngest.js'
 import { resumePendingConfirmation, type ShelfWriter } from './washingMachineResume.js'
@@ -388,6 +388,15 @@ async function handleMessage(
     // parallel with the gate above; neither blocks the other.
     const memoryContext = await injectMemoryFromShelves(rawText)
 
+    // Vault-notes fallback (feature_vault-notes-fallback, 2026-05-23).
+    // Fires only when the shelf inject returned empty (raw-rows hit nothing)
+    // AND the message looks like fact retrieval. Searches the local vault
+    // filesystem with a single grep call so meetings, dailies, research notes
+    // captured via /meeting, /tldr, /research, /daily can still surface even
+    // though EOD doesn't ingest them onto the shelf. Same graceful-degradation
+    // contract: any error returns '' and the agent proceeds without it.
+    const vaultContext = memoryContext === '' ? await injectVaultContext(rawText) : ''
+
     // Get existing session (may have been cleared above)
     const sessionId = getSession(chatId)
 
@@ -415,7 +424,7 @@ async function handleMessage(
       logger.warn({ err: String(err) }, 'YouTube pre-fetch threw; continuing with raw text')
     }
 
-    const fullMessage = preferenceContext + memoryContext + agentInput
+    const fullMessage = preferenceContext + memoryContext + vaultContext + agentInput
 
     const obsMarker = markObservationStart()
     const outboxMark = Date.now()

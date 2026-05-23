@@ -12,7 +12,14 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { injectMemoryFromShelves, resolveWashingMachinePython } from './memoryInject.js'
+import {
+  injectMemoryFromShelves,
+  injectVaultContext,
+  looksLikeFactRetrievalQuery,
+  pickVaultFallbackTerm,
+  resolveWashingMachinePython,
+  truncateOnWordBoundary,
+} from './memoryInject.js'
 import { normalizationGate } from './washingMachine.js'
 
 interface SpawnCall {
@@ -553,5 +560,466 @@ describe('resolveWashingMachinePython -- env-file fallback (Ship 1 Commit 5 fix)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// ============================================================================
+// injectVaultContext (feature_vault-notes-fallback, 2026-05-23)
+//
+// Vault-notes fallback fires when the shelf inject returned empty AND the
+// user message looks like fact retrieval. These tests cover the fact-retrieval
+// heuristic, the exact-query / fallback-term path, snippet formatting, the
+// top-K cap, and the graceful-degradation contract.
+// ============================================================================
+
+function makeGrepHarness(
+  exactHits: VaultGrepHit[] | Error,
+  fallbackHits: VaultGrepHit[] | Error = [],
+): { spawn: SpawnHarness; calls: SpawnCall[] } {
+  let callIdx = 0
+  const harness = makeSpawnHarness((cmd, args) => {
+    if (cmd !== 'grep') {
+      return { stdout: '', stderr: 'unexpected cmd', code: 127 }
+    }
+    const current = callIdx === 0 ? exactHits : fallbackHits
+    callIdx += 1
+    if (current instanceof Error) {
+      return { stdout: '', stderr: current.message, code: 2 }
+    }
+    if (current.length === 0) {
+      // grep exits 1 on no matches
+      return { stdout: '', stderr: '', code: 1 }
+    }
+    const lines = current.map((h) => `${h.file}:${h.line}:${h.text}`)
+    return { stdout: lines.join('\n') + '\n', stderr: '', code: 0 }
+  })
+  return { spawn: harness, calls: harness.calls }
+}
+
+interface VaultGrepHit {
+  file: string
+  line: number
+  text: string
+}
+
+describe('looksLikeFactRetrievalQuery', () => {
+  it('returns true for messages starting with a fact-retrieval question word + "?"', () => {
+    expect(looksLikeFactRetrievalQuery('what did we decide about Andrew?')).toBe(true)
+    expect(looksLikeFactRetrievalQuery('who is Dr Lo?')).toBe(true)
+  })
+
+  it('returns true for messages starting with a question word (no "?" required)', () => {
+    expect(looksLikeFactRetrievalQuery('what did we decide about TalentSignals tier')).toBe(true)
+    expect(looksLikeFactRetrievalQuery('who is Dr Lo')).toBe(true)
+    expect(looksLikeFactRetrievalQuery('where did I leave my notes on K2Bi')).toBe(true)
+    expect(looksLikeFactRetrievalQuery('how did Phase G end')).toBe(true)
+  })
+
+  it('returns true for "tell me" / "remind me" shapes', () => {
+    expect(looksLikeFactRetrievalQuery('tell me about TalentSignals')).toBe(true)
+    expect(looksLikeFactRetrievalQuery('remind me what we decided')).toBe(true)
+  })
+
+  it('returns false for command-shaped messages (Codex MEDIUM #2 -- command verb prefix)', () => {
+    expect(looksLikeFactRetrievalQuery('create a note about TalentSignals')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('search vault for the meeting')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('save this conversation')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('draft a LinkedIn post')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('send the email')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('summarize this thread')).toBe(false)
+  })
+
+  it('returns false for polite-command forms (Codex MEDIUM #2 -- "can you draft" etc.)', () => {
+    expect(looksLikeFactRetrievalQuery('can you draft a reply?')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('could you save this?')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('would you send the email?')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('will you summarize this?')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('please send the agenda')).toBe(false)
+  })
+
+  it('returns false for bare "?" alone -- requires a question word too (Codex MEDIUM #2)', () => {
+    // Before the fix, ANY "?" triggered. Now the message must START with a
+    // recognised question word (or "tell me" / "remind me") to qualify.
+    expect(looksLikeFactRetrievalQuery('any updates?')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('TalentSignals?')).toBe(false)
+  })
+
+  it('strips URLs before heuristic check (Codex MEDIUM #2 -- YouTube ?v= must not trigger)', () => {
+    // A bare YouTube URL contains "?v=" which under the old heuristic triggered
+    // the question-mark path. With URL stripping, the "?" is gone and the
+    // remaining text ("") fails the question-word check.
+    expect(looksLikeFactRetrievalQuery('https://www.youtube.com/watch?v=PeqDWP_2zPE')).toBe(false)
+    // URL + a real question still triggers because the question word survives.
+    expect(looksLikeFactRetrievalQuery('what was this https://example.com/x?y=1 about?')).toBe(true)
+  })
+
+  it('returns false on empty or whitespace-only input', () => {
+    expect(looksLikeFactRetrievalQuery('')).toBe(false)
+    expect(looksLikeFactRetrievalQuery('   ')).toBe(false)
+  })
+
+  it('does not mis-trigger on words that contain a question word as a substring', () => {
+    // "whatever" starts with "what" but the \b should prevent the regex match.
+    expect(looksLikeFactRetrievalQuery('whatever happens, ship it')).toBe(false)
+  })
+})
+
+describe('pickVaultFallbackTerm', () => {
+  it('returns the longest non-stopword token', () => {
+    expect(pickVaultFallbackTerm('what did we decide about TalentSignals tier')).toBe('talentsignals')
+  })
+
+  it('returns null when only stopwords remain', () => {
+    expect(pickVaultFallbackTerm('what did we do')).toBe(null)
+    expect(pickVaultFallbackTerm('')).toBe(null)
+  })
+
+  it('ignores tokens shorter than 4 chars', () => {
+    expect(pickVaultFallbackTerm('what is AI for HR')).toBe(null)
+  })
+
+  it('handles hyphenated terms by lowercasing and keeping them', () => {
+    expect(pickVaultFallbackTerm('what about washing-machine memory')).toMatch(/washing|machine|memory/)
+  })
+})
+
+describe('truncateOnWordBoundary', () => {
+  it('returns the string unchanged when within the limit', () => {
+    expect(truncateOnWordBoundary('short text', 200)).toBe('short text')
+  })
+
+  it('truncates at the nearest preceding word boundary', () => {
+    const long = 'park TalentSignals enterprise tier per Andrew strategy call decision'
+    const out = truncateOnWordBoundary(long, 30)
+    expect(out.length).toBeLessThanOrEqual(34) // 30 + '...'
+    expect(out.endsWith('...')).toBe(true)
+    // Word-boundary proof: stripping '...' must yield a strict prefix of the
+    // original, and the character following that prefix in the original must
+    // be whitespace -- proves the cut landed at a space, not mid-word.
+    const trimmed = out.slice(0, -3)
+    expect(long.startsWith(trimmed)).toBe(true)
+    expect(long[trimmed.length]).toBe(' ')
+  })
+
+  it('falls back to explicit [cut] marker when no boundary fits in budget (Codex MEDIUM #4)', () => {
+    // 60% of 10 = 6. Single 19-char token with NO whitespace or punctuation
+    // can't be cut cleanly. We mark the truncation as mid-token so the agent
+    // doesn't mistake the cut for a complete word.
+    const out = truncateOnWordBoundary('verylongsingletoken', 10)
+    expect(out.endsWith('[cut]...')).toBe(true)
+    // 10 chars + '[cut]...' (8 chars) = 18 max
+    expect(out.length).toBeLessThanOrEqual(18)
+  })
+
+  it('accepts punctuation as a boundary (Codex MEDIUM #4 -- not just ASCII space)', () => {
+    // Comma-separated list. Old code would have refused to truncate here
+    // since lastIndexOf(' ') returns -1; new code treats commas as boundaries.
+    const s = 'alpha,beta,gamma,delta,epsilon,zeta,eta,theta'
+    const out = truncateOnWordBoundary(s, 20)
+    expect(out.endsWith('...')).toBe(true)
+    expect(out).not.toContain('[cut]')
+    // Should cut at one of the commas, not mid-word
+    const trimmed = out.slice(0, -3)
+    expect(s.startsWith(trimmed)).toBe(true)
+  })
+})
+
+describe('injectVaultContext -- URL bypass (Codex round 2 MEDIUM)', () => {
+  it('returns empty string when the raw message contains a URL', async () => {
+    // bot.ts runs YouTube prefetch AFTER injectVaultContext, which provides
+    // its own transcript context fenced with its own sentinel. Adding vault
+    // hits on top would pollute the prompt with unrelated grep matches.
+    // URL-bearing turns belong entirely to the URL-prefetch path.
+    const harness = makeGrepHarness([
+      { file: '/vault/raw/x.md', line: 1, text: 'should not surface' },
+    ])
+    const out = await injectVaultContext(
+      'what was this https://youtube.com/watch?v=abc123 about?',
+      { vaultPath: '/vault', spawnImpl: harness.spawn.makeSpawn() as never },
+    )
+    expect(out).toBe('')
+    // Zero grep calls -- bypass is BEFORE spawn
+    expect(harness.calls).toHaveLength(0)
+  })
+
+  it('returns empty for a bare URL even if heuristic would otherwise miss', async () => {
+    const harness = makeGrepHarness([])
+    const out = await injectVaultContext(
+      'https://www.youtube.com/watch?v=PeqDWP_2zPE',
+      { vaultPath: '/vault', spawnImpl: harness.spawn.makeSpawn() as never },
+    )
+    expect(out).toBe('')
+    expect(harness.calls).toHaveLength(0)
+  })
+})
+
+describe('injectVaultContext -- gating', () => {
+  it('returns empty string for empty / whitespace input (no grep)', async () => {
+    const { spawn } = makeGrepHarness([])
+    expect(await injectVaultContext('', { spawnImpl: spawn.makeSpawn() as never })).toBe('')
+    expect(await injectVaultContext('   ', { spawnImpl: spawn.makeSpawn() as never })).toBe('')
+  })
+
+  it('returns empty string for non-question commands (no grep)', async () => {
+    const harness = makeGrepHarness([])
+    const out = await injectVaultContext('create a note about Andrew', {
+      spawnImpl: harness.spawn.makeSpawn() as never,
+    })
+    expect(out).toBe('')
+    expect(harness.calls).toHaveLength(0)
+  })
+})
+
+describe('injectVaultContext -- exact-query path', () => {
+  it('formats a sentinel-fenced [Vault context] block when the exact query has hits', async () => {
+    const hits: VaultGrepHit[] = [
+      {
+        file: '/vault/raw/meetings/2026-05-18_Andrew-Strategy-Call.md',
+        line: 42,
+        text: '- Decision: park TalentSignals enterprise tier per Q3 review',
+      },
+    ]
+    const { spawn } = makeGrepHarness(hits)
+    const out = await injectVaultContext('what did we decide about TalentSignals tier?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+    })
+    // Block starts with the system-instruction header (Codex HIGH #1 -- prompt
+    // injection defense), wraps content in a random sentinel fence, and contains
+    // [Vault context] as a labeled line inside the fence.
+    expect(out.startsWith('[System: vault-notes fallback')).toBe(true)
+    expect(out).toMatch(/<VAULT_[A-F0-9]{12}>/)
+    expect(out).toMatch(/<\/VAULT_[A-F0-9]{12}>/)
+    expect(out).toContain('[Vault context]')
+    expect(out).toContain('park TalentSignals enterprise tier')
+    expect(out).toContain('raw/meetings/2026-05-18_Andrew-Strategy-Call.md:42')
+    expect(out).toContain('UNTRUSTED data')
+    expect(out.endsWith('\n\n')).toBe(true)
+  })
+
+  it('generates a fresh sentinel per call (Codex HIGH #1 -- prevents replay impersonation)', async () => {
+    const hits: VaultGrepHit[] = [
+      { file: '/vault/raw/a.md', line: 1, text: 'content' },
+    ]
+    const { spawn: spawn1 } = makeGrepHarness(hits)
+    const { spawn: spawn2 } = makeGrepHarness(hits)
+    const out1 = await injectVaultContext('what is in the vault?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn1.makeSpawn() as never,
+    })
+    const out2 = await injectVaultContext('what is in the vault?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn2.makeSpawn() as never,
+    })
+    const sentinel1 = out1.match(/<(VAULT_[A-F0-9]{12})>/)?.[1]
+    const sentinel2 = out2.match(/<(VAULT_[A-F0-9]{12})>/)?.[1]
+    expect(sentinel1).toBeDefined()
+    expect(sentinel2).toBeDefined()
+    expect(sentinel1).not.toBe(sentinel2)
+  })
+
+  it('strips trailing question mark from the exact-query term passed to grep', async () => {
+    const harness = makeGrepHarness([
+      { file: '/vault/raw/x.md', line: 1, text: 'a hit' },
+    ])
+    await injectVaultContext('what is TalentSignals?', {
+      vaultPath: '/vault',
+      spawnImpl: harness.spawn.makeSpawn() as never,
+    })
+    expect(harness.calls).toHaveLength(1)
+    // grep -rniF --include=*.md -- <term> /vault/raw /vault/wiki
+    // term is the arg right after `--`
+    const dashDashIdx = harness.calls[0].args.indexOf('--')
+    expect(dashDashIdx).toBeGreaterThanOrEqual(0)
+    const term = harness.calls[0].args[dashDashIdx + 1]
+    expect(term.endsWith('?')).toBe(false)
+    expect(term).toBe('what is TalentSignals')
+  })
+
+  it('caps results at topK', async () => {
+    const hits: VaultGrepHit[] = [
+      { file: '/vault/raw/a.md', line: 1, text: 'one' },
+      { file: '/vault/raw/b.md', line: 2, text: 'two' },
+      { file: '/vault/raw/c.md', line: 3, text: 'three' },
+      { file: '/vault/raw/d.md', line: 4, text: 'four' },
+      { file: '/vault/raw/e.md', line: 5, text: 'five' },
+    ]
+    const { spawn } = makeGrepHarness(hits)
+    const out = await injectVaultContext('what is in the vault?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+      topK: 3,
+    })
+    const bullets = out.split('\n').filter((l) => l.startsWith('- '))
+    expect(bullets).toHaveLength(3)
+    expect(out).toContain('a.md:1')
+    expect(out).toContain('c.md:3')
+    expect(out).not.toContain('d.md:4')
+  })
+
+  it('truncates snippets longer than 200 chars on a word boundary', async () => {
+    const longText = 'park TalentSignals enterprise tier ' + 'detail '.repeat(60)
+    const hits: VaultGrepHit[] = [
+      { file: '/vault/raw/x.md', line: 1, text: longText },
+    ]
+    const { spawn } = makeGrepHarness(hits)
+    const out = await injectVaultContext('what did we decide?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+    })
+    // The bullet line: "- x.md:1 -- <snippet>..."
+    const bullet = out.split('\n').find((l) => l.startsWith('- '))!
+    const snippet = bullet.split(' -- ')[1]
+    // 200 chars + '...' = 203 max
+    expect(snippet.length).toBeLessThanOrEqual(203)
+    expect(snippet.endsWith('...')).toBe(true)
+  })
+})
+
+describe('injectVaultContext -- fallback term path', () => {
+  it('falls back to longest content word when exact query misses', async () => {
+    const harness = makeGrepHarness(
+      [], // exact-query miss
+      [{ file: '/vault/raw/m.md', line: 9, text: 'TalentSignals tier discussion' }],
+    )
+    const out = await injectVaultContext('what did we decide about TalentSignals tier last week?', {
+      vaultPath: '/vault',
+      spawnImpl: harness.spawn.makeSpawn() as never,
+    })
+    expect(out).toContain('TalentSignals tier discussion')
+    expect(harness.calls).toHaveLength(2)
+    // Second grep call should be invoked with the fallback term, not the full query
+    const lastCall = harness.calls[1]
+    const dashDashIdx = lastCall.args.indexOf('--')
+    expect(lastCall.args[dashDashIdx + 1]).toBe('talentsignals')
+  })
+
+  it('returns empty when both exact and fallback miss', async () => {
+    const { spawn } = makeGrepHarness([], [])
+    const out = await injectVaultContext('what about TalentSignals last week?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+    })
+    expect(out).toBe('')
+  })
+
+  it('returns empty when exact query misses and no fallback term survives stopwords', async () => {
+    const harness = makeGrepHarness([])
+    const out = await injectVaultContext('what did we do?', {
+      vaultPath: '/vault',
+      spawnImpl: harness.spawn.makeSpawn() as never,
+    })
+    expect(out).toBe('')
+    // Only one grep call -- no fallback term to try
+    expect(harness.calls).toHaveLength(1)
+  })
+})
+
+describe('injectVaultContext -- exclude filters', () => {
+  it('skips Syncthing sync-conflict files', async () => {
+    const hits: VaultGrepHit[] = [
+      { file: '/vault/raw/x.md', line: 1, text: 'good hit' },
+      {
+        file: '/vault/wiki/log.sync-conflict-20260512-211158-3H6OL5B.md',
+        line: 99,
+        text: 'stale conflict hit',
+      },
+    ]
+    const { spawn } = makeGrepHarness(hits)
+    const out = await injectVaultContext('what is in the vault?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+    })
+    expect(out).toContain('good hit')
+    expect(out).not.toContain('stale conflict hit')
+    expect(out).not.toContain('sync-conflict')
+  })
+
+  it('skips wiki/context/shelves/ (already covered by injectMemoryFromShelves)', async () => {
+    const hits: VaultGrepHit[] = [
+      {
+        file: '/vault/wiki/context/shelves/semantic.md',
+        line: 16,
+        text: 'shelf row that injectMemoryFromShelves already handles',
+      },
+      { file: '/vault/raw/meetings/x.md', line: 1, text: 'fresh meeting hit' },
+    ]
+    const { spawn } = makeGrepHarness(hits)
+    const out = await injectVaultContext('what is on the shelf?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+    })
+    expect(out).toContain('fresh meeting hit')
+    expect(out).not.toContain('shelf row that injectMemoryFromShelves')
+  })
+
+  it('skips structural log.md and index.md files', async () => {
+    const hits: VaultGrepHit[] = [
+      { file: '/vault/wiki/log.md', line: 100, text: 'log entry' },
+      { file: '/vault/wiki/concepts/index.md', line: 5, text: 'index row' },
+      { file: '/vault/raw/research/2026-05-19_research.md', line: 12, text: 'real content' },
+    ]
+    const { spawn } = makeGrepHarness(hits)
+    const out = await injectVaultContext('what did we research?', {
+      vaultPath: '/vault',
+      spawnImpl: spawn.makeSpawn() as never,
+    })
+    expect(out).toContain('real content')
+    expect(out).not.toContain('log entry')
+    expect(out).not.toContain('index row')
+  })
+})
+
+describe('injectVaultContext -- graceful degradation (never throws)', () => {
+  it('hard grep error on exact query returns empty without fallback retry (Codex MEDIUM #3)', async () => {
+    // The exact-query grep errors (non-zero non-1 exit, e.g. bad path).
+    // Before the fix, we caught the error and ran the fallback grep, doubling
+    // the user-visible latency on a broken vault path. New behavior: hard
+    // error fails closed, fallback is NOT attempted.
+    const harness = makeGrepHarness(new Error('bad path'), [
+      { file: '/vault/raw/x.md', line: 1, text: 'fallback hit -- should NOT surface' },
+    ])
+    const out = await injectVaultContext('who is Dr Lo Hak Keung?', {
+      vaultPath: '/vault',
+      spawnImpl: harness.spawn.makeSpawn() as never,
+    })
+    expect(out).toBe('')
+    // CRITICAL: only one grep call (no fallback retry on hard error)
+    expect(harness.calls).toHaveLength(1)
+  })
+
+  it('grep timeout on exact query returns empty without fallback retry (Codex MEDIUM #3)', async () => {
+    // Hung process must NOT trigger a second hung process. Bounded user-
+    // visible latency: ONE timeout window, not two.
+    const harness = makeSpawnHarness(() => ({ hang: true }))
+    const started = Date.now()
+    const out = await injectVaultContext('what did we decide?', {
+      vaultPath: '/vault',
+      spawnImpl: harness.makeSpawn() as never,
+      timeoutMs: 50,
+    })
+    const elapsed = Date.now() - started
+    expect(out).toBe('')
+    // Only one grep should have been spawned -- proves no fallback retry
+    expect(harness.calls).toHaveLength(1)
+    // 50ms timeout + small settling overhead. With the bug, this would be
+    // ~100ms (two consecutive 50ms timeouts).
+    expect(elapsed).toBeLessThan(500)
+  })
+
+  it('clean no-match still triggers fallback term (no false-degradation regression)', async () => {
+    // Verify the Codex MEDIUM #3 fix didn't accidentally disable the fallback
+    // for the legitimate use case: exact query missed cleanly (exit 1), fallback
+    // term then finds hits.
+    const harness = makeGrepHarness(
+      [], // clean miss on exact
+      [{ file: '/vault/raw/x.md', line: 1, text: 'TalentSignals decision' }],
+    )
+    const out = await injectVaultContext('what did we decide about TalentSignals tier?', {
+      vaultPath: '/vault',
+      spawnImpl: harness.spawn.makeSpawn() as never,
+    })
+    expect(out).toContain('TalentSignals decision')
+    expect(harness.calls).toHaveLength(2)
   })
 })
