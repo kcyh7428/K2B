@@ -20,6 +20,17 @@
 # --cookies-from-browser (default: auto-detect Chrome, Firefox, then Safari).
 set -euo pipefail
 
+# PATH augmentation for non-interactive callers (cron, launchd, pm2 with a
+# bare-env config). cron on macOS uses PATH=/usr/bin:/bin:/usr/sbin:/sbin
+# which does NOT include /opt/homebrew/bin (Apple Silicon Homebrew) or
+# /usr/local/bin (Intel-mac Homebrew). yt-dlp + ffmpeg live in one of those,
+# so without the prefix the script silently falls through every cascade
+# tier and reports METHOD: failed. Discovered 2026-05-26 -- yt-canary cron
+# had 5 consecutive FAILs since afc59a6 landed because of this. Prepending
+# both common Homebrew prefixes is safe (idempotent if already present)
+# and a no-op for interactive invocations.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMPDIR_BASE=""
 LANGUAGE_HINT=""
