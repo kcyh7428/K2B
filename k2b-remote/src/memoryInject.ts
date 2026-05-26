@@ -243,7 +243,14 @@ interface ChildLike {
 // relocated -- the rest of k2b-remote already routes through K2B_VAULT_PATH,
 // so this function must too. Per Codex Tier 3 pre-commit MEDIUM #5.
 const VAULT_DEFAULT_PATH = K2B_VAULT_PATH
-const VAULT_SEARCH_DIRS = ['raw', 'wiki'] as const
+// Per the feature spec's mvp: clause -- queries against facts in any of
+// `raw/`, `wiki/`, OR top-level `Daily/` (Keith's manual journal) must be
+// retrievable. Daily/ is NOT under raw/daily/ -- it's a separate top-level
+// directory holding hand-written daily notes that the EOD pipeline does
+// not ingest. Without it the MVP test misses content captured directly
+// in Obsidian. Folded in before /ship marked shipped 2026-05-26 per
+// the feature note's prior pending-action item #3.
+const VAULT_SEARCH_DIRS = ['raw', 'wiki', 'Daily'] as const
 
 // 2s upper bound: vault has ~200-500 markdown files. grep -r on macOS APFS
 // completes in ~50-150ms cold-cache, ~10-30ms warm. 2s leaves plenty of
