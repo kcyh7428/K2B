@@ -1,6 +1,60 @@
 # K2B Development Log
 
 ---
+## 2026-05-28 -- VLM/OCR GPTSAPI migration code landed
+
+**Commit:** `3e2dd2c` feat(vlm): migrate OCR media paths from MiniMax to GPTSAPI
+
+**What shipped:** The repo code path now migrates washing-machine OCR/media work
+off the dead MiniMax subscription. `scripts/gptsapi-vlm.sh` is the new GPTSAPI
+vision wrapper, `scripts/washing-machine/extract-attachment.sh` calls it,
+`k2b-remote` propagates attachment OCR fallback failures instead of silently
+eating them, `/media image` stays on GPTSAPI without a `--minimax` fallback, and
+the dead `scripts/minimax-vlm.sh` / `scripts/minimax-image.sh` wrappers are
+deleted. The GPTSAPI image and VLM wrappers also gained bounded timeout/retry
+hardening, daily-counter protection, URL payload guards, empty-OCR rejection,
+and test coverage for the review-discovered edge cases.
+
+**Codex review:** Tier 3 (`k2b-remote/src/**` allowlist). Codex primary hit the
+hard deadline on the first pass, then the runner fell back to Kimi/MiniMax as
+designed. Several Kimi/MiniMax NEEDS-ATTENTION rounds produced concrete
+hardening fixes (raw OCR fallback provider gating, timeout floors, Telegram
+HTTP retry handling, raw fallback write-failure propagation, unicode-safe plate
+rendering, payload guards, stale lock recovery). Final bounded approval pass
+`.code-reviews/2026-05-27T23-16-10Z_36f086.log` returned APPROVE with
+MiniMax/Kimi primary, no fallback, and no findings.
+
+**Verification:** `bash tests/washing-machine/gptsapi-vlm.test.sh` passed 17/17;
+`bash tests/washing-machine/extract-attachment.test.sh` passed 16/16; `bash
+tests/washing-machine/ocr-accuracy.test.sh` reported corpus accuracy `1.000`
+against threshold `0.800`; `cd k2b-remote && npm run typecheck` passed; `cd
+k2b-remote && npm test` passed 8 files / 157 tests; live GPTSAPI VLM smoke on
+`dr-lo-card.png` returned Dr. Lo text, phone numbers, and Chinese text; dead-code
+checks found no `minimax-vlm.sh` / `minimax-image.sh` files and no references
+under `scripts`, `k2b-remote/src`, or `.claude/skills`.
+
+**Feature status change:** `feature_vlm-gptsapi-migration` moved from Next Up /
+`designed` to In Progress / `in-progress`. It is not marked shipped because the
+frontmatter MVP still requires a deployed Telegram photo-to-shelf check after
+`/sync`: send known English and Chinese-text photos through the live bot, verify
+bot acknowledgement, verify `semantic.md` gains the extracted text, and verify
+Mini logs contain no `status_code 2049` or `MINIMAX` errors.
+
+**Follow-ups:**
+- Run `/sync` to deploy `k2b-remote` and `scripts` to the Mini.
+- Execute the live Telegram photo-to-shelf MVP gate from the feature note.
+- If the gate passes, run `/ship` to mark `feature_vlm-gptsapi-migration`
+  shipped and clear its `pending-action`.
+- 7-day informal watch after deploy: real-world photo OCR hit rate, Chinese
+  drift, GPTSAPI VLM latency, and daily call count.
+
+**Key decisions (if divergent from Codex.ai project specs):** Code commit landed
+before the deployed Telegram MVP gate because the local and live VLM evidence is
+green, but `/ship` refused the shipped label until the actual Mini bot path is
+exercised. This keeps broken MiniMax code off `main` while preserving the
+feature gate's named-bug discipline.
+
+---
 ## 2026-05-27 -- Google AI VPS leaf optimizer hardening
 
 **Commit:** `189a446` fix(router-watchdog): exclude Google AI VPS leaf before optimizer scoring
