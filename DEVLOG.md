@@ -1,6 +1,25 @@
 # K2B Development Log
 
 ---
+## 2026-05-27 -- Google AI VPS leaf optimizer hardening
+
+**Commit:** `189a446` fix(router-watchdog): exclude Google AI VPS leaf before optimizer scoring
+
+**What shipped:** The router Google AI route is live, but this code ship hardens the adjacent router-watchdog optimizer path: `scripts/router-watchdog/bin/optimize-leaves.py` now removes profile-excluded leaves before delay scoring, so the dedicated `🇲🇾 K2B-VPS-KL` leaf cannot be probed, enter `eligible_leaf_names`, or become a `target_leaf` for the old `🤖 OpenAI` manual-switch pool. The AI profile regex was tightened to match the exact KL leaf while preserving the existing meta-leaf prefix exclusion, and `tests/router-watchdog-leaf-optimizer.test.sh` now has a fake-Mihomo regression for the no-probe/no-target invariant.
+
+**Codex review:** tier-3 (`scripts/router-watchdog/**` allowlist). First review found 3 medium issues (excluded leaf still delay-scored, KL regex overmatched suffix-like names, test only compiled regex). All fixed inline. Re-review job `2026-05-27T00-17-26Z_0d769b` returned APPROVE with no material findings. Verification: `bash tests/router-watchdog-leaf-optimizer.test.sh`, `python3 -m py_compile scripts/router-watchdog/bin/optimize-leaves.py`, and a Mac Mini installed-runtime dry-run reporting `eligible_has_k2b=False`, `excluded_k2b=excluded_leaf_regex`, `target_has_k2b=False`, `changed=0`.
+
+**Feature status change:** `feature_google-ai-vps-leaf` remains `in-progress`, not shipped. The MVP requires 3 consecutive daily direct-router checks and zero `leaf-optimizer.jsonl` churn naming `📚 Google AI`; the measurement clock restarts from the final hardened state verified on 2026-05-27 01:15 HKT.
+
+**Follow-ups:**
+- Run daily direct-router Google AI checks until 3 consecutive days pass.
+- Confirm `📚 Google AI` remains selected to `🇲🇾 K2B-VPS-KL`.
+- Confirm `leaf-optimizer.jsonl` has zero entries naming `📚 Google AI`.
+- Run `/sync` or defer the pushed scripts changes so the Mac Mini source tree stays aligned with `main`; the installed runtime was already hot-patched for safety.
+
+**Key decisions (if divergent from Codex.ai project specs):** Applied a targeted hot patch to the Mac Mini installed router-watchdog snapshot before the formal `/sync` handoff because the active runtime is what protects the router path. Kept the feature in In Progress instead of forcing a shipped label because the binary MVP measurement window has not completed.
+
+---
 ## 2026-05-22 -- YouTube Option A2 Firefox cookies-from-browser + Whisper Bash 3.2 fix (afc59a6)
 
 **Commit:** `afc59a6` feat(youtube): Firefox cookies-from-browser path + Whisper Bash 3.2 fix
