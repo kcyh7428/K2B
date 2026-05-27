@@ -559,6 +559,7 @@ def run_profile(args: argparse.Namespace, now: dt.datetime | None = None, run_id
     proxies = proxies_payload.get("proxies") if isinstance(proxies_payload, dict) else {}
 
     selector_payloads: dict[str, dict] = {}
+    pre_excluded_leafs: dict[str, str] = {}
     leaf_pool: set[str] = set()
     for selector in selectors:
         payload = latest_selector_payload(base, secret, selector)
@@ -572,6 +573,9 @@ def run_profile(args: argparse.Namespace, now: dt.datetime | None = None, run_id
         for name in payload.get("all") or []:
             proxy_payload = proxies.get(name) or {}
             if is_leaf_proxy(name, proxy_payload):
+                if exclude_leaf_re and exclude_leaf_re.search(name):
+                    pre_excluded_leafs[name] = "excluded_leaf_regex"
+                    continue
                 leaf_pool.add(name)
 
     leaf_scores: dict[str, dict] = {}
@@ -615,6 +619,7 @@ def run_profile(args: argparse.Namespace, now: dt.datetime | None = None, run_id
         for leaf, row in leaf_scores.items()
         if row.get("excluded_reason")
     }
+    excluded_leafs.update(pre_excluded_leafs)
     used: set[str] = set()
     assignments: list[dict] = []
     changed = 0

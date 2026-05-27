@@ -439,6 +439,87 @@ PY
   [[ -s "$port_file" ]] || fail "fake Mihomo server did not start"
 }
 
+start_k2b_leaf_fake_mihomo() {
+  local d="$1"
+  local port_file="$d/port"
+  local request_log="$d/requests.jsonl"
+  python3 -u - "$port_file" "$request_log" <<'PY' &
+import json
+import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port_file, request_log = sys.argv[1], sys.argv[2]
+group = "🤖 OpenAI"
+selector = "♻️ 手动切换1"
+k2b = "🇲🇾 K2B-VPS-KL"
+current = "5台湾-联通/移动(AnyTLS) [AP1]"
+better = "🇸🇬15新加坡-专线(AnyTLS) [AP1]"
+delays = {k2b: 10, current: 220, better: 100}
+now = {"leaf": current}
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def write_json(self, status, body):
+        payload = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def record(self, body=None):
+        parsed = urllib.parse.urlparse(self.path)
+        path = urllib.parse.unquote(parsed.path)
+        with open(request_log, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"method": self.command, "path": path, "query": parsed.query, "body": body}, ensure_ascii=False) + "\n")
+        return path
+
+    def do_GET(self):
+        path = self.record()
+        if path == f"/proxies/{group}":
+            self.write_json(200, {"name": group, "type": "Selector", "now": selector, "all": [selector]})
+        elif path == f"/proxies/{selector}":
+            self.write_json(200, {"name": selector, "type": "Selector", "now": now["leaf"], "all": [k2b, current, better]})
+        elif path == "/proxies":
+            self.write_json(200, {"proxies": {
+                group: {"name": group, "type": "Selector", "now": selector, "all": [selector]},
+                selector: {"name": selector, "type": "Selector", "now": now["leaf"], "all": [k2b, current, better]},
+                k2b: {"name": k2b, "type": "Hysteria2"},
+                current: {"name": current, "type": "AnyTLS"},
+                better: {"name": better, "type": "AnyTLS"},
+            }})
+        elif path.startswith("/proxies/") and path.endswith("/delay"):
+            name = path.removeprefix("/proxies/").removesuffix("/delay")
+            self.write_json(200, {"delay": delays[name]})
+        elif path.startswith("/proxies/"):
+            name = path.removeprefix("/proxies/")
+            self.write_json(200, {"name": name, "type": "AnyTLS"})
+        else:
+            self.write_json(404, {"message": "not found"})
+
+    def do_PUT(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
+        body = json.loads(raw or "{}")
+        path = self.record(body)
+        if path == f"/proxies/{selector}":
+            now["leaf"] = body["name"]
+            self.write_json(204, {})
+        else:
+            self.write_json(500, {"message": "unsafe PUT"})
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(port_file, "w", encoding="utf-8") as f:
+    f.write(str(server.server_port))
+server.serve_forever()
+PY
+  SERVER_PIDS+=("$!")
+  for _ in {1..50}; do [[ -s "$port_file" ]] && break; sleep 0.1; done
+  [[ -s "$port_file" ]] || fail "fake Mihomo server did not start"
+}
+
 start_direct_leaf_group_fake_mihomo() {
   local d="$1"
   local port_file="$d/port"
@@ -1456,4 +1537,58 @@ assert pat.search("foo♻️ 手动切换1") is None, f"prefix-polluted selector
 assert pat.search("prefix ♻️ 手动切换5") is None, f"leading-text selector must NOT match {ai_regex!r} (regex must be start-anchored)"
 PY
   echo "  PASS: AI profile selector_regex excludes the no-number cascade selector"
+}
+
+# ---------------------------------------------------------------------------
+# Test 24: AI profile excludes the dedicated Google AI VPS leaf from the
+# optimizer's OpenAI/manual-switch candidate pool before delay scoring.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/k2b-leaf-exclusion"
+  mkdir -p "$d"
+  start_k2b_leaf_fake_mihomo "$d"
+
+  python3 - "$REPO_ROOT/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'PY' || fail "AI profile exclude_leaf_regex regression"
+import json
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+exclude_regex = data["profiles"]["ai"]["exclude_leaf_regex"]
+pat = re.compile(exclude_regex)
+
+assert pat.search("🌏自动最优线路(AnyTLS)-网址: www.dg6.me [AP1]"), exclude_regex
+assert pat.search("🇲🇾 K2B-VPS-KL"), exclude_regex
+assert pat.search("🇲🇾 K2B-VPS-KL Backup [AP1]") is None, exclude_regex
+assert pat.search("🇮🇩34印尼-电信优化(AnyTLS) [AP1]") is None, exclude_regex
+assert pat.search("🇸🇬15新加坡-专线(AnyTLS) [AP1]") is None, exclude_regex
+PY
+
+  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$d/port")" \
+  MIHOMO_API_SECRET="test-secret" \
+  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  python3 "$OPTIMIZER" \
+    --profiles-file "$REPO_ROOT/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" \
+    --profile ai \
+    --decision-log "$d/leaf-optimizer.jsonl" \
+    --now "2026-05-27T00:00:00Z" \
+    --dry-run > "$d/stdout.json"
+
+  python3 - "$d/stdout.json" "$d/requests.jsonl" <<'PY' || fail "K2B VPS leaf was not excluded before scoring"
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
+k2b = "🇲🇾 K2B-VPS-KL"
+assert summary["reason"] == "completed", summary
+assert k2b not in summary["eligible_leaf_names"], summary
+assert summary["excluded_leafs"].get(k2b) == "excluded_leaf_regex", summary
+assert not any(item.get("target_leaf") == k2b for item in summary["assignments"]), summary
+assert not any(req["method"] == "GET" and req["path"] == f"/proxies/{k2b}/delay" for req in requests), requests
+PY
+  stop_servers
+  echo "  PASS: AI profile excludes the Google AI VPS leaf before optimizer scoring"
 }
