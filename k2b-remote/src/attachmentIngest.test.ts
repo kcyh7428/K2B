@@ -52,7 +52,7 @@ describe('ingestAttachment', () => {
           normalized_text: 'Dr. Lo Hak Keung\nTel: 2830 3709',
           attachment_type: 'photo',
           source_path: input.path,
-          provider: 'minimax-vlm',
+          provider: 'gptsapi-vlm',
           message_ts: input.messageTsMs,
         }),
         gate: async (input) => {
@@ -84,7 +84,7 @@ describe('ingestAttachment', () => {
           normalized_text: 'Dr. Lo\n2025-04-11',
           attachment_type: 'photo',
           source_path: '/tmp/card.png',
-          provider: 'minimax-vlm',
+          provider: 'gptsapi-vlm',
           message_ts: 1711987200000,
         }),
         gate: async () => ({
@@ -115,7 +115,7 @@ describe('ingestAttachment', () => {
           normalized_text: 'Dr. Lo issued 2025-04-11',
           attachment_type: 'photo',
           source_path: '/tmp/c.png',
-          provider: 'minimax-vlm',
+          provider: 'gptsapi-vlm',
           message_ts: 1711987200000,
         }),
         gate: async (input) => {
@@ -142,7 +142,7 @@ describe('ingestAttachment', () => {
           normalized_text: 'text with 2025-04-11 date inside',
           attachment_type: 'photo',
           source_path: '/tmp/c.png',
-          provider: 'minimax-vlm',
+          provider: 'gptsapi-vlm',
           message_ts: 1711987200000,
           ocr_date: '2026-01-15',
         }),
@@ -153,6 +153,124 @@ describe('ingestAttachment', () => {
       }
     )
     expect(observedOcrDate).toBe('2026-01-15')
+  })
+
+  it('writes a raw OCR fallback row when attachment classifier writes zero rows', async () => {
+    const fallbackRows: Array<{
+      text: string
+      messageTsMs: number
+      provider: string
+      attachmentType: string
+      sourcePath: string
+    }> = []
+
+    const result = await ingestAttachment(
+      {
+        type: 'photo',
+        path: '/tmp/talentsignals.png',
+        caption: '',
+        messageTsMs: Date.parse('2026-05-27T15:00:00+08:00'),
+        chatId: '42',
+      },
+      {
+        extractor: async () => ({
+          normalized_text: 'TalentSignals Q3 review',
+          attachment_type: 'photo',
+          source_path: '/tmp/talentsignals.png',
+          provider: 'gptsapi-vlm',
+          message_ts: Date.parse('2026-05-27T15:00:00+08:00'),
+        }),
+        gate: async () => ({
+          status: 'classified',
+          rowsWritten: 0,
+          latencyMs: 1,
+          classifier: { keep: false, discard_reason: 'too_short' },
+        }),
+        rawOcrShelfWriter: async (row) => {
+          fallbackRows.push(row)
+          return true
+        },
+      }
+    )
+
+    expect(result.rawOcrRowsWritten).toBe(1)
+    expect(fallbackRows).toEqual([
+      {
+        text: 'TalentSignals Q3 review',
+        messageTsMs: Date.parse('2026-05-27T15:00:00+08:00'),
+        provider: 'gptsapi-vlm',
+        attachmentType: 'photo',
+        sourcePath: '/tmp/talentsignals.png',
+      },
+    ])
+  })
+
+  it('writes raw OCR fallback for future OCR providers, not only gptsapi-vlm', async () => {
+    const fallbackProviders: string[] = []
+
+    const result = await ingestAttachment(
+      {
+        type: 'photo',
+        path: '/tmp/future.png',
+        caption: '',
+        messageTsMs: Date.parse('2026-05-27T15:00:00+08:00'),
+        chatId: '42',
+      },
+      {
+        extractor: async () => ({
+          normalized_text: 'Future OCR text',
+          attachment_type: 'photo',
+          source_path: '/tmp/future.png',
+          provider: 'openai-vision',
+          message_ts: Date.parse('2026-05-27T15:00:00+08:00'),
+        }),
+        gate: async () => ({
+          status: 'classified',
+          rowsWritten: 0,
+          latencyMs: 1,
+          classifier: { keep: false, discard_reason: 'too_short' },
+        }),
+        rawOcrShelfWriter: async (row) => {
+          fallbackProviders.push(row.provider)
+          return true
+        },
+      }
+    )
+
+    expect(result.rawOcrRowsWritten).toBe(1)
+    expect(fallbackProviders).toEqual(['openai-vision'])
+    expect(result.rawOcrShelfWriterFailed).toBe(false)
+  })
+
+  it('reports raw OCR fallback writer failure separately from no-fallback-needed', async () => {
+    const result = await ingestAttachment(
+      {
+        type: 'photo',
+        path: '/tmp/talentsignals.png',
+        caption: '',
+        messageTsMs: Date.parse('2026-05-27T15:00:00+08:00'),
+        chatId: '42',
+      },
+      {
+        extractor: async () => ({
+          normalized_text: 'TalentSignals Q3 review',
+          attachment_type: 'photo',
+          source_path: '/tmp/talentsignals.png',
+          provider: 'gptsapi-vlm',
+          message_ts: Date.parse('2026-05-27T15:00:00+08:00'),
+        }),
+        gate: async () => ({
+          status: 'classified',
+          rowsWritten: 0,
+          latencyMs: 1,
+          classifier: { keep: false, discard_reason: 'too_short' },
+        }),
+        rawOcrShelfWriter: async () => false,
+      }
+    )
+
+    expect(result.rawOcrRowsWritten).toBe(0)
+    expect(result.rawOcrShelfWriterFailed).toBe(true)
   })
 
   it('extractor failure propagates', async () => {

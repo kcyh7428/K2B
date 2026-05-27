@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for scripts/washing-machine/extract-attachment.sh.
-# Uses MINIMAX_VLM_MOCK to bypass the real VLM endpoint so the unit tests
+# Uses GPTSAPI_VLM_MOCK to bypass the real VLM endpoint so the unit tests
 # are deterministic and offline.
 set -euo pipefail
 
@@ -10,8 +10,8 @@ FIXDIR="$REPO/tests/washing-machine/fixtures/images"
 TMP=$(mktemp -d)
 trap "rm -rf $TMP" EXIT
 
-# minimax-common.sh (sourced by minimax-vlm.sh) requires MINIMAX_API_KEY
-export MINIMAX_API_KEY="${MINIMAX_API_KEY:-test-key-for-unit-test}"
+export GPTSAPI_KEY="${GPTSAPI_KEY:-test-key-for-unit-test}"
+export GPTSAPI_VLM_STATE_DIR="$TMP/state"
 
 PASS=0
 FAIL=0
@@ -36,9 +36,9 @@ assert_nonzero_exit() {
 
 # --- Case 1: photo → VLM mock → normalized_text set, attachment_type=photo ---
 cat >"$TMP/mock-ok.json" <<'EOF'
-{"base_resp":{"status_code":0,"status_msg":"ok"},"content":"Dr. Lo Hak Keung\nTel: 2830 3709"}
+{"choices":[{"message":{"content":"Dr. Lo Hak Keung\nTel: 2830 3709"}}]}
 EOF
-export MINIMAX_VLM_MOCK="$TMP/mock-ok.json"
+export GPTSAPI_VLM_MOCK="$TMP/mock-ok.json"
 input='{"type":"photo","path":"'$FIXDIR'/dr-lo-card.png","message_ts":1711987200000}'
 out=$(printf '%s' "$input" | "$SCRIPT" 2>/dev/null)
 type=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["attachment_type"])')
@@ -54,9 +54,13 @@ ptype=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.st
 assert_eq "case2 text: pass-through text" "$text" "Hello world"
 assert_eq "case2 text: provider" "$ptype" "passthrough"
 
-# --- Case 3: GIF rejected (delegates rejection to minimax-vlm.sh) ---
+# --- Case 3: GIF accepted through GPTsAPI path (first frame if conversion is needed) ---
 input='{"type":"photo","path":"'$FIXDIR'/invalid.gif","message_ts":1711987200000}'
-assert_nonzero_exit "case3 gif rejected" bash -c "printf '%s' '$input' | '$SCRIPT'"
+out=$(printf '%s' "$input" | "$SCRIPT" 2>/dev/null)
+prov=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["provider"])')
+text=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["normalized_text"])')
+assert_eq "case3 gif provider" "$prov" "gptsapi-vlm"
+assert_contains "case3 gif text" "$text" "2830 3709"
 
 # --- Case 4: unknown type ---
 input='{"type":"unknown","message_ts":1711987200000}'
@@ -90,14 +94,22 @@ text=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.std
 assert_eq "case8 md document provider" "$prov" "passthrough"
 assert_contains "case8 md document text" "$text" "2830 3709"
 
-# --- Case 9: binary document (PNG renamed) → exit 2, unsupported mime ---
-cp "$FIXDIR/test-128.png" "$TMP/fake.bin"
-input='{"type":"document","path":"'$TMP'/fake.bin","message_ts":1711987200000}'
-assert_nonzero_exit "case9 binary document rejected" bash -c "printf '%s' '$input' | '$SCRIPT'"
+# --- Case 9: image document (Telegram screenshot/file) → OCR via GPTsAPI VLM ---
+input='{"type":"document","path":"'$FIXDIR'/test-128.png","message_ts":1711987200000}'
+out=$(printf '%s' "$input" | "$SCRIPT" 2>/dev/null)
+prov=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["provider"])')
+atype=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["attachment_type"])')
+assert_eq "case9 image document provider" "$prov" "gptsapi-vlm"
+assert_eq "case9 image document type preserved" "$atype" "document"
 
-# --- Case 10: missing document path ---
+# --- Case 10: binary non-image document → exit 2, unsupported mime ---
+printf '\001\002\003\004not text\n' > "$TMP/fake.bin"
+input='{"type":"document","path":"'$TMP'/fake.bin","message_ts":1711987200000}'
+assert_nonzero_exit "case10 binary document rejected" bash -c "printf '%s' '$input' | '$SCRIPT'"
+
+# --- Case 11: missing document path ---
 input='{"type":"document","message_ts":1711987200000}'
-assert_nonzero_exit "case10 document missing path" bash -c "printf '%s' '$input' | '$SCRIPT'"
+assert_nonzero_exit "case11 document missing path" bash -c "printf '%s' '$input' | '$SCRIPT'"
 
 echo "---"
 echo "TOTAL PASS=$PASS  FAIL=$FAIL"

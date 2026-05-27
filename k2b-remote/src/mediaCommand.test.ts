@@ -58,7 +58,6 @@ describe('parseMediaCommand', () => {
       ok: true,
       request: {
         kind: 'image',
-        provider: 'gptsapi',
         prompt: 'Clean executive K2B logo',
         aspectRatio: '1:1',
         slug: 'logo',
@@ -66,17 +65,12 @@ describe('parseMediaCommand', () => {
     })
   })
 
-  it('uses MiniMax when --minimax is present', () => {
-    expect(parseMediaCommand('/media image --minimax "clean stylized sketch" 21:9 story')).toEqual({
-      ok: true,
-      request: {
-        kind: 'image',
-        provider: 'minimax',
-        prompt: 'clean stylized sketch',
-        aspectRatio: '21:9',
-        slug: 'story',
-      },
-    })
+  it('rejects the retired MiniMax image fallback', () => {
+    const parsed = parseMediaCommand('/media image --minimax "clean stylized sketch" 21:9 story')
+    expect(parsed.ok).toBe(false)
+    expect(parsed.message).toBe(
+      'MiniMax image fallback was retired 2026-05-27. Use `/media image <prompt>` (GPTsAPI gpt-image-2 is the only path).'
+    )
   })
 
   it('rejects MiniMax-only aspect ratios on the GPTsAPI default path', () => {
@@ -90,7 +84,6 @@ describe('parseMediaCommand', () => {
       ok: true,
       request: {
         kind: 'image',
-        provider: 'gptsapi',
         prompt: 'clean executive logo',
         aspectRatio: '16:9',
       },
@@ -204,7 +197,6 @@ describe('parseMediaCommand', () => {
       ok: true,
       request: {
         kind: 'image',
-        provider: 'gptsapi',
         prompt: 'draw a 16:9 grid',
         aspectRatio: '16:9',
       },

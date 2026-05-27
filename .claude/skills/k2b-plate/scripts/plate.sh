@@ -212,28 +212,107 @@ echo ""
 
 echo "## 🚧 In Progress lanes"
 echo ""
-awk '
-  /^## In Progress/ { in_section=1; next }
-  /^## / && in_section { exit }
-  in_section && (/^\| \[\[feature_/ || /^\| \[\[project_/) {
-    if (match($0, /\[\[[^]]+\]\]/)) {
-      name = substr($0, RSTART+2, RLENGTH-4)
-      # Strip alias including any escaped \|
-      sub(/\\?\|.*/, "", name)
-      # Get last date-like column
-      n = split($0, parts, "|")
-      # Walk backwards to find a date column
-      for (i = n; i >= 1; i--) {
-        col = parts[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", col)
-        if (match(col, /^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/)) {
-          date = col
-          break
-        }
-      }
-      print "- **" name "** (updated " (date ? date : "?") ")"
-    }
-  }
-' "$VAULT"/wiki/concepts/index.md
+python3 - "$VAULT/wiki/concepts/index.md" <<'PY'
+from pathlib import Path
+import os
+import re
+import sys
+import unicodedata
+
+path = Path(sys.argv[1])
+
+def display_width(text: str) -> int:
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return width
+
+ZERO_WIDTH = {
+    "\u200b", "\u200c", "\u200d", "\u200e", "\u200f",
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+    "\u2060", "\ufeff",
+}
+
+def strip_invisible(text: str) -> str:
+    return "".join(ch for ch in text if ch not in ZERO_WIDTH)
+
+def split_markdown_row(line: str) -> list[str]:
+    cells = []
+    buf = []
+    bracket_depth = 0
+    i = 0
+    while i < len(line):
+        pair = line[i:i + 2]
+        if pair == "[[":
+            bracket_depth += 1
+            buf.append(pair)
+            i += 2
+            continue
+        if pair == "]]":
+            bracket_depth = max(0, bracket_depth - 1)
+            buf.append(pair)
+            i += 2
+            continue
+        ch = line[i]
+        if ch == "|" and bracket_depth == 0:
+            cells.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    cells.append("".join(buf).strip())
+    if cells and cells[0] == "":
+        cells = cells[1:]
+    if cells and cells[-1] == "":
+        cells = cells[:-1]
+    return cells
+
+def truncate_display(text: str, max_width: int = 120) -> str:
+    width = 0
+    out = []
+    for ch in text:
+        ch_width = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1)
+        if width + ch_width > max_width - 3:
+            suffix = "".join(out).rstrip()
+            if " " in suffix:
+                suffix = suffix.rsplit(" ", 1)[0].rstrip() or suffix
+            return suffix + "..."
+        out.append(ch)
+        width += ch_width
+    return "".join(out)
+
+in_section = False
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.startswith("## In Progress"):
+        in_section = True
+        continue
+    if in_section and line.startswith("## "):
+        break
+    if not in_section or not (line.startswith("| [[feature_") or line.startswith("| [[project_")):
+        continue
+
+    try:
+        m = re.search(r"\[\[([^]]+)\]\]", line)
+        if not m:
+            continue
+        name = re.sub(r"\\?\|.*", "", m.group(1))
+        parts = split_markdown_row(line)
+        status = " | ".join(parts[1:-3]).strip() if len(parts) >= 5 else (parts[1] if len(parts) > 1 else "")
+        status = status.replace("|", "·")
+        status = strip_invisible(status).strip()
+        if display_width(status) > 120:
+            status = truncate_display(status)
+        date = next((p for p in reversed(parts) if re.fullmatch(r"20\d\d-\d\d-\d\d", p)), "?")
+        if status:
+            print(f"- **{name}** (updated {date}): {status}")
+        else:
+            print(f"- **{name}** (updated {date})")
+    except Exception as exc:
+        if "K2B_PLATE_DEBUG" in os.environ:
+            print(f"plate: skipped malformed In Progress row: {exc}", file=sys.stderr)
+PY
 echo ""
 
 # --- Section 5: Memory flags ---

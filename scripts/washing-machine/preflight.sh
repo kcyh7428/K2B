@@ -11,7 +11,7 @@
 #   2. sentence-transformers loads all-MiniLM-L6-v2, returns 384-dim vector
 #   3. SQLite FTS5 works with the pinned interpreter
 #   4. MiniMax chat reachable via scripts/minimax-json-job.sh
-#   5. MiniMax VLM reachable at POST /v1/coding_plan/vlm on api.minimaxi.com
+#   5. GPTsAPI VLM reachable via scripts/gptsapi-vlm.sh
 #   6. flock / mkdir dual lock pattern works (same pattern as motivations-helper.sh)
 #   7. scripts/vault-query.sh search "Dr Lo Hak Keung" returns results
 #
@@ -191,8 +191,8 @@ fi
 
 pass "MiniMax-M2.7 chat reachable; returned valid JSON within timeout"
 
-# --- Step 5: MiniMax VLM smoke (POST /v1/coding_plan/vlm) ---
-step_header 5 "MiniMax VLM smoke (coding-plan-vlm)"
+# --- Step 5: GPTsAPI VLM smoke ---
+step_header 5 "GPTsAPI VLM smoke (gptsapi-vlm.sh)"
 
 # Generate a tiny 1x1 PNG inline if no fixture exists -- enough to prove the endpoint
 # responds. Real OCR accuracy is gated in Commit 3's extract-attachment.test.sh.
@@ -208,66 +208,48 @@ print('generated 1x1 test PNG')
 " || { fail "test PNG generation failed"; exit 5; }
 fi
 
-B64=$(base64 < "$TEST_IMAGE" | tr -d '\n')
-# macOS 'file' reports valid image/png; stays canonical for preflight
-MIME=$(file -b --mime-type "$TEST_IMAGE")
+if [[ -z "${GPTSAPI_KEY:-}" && -f "$HOME/.zshrc" ]]; then
+  set +eu
+  # shellcheck disable=SC1091
+  source "$HOME/.zshrc" >/dev/null 2>&1 || true
+  set -eu
+fi
 
-info "POST /v1/coding_plan/vlm on api.minimaxi.com (timeout 30s)"
+if [[ -z "${GPTSAPI_KEY:-}" ]]; then
+  fail "GPTSAPI_KEY not set in environment inherited by washing-machine subprocesses."
+  exit 5
+fi
+
+GPTSAPI_VLM="${REPO_ROOT}/scripts/gptsapi-vlm.sh"
+if [[ ! -x "$GPTSAPI_VLM" ]]; then
+  fail "scripts/gptsapi-vlm.sh not found or not executable at $GPTSAPI_VLM"
+  exit 5
+fi
+
+info "Calling GPTsAPI vision via $GPTSAPI_VLM (timeout 60s, wrapper: ${TIMEOUT_CMD:-<none>})"
 VLM_STDERR=$(mktemp)
 set +e
-VLM_RESP=$(curl --max-time 30 -sS \
-  "https://api.minimaxi.com/v1/coding_plan/vlm" \
-  -H "Authorization: Bearer ${MINIMAX_API_KEY}" \
-  -H "MM-API-Source: K2B" \
-  -H "Content-Type: application/json" \
-  -d "$(jq -n \
-    --arg p "Describe this image in one short sentence." \
-    --arg img "data:${MIME};base64,${B64}" \
-    '{prompt: $p, image_url: $img}')" 2>"$VLM_STDERR")
+VLM_RESP=$(run_with_timeout 60 "$GPTSAPI_VLM" \
+  --image "$TEST_IMAGE" \
+  --prompt "Describe this image in one short sentence." \
+  --job-name preflight-vlm 2>"$VLM_STDERR")
 VLM_RC=$?
 set -e
 
 if [[ $VLM_RC -ne 0 ]]; then
-  fail "VLM HTTP call failed (rc=$VLM_RC)"
+  fail "GPTsAPI VLM smoke failed (rc=$VLM_RC)"
   fail "stderr: $(cat "$VLM_STDERR")"
   rm -f "$VLM_STDERR"
-  fail "If rc=28 (timeout) or 22 (HTTP 4xx), check:"
-  fail "  - API key is .com-minted (not .io): echo \$MINIMAX_API_KEY | head -c 10"
-  fail "  - Host resolves: dig api.minimaxi.com"
-  fail "  - Account has real-name verification if base_resp.status_code == 2038"
   exit 5
 fi
 rm -f "$VLM_STDERR"
 
-# Guard: VLM must return valid JSON. Non-JSON HTTP 200 body (e.g., HTML error page
-# from an upstream proxy, or rate-limit page) would otherwise kill the script via
-# `set -e` mid-jq with no error message.
-if ! echo "$VLM_RESP" | jq -e . >/dev/null 2>&1; then
-  fail "VLM returned HTTP 200 but body is not valid JSON. First 500 chars:"
-  fail "$(echo "$VLM_RESP" | head -c 500)"
+if [[ -z "$VLM_RESP" ]]; then
+  fail "GPTsAPI VLM returned empty content"
   exit 5
 fi
 
-VLM_STATUS=$(echo "$VLM_RESP" | jq -r '.base_resp.status_code // "missing"')
-VLM_CONTENT=$(echo "$VLM_RESP" | jq -r '.content // ""')
-
-if [[ "$VLM_STATUS" != "0" ]]; then
-  VLM_MSG=$(echo "$VLM_RESP" | jq -r '.base_resp.status_msg // "no message"')
-  fail "VLM returned non-zero status_code: $VLM_STATUS ($VLM_MSG)"
-  fail "Error code reference:"
-  fail "  1002 = rate limit (retry after window)"
-  fail "  1004 = auth / region mismatch (check .com vs .io)"
-  fail "  1008 = quota exhausted"
-  fail "  2038 = real-name verification required"
-  exit 5
-fi
-
-if [[ -z "$VLM_CONTENT" ]]; then
-  fail "VLM returned status_code=0 but empty content field. Full response:\n$VLM_RESP"
-  exit 5
-fi
-
-pass "VLM endpoint reachable; status_code=0; content non-empty (${#VLM_CONTENT} chars)"
+pass "GPTsAPI VLM reachable; content non-empty (${#VLM_RESP} chars)"
 
 # --- Step 6: flock / mkdir dual lock pattern ---
 step_header 6 "flock / mkdir dual lock pattern"

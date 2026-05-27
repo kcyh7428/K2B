@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate images via GPTsAPI gpt-image-2-plus.
+# Generate images via GPTsAPI gpt-image-2.
 # GPTSAPI_KEY MUST be supplied by the caller's environment. The script does
 # not read .env files of its own accord; the TypeScript caller in
 # k2b-remote/src/mediaCommand.ts is the single source of truth for keys.
@@ -249,14 +249,14 @@ cleanup_lock() {
 }
 trap cleanup_lock EXIT
 
-submit_url="${GPTSAPI_API_HOST}/api/v3/openai/gpt-image-2-plus/text-to-image"
+submit_url="${GPTSAPI_API_HOST}/api/v3/openai/gpt-image-2/text-to-image"
 submit_body=$(jq -cn \
   --arg prompt "$prompt" \
   --arg aspect_ratio "$aspect_ratio" \
   --arg output_format "$output_format" \
   '{prompt: $prompt, aspect_ratio: $aspect_ratio, output_format: $output_format}')
 
-echo "gptsapi-image: submitting gpt-image-2-plus aspect=${aspect_ratio} format=${output_format}" >&2
+echo "gptsapi-image: submitting gpt-image-2 aspect=${aspect_ratio} format=${output_format}" >&2
 submit_response=$(curl \
   --silent --show-error --fail-with-body \
   --max-time "$GPTSAPI_CURL_TIMEOUT_SECONDS" \
@@ -359,7 +359,25 @@ cleanup_run() {
 }
 trap cleanup_run EXIT
 
-if ! python3 -c '
+# GPTSAPI's gpt-image-2 returns a URL in outputs[]; the legacy endpoint returned
+# base64. Handle both: download URLs, decode base64 inline.
+if [[ -n "$image_payload" && "$image_payload" =~ ^https?:// ]]; then
+  download_elapsed=$(($(date +%s) - start_epoch))
+  download_timeout=$((timeout_seconds - download_elapsed))
+  if (( download_timeout <= 0 )); then
+    emit_error "timeout" "prediction completed but no time remained to download output"
+    exit 1
+  fi
+  if (( download_timeout > GPTSAPI_CURL_TIMEOUT_SECONDS )); then
+    download_timeout="$GPTSAPI_CURL_TIMEOUT_SECONDS"
+  fi
+  if ! curl --silent --show-error --fail-with-body \
+       --connect-timeout 10 --max-time "$download_timeout" --retry 2 --retry-delay 3 --retry-max-time "$download_timeout" \
+       -o "$tmp_file" "$image_payload"; then
+    emit_error "download_failed" "could not fetch image from output URL"
+    exit 1
+  fi
+elif ! python3 -c '
 import base64
 import binascii
 import sys
@@ -376,9 +394,21 @@ except (binascii.Error, ValueError):
     sys.exit(3)
 if not data:
     sys.exit(4)
+with open(output_path, "wb") as fh:
+    fh.write(data)
+' "$tmp_file" <<<"$image_payload"; then
+  emit_error "base64_decode_failed" "$completed_response"
+  exit 1
+fi
+
+# Magic-byte validation applies to both URL-downloaded and base64-decoded files.
+if ! python3 -c '
+import sys
+fmt = sys.argv[1]
+with open(sys.argv[2], "rb") as fh:
+    data = fh.read()
 if len(data) < 100:
     sys.exit(7)
-fmt = sys.argv[2]
 if fmt == "png" and not data.startswith(b"\x89PNG\r\n\x1a\n"):
     sys.exit(5)
 if fmt == "png" and not data.endswith(b"IEND\xaeB`\x82"):
@@ -387,10 +417,8 @@ if fmt == "jpeg" and not data.startswith(b"\xff\xd8\xff"):
     sys.exit(6)
 if fmt == "jpeg" and not data.endswith(b"\xff\xd9"):
     sys.exit(9)
-with open(output_path, "wb") as fh:
-    fh.write(data)
-' "$tmp_file" "$output_format" <<<"$image_payload"; then
-  emit_error "base64_decode_failed" "$completed_response"
+' "$output_format" "$tmp_file"; then
+  emit_error "magic_byte_check_failed" "downloaded file did not match expected ${output_format} signature"
   exit 1
 fi
 

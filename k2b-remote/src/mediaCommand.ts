@@ -8,9 +8,8 @@ import { readEnvFile } from './env.js'
 import { logger } from './logger.js'
 import { sendMedia } from './telegram-outbox.js'
 
-const MEDIA_ENV = readEnvFile(['GPTSAPI_KEY', 'MINIMAX_API_KEY'])
+const MEDIA_ENV = readEnvFile(['GPTSAPI_KEY'])
 const GPTSAPI_ASPECT_RATIOS = new Set(['1:1', '16:9', '9:16', '4:3', '3:4'])
-const MINIMAX_ASPECT_RATIOS = new Set(['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'])
 const ASPECT_RATIO_PATTERN = /^\d+:\d+$/
 const DEFAULT_IMAGE_ASPECT_RATIO = '16:9'
 const MAX_IMAGE_PROMPT_LENGTH = 4000
@@ -35,12 +34,10 @@ const PLAIN_OPTION_TOKEN_PATTERN = /^[A-Za-z]+$/
 const GPTSAPI_IMAGE_TIMEOUT_MS = 150_000
 const GPTSAPI_CURL_TIMEOUT_S = 30
 const GPTSAPI_NODE_BUDGET_MARGIN_S = 10
-const MINIMAX_IMAGE_TIMEOUT_MS = 90_000
 const GPTSAPI_SPEECH_TIMEOUT_MS = 90_000
 
 export interface MediaImageRequest {
   kind: 'image'
-  provider: 'gptsapi' | 'minimax'
   prompt: string
   aspectRatio: string
   slug?: string
@@ -152,11 +149,14 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
     }
   }
 
-  let provider: MediaImageRequest['provider'] = 'gptsapi'
   const args: CommandToken[] = []
   for (const token of commandTokens.slice(2)) {
     if (token.value === '--minimax') {
-      provider = 'minimax'
+      return {
+        ok: false,
+        message:
+          'MiniMax image fallback was retired 2026-05-27. Use `/media image <prompt>` (GPTsAPI gpt-image-2 is the only path).',
+      }
     } else {
       args.push(token)
     }
@@ -166,7 +166,7 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
     return { ok: false, message: 'Use /media image "prompt" [aspect] [slug].' }
   }
 
-  const allowedAspectRatios = provider === 'minimax' ? MINIMAX_ASPECT_RATIOS : GPTSAPI_ASPECT_RATIOS
+  const allowedAspectRatios = GPTSAPI_ASPECT_RATIOS
   const firstAspectIndex = args.findIndex((arg) => ASPECT_RATIO_PATTERN.test(arg.value))
   if (firstAspectIndex >= 0 && !args[0]?.quoted) {
     return {
@@ -188,7 +188,7 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
     } else if (maybeAspect && ASPECT_RATIO_PATTERN.test(maybeAspect)) {
       return {
         ok: false,
-        message: `${maybeAspect} is not supported for ${provider === 'minimax' ? 'MiniMax' : 'gpt-image-2-plus'}.`,
+        message: `${maybeAspect} is not supported for gpt-image-2.`,
       }
     } else if (maybeAspect) {
       slug = args.slice(1).map((arg) => arg.value).join('-') || undefined
@@ -220,7 +220,6 @@ export function parseMediaCommand(text: string): ParsedMediaCommand {
     ok: true,
     request: {
       kind: 'image',
-      provider,
       prompt,
       aspectRatio,
       ...(slug ? { slug } : {}),
@@ -456,56 +455,38 @@ function fileLooksLikeAudio(realPath: string): boolean {
 
 function runImageScript(request: MediaImageRequest): Promise<{ stdout: string; stderr: string }> {
   const gptsapiKey = gptsapiKeyForMedia()
-  const minimaxKey = minimaxKeyForMedia()
 
-  if (request.provider === 'gptsapi' && !gptsapiKey) {
+  if (!gptsapiKey) {
     return Promise.reject(new Error('GPTSAPI_KEY is not set in the bot environment.'))
   }
-  if (request.provider === 'minimax' && !minimaxKey) {
-    return Promise.reject(new Error('MINIMAX_API_KEY is not set in the bot environment.'))
-  }
 
-  const script =
-    request.provider === 'gptsapi'
-      ? resolve(K2B_PROJECT_ROOT, 'scripts', 'gptsapi-image.sh')
-      : resolve(K2B_PROJECT_ROOT, 'scripts', 'minimax-image.sh')
-
-  const args =
-    request.provider === 'gptsapi'
-      ? [
-          '--prompt',
-          request.prompt,
-          '--aspect-ratio',
-          request.aspectRatio,
-          '--timeout',
-          String(
-            Math.max(
-              30,
-              Math.floor(GPTSAPI_IMAGE_TIMEOUT_MS / 1000) - GPTSAPI_CURL_TIMEOUT_S - GPTSAPI_NODE_BUDGET_MARGIN_S
-            )
-          ),
-          ...(request.slug ? ['--slug', request.slug] : []),
-        ]
-      : [
-          request.prompt,
-          request.aspectRatio,
-          ...(request.slug ? [request.slug] : []),
-        ]
+  const script = resolve(K2B_PROJECT_ROOT, 'scripts', 'gptsapi-image.sh')
+  const args = [
+    '--prompt',
+    request.prompt,
+    '--aspect-ratio',
+    request.aspectRatio,
+    '--timeout',
+    String(
+      Math.max(
+        30,
+        Math.floor(GPTSAPI_IMAGE_TIMEOUT_MS / 1000) - GPTSAPI_CURL_TIMEOUT_S - GPTSAPI_NODE_BUDGET_MARGIN_S
+      )
+    ),
+    ...(request.slug ? ['--slug', request.slug] : []),
+  ]
 
   return new Promise((resolvePromise, reject) => {
     const child = spawn(script, args, {
       cwd: K2B_PROJECT_ROOT,
       env: {
         ...process.env,
-        ...(gptsapiKey ? { GPTSAPI_KEY: gptsapiKey } : {}),
-        ...(minimaxKey ? { MINIMAX_API_KEY: minimaxKey } : {}),
+        GPTSAPI_KEY: gptsapiKey,
         K2B_VAULT_PATH,
         // Pin the bash-side curl timeout so it stays coupled to the
         // Node-side timeout math even if a stray env override is
         // present in the parent shell.
-        ...(request.provider === 'gptsapi'
-          ? { GPTSAPI_CURL_TIMEOUT_SECONDS: String(GPTSAPI_CURL_TIMEOUT_S) }
-          : {}),
+        GPTSAPI_CURL_TIMEOUT_SECONDS: String(GPTSAPI_CURL_TIMEOUT_S),
       },
     })
     let stdout = ''
@@ -529,7 +510,7 @@ function runImageScript(request: MediaImageRequest): Promise<{ stdout: string; s
       }
     }
 
-    const timeoutMs = request.provider === 'gptsapi' ? GPTSAPI_IMAGE_TIMEOUT_MS : MINIMAX_IMAGE_TIMEOUT_MS
+    const timeoutMs = GPTSAPI_IMAGE_TIMEOUT_MS
     const timeout = setTimeout(() => {
       if (settled) return
       settled = true
@@ -684,10 +665,6 @@ function gptsapiKeyForMedia(): string {
   return process.env.GPTSAPI_KEY || MEDIA_ENV['GPTSAPI_KEY'] || ''
 }
 
-function minimaxKeyForMedia(): string {
-  return process.env.MINIMAX_API_KEY || MEDIA_ENV['MINIMAX_API_KEY'] || ''
-}
-
 // Cap key length we are willing to use as a literal substitution token.
 // Tokens longer than this (e.g., a stray 4KB blob masquerading as a key)
 // would inflate regex/replace cost without benefit. Real API keys are
@@ -697,7 +674,10 @@ const MAX_SECRET_LENGTH_FOR_REDACTION = 512
 export function safeUserErrorMessage(detail: string): string {
   let safe = detail
   const variants = []
-  for (const secret of [gptsapiKeyForMedia(), minimaxKeyForMedia(), process.env.GPTSAPI_KEY, process.env.MINIMAX_API_KEY]) {
+  const envSecrets = Object.entries(process.env)
+    .filter(([key]) => /(API_KEY|_KEY|SECRET|TOKEN)$/i.test(key))
+    .map(([, value]) => value)
+  for (const secret of [gptsapiKeyForMedia(), process.env.GPTSAPI_KEY, ...envSecrets]) {
     if (!secret) continue
     if (secret.length > MAX_SECRET_LENGTH_FOR_REDACTION) continue
     variants.push(secret, encodeURIComponent(secret), JSON.stringify(secret).slice(1, -1))
@@ -772,10 +752,8 @@ export async function handleMediaCommand(ctx: Context): Promise<void> {
     return
   }
 
-  const providerLabel = request.provider === 'gptsapi' ? 'gpt-image-2-plus' : 'MiniMax image-01'
-  const waitText = request.provider === 'gptsapi'
-    ? 'Generating image with gpt-image-2-plus. This usually takes about 40 seconds.'
-    : 'Generating image with MiniMax image-01.'
+  const providerLabel = 'gpt-image-2'
+  const waitText = 'Generating image with gpt-image-2. This usually takes about 40 seconds.'
   await replyText(ctx, waitText)
 
   const sendUploadAction = async () => {
@@ -792,7 +770,7 @@ export async function handleMediaCommand(ctx: Context): Promise<void> {
     const { stdout, stderr } = await runImageScript(request)
     if (stderr.trim()) {
       logger.info(
-        { provider: request.provider, stderr: safeUserErrorMessage(stderr).slice(0, 2000) },
+        { provider: 'gptsapi', stderr: safeUserErrorMessage(stderr).slice(0, 2000) },
         'media image script stderr'
       )
     }

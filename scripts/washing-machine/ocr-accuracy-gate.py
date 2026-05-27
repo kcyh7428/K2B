@@ -2,26 +2,25 @@
 """OCR accuracy gate (Ship 1B).
 
 Runs every image in tests/washing-machine/fixtures/images/ocr-expected.json
-through scripts/minimax-vlm.sh and computes per-image field-match accuracy.
+through scripts/gptsapi-vlm.sh and computes per-image field-match accuracy.
 
 Field match = case-insensitive substring match of the expected value in the
 OCR content string. Per-image accuracy = matched_fields / total_fields.
 Corpus accuracy = mean of per-image accuracies. Exits 0 if corpus accuracy
 >= threshold (default 0.80 from ocr-expected.json). Exit 1 otherwise.
 
-Offline: set MINIMAX_VLM_MOCK to point at a JSON file containing a single
-`{"base_resp":{"status_code":0},"content":"..."}` payload. Every image call
+Offline: set GPTSAPI_VLM_MOCK to point at a JSON file containing a single
+GPTsAPI chat-completions response payload. Every image call
 returns that same content, so the test script can seed a content string that
 passes the gate deterministically.
 
 Env:
-  MINIMAX_VLM_MOCK  optional. See above.
-  MINIMAX_API_KEY   required if MINIMAX_VLM_MOCK is not set (real VLM call).
+  GPTSAPI_VLM_MOCK  optional. See above.
+  GPTSAPI_KEY       required if GPTSAPI_VLM_MOCK is not set (real VLM call).
 """
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -29,7 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 FIXDIR = REPO / "tests/washing-machine/fixtures/images"
 EXPECTED_PATH = FIXDIR / "ocr-expected.json"
-VLM_SCRIPT = REPO / "scripts/minimax-vlm.sh"
+VLM_SCRIPT = REPO / "scripts/gptsapi-vlm.sh"
 
 OCR_PROMPT = (
     "Transcribe every field on this business card. Return plain text, "
@@ -45,13 +44,12 @@ def run_vlm(image_path: Path, job_name: str) -> str:
             "--image", str(image_path),
             "--prompt", OCR_PROMPT,
             "--job-name", job_name,
-            "--fallback", "never",
         ],
         capture_output=True, text=True, timeout=90,
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"minimax-vlm.sh exited {result.returncode} for {image_path.name}: "
+            f"gptsapi-vlm.sh exited {result.returncode} for {image_path.name}: "
             f"{result.stderr.strip()}"
         )
     return result.stdout

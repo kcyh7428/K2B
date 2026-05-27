@@ -6,12 +6,23 @@ import { UPLOADS_DIR, TELEGRAM_BOT_TOKEN, HTTP_PROXY } from './config.js'
 import { logger } from './logger.js'
 
 const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : undefined
+const MEDIA_DOWNLOAD_ATTEMPTS = 3
+const MEDIA_DOWNLOAD_RETRY_DELAY_MS = 500
 
 // Ensure uploads dir exists
 mkdirSync(UPLOADS_DIR, { recursive: true })
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '-')
+}
+
+type HttpGetter = (url: string) => Promise<Buffer>
+
+export interface DownloadMediaDeps {
+  httpGet?: HttpGetter
+  now?: () => number
+  retryDelayMs?: number
+  writeFile?: typeof writeFileSync
 }
 
 async function httpGet(url: string): Promise<Buffer> {
@@ -22,21 +33,88 @@ async function httpGet(url: string): Promise<Buffer> {
         httpsRequest(res.headers.location, { agent: proxyAgent }, handler).on('error', reject).end()
         return
       }
+      if (res.statusCode && (res.statusCode >= 500 || res.statusCode === 429)) {
+        res.resume()
+        const err = new Error(`HTTP ${res.statusCode} from Telegram media endpoint`) as NodeJS.ErrnoException
+        err.code = `HTTP_${res.statusCode}`
+        reject(err)
+        return
+      }
       const chunks: Buffer[] = []
       res.on('data', (chunk: Buffer) => chunks.push(chunk))
-      res.on('end', () => resolvePromise(Buffer.concat(chunks)))
+      res.on('end', () => {
+        const body = Buffer.concat(chunks)
+        if (body.length === 0) {
+          const err = new Error('empty Telegram media response') as NodeJS.ErrnoException
+          err.code = 'EMPTY_RESPONSE'
+          reject(err)
+          return
+        }
+        resolvePromise(body)
+      })
     }
     httpsRequest(url, { agent: proxyAgent }, handler).on('error', reject).end()
   })
 }
 
+async function httpGetWithRetry(
+  url: string,
+  get: HttpGetter,
+  retryDelayMs: number
+): Promise<Buffer> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= MEDIA_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      return await get(url)
+    } catch (err) {
+      lastErr = err
+      if (attempt >= MEDIA_DOWNLOAD_ATTEMPTS || !isTransientDownloadError(err)) {
+        throw err
+      }
+      logger.warn(
+        { err: String(err), attempt, nextAttempt: attempt + 1 },
+        'Telegram media download transient failure; retrying'
+      )
+      if (retryDelayMs > 0) {
+        await sleep(retryDelayMs * attempt)
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+}
+
+function isTransientDownloadError(err: unknown): boolean {
+  const e = err as NodeJS.ErrnoException
+  const code = typeof e?.code === 'string' ? e.code : ''
+  if (['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'EMPTY_RESPONSE'].includes(code)) {
+    return true
+  }
+  if (/^HTTP_5\d\d$/.test(code)) {
+    return true
+  }
+  if (code === 'HTTP_429') {
+    return true
+  }
+  const msg = err instanceof Error ? err.message : String(err)
+  return /socket hang up|network socket disconnected|TLS|timeout|ECONNRESET|ETIMEDOUT/i.test(msg)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
 export async function downloadMedia(
   fileId: string,
-  originalFilename?: string
+  originalFilename?: string,
+  deps: DownloadMediaDeps = {}
 ): Promise<string> {
+  const get = deps.httpGet ?? httpGet
+  const writeFile = deps.writeFile ?? writeFileSync
+  const now = deps.now ?? Date.now
+  const retryDelayMs = deps.retryDelayMs ?? MEDIA_DOWNLOAD_RETRY_DELAY_MS
   // Get file path from Telegram
   const fileInfoUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`
-  const fileInfoBuf = await httpGet(fileInfoUrl)
+  const fileInfoBuf = await httpGetWithRetry(fileInfoUrl, get, retryDelayMs)
   const fileInfo = JSON.parse(fileInfoBuf.toString())
 
   if (!fileInfo.ok || !fileInfo.result?.file_path) {
@@ -45,15 +123,15 @@ export async function downloadMedia(
 
   const remotePath = fileInfo.result.file_path
   const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${remotePath}`
-  const data = await httpGet(downloadUrl)
+  const data = await httpGetWithRetry(downloadUrl, get, retryDelayMs)
 
   const ext = remotePath.includes('.') ? '.' + remotePath.split('.').pop() : ''
   const safeName = originalFilename
     ? sanitizeFilename(originalFilename)
     : `file${ext}`
-  const localPath = resolve(UPLOADS_DIR, `${Date.now()}_${safeName}`)
+  const localPath = resolve(UPLOADS_DIR, `${now()}_${safeName}`)
 
-  writeFileSync(localPath, data)
+  writeFile(localPath, data)
   logger.info({ localPath, size: data.length }, 'Downloaded media')
   return localPath
 }

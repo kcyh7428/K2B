@@ -1,11 +1,10 @@
 # K2B Media Generator
 
-Generate images, speech, audio transcriptions, video, and music. Images and speech default to GPTsAPI (`gpt-image-2-plus`, `tts-1-hd`). Transcription defaults to GPTsAPI Whisper (`whisper-1`) with Groq Whisper as fallback. Video and music remain on MiniMax (specialty modalities).
+Generate images, speech, audio transcriptions, video, and music. Images and speech default to GPTsAPI (`gpt-image-2`, `tts-1-hd`). Transcription defaults to GPTsAPI Whisper (`whisper-1`) with Groq Whisper as fallback. MiniMax image fallback was retired on 2026-05-27.
 
 ## Commands
 
-- `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2-plus`
-- `/media image --minimax "prompt" [aspect] [slug]` -- Generate an image via MiniMax fallback
+- `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2`
 - `/media speech "text" [voice] [model] [slug]` -- Generate TTS audio via GPTsAPI `tts-1-hd`
 - `/media transcribe <audio-file> [language] [slug]` -- Transcribe audio via GPTsAPI Whisper (Chinese/English/50+ languages); Groq Whisper available as fallback
 - `/media video "prompt" [slug]` -- Generate video clip (requires Max tier; MiniMax)
@@ -15,9 +14,9 @@ Generate images, speech, audio transcriptions, video, and music. Images and spee
 
 ## Paths
 
-- Scripts (image/video/music/VLM): `~/Projects/K2B/scripts/minimax-image.sh`, `minimax-vlm.sh`, plus the MiniMax MCP for video/music
+- Scripts (image/VLM): `~/Projects/K2B/scripts/gptsapi-image.sh`, `~/Projects/K2B/scripts/gptsapi-vlm.sh`
 - Scripts (speech + transcription): `~/Projects/K2B/scripts/gptsapi-speech.sh`, `~/Projects/K2B/scripts/gptsapi-transcribe.sh`
-- **Retired (do NOT call):** `scripts/minimax-speech.sh` deleted 2026-05-16. `mcp__minimax__text_to_audio` MCP tool still exists in the agent's tool list but its backend is dead (status_code 2049). `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created — MiniMax has no STT endpoint.
+- **Retired (do NOT call):** the legacy MiniMax image and OCR wrapper scripts were deleted 2026-05-27. `scripts/minimax-speech.sh` deleted 2026-05-16. `mcp__minimax__text_to_audio` MCP tool still exists in the agent's tool list but its backend is dead (status_code 2049). `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created -- MiniMax has no STT endpoint.
 - Assets: `~/Projects/K2B-Vault/Assets/` (images/, audio/, video/)
 - Vault: `~/Projects/K2B-Vault`
 
@@ -29,17 +28,10 @@ Use the bash wrapper for image generation:
 ./scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio 16:9 --slug slug
 ```
 
-The wrapper submits an async `gpt-image-2-plus` prediction, polls for completion for up to 120 seconds, decodes the returned base64 image, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
-
-**MiniMax fallback**
-Use MiniMax only when Keith passes `--minimax`, when GPTsAPI is down, or when the requested style benefits from MiniMax's faster stylized output:
-```bash
-./scripts/minimax-image.sh "prompt" 16:9 slug
-```
+The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
 
 **Other media: MiniMax MCP Server** (when available in session)
 The MiniMax MCP server (`minimax-mcp-js`) provides direct tools:
-- `text_to_image` -- image generation
 - `text_to_audio` -- TTS
 - `generate_video` -- video generation (Max tier)
 - `query_video_generation` -- poll async video task
@@ -52,7 +44,6 @@ The MiniMax MCP server (`minimax-mcp-js`) provides direct tools:
 If MCP tools are unavailable, use the bash scripts:
 ```bash
 ./scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio 16:9 --slug slug
-./scripts/minimax-image.sh "prompt" [aspect] [slug]    # only with --minimax fallback
 ./scripts/gptsapi-speech.sh "text" [voice] [model] [slug]
 ./scripts/gptsapi-transcribe.sh <audio-file> [language]
 ```
@@ -61,22 +52,18 @@ If MCP tools are unavailable, use the bash scripts:
 
 ### Parameters
 - **prompt**: Description of the image to generate
-- **aspect**: GPTsAPI supports `1:1`, `16:9`, `9:16`, `4:3`, `3:4` (default: `16:9`). MiniMax fallback also supports `3:2`, `2:3`, `21:9`.
+- **aspect**: GPTsAPI supports `1:1`, `16:9`, `9:16`, `4:3`, `3:4` (default: `16:9`).
 - **slug**: Filename slug (auto-generated from prompt if omitted)
-- Default model: GPTsAPI `gpt-image-2-plus`
-- Fallback model: MiniMax `image-01`
+- Default model: GPTsAPI `gpt-image-2`
 
 ### Provider choice
 - Default GPTsAPI for executive editorial images, typography, diagrams, quote cards, LinkedIn headers, and clean business visuals.
-- Use `--minimax` for stylized images, faster drafts, quota fallback, or when GPTsAPI is degraded.
-- Rollback path: `/media image --minimax "prompt" [aspect] [slug]`.
 - TTS now routes through GPTsAPI by default (see Speech section below). MiniMax TTS retired 2026-05-14 -- the Token Plan tier allocates zero TTS quota and pay-per-call MiniMax requires a separate Standard API key with Credits topped up. GPTsAPI uses the existing `GPTSAPI_KEY` and same billing as image generation.
 
 ### Workflow
 1. Default: run `scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio aspect --slug slug`
-2. Fallback: when `--minimax` is present, run `scripts/minimax-image.sh "prompt" aspect slug`
-3. Asset saves to `K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png`
-4. **Send to Telegram**:
+2. Asset saves to `K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png`
+3. **Send to Telegram**:
    - If running through k2b-remote `/media image`, the bot sends a progress message, waits for the wrapper, then sends the photo directly.
    - If running inside an agent session, write an outbox manifest so the bot delivers the image to Keith:
    ```bash
@@ -84,8 +71,8 @@ If MCP tools are unavailable, use the bash scripts:
      "$HOME/Projects/K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png" \
      "description"
    ```
-5. Print the Obsidian embed: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
-6. If generating for a vault note, update that note with the embed link
+4. Print the Obsidian embed: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
+5. If generating for a vault note, update that note with the embed link
 
 ### Style Tips for Prompts
 - LinkedIn headers: "professional, corporate, modern, clean design"
@@ -268,10 +255,10 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 
 - No em dashes, no AI cliches
 - Always confirm with Keith before generating multiple assets (API quota awareness)
-- GPTsAPI image cost: $0.019 per `gpt-image-2-plus` request. MiniMax Plus tier daily limits still apply when using `--minimax`.
+- GPTsAPI image cost: see the current GPTsAPI dashboard for `gpt-image-2`.
 - For batch generation, spread across days rather than burning quota in one session
 - Always print the Obsidian embed path so Keith can paste it into notes
 - API key error guidance, by command:
   - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard."
-  - `/media image --minimax`, `/media video`, `/media music` (MiniMax-only modalities) -- "Set `MINIMAX_API_KEY` in your shell environment. Get it from minimaxi.com dashboard."
+  - `/media video`, `/media music` (MiniMax-only modalities) -- "Set `MINIMAX_API_KEY` in your shell environment. Get it from minimaxi.com dashboard." Current MiniMax subscription state may still make these fail with `status_code 2049`.
   - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in `~/Projects/K2B/k2b-remote/.env`."

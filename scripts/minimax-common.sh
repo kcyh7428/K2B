@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # Shared utilities for MiniMax API scripts
 # Sourced by all minimax-*.sh scripts
+#
+# ============================================================================
+# IMPORTANT: MiniMax subscription EXPIRED on or before 2026-05-27.
+# All MiniMax endpoints (text chatcompletion, VLM, image, video, music) now
+# return {"base_resp":{"status_code":2049,"status_msg":"invalid api key"}}.
+#
+# The MiniMax branch in this file (K2B_LLM_PROVIDER=minimax) is therefore
+# INERT in production. The Kimi branch (K2B_LLM_PROVIDER=kimi, the default)
+# is the only working text path.
+#
+# We keep the MiniMax branch code intact, not delete it, because:
+# 1. The provider abstraction is useful if a future text provider plugs in.
+# 2. Re-activating MiniMax, if Keith subscribes again, needs no code change.
+# 3. Deletion of dead-but-quiescent text code is a separate cleanup ship.
+#
+# Spec: wiki/concepts/Shipped/feature_vlm-gptsapi-migration.md
+# ============================================================================
 
 set -euo pipefail
 
@@ -34,8 +51,8 @@ MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
 # 2026-04-25: MiniMax Plus plan started returning status_code 2061 "your current
 # token plan not support model" for every text model (M2.7, M2.5, abab6.5, etc.).
 # Kimi K2.6 via the /coding/v1 Anthropic-compatible endpoint is the new primary.
-# Image generation and TTS stay on MiniMax -- Kimi is text-only. To roll back
-# to MiniMax for text when MiniMax releases a supported model, export
+# Kimi is text-only. GPTsAPI owns image, VLM/OCR, TTS, and STT in K2B now.
+# To roll back to MiniMax for text when MiniMax releases a supported model, export
 # K2B_LLM_PROVIDER=minimax (no other changes needed).
 K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
 KIMI_API_HOST="${KIMI_API_HOST:-https://api.kimi.com/coding}"
@@ -80,10 +97,11 @@ slugify() {
 }
 
 # Make an authenticated API call.
-# Routes text chatcompletion requests to Kimi (when K2B_LLM_PROVIDER=kimi);
-# everything else (image_generation, t2a_v2, ...) always hits MiniMax because
-# Kimi is text-only. Callers keep writing OpenAI-style bodies -- the Kimi
-# branch translates to/from Anthropic Messages on the wire.
+# Routes text chatcompletion requests to Kimi (when K2B_LLM_PROVIDER=kimi).
+# Non-text MiniMax paths still fall through to MiniMax if an old caller uses
+# mm_api directly, but production image/VLM/TTS/STT callers have moved to
+# GPTsAPI wrappers. Callers keep writing OpenAI-style bodies -- the Kimi branch
+# translates to/from Anthropic Messages on the wire.
 #
 # Usage: mm_api POST /v1/text/chatcompletion_v2 '{"model":"...","messages":[...],...}'
 #        mm_api POST /v1/image_generation      '{"model":"image-01",...}'
@@ -99,8 +117,8 @@ mm_api() {
   _mm_api_minimax "$method" "$path" "$body"
 }
 
-# Direct MiniMax call -- original mm_api behavior, used for image/TTS always
-# and for text when K2B_LLM_PROVIDER=minimax (manual rollback).
+# Direct MiniMax call -- original mm_api behavior, now only a legacy fallback
+# for non-text MiniMax paths and text when K2B_LLM_PROVIDER=minimax.
 _mm_api_minimax() {
   local method="$1"
   local path="$2"

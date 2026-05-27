@@ -21,7 +21,7 @@
 #     "normalized_text": "<extracted text>",
 #     "attachment_type": "photo" | "document" | "text",
 #     "source_path": "/abs/path/to/file" | null,
-#     "provider": "minimax-vlm" | "pdftotext" | "passthrough",
+#     "provider": "gptsapi-vlm" | "pdftotext" | "passthrough",
 #     "message_ts": <ms-since-epoch>
 #   }
 #
@@ -33,7 +33,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-VLM="$REPO_ROOT/scripts/minimax-vlm.sh"
+# MiniMax VLM retired after the subscription expired on 2026-05-27
+# (status_code 2049). GPTsAPI is now the single OCR provider.
+VLM="$REPO_ROOT/scripts/gptsapi-vlm.sh"
 
 # --- Read envelope from stdin ---
 input=$(cat)
@@ -82,16 +84,37 @@ json.dump(payload, sys.stdout, ensure_ascii=False)
 ' "$@"
 }
 
+extract_image_text() {
+  local image_path="$1"
+  local image_prompt="$2"
+  local vlm_stderr
+  vlm_stderr=$(mktemp "${TMPDIR:-/tmp}/k2b-extract-vlm.XXXXXX")
+  if ! "$VLM" --image "$image_path" --prompt "$image_prompt" --job-name attachment-image 2>"$vlm_stderr"; then
+    echo "extract-attachment: VLM failed for $image_path: $(cat "$vlm_stderr")" >&2
+    rm -f "$vlm_stderr"
+    return 1
+  fi
+  rm -f "$vlm_stderr"
+}
+
+require_nonempty_ocr() {
+  local text="$1" label="$2"
+  if ! printf '%s' "$text" | python3 -c 'import sys; sys.exit(0 if any(not ch.isspace() for ch in sys.stdin.read()) else 1)'; then
+    echo "extract-attachment: VLM returned empty OCR for $label" >&2
+    exit 3
+  fi
+}
+
 case "$type" in
   photo)
     [ -n "$path" ] || { echo "extract-attachment: photo requires path" >&2; exit 2; }
     [ -f "$path" ] || { echo "extract-attachment: photo path not found: $path" >&2; exit 2; }
     prompt='Transcribe every field on this business card. Return plain text, one field per line as Key: Value. Include both English and Chinese text if present. Be literal: no interpretation, no commentary.'
-    if ! ocr=$("$VLM" --image "$path" --prompt "$prompt" --job-name attachment-photo --fallback auto 2>&1); then
-      echo "extract-attachment: VLM failed for $path: $ocr" >&2
+    if ! ocr=$(extract_image_text "$path" "$prompt"); then
       exit 3
     fi
-    emit_json "$ocr" "photo" "$path" "minimax-vlm" "$msg_ts"
+    require_nonempty_ocr "$ocr" "$path"
+    emit_json "$ocr" "photo" "$path" "gptsapi-vlm" "$msg_ts"
     ;;
   document)
     [ -n "$path" ] || { echo "extract-attachment: document requires path" >&2; exit 2; }
@@ -111,6 +134,15 @@ case "$type" in
       fi
       emit_json "$content" "document" "$path" "pdftotext" "$msg_ts"
     else
+      if [[ "$mime" == image/* ]]; then
+        prompt='Extract all text visible in this image. Preserve layout where helpful. Return only the extracted text, no commentary.'
+        if ! ocr=$(extract_image_text "$path" "$prompt"); then
+          exit 3
+        fi
+        require_nonempty_ocr "$ocr" "$path"
+        emit_json "$ocr" "document" "$path" "gptsapi-vlm" "$msg_ts"
+        exit 0
+      fi
       # Plain-text document (markdown, txt, etc.) -- pass through raw content.
       # Binary documents would poison the classifier; reject anything non-text.
       case "$mime" in

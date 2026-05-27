@@ -22,10 +22,13 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { logger } from './logger.js'
 import { K2B_PROJECT_ROOT } from './config.js'
-import { normalizationGate, type GateInput, type GateInvocation } from './washingMachine.js'
+import { isoDate, normalizationGate, type GateInput, type GateInvocation } from './washingMachine.js'
 
 const EXTRACT_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/extract-attachment.sh')
+const SHELF_WRITER_SCRIPT = resolve(K2B_PROJECT_ROOT, 'scripts/washing-machine/shelf-writer.sh')
 const EXTRACT_TIMEOUT_MS = 60_000
+const RAW_OCR_SHELF_TIMEOUT_MS = 5_000
+const RAW_OCR_FALLBACK_REASONS = new Set(['too_short', 'no_date', 'ambiguous', 'unparseable'])
 
 export interface AttachmentInput {
   type: 'photo' | 'document'
@@ -49,11 +52,22 @@ export interface IngestResult {
   ocrText: string
   gate: GateInvocation
   pendingPrompt?: string
+  rawOcrRowsWritten: number
+  rawOcrShelfWriterFailed: boolean
 }
 
 export interface IngestDeps {
   extractor?: (input: AttachmentInput) => Promise<ExtractResult>
   gate?: (input: GateInput) => Promise<GateInvocation>
+  rawOcrShelfWriter?: (row: RawOcrShelfRow) => Promise<boolean>
+}
+
+export interface RawOcrShelfRow {
+  text: string
+  messageTsMs: number
+  provider: string
+  attachmentType: string
+  sourcePath: string
 }
 
 async function runExtractor(input: AttachmentInput): Promise<ExtractResult> {
@@ -127,6 +141,82 @@ function isExtractResult(x: unknown): x is ExtractResult {
   return true
 }
 
+async function runRawOcrShelfWriter(row: RawOcrShelfRow): Promise<boolean> {
+  const attrs = [
+    `text:${collapseForShelf(row.text)}`,
+    `pinned:no`,
+    `category:fact`,
+    `source:telegram-attachment-ocr`,
+    `provider:${collapseForShelf(row.provider)}`,
+    `attachment_type:${collapseForShelf(row.attachmentType)}`,
+    `source_path:${collapseForShelf(row.sourcePath)}`,
+  ]
+  const args = [
+    SHELF_WRITER_SCRIPT,
+    '--shelf',
+    'semantic',
+    '--date',
+    isoDate(new Date(row.messageTsMs)),
+    '--type',
+    'fact',
+    '--slug',
+    buildRawOcrSlug(row.text),
+  ]
+  for (const attr of attrs) {
+    args.push('--attr', attr)
+  }
+
+  return new Promise((resolveFn) => {
+    const child = spawn('bash', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', (c) => {
+      stderr += c.toString()
+    })
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // ignore
+      }
+      logger.error({ slug: args[args.indexOf('--slug') + 1] }, 'attachmentIngest: raw OCR shelf fallback timed out')
+      resolveFn(false)
+    }, RAW_OCR_SHELF_TIMEOUT_MS)
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        resolveFn(true)
+      } else {
+        logger.error(
+          { code, stderr: stderr.trim(), slug: args[args.indexOf('--slug') + 1] },
+          'attachmentIngest: raw OCR shelf fallback failed'
+        )
+        resolveFn(false)
+      }
+    })
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      logger.error({ err: String(err) }, 'attachmentIngest: raw OCR shelf fallback spawn error')
+      resolveFn(false)
+    })
+  })
+}
+
+function collapseForShelf(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').trim()
+}
+
+function buildRawOcrSlug(text: string): string {
+  const base = collapseForShelf(text)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+    .replace(/-+$/g, '')
+  return base || 'attachment-ocr'
+}
+
 const DATE_RE = /\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/
 
 /**
@@ -154,6 +244,7 @@ export async function ingestAttachment(
   const extractor = deps.extractor ?? runExtractor
   const gate =
     deps.gate ?? ((gi: GateInput) => normalizationGate(gi))
+  const rawOcrShelfWriter = deps.rawOcrShelfWriter ?? runRawOcrShelfWriter
 
   const extracted = await extractor(input)
   const ocrText = extracted.normalized_text ?? ''
@@ -165,6 +256,30 @@ export async function ingestAttachment(
     promptMessageId: input.promptMessageId,
     ocrDate,
   })
+  let rawOcrRowsWritten = 0
+  let rawOcrShelfWriterFailed = false
+  if (shouldWriteRawOcrFallback(extracted, gateResult)) {
+    const wrote = await rawOcrShelfWriter({
+      text: ocrText,
+      messageTsMs: input.messageTsMs,
+      provider: extracted.provider,
+      attachmentType: extracted.attachment_type,
+      sourcePath: extracted.source_path ?? input.path,
+    })
+    rawOcrRowsWritten = wrote ? 1 : 0
+    rawOcrShelfWriterFailed = !wrote
+    logger.info(
+      {
+        provider: extracted.provider,
+        attachmentType: extracted.attachment_type,
+        gateStatus: gateResult.status,
+        discardReason: gateResult.classifier?.discard_reason,
+        rawOcrRowsWritten,
+        rawOcrShelfWriterFailed,
+      },
+      'attachmentIngest: raw OCR fallback after zero classifier rows'
+    )
+  }
   if (gateResult.status === 'pending-confirmation') {
     logger.info(
       { uuid: gateResult.pendingUuid, chatId: input.chatId, ocrDate, provider: extracted.provider },
@@ -175,5 +290,21 @@ export async function ingestAttachment(
     ocrText,
     gate: gateResult,
     pendingPrompt: gateResult.pendingPrompt,
+    rawOcrRowsWritten,
+    rawOcrShelfWriterFailed,
   }
+}
+
+function shouldWriteRawOcrFallback(extracted: ExtractResult, gateResult: GateInvocation): boolean {
+  const provider = extracted.provider.trim().toLowerCase()
+  const discardReason = gateResult.classifier?.discard_reason
+  return (
+    provider !== 'pdftotext' &&
+    provider !== 'passthrough' &&
+    extracted.normalized_text.trim().length > 0 &&
+    gateResult.status === 'classified' &&
+    gateResult.rowsWritten === 0 &&
+    typeof discardReason === 'string' &&
+    RAW_OCR_FALLBACK_REASONS.has(discardReason)
+  )
 }

@@ -76,7 +76,7 @@ The agent (Claude Code) does NOT show the raw script output verbatim by default.
 | 🔔 Open reminders | **Full body verbatim** -- same reason. |
 | 🎩 K2Bi PM checkpoint | **One-paragraph summary** the agent extracts from the multi-paragraph blockquote. Capture: ship state, next concrete action, binding constraints. Skip the numbered conditional triggers + discipline list unless Keith asks. |
 | ✅ Recently shipped | **Title + date + one-line tag** per item. Skip the long Shipped-table notes. |
-| 🚧 In Progress | **2-column markdown table** (feature / updated date). No commentary column. |
+| 🚧 In Progress | **3-column markdown table** (feature / updated date / latest status -- what's next). The status column is a one-line distillation of the Ship/Phase column from `concepts/index.md` -- what state the feature is in AND the concrete next move so Keith doesn't have to open each note to remember what it is. Keep each cell under ~120 chars; if the raw status is longer, compress while preserving the next-action signal (e.g. "Ship 2 commits 2+3 pending: --tier override + Codex --cached"). The script (plate.sh) emits the truncated status alongside the slug + date, so the agent just needs to wrap into table cells and compress further if needed. Established 2026-05-27 after Keith asked for at-a-glance status context on every In Progress feature. |
 | 📅 Pipeline | **Compact one-line** Next Up + Backlog top 3 (e.g. "Next Up: feature_X · Backlog top 3: A · B · C"). |
 | 🧠 Memory flags | **Omit entirely when empty**. When populated, render as a 1-line summary per R-ID/E-ID. |
 

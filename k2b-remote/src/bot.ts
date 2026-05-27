@@ -723,6 +723,10 @@ export function createBot(): Bot {
         return
       }
 
+      if (ingest?.rawOcrShelfWriterFailed) {
+        await ctx.reply('OCR text was extracted, but K2B could not save it to the semantic shelf. I will still include it in this reply.')
+      }
+
       // Append OCR text as context so the agent sees what was extracted,
       // even on the normal (no-contradiction) path. The agent response
       // runs through handleMessage below.
@@ -786,6 +790,10 @@ export function createBot(): Bot {
           })
         }
         return
+      }
+
+      if (ingest?.rawOcrShelfWriterFailed) {
+        await ctx.reply('Document text was extracted, but K2B could not save it to the semantic shelf. I will still include it in this reply.')
       }
 
       const wrapper = buildDocumentMessage(localPath, filename, caption)

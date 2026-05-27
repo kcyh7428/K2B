@@ -2,6 +2,14 @@
 
 Always uses the global endpoint (api.minimaxi.com), never the China-only
 .chat host. See ~/.claude/projects/.../memory/minimax_endpoint.md.
+
+IMPORTANT: MiniMax subscription EXPIRED on or before 2026-05-27. All MiniMax
+endpoints (text chatcompletion, VLM, image, video, music) now return
+{"base_resp":{"status_code":2049,"status_msg":"invalid api key"}}. The
+K2B_LLM_PROVIDER=minimax branch is therefore inert in production; the default
+Kimi branch is the only working text path. Keep this skeleton for future
+provider reuse or possible MiniMax reactivation. Spec:
+wiki/concepts/Shipped/feature_vlm-gptsapi-migration.md.
 """
 
 import http.client
@@ -21,7 +29,8 @@ DEFAULT_TIMEOUT_S = 300
 
 # Kimi K2.6 via the Anthropic-compatible /coding endpoint. Primary text
 # provider as of 2026-04-25 -- see scripts/minimax-common.sh header.
-# Image/TTS stay on MiniMax (Kimi is text-only). Rollback: K2B_LLM_PROVIDER=minimax.
+# Kimi is text-only. GPTsAPI owns image, VLM/OCR, TTS, and STT in K2B now.
+# Rollback text routing: K2B_LLM_PROVIDER=minimax.
 K2B_LLM_PROVIDER = os.environ.get("K2B_LLM_PROVIDER", "kimi").strip() or "kimi"
 KIMI_API_HOST = os.environ.get("KIMI_API_HOST", "https://api.kimi.com/coding")
 KIMI_MESSAGES_PATH = "/v1/messages"

@@ -2,7 +2,7 @@
   "_meta": {
     "version": "1.0",
     "generated": "2026-04-24",
-    "purpose": "Per-image expected OCR fields for the Ship 1B OCR accuracy gate. scripts/washing-machine/ocr-accuracy-gate.py runs each image through minimax-vlm.sh and computes field-match accuracy (case-insensitive substring match on the OCR content). Corpus accuracy = mean of per-image accuracies. Exits 0 if corpus accuracy >= threshold.",
+    "purpose": "Per-image expected OCR fields for the Ship 1B OCR accuracy gate. scripts/washing-machine/ocr-accuracy-gate.py runs each image through gptsapi-vlm.sh and computes field-match accuracy (case-insensitive substring match on the OCR content). Corpus accuracy = mean of per-image accuracies. Exits 0 if corpus accuracy >= threshold.",
     "notes": "The 5 images exercise: (1) the Dr. Lo card (Chinese + English), (2) an English-only card, (3) an English+Chinese mixed card with a female Chinese name, (4) a doctor card with traditional-Chinese honorific, (5) a minimal name+phone card. Threshold 0.80 is the Ship 1B binary gate."
   },
   "threshold": 0.80,
