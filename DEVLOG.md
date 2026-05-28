@@ -1,6 +1,25 @@
 # K2B Development Log
 
 ---
+## 2026-05-28 -- EOD capture content vs schema rejection split
+
+**Commit:** `7402e33` fix(eod-capture): split content vs schema rejections, stop halting job-b on content failures
+
+**What shipped:** Bug fix for the 2026-05-27 incident where two sessions with hallucinated `evidence_quote` values (Kimi extractor scraped system-prompt facts that don't appear in the transcript) caused `job-a` to return rc=1, the cron wrapper to skip `job-b`, and the day's 37 successful extractions to never reach reconciliation. The fix introduces `ContentClassRejectionError(ValueError)` with two leaf types (`EvidenceQuoteNotInTranscriptError`, `UnsupportedCanonicalHomeError`); `_filter_extraction_items` tags each rejection with `rejection_class: content | schema`; the all-items-rejected skip path now requires every rejection to be content-class; partial schema drift fails loud even with surviving items; schema/contract checks run before content-class checks across all three validators; type guards added so non-string `evidence_quote`/`canonical_home` raise plain `ValueError` rather than being str()-coerced into a content-class miss; cached extractions re-validated against the tightened contract; `rejection_class` persisted to `.staging/extraction-rejections/` JSON for audit.
+
+**Backfill:** 2026-05-27 was already reconciled out-of-band before the code change landed, via a direct `scripts/eod-capture-cron.sh job-b 2026-05-27` call on the Mini (38 staged extractions: 16 auto-written, 2 conflicts queued for `/review`, 1 low-confidence queued, 0 errors).
+
+**Codex review:** Tier 3 (1133 LOC changed). 11 adversarial passes were run during `/ship`, each finding a real attack vector that was addressed inline: (1) rc=0 too broad, (2) skip path too broad, (3) substring marker too broad, (4) phrase collision via extractor-controlled values, (5/6) validation ordering within and across validators, (7) missing/empty evidence_quote bypass, (8) cached-extraction bypass, (9) partial-schema-rejection gap, (10) MiniMax fallback found 5 findings (2 fixed, 3 dismissed with reasoning), (11) non-string type drift. Pass 12 wedged on pure inference and was killed for cost reasons; the contract is locked by the test suite.
+
+**Verification:** 124/124 EOD-capture tests pass. New regression tests cover: stub-session skip, schema-drift failure path, non-string field types, missing/empty `evidence_quote`, validation ordering across both validators, phrase-collision attacks via extractor-controlled values, cache bypass with stale evidence_quote contract, partial schema vs partial content rejections, and persisted `rejection_class`.
+
+**Feature status change:** none (bug fix to already-shipped `feature_end-of-day-capture`; no lane move). An `## Updates` entry was appended to `wiki/concepts/Shipped/feature_end-of-day-capture.md` for the audit trail.
+
+**Follow-ups:** Dismissed pass-10 MiniMax findings (rejection-file race condition under hypothetical concurrent job-a, cache-invalidation observability gap, pathological disk-full case) are documented here as candidates for future hardening if they ever bite production.
+
+**Key decisions:** Cap adversarial review at 11 passes after diminishing returns. The chain of HIGH findings represented genuine design progress, but pass-12 was killed when the original production bug + 11 layers of additional hardening + 124 regression tests already exceeded the marginal value of another pass.
+
+---
 ## 2026-05-28 -- VLM/OCR GPTSAPI migration code landed
 
 **Commit:** `3e2dd2c` feat(vlm): migrate OCR media paths from MiniMax to GPTSAPI
