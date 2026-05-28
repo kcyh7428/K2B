@@ -73,6 +73,28 @@ class AllItemsRejectedError(ValueError):
     """Raised when Kimi returned items but every item failed validation."""
 
 
+class ContentClassRejectionError(ValueError):
+    """Marker base for per-item rejections that are content/groundability
+    failures (extractor produced well-formed items but couldn't ground them).
+
+    These are skip-eligible when ALL items in a session are rejected, because
+    the cron pipeline should not halt on sessions that legitimately produce
+    no extractable content. Schema/contract drift uses plain ``ValueError``.
+    Subclasses are used in place of substring matching on error text, so
+    extractor-controlled values echoed into error messages cannot smuggle a
+    schema error into the skip path.
+    """
+
+
+class EvidenceQuoteNotInTranscriptError(ContentClassRejectionError):
+    """Extractor invented a quote that isn't in the stripped transcript."""
+
+
+class UnsupportedCanonicalHomeError(ContentClassRejectionError):
+    """Extractor proposed writing the item to a destination not in the
+    canonical_home allow-list."""
+
+
 def _normalize_predicate_value(value: object) -> str:
     text = str(value)
     if PREDICATE_WHITESPACE_RE.search(text):
@@ -809,7 +831,22 @@ def _validate_item_evidence_quote(
     normalized_payload: str,
     session_path: Path,
 ) -> None:
-    quote = str(item.get("evidence_quote") or "").strip()
+    # Schema-class presence/non-empty/type guard runs first so missing,
+    # empty, or non-string evidence_quote cannot fall through to the
+    # content-class checks below and end up masking extractor drift. Plain
+    # str() coercion of a dict or list would otherwise produce a stringified
+    # repr that then fails grounding and raises content-class.
+    if "evidence_quote" not in item:
+        raise ValueError(f"extractor item {idx} missing evidence_quote")
+    raw_quote = item.get("evidence_quote")
+    if not isinstance(raw_quote, str):
+        raise ValueError(
+            f"extractor item {idx} has non-string evidence_quote: "
+            f"{type(raw_quote).__name__}"
+        )
+    quote = raw_quote.strip()
+    if not quote:
+        raise ValueError(f"extractor item {idx} has empty evidence_quote")
     _validate_evidence_quote_controls(quote, idx=idx)
     normalized_quote = _normalize_evidence_text(quote)
     if normalized_quote and len(normalized_quote) < MIN_EVIDENCE_QUOTE_CHARS:
@@ -817,7 +854,7 @@ def _validate_item_evidence_quote(
             f"evidence_quote for item {idx} in {session_path} is too short"
         )
     if normalized_quote and normalized_quote not in normalized_payload:
-        raise ValueError(
+        raise EvidenceQuoteNotInTranscriptError(
             f"evidence_quote for item {idx} in {session_path} is not present "
             "in stripped transcript"
         )
@@ -836,18 +873,34 @@ def _filter_extraction_items(
                 raise ValueError(
                     f"extractor item {idx} for {session_path} is not an object"
                 )
-            _validate_extraction_item(item, idx=idx, source=session_path)
+            # All schema/contract checks run first across BOTH validators
+            # (canonical_home content-class check is deferred). Then evidence
+            # quote schema (control char, too short) + grounding. Then
+            # canonical_home routing runs last so any earlier schema drift
+            # raises ValueError (rejection_class=schema) before the
+            # content-class UnsupportedCanonicalHomeError can fire.
+            _validate_extraction_item(
+                item,
+                idx=idx,
+                source=session_path,
+                defer_content_class_checks=True,
+            )
             _validate_item_evidence_quote(
                 item,
                 idx=idx,
                 normalized_payload=normalized_payload,
                 session_path=session_path,
             )
+            _validate_canonical_home_routing(item, idx=idx, source=session_path)
         except ValueError as exc:
+            rejection_class = (
+                "content" if isinstance(exc, ContentClassRejectionError) else "schema"
+            )
             rejections.append(
                 {
                     "item_index": idx,
                     "error": f"{type(exc).__name__}: {exc}",
+                    "rejection_class": rejection_class,
                     "item": item,
                 }
             )
@@ -858,14 +911,49 @@ def _filter_extraction_items(
     return filtered, rejections
 
 
-def _all_rejections_are_unsupported_canonical_home(rejections: list[dict]) -> bool:
+def _all_rejections_are_content_class(rejections: list[dict]) -> bool:
+    """True when every rejection is a content/groundability failure (extractor
+    produced well-formed items but couldn't ground them), not a schema/contract
+    failure (extractor itself drifted from the items spec).
+
+    Reads the structured ``rejection_class`` field set by
+    ``_filter_extraction_items`` based on the exception type at raise-time
+    (``ContentClassRejectionError`` subclasses vs plain ``ValueError``).
+    String matching is avoided so an extractor-controlled value echoed into
+    an error message cannot smuggle a schema failure into the skip path.
+    """
     return bool(rejections) and all(
-        "unsupported canonical_home" in str(rejection.get("error", ""))
-        for rejection in rejections
+        rejection.get("rejection_class") == "content" for rejection in rejections
     )
 
 
-def _validate_extraction_item(item: object, *, idx: int, source: Path) -> None:
+def _validate_canonical_home_routing(item: dict, *, idx: int, source: Path) -> None:
+    raw = item.get("canonical_home")
+    if raw is None:
+        return
+    # Non-string canonical_home is schema-class drift, not content-class.
+    # Without this check str() would stringify a dict/list and the
+    # equality check would then raise UnsupportedCanonicalHomeError
+    # (content-class) instead of surfacing the type drift as a failure.
+    if not isinstance(raw, str):
+        raise ValueError(
+            f"extractor item {idx} has non-string canonical_home: "
+            f"{type(raw).__name__}"
+        )
+    canonical_home = raw.strip()
+    if canonical_home and canonical_home != "wiki/context/shelves/semantic.md":
+        raise UnsupportedCanonicalHomeError(
+            f"extractor item {idx} has unsupported canonical_home: {canonical_home}"
+        )
+
+
+def _validate_extraction_item(
+    item: object,
+    *,
+    idx: int,
+    source: Path,
+    defer_content_class_checks: bool = False,
+) -> None:
     if not isinstance(item, dict):
         raise ValueError(f"extractor item {idx} for {source} is not an object")
     allowed_fields = {
@@ -895,11 +983,6 @@ def _validate_extraction_item(item: object, *, idx: int, source: Path) -> None:
     if confidence not in {"high", "medium", "low"}:
         raise ValueError(
             f"extractor item {idx} has unsupported confidence: {confidence}"
-        )
-    canonical_home = str(item.get("canonical_home", "")).strip()
-    if canonical_home and canonical_home != "wiki/context/shelves/semantic.md":
-        raise ValueError(
-            f"extractor item {idx} has unsupported canonical_home: {canonical_home}"
         )
     speaker_source = str(item.get("speaker_source", "")).strip()
     if speaker_source and speaker_source not in {"keith", "assistant_confirmed"}:
@@ -932,9 +1015,22 @@ def _validate_extraction_item(item: object, *, idx: int, source: Path) -> None:
         _validate_evidence_quote_controls(
             str(item.get("evidence_quote", "")), idx=idx
         )
+    # Content-class checks (canonical_home routing) are deferred when called
+    # from _filter_extraction_items so they run AFTER _validate_item_evidence_quote
+    # too -- otherwise the canonical_home raise would mask schema-class
+    # quote errors (too-short, control char). Other callers (validate_extraction,
+    # reconcile_extractions) opt in to the full check by leaving the default.
+    if not defer_content_class_checks:
+        _validate_canonical_home_routing(item, idx=idx, source=source)
 
 
-def _existing_valid_extraction(path: Path, *, transcript_sha256: str | None = None) -> bool:
+def _existing_valid_extraction(
+    path: Path,
+    *,
+    transcript_sha256: str | None = None,
+    payload: str | None = None,
+    session_path: Path | None = None,
+) -> bool:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -947,6 +1043,29 @@ def _existing_valid_extraction(path: Path, *, transcript_sha256: str | None = No
         return False
     if transcript_sha256 is not None and data.get("transcript_sha256") != transcript_sha256:
         return False
+    # Re-run the evidence_quote contract on cached items so a stale extraction
+    # written before the tightened schema (or by a drifted extractor) is not
+    # silently treated as valid. validate_extraction above only runs the item-
+    # shape checks; the per-quote presence + non-empty + control + grounding
+    # checks live in _validate_item_evidence_quote and need the payload.
+    # session_path is only used to construct error messages; default to the
+    # cache file path so any future caller that passes payload without it
+    # still gets the re-validation rather than silently bypassing it.
+    if payload is not None:
+        normalized_payload = _normalize_evidence_text(payload)
+        error_path = session_path if session_path is not None else path
+        try:
+            for idx, item in enumerate(data.get("items", [])):
+                if not isinstance(item, dict):
+                    return False
+                _validate_item_evidence_quote(
+                    item,
+                    idx=idx,
+                    normalized_payload=normalized_payload,
+                    session_path=error_path,
+                )
+        except ValueError:
+            return False
     return True
 
 
@@ -982,7 +1101,10 @@ def run_job_a(
                         continue
                     transcript_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
                     if _existing_valid_extraction(
-                        out_path, transcript_sha256=transcript_sha256
+                        out_path,
+                        transcript_sha256=transcript_sha256,
+                        payload=payload,
+                        session_path=session_path,
                     ):
                         continue
                     if out_path.exists():
@@ -1022,9 +1144,31 @@ def run_job_a(
                         )
                     if rejections and not data.get("items"):
                         message = f"all extractor items rejected for {session_path}"
-                        if _all_rejections_are_unsupported_canonical_home(rejections):
+                        if _all_rejections_are_content_class(rejections):
+                            # Extractor produced well-formed items but couldn't
+                            # ground them in the transcript (hallucination /
+                            # bad canonical_home). Skip the session; the cron
+                            # pipeline continues so the rest of the day's
+                            # successful extractions still reach job-b.
                             raise AllItemsRejectedError(message)
+                        # Schema/contract drift -- extractor itself is broken
+                        # (missing fields, invalid kinds, malformed items).
+                        # Raise ValueError so the failure path writes an
+                        # extraction-failures file and main() returns rc=1,
+                        # halting job-b until the extractor is fixed.
                         raise ValueError(message)
+                    if any(
+                        rejection.get("rejection_class") == "schema"
+                        for rejection in rejections
+                    ):
+                        # Partial schema drift: some items survived but the
+                        # extractor produced at least one malformed item.
+                        # Must surface a failure so cron rc=1 fires; otherwise
+                        # extractor regression would silently drop items while
+                        # job-b reconciles the survivors.
+                        raise ValueError(
+                            f"extractor produced schema-invalid item(s) for {session_path}"
+                        )
                     _atomic_write_json(out_path, data)
                     written.append(out_path)
                 except AllItemsRejectedError as exc:
@@ -1257,6 +1401,7 @@ def _write_extraction_rejection(
         "source_app": detect_source_app(session_path),
         "item_index": item_index,
         "error": str(rejection.get("error", "")),
+        "rejection_class": rejection.get("rejection_class", "schema"),
         "item": rejection.get("item"),
     }
     if transcript_sha256:

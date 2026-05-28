@@ -414,7 +414,10 @@ def test_job_a_skips_existing_valid_extraction_on_rerun(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
-    session.write_text(json.dumps({"type": "user", "content": "ok"}) + "\n", encoding="utf-8")
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
     calls = 0
 
     def fake_extract(_payload: str, _session_path: Path) -> dict:
@@ -429,6 +432,7 @@ def test_job_a_skips_existing_valid_extraction_on_rerun(tmp_path):
                     "predicate": "status",
                     "object": "B",
                     "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
                     "dedupe_key": "fact:a:status",
                 }
             ],
@@ -1396,9 +1400,15 @@ def test_all_items_rejected_writes_skip_not_failure(tmp_path, monkeypatch):
     assert all("unsupported canonical_home" in p.read_text(encoding="utf-8") for p in rejections)
 
 
-def test_all_items_rejected_for_bad_evidence_quote_still_fails(
-    tmp_path, monkeypatch
+def test_all_items_rejected_for_bad_evidence_quote_now_skips(
+    tmp_path, monkeypatch, capsys
 ):
+    # Content-class validation failures (e.g. hallucinated evidence_quote that
+    # the extractor invented from the system prompt) must take the SKIP path,
+    # not the FAILURE path. A 2026-05-27 incident showed that halting job-b on
+    # 2 hallucinated-evidence_quote sessions dropped 37 successful extractions
+    # for the day. Infrastructure failures (missing wrapper, auth/API, parse
+    # errors) still go to the failure path -- see test_other_value_errors_*.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -1436,17 +1446,973 @@ def test_all_items_rejected_for_bad_evidence_quote_still_fails(
 
     monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
 
-    written = eod_capture.run_job_a([session], vault_path=vault, run_date="2026-05-14")
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
 
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
-    assert written == []
+    assert rc == 0
+    assert failures == []
+    assert len(skips) == 1
+    assert len(rejections) == 1
+    assert skips[0].name.startswith("2026-05-14_")
+    skip = json.loads(skips[0].read_text(encoding="utf-8"))
+    assert skip["reason"] == "all_items_rejected_after_validation"
+    assert "all extractor items rejected" in skip["error"]
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "content"
+    assert "evidence_quote" in rejection["error"]
+    issues = eod_capture._digest_health_issues(vault, "2026-05-14")
+    assert any("all-items-rejected skips: 1" in issue for issue in issues)
+    assert not any("extraction failures" in issue for issue in issues)
+
+
+def test_schema_drift_masked_by_unsupported_canonical_home_still_fails(
+    tmp_path, monkeypatch, capsys
+):
+    # Validation ordering: if an item has BOTH a schema drift (missing
+    # dedupe_key) AND an unsupported canonical_home, the schema check must
+    # raise first so the rejection is classified as schema, not content.
+    # Otherwise an extractor regression could be masked behind a content
+    # rejection and the cron pipeline would silently skip job-b's halt.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    # dedupe_key missing + bad canonical_home: schema must win
+                    "canonical_home": "wiki/concepts/feature_other.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "dedupe_key" in rejection["error"]
+
+
+def test_non_string_evidence_quote_fails_as_schema_not_content(
+    tmp_path, monkeypatch, capsys
+):
+    # Type-drift attack: extractor returns evidence_quote as a dict/list. The
+    # old code would str()-coerce that into a stringified repr, fail the
+    # grounding check, and raise content-class -> skip path. The type guard
+    # must catch this as schema drift -> failure path -> rc=1.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": {"text": "alpha fact one is true"},
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "non-string evidence_quote" in rejection["error"]
+
+
+def test_non_string_canonical_home_fails_as_schema_not_content(
+    tmp_path, monkeypatch, capsys
+):
+    # Type-drift attack via canonical_home as list. Same pattern: old code
+    # would str()-coerce the list, fail equality check, raise content-class
+    # UnsupportedCanonicalHomeError -> skip. Type guard must surface schema.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": ["wiki/context/shelves/semantic.md"],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "non-string canonical_home" in rejection["error"]
+
+
+def test_partial_schema_drift_with_valid_survivor_still_fails(
+    tmp_path, monkeypatch, capsys
+):
+    # Partial-rejection gap: extractor returns one valid item PLUS one
+    # schema-drifted item. The valid item would otherwise be staged and
+    # main() would return rc=0, silently dropping the malformed item.
+    # Must surface a failure file so cron rc=1 fires and extractor
+    # regression doesn't hide behind a survivor.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true and beta fact two is also true"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                },
+                {
+                    # schema drift: missing dedupe_key
+                    "kind": "fact",
+                    "subject": "Beta",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "beta fact two is also true",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    captured = capsys.readouterr()
+    assert rc == 1
     assert skips == []
     assert len(failures) == 1
     assert len(rejections) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "schema-invalid" in failures[0].read_text(encoding="utf-8")
+    assert "extraction failure(s) written" in captured.err
+
+
+def test_partial_content_drift_with_valid_survivor_succeeds(
+    tmp_path, monkeypatch, capsys
+):
+    # Counter-test: same partial-rejection shape but the rejected item is
+    # CONTENT-class (hallucinated evidence_quote). The valid item should
+    # still stage and main() should return rc=0 -- content-class partial
+    # rejections are non-fatal because they're not extractor regression.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def mixed_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                },
+                {
+                    "kind": "fact",
+                    "subject": "Beta",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    # content-class: evidence_quote not in transcript
+                    "evidence_quote": "totally fabricated text not in payload",
+                    "dedupe_key": "fact:beta:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", mixed_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    extractions = sorted((vault / ".staging" / "extractions").glob("*.json"))
+    assert rc == 0
+    assert failures == []
+    assert skips == []
+    assert len(extractions) == 1
+    staged = json.loads(extractions[0].read_text(encoding="utf-8"))
+    assert [item["dedupe_key"] for item in staged["items"]] == ["fact:alpha:status"]
+
+
+def test_cached_extraction_with_missing_evidence_quote_is_reextracted(
+    tmp_path, monkeypatch
+):
+    # Cached-extraction bypass guard: a previously-staged .staging/extractions
+    # file written under the old (looser) schema with missing evidence_quote
+    # MUST NOT be treated as valid on re-run, even if schema_version and
+    # transcript_sha256 match. _existing_valid_extraction must re-validate
+    # the evidence_quote contract against the payload.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    # Pre-stage a "valid-looking" extraction without evidence_quote.
+    payload = eod_capture.strip_transcript(session)
+    sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    out_dir = vault / ".staging" / "extractions"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stale = {
+        "schema_version": eod_capture.EXTRACTION_SCHEMA_VERSION,
+        "session_path": str(session),
+        "source_app": "claude_code",
+        "transcript_sha256": sha,
+        "items": [
+            {
+                "kind": "fact",
+                "subject": "Alpha",
+                "predicate": "status",
+                "object": "true",
+                "confidence": "high",
+                "dedupe_key": "fact:alpha:status",
+                # evidence_quote intentionally missing -- pre-tightening shape
+            }
+        ],
+    }
+    session_id = eod_capture._safe_session_id(session)
+    (out_dir / f"2026-05-14_{session_id}.json").write_text(
+        json.dumps(stale), encoding="utf-8"
+    )
+
+    calls = 0
+
+    def fake_extract(_payload: str, _session_path: Path) -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                }
+            ]
+        }
+
+    written = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        extract_func=fake_extract,
+    )
+
+    # The extractor MUST have been called (cache was rejected) and the new
+    # extraction MUST have a non-empty evidence_quote.
+    assert calls == 1
+    assert len(written) == 1
+    fresh = json.loads(written[0].read_text(encoding="utf-8"))
+    assert fresh["items"][0]["evidence_quote"] == "alpha fact one is true"
+
+
+def test_missing_evidence_quote_plus_bad_canonical_home_fails_as_schema(
+    tmp_path, monkeypatch, capsys
+):
+    # An item with NO evidence_quote field AND a bad canonical_home must
+    # fail as schema (missing evidence_quote), not skip as content (bad
+    # canonical_home). The previous evidence_quote validator silently
+    # coerced missing -> empty and skipped the length/grounding checks.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/concepts/feature_other.md",
+                    # evidence_quote intentionally missing
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "missing evidence_quote" in rejection["error"]
+
+
+def test_empty_evidence_quote_plus_bad_canonical_home_fails_as_schema(
+    tmp_path, monkeypatch, capsys
+):
+    # Same as above but with empty-string evidence_quote rather than missing.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "   ",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/concepts/feature_other.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "empty evidence_quote" in rejection["error"]
+
+
+def test_unsupported_canonical_home_does_not_mask_too_short_evidence_quote(
+    tmp_path, monkeypatch, capsys
+):
+    # Cross-validator ordering: item has BOTH an unsupported canonical_home
+    # (content-class) AND a too-short evidence_quote (schema-class). The
+    # schema check from _validate_item_evidence_quote must raise first so the
+    # rejection is classified as schema. Previously the canonical_home raise
+    # in _validate_extraction_item happened first and masked the quote drift.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "ok",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/concepts/feature_other.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
+    assert rejection["rejection_class"] == "schema"
+    assert "too short" in rejection["error"]
+
+
+def test_rejection_class_persisted_in_extraction_rejections_json(
+    tmp_path, monkeypatch, capsys
+):
+    # Audit/replay contract: extraction-rejections JSON files must carry
+    # rejection_class so downstream consumers (and post-hoc audits) can verify
+    # the skip-vs-fail decision without re-parsing error strings.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    # Two sessions: one content-class (bad canonical_home), one schema-class
+    # (missing dedupe_key). The session with bad canonical_home alone yields
+    # rejection_class=content (item is otherwise well-formed).
+    content_session = tmp_path / "content.jsonl"
+    content_session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+    schema_session = tmp_path / "schema.jsonl"
+    schema_session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def per_session_extract(_payload: str, session_path: Path) -> dict:
+        if "content" in str(session_path):
+            return {
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subject": "Alpha",
+                        "predicate": "status",
+                        "object": "true",
+                        "confidence": "high",
+                        "evidence_quote": "alpha fact one is true",
+                        "dedupe_key": "fact:alpha:status",
+                        "canonical_home": "wiki/concepts/feature_other.md",
+                    }
+                ]
+            }
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                    # dedupe_key missing -> schema-class
+                }
+            ]
+        }
+
+    eod_capture.run_job_a(
+        [content_session, schema_session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        extract_func=per_session_extract,
+    )
+
+    rejection_files = sorted(
+        (vault / ".staging" / "extraction-rejections").glob("*.json")
+    )
+    assert len(rejection_files) == 2
+    classes = sorted(
+        json.loads(p.read_text(encoding="utf-8"))["rejection_class"]
+        for p in rejection_files
+    )
+    assert classes == ["content", "schema"]
+
+
+def test_phrase_collision_unsupported_canonical_home_in_dedupe_key(
+    tmp_path, monkeypatch, capsys
+):
+    # Phrase-collision attack: extractor returns an item whose dedupe_key
+    # literally contains 'unsupported canonical_home'. The rejection error
+    # string echoes the value, but the rejection class is SCHEMA (invalid
+    # dedupe_key), not content. The typed-exception classifier must NOT skip.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "unsupported canonical_home",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+
+
+def test_phrase_collision_is_not_present_in_unsupported_field_name(
+    tmp_path, monkeypatch, capsys
+):
+    # Phrase-collision attack via extra field name. Extractor returns an
+    # item with an unsupported field literally named with the content-class
+    # phrase. The error is schema-class (unsupported field), so MUST fail.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                    "is not present in stripped transcript": "boom",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+
+
+def test_main_job_a_returns_nonzero_on_evidence_quote_control_char(
+    tmp_path, monkeypatch, capsys
+):
+    # Schema-class evidence_quote failure: extractor injected a non-whitespace
+    # control character. Error string contains 'evidence_quote' but is NOT
+    # content-class (the extractor's output is malformed). Must route to
+    # failure path so cron rc=1 fires.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact\x00one is true",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    assert "control character" in (
+        sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))[0]
+    ).read_text(encoding="utf-8")
+
+
+def test_main_job_a_returns_nonzero_on_evidence_quote_too_short(
+    tmp_path, monkeypatch, capsys
+):
+    # Schema-class evidence_quote failure: extractor returned a too-short
+    # quote. Error string contains 'evidence_quote' but is NOT content-class.
+    # Must route to failure path so cron rc=1 fires.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "ok",
+                    "dedupe_key": "fact:alpha:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    assert "too short" in (
+        sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))[0]
+    ).read_text(encoding="utf-8")
+
+
+def test_main_job_a_returns_nonzero_on_all_items_schema_drift(
+    tmp_path, monkeypatch, capsys
+):
+    # If the extractor drifts from the items spec (here: every item is missing
+    # dedupe_key), all items get rejected by _filter_extraction_items but the
+    # rejection class is schema/contract, NOT content/groundability. Those
+    # MUST take the failure path so cron rc=1 halts job-b and the extractor
+    # regression surfaces immediately. The skip path is reserved for content
+    # rejections (evidence_quote hallucination, unsupported canonical_home).
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    # dedupe_key intentionally missing -> schema drift
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    assert failures[0].name.startswith("2026-05-14_")
     assert "all extractor items rejected" in failures[0].read_text(encoding="utf-8")
-    assert "evidence_quote" in rejections[0].read_text(encoding="utf-8")
+    assert "extraction failure(s) written" in captured.err
+    issues = eod_capture._digest_health_issues(vault, "2026-05-14")
+    assert any("extraction failures: 1" in issue for issue in issues)
+
+
+def test_main_job_a_returns_nonzero_on_infrastructure_failure(
+    tmp_path, monkeypatch, capsys
+):
+    # Counter-test to the skip path: a genuine infrastructure failure
+    # (extractor wrapper missing -> RuntimeError) MUST still produce rc=1
+    # so cron skips job-b and the operator sees a hard signal. This protects
+    # against future "rc=0 catches everything" regressions.
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def failing_extract(*_args, **_kwargs):
+        raise RuntimeError("kimi wrapper not found at /opt/kimi/bin/kimi")
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", failing_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert skips == []
+    assert len(failures) == 1
+    assert failures[0].name.startswith("2026-05-14_")
+    assert "extraction failure(s) written" in captured.err
+    issues = eod_capture._digest_health_issues(vault, "2026-05-14")
+    assert any("extraction failures: 1" in issue for issue in issues)
 
 
 def test_main_returns_0_when_all_items_rejected(tmp_path, monkeypatch):
