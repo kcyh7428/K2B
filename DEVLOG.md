@@ -3684,3 +3684,20 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Key decisions:**
 - **Ship now instead of waiting 7 more days from today.** The original close condition (7 consecutive cron-canary OK) was a safeguard against Firefox profile session longevity on headless macOS. With the PATH fix the canary now exercises that path daily; holding the feature in-progress for a week would be CI-like reassurance, not new information. Operational caveat captured as a 14-day informal watch instead.
 - **Single commit instead of full /ship workflow.** Tier 0 fix, no adversarial review pass, no DEVLOG-as-a-separate-commit. The change has verified before/after in the exact failing environment.
+
+---
+## 2026-05-28 -- k2b-portfolio Ship 1
+
+**Commit:** `53e0e71` feat(k2b-portfolio): Ship 1 -- /portfolio slash command for K2Bi pipeline state
+
+**What shipped:** New K2B skill `k2b-portfolio` that exposes a `/portfolio` slash command. Reads K2Bi vault state (read-only) and emits one screen with 6 sections showing where every ticker sits in the K2Bi pipeline, what needs Keith's decision, and what positions the engine is holding. Mirrors `k2b-plate` in shape (skill body + scripts/ subdir + script that emits markdown sections that the agent then renders). Ship 1 does NOT include the "Active orchestrator flights" section (Ship 2, gated on `feature_k2b-orchestrator-v1`).
+
+**Files:** `.claude/skills/k2b-portfolio/SKILL.md`, `scripts/portfolio.sh`, `tests/test-portfolio.sh`, `tests/fixtures/k2bi-vault/` (8 fixture files).
+
+**Binary MVP test:** 8/8 conditions PASS against sandbox fixture + real-vault smoke run (0.5s runtime, sensible output).
+
+**Codex review:** First pass completed with 3 P2 findings (retro lookup matched by date only not ticker; journal globs skipped sync-conflict filter; test fixtures used fixed dates). All 3 fixed. Re-review timed out (Codex wedge, 600s hard deadline, stale >120s). No Kimi-backed fallback accepted per job spec.
+
+**Feature status:** `feature_k2b-portfolio-view` multi-ship feature; Ship 1 shipped, Ship 2 pending orchestrator-v1.
+
+**Key decisions:** Used theme-slug (not individual ticker) for Awaiting-promotion rows since Keith's decision is "which ticker from this theme to promote". Used `jq` for journal JSONL parsing despite Bash 3.2 constraint because jq is already a project dependency. Date-relative test fixtures generated at test runtime to avoid time-bomb assertions.
