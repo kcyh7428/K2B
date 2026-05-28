@@ -81,6 +81,7 @@ Auto-detect destination from the `type:` frontmatter field:
 | `content-idea` | `wiki/content-pipeline/` | Set `origin: keith` (Keith adopted it) |
 | `linkedin-draft` | `wiki/content-pipeline/` | Keith approved the draft |
 | `crosslink-digest` | delegated to `/weave apply` | Handled above, do NOT use this table |
+| `forge-audit-report` | `wiki/reference/forge-audits/` | Weekly Codex Forge audit Keith chose to keep as audit trail. Promote does NOT auto-file an R-ID; if Keith decided to file the strongest candidate as `/request`, capture the R-ID in `review-notes:` BEFORE promoting. See [[context_codex-forge-audit]] for the full delivery wiring. |
 | `project` | `wiki/projects/` | Misrouted -- should not be in review |
 | `insight` | `wiki/insights/` | Misrouted -- should not be in review |
 | `reference` | `wiki/reference/` | Misrouted -- should not be in review |
@@ -136,6 +137,7 @@ echo '{"date":"'$(date +%Y-%m-%d)'","file":"'"$FILENAME"'","source_skill":"'"$SK
 - Filename starts with `youtube_` or type is `video-capture` --> `k2b-youtube-capture`
 - Type is `tldr` --> `k2b-tldr`
 - Type is `research-briefing` --> `k2b-research`
+- Type is `forge-audit-report` --> `codex-forge-audit` (external producer, not a K2B skill)
 - Otherwise --> `unknown`
 
 If the file `preference-signals.jsonl` doesn't exist, create it (first run).
