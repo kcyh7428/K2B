@@ -2,6 +2,35 @@
 
 
 ---
+## 2026-05-28 -- Codex Forge audit launchd delivery bridge
+
+**Commit:** `cd1a7fb` feat(forge-audit): launchd bridge moves Codex audit reports into vault
+
+**What shipped:** Closes the Codex sandbox permission gap discovered during the first live test of the new forge-audit delivery wiring (devlog above, commit `9626f13`). Codex Automations' sandbox can write to `/private/tmp/` and `~/.codex/automations/` but NOT to `~/Projects/K2B-Vault/`. The K2B Forge audit's mandatory delivery to `K2B-Vault/review/forge-audit_YYYY-MM-DD.md` therefore fails with `PermissionError`. New macOS launchd user agent on Keith's MacBook watches `/private/tmp/` via `WatchPaths` and fires `scripts/forge-audit-mover.sh`, which atomically moves any `forge-audit_*.md` files into the vault.
+
+**Components:**
+- `scripts/forge-audit-mover.sh` — single-instance `mkdir` lock against overlapping launchd runs, wait-for-stability guard (size + mtime stable for 3 consecutive 1-second checks, 30s cap), collision-safe destination (epoch suffix when canonical filename already exists), captured-stderr `mv`.
+- `scripts/launchd/com.k2b.forge-audit-mover.plist` — `WatchPaths` on `/private/tmp/`, `ThrottleInterval=10`, `RunAtLoad=false`, install-by-hand on MacBook only (Mini does not run Codex Automations). Logs to `~/Library/Logs/k2b-forge-audit-mover.log`.
+
+**Verification:** end-to-end live-tested via an orphaned test file (`forge-audit_RETEST.md`) — the agent detected the write, waited for size+mtime stability, and moved cleanly to vault. Lock verified against concurrent invocation: second run logs `"another instance holds"` and exits 0.
+
+**Codex review:** Tier 2 via runner. Codex primary hit hard deadline (rc=124, elapsed 365s); MiniMax fallback returned 8 findings — 4 fixed inline (HIGH#1 collision silent-orphan → epoch suffix; HIGH#3 size-only stability misses bursty writes → size+mtime check; MED#5 overlapping launchd runs race → mkdir lock; MED#6 mv stderr interleaves with log() → captured stderr), 4 dismissed with reasoning (HIGH#2 log-injection via filenames is outside threat model — names come from Codex's prompt-constrained `forge-audit_YYYY-MM-DD.md` format; MED#4 plist hardcoded path is intentional and MacBook-only as documented; MED#7 K2B_VAULT_PATH not in plist EnvironmentVariables is non-issue under current layout; LOW#8 orphan cleanup deferred). Capped review iteration at one pass after prior session's 11-pass marathon — diminishing-returns boundary respected.
+
+**Worktree ship:** built in an isolated `forge-audit-mover-bridge` worktree because a sibling Claude Code session was concurrently building `k2b-portfolio` in the main working tree. Earlier in the same MacBook session, the sibling's git operations had wiped my new untracked files; the worktree isolation prevented recurrence. Fast-forward push to `origin/main` after rebase on top of the sibling's `53e0e71`.
+
+**Feature status change:** none (no formal feature note — this is companion-wiring to `9626f13`). Documented in `wiki/context/context_codex-forge-audit.md`.
+
+**Follow-ups:**
+- **Manual:** install the launchd agent (`cp scripts/launchd/com.k2b.forge-audit-mover.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.forge-audit-mover.plist`). Already installed on Keith's MacBook from the build session.
+- **Manual:** paste the updated Codex Automations prompt body (canonical version in `context_codex-forge-audit.md`) into the K2B Forge audit job to switch its delivery target from the blocked vault path to `/private/tmp/forge-audit_YYYY-MM-DD.md`.
+- **Watch:** if no `forge-audit_*.md` appears in `K2B-Vault/review/` after the next Monday 23:01 HKT run, check `~/Library/Logs/k2b-forge-audit-mover.log` for stability-timeout or destination-collision warnings.
+
+**Key decisions:**
+- Worktree-based ship instead of waiting for the sibling to finish — independent change scope (different files, different branch), and the wait could have been hours.
+- Single-pass review with explicit dismissed-finding reasoning instead of iterating to APPROVE — Keith explicitly pushed back on review marathons earlier in the same session.
+- File-stability check on both size AND mtime (not size alone) per MiniMax HIGH#3 — bursty writers would fool a size-only check during the pause window.
+
+---
 ## 2026-05-28 -- Codex Forge audit delivery wiring
 
 **Commit:** `9626f13` feat(k2b-review): route forge-audit-report type to wiki/reference/forge-audits/
