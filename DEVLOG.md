@@ -1,5 +1,26 @@
 # K2B Development Log
 
+
+---
+## 2026-05-28 -- Codex Forge audit delivery wiring
+
+**Commit:** `9626f13` feat(k2b-review): route forge-audit-report type to wiki/reference/forge-audits/
+
+**What shipped:** Closes the Codex Forge audit delivery gap. The weekly audit (Codex Automations job, Mondays 23:01 HKT) produces ranked K2B workflow-gap candidates from prompt-pattern analysis of the last 30 days of session transcripts. Pre-2026-05-28 those outputs died inside the Codex Automations run-history panel because nothing surfaced them to K2B; only the first run's strongest finding (R-2026-05-18-001) made it into the vault, transcribed manually. The fix: extend the k2b-review skill to recognize a new `forge-audit-report` type that promotes to `wiki/reference/forge-audits/`. The audit now writes its report to `K2B-Vault/review/forge-audit_YYYY-MM-DD.md` and three existing surfaces catch it automatically (session-start hook review queue count, integrated loop dashboard `a N / r N / d N` numbering, `/review` triage). Promote is audit-trail-only -- it does NOT auto-file as `/request`; Keith captures the R-ID in `review-notes:` before promoting if he files one.
+
+**Companion vault wiring:** `wiki/context/context_codex-forge-audit.md` documents the full delivery contract and carries a canonical backup of the Codex Automations prompt body (since Codex Automations doesn't version-control prompts and the audit would silently break if the prompt ever drifted or got wiped). `wiki/reference/forge-audits/` created as the promote destination. Indexes updated.
+
+**Manual step:** Keith pastes the updated prompt body into the Codex Automations K2B Forge audit job. The full canonical prompt lives in the context page.
+
+**Codex review:** Tier 1 docs single-pass via MiniMax (2 files changed, all `.md`). 1 MEDIUM finding addressed inline (missing source_skill mapping for the new type would have polluted `preference-signals.jsonl` with `unknown` labels; added `codex-forge-audit` mapping). 1 LOW finding dismissed (cosmetic table row ordering).
+
+**Feature status change:** no formal feature note. Routing fix to the existing `k2b-review` skill + companion vault docs. Documented as a context page rather than a feature note because the audit itself lives in Codex Automations, not in the K2B repo.
+
+**Follow-ups:**
+- If no `forge-audit_*.md` appears in `review/` for 14 days, treat the automation as broken (no notification mechanism exists today; consider a `/lint` check if it recurs).
+- The first weekly run under the new wiring fires next Monday 2026-06-01 23:01 HKT.
+
+**Key decisions:** Picked option (b) of three (audit delivery to vault), rejected (a) Telegram notification as too noisy and (c) shipping R-2026-05-18-001 itself as XL work that can't yet measure its own value until (b) is in place.
 ---
 ## 2026-05-28 -- EOD capture content vs schema rejection split
 
