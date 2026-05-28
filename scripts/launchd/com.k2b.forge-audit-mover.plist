@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  K2B Forge audit delivery bridge.
+
+  Codex Automations' sandbox can write to /private/tmp/ but not directly to
+  the K2B vault. The K2B Forge audit job writes its weekly report to
+  /private/tmp/forge-audit_YYYY-MM-DD.md; this launchd user agent watches
+  /private/tmp/ and fires scripts/forge-audit-mover.sh, which moves any
+  matching files into K2B-Vault/review/ where the integrated loop dashboard
+  and k2b-review skill pick them up.
+
+  WatchPaths fires on ANY change to /private/tmp/ contents, so the mover
+  script's first job is to filter for forge-audit_*.md (cheap no-op when
+  nothing matches). ThrottleInterval=10 stops thrashing on /private/tmp/
+  churn from other apps. The script itself waits for file size stability
+  (mtime stops changing for 3 consecutive seconds) before moving, so a
+  trigger that fires mid-flush doesn't grab a truncated report.
+
+  Install (one-time, MacBook only -- Mini does not run Codex Automations):
+    cp scripts/launchd/com.k2b.forge-audit-mover.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.forge-audit-mover.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.k2b.forge-audit-mover
+    rm ~/Library/LaunchAgents/com.k2b.forge-audit-mover.plist
+
+  Logs:
+    ~/Library/Logs/k2b-forge-audit-mover.log         (script's own activity)
+    ~/Library/Logs/k2b-forge-audit-mover.stdout.log  (launchd-captured stdout)
+    ~/Library/Logs/k2b-forge-audit-mover.stderr.log  (launchd-captured stderr)
+
+  See K2B-Vault/wiki/context/context_codex-forge-audit.md for the full
+  delivery wiring documentation.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.k2b.forge-audit-mover</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/keithmbpm2/Projects/K2B/scripts/forge-audit-mover.sh</string>
+    </array>
+
+    <key>WatchPaths</key>
+    <array>
+        <string>/private/tmp</string>
+    </array>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/keithmbpm2/Library/Logs/k2b-forge-audit-mover.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/keithmbpm2/Library/Logs/k2b-forge-audit-mover.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin</string>
+    </dict>
+</dict>
+</plist>
