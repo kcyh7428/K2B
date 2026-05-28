@@ -95,6 +95,7 @@ The agent (Claude Code) does NOT show the raw script output verbatim by default.
 - **NOT a /plate replacement.** `/plate` covers K2B project state; `/portfolio` covers K2Bi investment pipeline state. Run both for a full picture.
 - **NOT a calculator.** Reads what K2Bi already wrote. P&L numbers come from journal events, not re-computed.
 - **NOT live broker-data.** Position state is journal-derived, latest-as-of-last-event. Not a real-time broker query.
+- **NOT runnable on Mac Mini.** K2Bi-Vault was nuked from Mac Mini during Phase 3.9 VPS migration (2026-04-25). The K2Bi engine + vault live on the Hostinger VPS in KL; the K2Bi PM workspace lives on Keith's MacBook only. Sending `/portfolio` to the Telegram bot (which runs on Mac Mini) will dispatch the script there and fail with `K2Bi vault unreachable at /Users/fastshower/Projects/K2Bi-Vault`. **Use `/portfolio` from K2B Claude Code on MacBook.** If the Telegram path is ever needed, the prerequisite is restoring K2Bi-Vault to Mac Mini via Syncthing read-only mirror (separate feature, not in this skill's scope).
 
 ## Implementation notes
 
