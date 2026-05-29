@@ -1,6 +1,6 @@
 ---
 name: k2b-ship
-description: End-of-session shipping workflow -- runs adversarial pre-commit review (Codex primary, MiniMax-M2.7 fallback), commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and reminds Keith to /sync. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
+description: End-of-session shipping workflow -- runs adversarial pre-commit review (Codex primary, Kimi K2.6 fallback), commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and reminds Keith to /sync. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
 ---
 
 # K2B Ship
@@ -23,8 +23,8 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 ## Commands
 
-- `/ship` -- full workflow with adversarial review (Codex primary, MiniMax fallback) + feature note updates + roadmap updates
-- `/ship --skip-codex <reason>` -- skip the Codex reviewer specifically (NOT skip review entirely). MiniMax fallback still runs unless also unavailable. Reason is required (e.g. `codex-quota-depleted`, `codex-cli-wedged`, `codex-plugin-missing`).
+- `/ship` -- full workflow with adversarial review (Codex primary, Kimi fallback) + feature note updates + roadmap updates
+- `/ship --skip-codex <reason>` -- skip the Codex reviewer specifically (NOT skip review entirely). Kimi fallback still runs unless also unavailable. Reason is required (e.g. `codex-quota-depleted`, `codex-cli-wedged`, `codex-plugin-missing`).
 - `/ship --no-feature` -- ship code without touching feature notes or the roadmap (e.g. typo fix, config tweak)
 - `/ship status` -- show what would ship without actually shipping
 
@@ -268,8 +268,8 @@ echo "tier: $TIER -- $TIER_REASON"
 | Tier | Routing |
 |---|---|
 | 0 | Skip review (log only). |
-| 1 | MiniMax `--scope diff` single-pass, cap at 2 iterations, escalate to Tier 2 on MiniMax failure. See Step 3b.1. |
-| 2 | Codex single-pass via today's background + poll pattern. `--skip-codex` routes to MiniMax `--scope diff` single-pass. Both-fail -> REFUSE (same as Tier 3). |
+| 1 | Kimi `--scope diff` single-pass, cap at 2 iterations, escalate to Tier 2 on Kimi failure. See Step 3b.1. |
+| 2 | Codex single-pass via today's background + poll pattern. `--skip-codex` routes to Kimi `--scope diff` single-pass. Both-fail -> REFUSE (same as Tier 3). |
 | 3 | Today's iterate-until-clean flow, verbatim. See Step 3c. |
 
 **Get the safe changed-file list once from the staged set** (used by Tier 1, Tier 2, and Tier 3 diff-scoped reviewer invocations; handles renames + spaces via `-z`). Do not use the full working tree here; unrelated dirty files are deliberately out of scope. Capture the reviewed file list and verify it again in Step 5 before committing.
@@ -295,7 +295,7 @@ fi
 
 ##### 3b.1 Tier 1 flow
 
-MiniMax `--scope diff` with a 2-pass cap. On MiniMax failure, escalate to Tier 2 Codex. If `--skip-codex` blocks Codex too, REFUSE (both reviewers unavailable).
+Kimi `--scope diff` with a 2-pass cap. On Kimi failure, escalate to Tier 2 Codex. If `--skip-codex` blocks Codex too, REFUSE (both reviewers unavailable).
 
 ```bash
 if [ "$TIER" = "1" ]; then
@@ -305,7 +305,7 @@ if [ "$TIER" = "1" ]; then
   TIER_1_MINIMAX_FAILED=no
 
   while [ "$TIER_1_PASS" -le "$TIER_1_MAX" ]; do
-    echo "[tier-1] pass $TIER_1_PASS of $TIER_1_MAX -- running MiniMax --scope diff..."
+    echo "[tier-1] pass $TIER_1_PASS of $TIER_1_MAX -- running Kimi --scope diff..."
     set +e
     VERDICT_JSON=$(scripts/minimax-review.sh \
       --scope diff \
@@ -316,7 +316,7 @@ if [ "$TIER" = "1" ]; then
     set -e
 
     if [ "$MINIMAX_EXIT" -ne 0 ]; then
-      echo "[tier-1] MiniMax FAILED on pass $TIER_1_PASS (exit $MINIMAX_EXIT):" >&2
+      echo "[tier-1] Kimi FAILED on pass $TIER_1_PASS (exit $MINIMAX_EXIT):" >&2
       cat /tmp/tier1_pass_${TIER_1_PASS}.err >&2
       TIER_1_MINIMAX_FAILED=yes
       break
@@ -335,12 +335,12 @@ v = data.get('verdict', '') or ''
 print(v.strip().lower())
 ")
 
-    # Treat empty/parse-error verdict as MiniMax failure (malformed response
+    # Treat empty/parse-error verdict as Kimi failure (malformed response
     # with exit 0 otherwise slips past exit-code-only escalation gate and
     # silently advances the pass counter, which masks a broken reviewer).
-    # Per MiniMax Checkpoint 2 HIGH-1.
+    # Per Kimi Checkpoint 2 HIGH-1.
     if [ -z "$VERDICT" ] || [ "$VERDICT" = "parse-error" ]; then
-      echo "[tier-1] MiniMax returned malformed response (verdict empty/unparseable) on pass $TIER_1_PASS -- treating as failure." >&2
+      echo "[tier-1] Kimi returned malformed response (verdict empty/unparseable) on pass $TIER_1_PASS -- treating as failure." >&2
       TIER_1_MINIMAX_FAILED=yes
       break
     fi
@@ -361,11 +361,11 @@ print(v.strip().lower())
 
   if [ "$TIER_1_MINIMAX_FAILED" = "yes" ]; then
     if [ -n "${SKIP_CODEX:-}" ]; then
-      echo "[FATAL] tier-1 MiniMax failed AND --skip-codex blocks Codex." >&2
+      echo "[FATAL] tier-1 Kimi failed AND --skip-codex blocks Codex." >&2
       echo "Both reviewers unavailable. REFUSE /ship." >&2
       exit 3
     fi
-    echo "[tier-1] escalating to tier-2 Codex single-pass (MiniMax failed)."
+    echo "[tier-1] escalating to tier-2 Codex single-pass (Kimi failed)."
     TIER=2
     # Defensive: seed REVIEW_RESULT in case Tier 2 block fails to run for
     # any reason -- the Tier 2 success path will overwrite this with the
@@ -385,7 +385,7 @@ fi
 
 ##### 3b.2 Tier 2 flow
 
-Single-pass adversarial review via the unified runner `scripts/review.sh`. The runner handles Codex primary, MiniMax automatic fallback (on deadline / quality-gate-fail / EISDIR hazard / plan scope), and `--skip-codex` routing. Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior).
+Single-pass adversarial review via the unified runner `scripts/review.sh`. The runner handles Codex primary, Kimi automatic fallback (on deadline / quality-gate-fail / EISDIR hazard / plan scope), and `--skip-codex` routing. Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior).
 
 ```bash
 if [ "$TIER" = "2" ]; then
@@ -404,7 +404,7 @@ if [ "$TIER" = "2" ]; then
   set -e
 
   if [ "$RUNNER_EXIT" = "2" ]; then
-    echo "[FATAL] tier-2: both Codex and MiniMax failed." >&2
+    echo "[FATAL] tier-2: both Codex and Kimi failed." >&2
     echo "$RUNNER_OUT" >&2
     echo "Surface to Keith: options are (a) fix underlying reviewer problem," >&2
     echo "(b) /ship --skip-codex <reason> with Checkpoint 1 in-session." >&2
@@ -430,11 +430,11 @@ if [ "$TIER" = "2" ]; then
 fi
 ```
 
-After the runner returns, Claude (the ship-agent) reads `$REVIEW_LOG` and surfaces the findings to Keith verbatim. Find the last `# Codex Review` or `# MiniMax ... review --` section in the log and present it -- do not paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) and MiniMax's own ordering (CRITICAL/HIGH/MEDIUM/LOW) stay intact.
+After the runner returns, Claude (the ship-agent) reads `$REVIEW_LOG` and surfaces the findings to Keith verbatim. Find the last `# Codex Review` or `# kimi-for-coding review --` section in the log and present it -- do not paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) and Kimi's own ordering (CRITICAL/HIGH/MEDIUM/LOW) stay intact.
 
 #### 3c. Tier 3 flow -- iterate-until-clean via runner
 
-Single-pass reviewer invocation per `/ship` call via `scripts/review.sh`. The runner handles Codex primary, MiniMax automatic fallback (on failure / deadline / quality-gate / EISDIR / plan-scope), and `--skip-codex` routing. Iteration in the Tier 3 sense is **human-driven**: after a NEEDS-ATTENTION verdict, Keith fixes inline and re-runs `/ship`. Each `/ship` is one reviewer pass. This matches the pre-runner Step 3c behavior; the runner replaces the transport only.
+Single-pass reviewer invocation per `/ship` call via `scripts/review.sh`. The runner handles Codex primary, Kimi automatic fallback (on failure / deadline / quality-gate / EISDIR / plan-scope), and `--skip-codex` routing. Iteration in the Tier 3 sense is **human-driven**: after a NEEDS-ATTENTION verdict, Keith fixes inline and re-runs `/ship`. Each `/ship` is one reviewer pass. This matches the pre-runner Step 3c behavior; the runner replaces the transport only.
 
 ```bash
 if [ "$TIER" = "3" ]; then
@@ -453,7 +453,7 @@ if [ "$TIER" = "3" ]; then
   set -e
 
   if [ "$RUNNER_EXIT" = "2" ]; then
-    echo "[FATAL] tier-3: both Codex and MiniMax failed." >&2
+    echo "[FATAL] tier-3: both Codex and Kimi failed." >&2
     echo "$RUNNER_OUT" >&2
     echo "Surface to Keith: only proceed with /ship --skip-codex <reason>" >&2
     echo "if Checkpoint 1 (plan review) ran earlier in the session." >&2
@@ -477,13 +477,13 @@ if [ "$TIER" = "3" ]; then
 fi
 ```
 
-**How Claude reads the verdict:** open `$REVIEW_LOG`, find the last `# Codex Review` or `# MiniMax ... review --` section, and present it to Keith verbatim. Do NOT paraphrase, rank, or pre-filter. Use the **last** section in the log because quality-gate-triggered fallbacks write both a failed Codex attempt AND a successful MiniMax run into the same log; only the final section is the actual verdict.
+**How Claude reads the verdict:** open `$REVIEW_LOG`, find the last `# Codex Review` or `# kimi-for-coding review --` section, and present it to Keith verbatim. Do NOT paraphrase, rank, or pre-filter. Use the **last** section in the log because quality-gate-triggered fallbacks write both a failed Codex attempt AND a successful Kimi run into the same log; only the final section is the actual verdict.
 
 **Keith's iteration loop** (human-driven across `/ship` invocations, not inside bash):
 
 - APPROVE verdict -> proceed to commit (step 4 of this workflow).
 - NEEDS-ATTENTION verdict, real findings -> fix inline, then re-run `/ship`. Each re-run is a new invocation with a fresh runner job.
-- NEEDS-ATTENTION verdict, false positives (common with MiniMax "file not verified" items for files outside the working tree) -> triage via direct `grep` / `git log`, dismiss as FP in the ship record; if all findings dismissed, proceed to commit. If some real + some FP, fix the real ones and re-run.
+- NEEDS-ATTENTION verdict, false positives (common with Kimi "file not verified" items for files outside the working tree) -> triage via direct `grep` / `git log`, dismiss as FP in the ship record; if all findings dismissed, proceed to commit. If some real + some FP, fix the real ones and re-run.
 - Accept findings and commit anyway -> proceed to commit with explicit "accepted despite N findings" note in the ship record + the commit message body.
 
 No in-bash loop. Bash runs ONE review pass per `/ship`; Keith drives the loop by re-running.
@@ -508,21 +508,21 @@ Exit codes:
 
 The log at `log_path` is a plain-text unified log with two kinds of lines:
 - **Runner-tagged** (`[ISO] TAG payload`) -- `JOB_START`, `REVIEWER_START`, `SPAWN`, `REVIEWER_SKIP`, `HEARTBEAT`, `HEARTBEAT_STALE`, `WEDGE_SUSPECTED`, `SOFT_DEADLINE`, `HARD_DEADLINE`, `SIGKILL`, `REVIEWER_END`, `QUALITY_GATE_FAIL`, `FALLBACK`, `MINIMAX_KEY_LOAD_FAILED`.
-- **Verbatim reviewer stdout** -- including the actual `# Codex Review` sections and `# MiniMax MiniMax-M2.7 review -- APPROVE|NEEDS-ATTENTION` headers. These are what Claude reads to surface findings.
+- **Verbatim reviewer stdout** -- including the actual `# Codex Review` sections and `# kimi-for-coding review -- APPROVE|NEEDS-ATTENTION` headers. These are what Claude reads to surface findings.
 
 Runner state lives in `.code-reviews/<job_id>.json` (updated by the watchdog while running; finalized at completion with `status`, `primary_used`, `fallback_used`, `exit_code`, `reviewer_attempts[]`). For background mode (no `--wait`), `scripts/review-poll.sh <job_id>` returns a snapshot with `phase`, `elapsed_s`, `last_activity_s_ago`, `tail`, `should_poll_again`, and `recommended_poll_interval_s`. The skill doesn't use background mode in the Tier 2/3 flows (they use `--wait`) but the poll path exists for ad-hoc use.
 
-**Why the runner replaces the old inline patterns:** the old Step 3c ran `node codex-companion.mjs review` synchronously and relied on Claude-side polling + manual MiniMax fallback when Codex wedged. Observed failure modes: Codex silent hang during WebSocket cold-start (~10+ min), MiniMax HTTP 529 with no retry, "both reviewers available but k2b-ship bash can't coordinate the fallback." The runner solves all three: hard SIGTERM at deadline, automatic fallback on any failure mode, and watchdog HEARTBEAT lines that make "still working" observable. Built once in K2Bi, validated in production there for several days, ported here.
+**Why the runner replaces the old inline patterns:** the old Step 3c ran `node codex-companion.mjs review` synchronously and relied on Claude-side polling + manual Kimi fallback when Codex wedged. Observed failure modes: Codex silent hang during WebSocket cold-start (~10+ min), Kimi HTTP 529 with no retry, "both reviewers available but k2b-ship bash can't coordinate the fallback." The runner solves all three: hard SIGTERM at deadline, automatic fallback on any failure mode, and watchdog HEARTBEAT lines that make "still working" observable. Built once in K2Bi, validated in production there for several days, ported here.
 
 **Presentation rules for reviewer findings (unchanged):**
 
 - Report findings neutrally. Do not argue with the reviewer.
 - Do not pre-filter findings by "importance" before Keith sees them.
 - Let Keith decide which to fix, defer, or accept.
-- For MiniMax findings specifically: the reviewer cannot see files outside the git working tree, so "file not verified" / "consumer not visible" findings often dissolve under a quick direct `grep`. Triage real-vs-false-positive before triggering a fix.
-- The archived JSON at `.minimax-reviews/<ts>_<scope>.json` (MiniMax) and the unified log at `.code-reviews/<job_id>.log` (runner) are durable evidence of the gate.
+- For Kimi findings specifically: the reviewer cannot see files outside the git working tree, so "file not verified" / "consumer not visible" findings often dissolve under a quick direct `grep`. Triage real-vs-false-positive before triggering a fix.
+- The archived JSON at `.minimax-reviews/<ts>_<scope>.json` (Kimi) and the unified log at `.code-reviews/<job_id>.log` (runner) are durable evidence of the gate.
 
-**MiniMax invocation contract (inherited through the runner).** The `scripts/minimax-review.sh` child exits 0 on success (any verdict including NEEDS-ATTENTION counts as success -- the verdict is review output, not script status), non-zero on failure (missing API key, network error, malformed MiniMax response, JSON Schema validation failure). Empty stdout from a 0-exit run is impossible by design (the formatter always emits a verdict). If the runner observes exit 0 with no verdict marker in the log, the quality gate forces a fallback (`effective_rc = 125`) -- silent emptiness is worse than a loud error.
+**Kimi invocation contract (inherited through the runner).** The `scripts/minimax-review.sh` child exits 0 on success (any verdict including NEEDS-ATTENTION counts as success -- the verdict is review output, not script status), non-zero on failure (missing API key, network error, malformed Kimi response, JSON Schema validation failure). Empty stdout from a 0-exit run is impossible by design (the formatter always emits a verdict). If the runner observes exit 0 with no verdict marker in the log, the quality gate forces a fallback (`effective_rc = 125`) -- silent emptiness is worse than a loud error.
 
 #### 3d. Record the tier used
 
@@ -538,21 +538,21 @@ For multi-ship features (Shipping Status table), append the tier + reason to the
 
 ### Adversarial Review -- the two checkpoints
 
-K2B uses a second-model reviewer (Codex primary, MiniMax-M2.7 fallback) to catch blind spots Claude cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
+K2B uses a second-model reviewer (Codex primary, Kimi K2.6 fallback) to catch blind spots Claude cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
 
 **Checkpoint 1: Plan Review.** Before implementing any new feature, skill, or significant refactor, after the plan is written but before code is touched:
 
 - **Codex (primary)**: `/codex:adversarial-review challenge the plan` with the plan file path. Codex has Read tool access, so it can fetch any plan file from any path -- the typical locations (`~/.claude/plans/`, `<repo>/plans/`) are both reachable.
-- **MiniMax fallback** when Codex unavailable: MiniMax CANNOT see files outside the git working tree, and plan files live at `~/.claude/plans/` (Claude Code plans, outside any repo) or `<repo>/plans/` (gitignored or untracked) -- `minimax-review.sh` gathers context from `git status` / `git diff` only, so a bare invocation would produce a generic review with no plan content. Workarounds:
-  - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/minimax-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` MiniMax M2.7 has a generous prompt window so even multi-thousand-line plans fit.
+- **Kimi fallback** when Codex unavailable: Kimi CANNOT see files outside the git working tree, and plan files live at `~/.claude/plans/` (Claude Code plans, outside any repo) or `<repo>/plans/` (gitignored or untracked) -- `minimax-review.sh` gathers context from `git status` / `git diff` only, so a bare invocation would produce a generic review with no plan content. Workarounds:
+  - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/minimax-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` Kimi K2.6 has a generous prompt window so even multi-thousand-line plans fit.
   - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .minimax-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
   - **(c) Skip Plan Review entirely and rely on Checkpoint 2 being mandatory** when Checkpoint 1 was skipped. Acceptable for small plans where adversarial review at pre-commit time catches the same issues; not acceptable for large architectural plans where catching the issue early matters.
 - Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
 - Adjust the plan based on findings BEFORE writing code
 
-This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If neither Codex nor MiniMax was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped via `--skip-codex`.
+This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If neither Codex nor Kimi was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped via `--skip-codex`.
 
-**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` (Codex primary, MiniMax automatic fallback on failure / deadline / quality-gate / EISDIR / plan-scope). Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` (Codex primary, Kimi automatic fallback on failure / deadline / quality-gate / EISDIR / plan-scope). Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
 
 **When pre-commit review can be skipped (gate-not-applicable cases):**
 
@@ -560,16 +560,16 @@ This checkpoint lives outside `/ship` -- it is the author's responsibility at pl
 - Config tweaks, typo fixes, one-line changes
 - Emergency hotfixes where the bug-fix speed matters more than review (review after the fact)
 
-**`--skip-codex` does NOT mean "skip review."** It means "skip the Codex reviewer specifically -- usually because Codex is unavailable." The runner auto-switches `--primary` to MiniMax when `SKIP_CODEX` is set, so MiniMax still runs unless the change is in the gate-not-applicable list above. Use `--skip-codex codex-quota-depleted` (or similar reason) and record the reason in `REVIEW_RESULT`.
+**`--skip-codex` does NOT mean "skip review."** It means "skip the Codex reviewer specifically -- usually because Codex is unavailable." The runner auto-switches `--primary` to Kimi when `SKIP_CODEX` is set, so Kimi still runs unless the change is in the gate-not-applicable list above. Use `--skip-codex codex-quota-depleted` (or similar reason) and record the reason in `REVIEW_RESULT`.
 
-**Never skip both reviewers.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if Codex AND MiniMax are both unavailable, the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
+**Never skip both reviewers.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if Codex AND Kimi are both unavailable, the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
 
 **Rules for presenting reviewer findings to Keith:**
 
 - Report findings neutrally. Do not argue with the reviewer.
 - Do not pre-filter findings by "importance" before Keith sees them.
 - Let Keith decide which to fix, defer, or accept.
-- For MiniMax findings specifically: the reviewer cannot see files outside the git working tree, so "file not verified" / "consumer not visible" findings often dissolve under a quick direct `grep`. Triage real-vs-false-positive before triggering a fix.
+- For Kimi findings specifically: the reviewer cannot see files outside the git working tree, so "file not verified" / "consumer not visible" findings often dissolve under a quick direct `grep`. Triage real-vs-false-positive before triggering a fix.
 
 ### 4. Generate commit message
 
@@ -916,9 +916,9 @@ Fail-open: helper crashes do NOT fail the ship. The summary file is already on d
 
 - **Pre-commit hook fails** -> fix the underlying issue (per Active Rule 8, never `--no-verify`), re-stage, create a NEW commit (never `--amend`).
 - **Push fails (not a force-push scenario)** -> investigate. Fetch, check if the branch diverged, ask Keith how to reconcile.
-- **Codex plugin missing OR Codex quota depleted** -> step 3 decision tree routes to MiniMax fallback (`scripts/minimax-review.sh`). Do NOT silently skip review.
-- **MiniMax fallback fails** (script missing, `MINIMAX_API_KEY` unset, network error, non-zero exit, empty stdout despite 0 exit) -> escalate to "both reviewers unavailable" surface message in step 3. Require explicit Keith override via `/ship --skip-codex <reason>` AND confirmation that Checkpoint 1 plan review ran earlier in the session, before /ship may proceed.
-- **Both Codex AND MiniMax unavailable, no Checkpoint 1 ran either** -> /ship REFUSES to proceed. The build has had zero adversarial review. Fix the underlying reviewer problem first.
+- **Codex plugin missing OR Codex quota depleted** -> step 3 decision tree routes to Kimi fallback (`scripts/minimax-review.sh`). Do NOT silently skip review.
+- **Kimi fallback fails** (script missing, `MINIMAX_API_KEY` unset, network error, non-zero exit, empty stdout despite 0 exit) -> escalate to "both reviewers unavailable" surface message in step 3. Require explicit Keith override via `/ship --skip-codex <reason>` AND confirmation that Checkpoint 1 plan review ran earlier in the session, before /ship may proceed.
+- **Both Codex AND Kimi unavailable, no Checkpoint 1 ran either** -> /ship REFUSES to proceed. The build has had zero adversarial review. Fix the underlying reviewer problem first.
 - **Feature note not found** -> ask Keith which feature this belongs to, or offer to ship as `--no-feature`.
 - **`wiki/concepts/index.md` parse failure** -> fail loudly, point Keith at the file, do not guess the lane structure.
 - **DEVLOG.md / wiki/log.md append failure** -> commit has already landed, so degrade gracefully: print the entry Keith should add manually, continue with the rest of the workflow.

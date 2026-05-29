@@ -35,7 +35,7 @@ Reads raw source captures and compiles them into wiki knowledge pages. Based on 
 
 ## Commander/Worker Architecture
 
-**MiniMax M2.7** does the heavy cognitive work (reading, analyzing, generating structured output).
+**Kimi K2.6** does the heavy cognitive work (reading, analyzing, generating structured output).
 **Opus** orchestrates (calls the script, presents summary, applies file changes, updates indexes).
 
 This is the same pattern used by the observer loop. ~30-50x cheaper than running everything on Opus.
@@ -55,7 +55,7 @@ Before creating or updating ANY wiki page, check the policy ledger:
 
 ## Compile Flow
 
-### 1. Call MiniMax Compile Worker
+### 1. Call Kimi Compile Worker
 
 ```bash
 ~/Projects/K2B/scripts/minimax-compile.sh "<raw-source-path>"
@@ -64,7 +64,7 @@ Before creating or updating ANY wiki page, check the policy ledger:
 The script:
 1. Reads the raw source file
 2. Reads wiki/index.md + relevant subfolder indexes (people, projects, work, concepts, insights, reference)
-3. Sends everything to MiniMax M2.7 with a structured extraction prompt
+3. Sends everything to Kimi K2.6 with a structured extraction prompt
 4. Returns JSON with: pages_to_update, pages_to_create, content_seeds, summary
 
 ### 2. Parse, Validate, and Present Summary
@@ -99,10 +99,10 @@ If Keith gives specific feedback: adjust plan and re-present.
 
 For each planned change:
 
-Opus applies changes from the MiniMax JSON output:
+Opus applies changes from the Kimi JSON output:
 
 **For each entry in `pages_to_create`:**
-1. **BEFORE creating:** Check if the raw source frontmatter has `related:` links pointing to existing wiki pages that cover this entity. If yes, ENRICH the existing page instead of creating a new one. MiniMax's create suggestion is a hint, not a directive -- Opus must verify against existing wiki state.
+1. **BEFORE creating:** Check if the raw source frontmatter has `related:` links pointing to existing wiki pages that cover this entity. If yes, ENRICH the existing page instead of creating a new one. Kimi's create suggestion is a hint, not a directive -- Opus must verify against existing wiki state.
 2. **BEFORE creating:** Grep `wiki/` for the entity name. If a page already exists, update it instead.
 3. Only if steps 1-2 confirm no existing page: write the file using frontmatter + content from JSON
 4. Verify wikilinks point to existing pages (glob check)
@@ -156,7 +156,7 @@ Groups multiple uncompiled sources:
 3. One approval for all (approval gate STAYS on Opus -- see below)
 4. Process sequentially
 
-**claude-minimaxi offload for large batches.** When this runs on Opus (`[[ "${K2B_OFFLOADED:-0}" != "1" ]]`) AND there are **3 or more** uncompiled sources, offload the sequential processing loop (step 4) to `claude-minimaxi` after Keith approves the plan. Opus still owns steps 1-3 (discovery, plan summary, approval gate) because those need identity-aware synthesis; MiniMax handles the mechanical per-source loop.
+**claude-minimaxi offload for large batches.** When this runs on Opus (`[[ "${K2B_OFFLOADED:-0}" != "1" ]]`) AND there are **3 or more** uncompiled sources, offload the sequential processing loop (step 4) to `claude-minimaxi` after Keith approves the plan. Opus still owns steps 1-3 (discovery, plan summary, approval gate) because those need identity-aware synthesis; Kimi handles the mechanical per-source loop.
 
 Dispatch shape:
 ```bash
@@ -168,7 +168,7 @@ claude-minimaxi "/compile batch --approved" \
 
 The child session sees `K2B_OFFLOADED=1` set by the wrapper, reads the same raw sources, skips the re-dispatch check (no recursion), calls `minimax-compile.sh` per source, runs `compile-index-update.py`, and marks frontmatter. Then exits. Opus reads the return status and reports to Keith.
 
-**Why this specifically.** Per-source orchestration in batch mode is mechanical loop work -- for each source, build context, call MiniMax worker, parse JSON, apply changes, mark compiled. The only semantic judgment (classify-vs-enrich, voice alignment, cross-link decisions) happens once, at the approval gate, which stays on Opus. Dispatching the loop saves orchestration tokens and keeps the measurement pipeline (`minimax-jobs.jsonl` with `job: "claude-minimaxi-session"`) getting data.
+**Why this specifically.** Per-source orchestration in batch mode is mechanical loop work -- for each source, build context, call Kimi worker, parse JSON, apply changes, mark compiled. The only semantic judgment (classify-vs-enrich, voice alignment, cross-link decisions) happens once, at the approval gate, which stays on Opus. Dispatching the loop saves orchestration tokens and keeps the measurement pipeline (`minimax-jobs.jsonl` with `job: "claude-minimaxi-session"`) getting data.
 
 **Under 3 sources**: stay on Opus. Overhead of dispatch isn't worth it for 1-2 items.
 

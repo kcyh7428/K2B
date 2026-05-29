@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# MiniMax-powered research extraction
+# Kimi-backed research extraction (routes via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi).
+# The "minimax" in the name is historical.
 # Reads a fetched research source (URL content, transcript, README, etc.)
 # and returns a compressed, citation-backed JSON digest for Opus to reason over.
 #
@@ -12,6 +13,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
+# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
+# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
 MODEL="MiniMax-M2.7"
 MAX_TOKENS=4000
 TEMPERATURE=0.1

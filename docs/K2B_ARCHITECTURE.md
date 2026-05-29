@@ -91,10 +91,10 @@ Keith partners with Andrew on TalentSignals (AI automations for recruiting firms
 - **PowerPoint skill** — On-brand presentations
 
 ### Multi-Modal Media (Phase 6)
-- **MiniMax API** (minimaxi.com) -- image, speech, video, music generation
+- **GPTsAPI** -- image (`gpt-image-2-plus`), speech (`tts-1-hd`), transcription (`whisper-1`), VLM/OCR (`gpt-4o-mini`)
 - `k2b-media-generator` skill -- `/media` command for all modalities
-- MCP server: `minimax-mcp-js` for direct tool access
-- Bash scripts: `scripts/minimax-*.sh` as fallback/CLI interface
+- Bash scripts: `scripts/gptsapi-*.sh` (image, speech, transcribe, vlm)
+- MiniMax was the original media provider; its subscription lapsed 2026-05-27, so every MiniMax media path is dead. The `minimax-mcp-js` MCP server still appears in `.mcp.json` (video/music tools) but has no working automated callers.
 - Generated assets stored in `K2B-Vault/Assets/` (images/, audio/, video/)
 
 ### Integrations (via MCP, wrapped as Skills)
@@ -102,7 +102,7 @@ Keith partners with Andrew on TalentSignals (AI automations for recruiting firms
 - Google Calendar
 - Fireflies (meeting transcripts)
 - GPTsAPI (image generation, TTS via `tts-1-hd`, transcription via `whisper-1`)
-- MiniMax (image fallback, VLM/OCR for washing-machine, video, music; TTS retired 2026-05-14)
+- MiniMax (DEAD since 2026-05-27 -- subscription lapsed; former image-fallback / VLM-OCR / video / music paths are non-functional, all migrated to GPTsAPI)
 - Groq Whisper (k2b-remote Telegram voice memo transcription; `/media transcribe` fallback)
 
 ## Obsidian Vault Structure
@@ -189,13 +189,13 @@ K2B-Vault/
 3. **Usage triggers** -- Threshold-based actions via `/usage` (e.g., after 10 meeting transcripts, auto-run insight extraction)
 
 ### Phase 6: Multi-Modal Media Generation (Complete)
-**Goal**: Generate images, speech, and audio transcriptions using MiniMax AI (minimaxi.com)
+**Goal**: Generate images, speech, and audio transcriptions (originally via MiniMax; migrated to GPTsAPI after the MiniMax subscription lapsed 2026-05-27)
 **What gets built**:
-- `k2b-media-generator` skill -- `/media` command wrapping image, speech, transcription, video, music
-- MiniMax MCP server (`minimax-mcp-js`) in `.mcp.json` for direct Claude Code tool access
-- Bash scripts: `minimax-common.sh`, `minimax-image.sh` (fallback only), `gptsapi-image.sh`, `gptsapi-speech.sh`, `gptsapi-transcribe.sh`
+- `k2b-media-generator` skill -- `/media` command wrapping image, speech, transcription
+- `minimax-mcp-js` MCP server still in `.mcp.json` (video/music tools; no working automated callers since MiniMax went dead)
+- Bash scripts: `gptsapi-image.sh`, `gptsapi-speech.sh`, `gptsapi-transcribe.sh`, `gptsapi-vlm.sh` (the legacy `minimax-image.sh` fallback was deleted when MiniMax went dead)
 - `Assets/` folder in vault (images/, audio/, video/) with naming convention `YYYY-MM-DD_type_slug.ext`
-- Image generation via GPTsAPI `gpt-image-2-plus` (default); MiniMax `image-01` as `--minimax` fallback
+- Image generation via GPTsAPI `gpt-image-2-plus` (the former MiniMax `--minimax image-01` fallback no longer exists)
 - Text-to-speech via GPTsAPI `tts-1-hd` (50+ languages, 6 voices: alloy, echo, fable, onyx, nova, shimmer)
 - Audio transcription (Chinese/English STT) for meeting recordings
 - Video generation (Hailuo 2.3) and music (Music 2.5+) ready in code, requires Max tier upgrade

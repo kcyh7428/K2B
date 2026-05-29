@@ -20,7 +20,7 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - **Obsidian vault**: /Users/keithmbpm2/Projects/K2B-Vault
 - All global Claude Code skills in ~/.claude/skills/
 - **Google Workspace CLI** (`gws`) -- Gmail, Calendar, Drive, Sheets, and more via `gws` commands. JSON output, works from bash.
-- MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image, speech, video, music generation)
+- MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image/speech/video/music tools still listed but backend DEAD since 2026-05-27; media now runs on GPTsAPI -- see the MiniMax API note below)
 - **Kimi K2.6** (api.kimi.com/coding) -- primary text provider since 2026-04-25 (background observer, compile, lint deep, research extraction, weave, bootstrap, code-review fallback). Anthropic Messages API shape, model id `kimi-for-coding`. API key in `KIMI_API_KEY` env var. Routing lives at `scripts/minimax-common.sh` + `scripts/lib/minimax_common.py` via `K2B_LLM_PROVIDER` (default `kimi`); Kimi responses are translated back into the MiniMax `chatcompletion_v2` envelope so every existing caller keeps working. Single source of truth for which workload uses which provider: [[wiki/context/context_llm-providers]].
 - **MiniMax API** (minimaxi.com) -- subscription DEAD as of 2026-05-27. All MiniMax endpoints return `status_code 2049 invalid api key`. K2B has migrated: VLM/OCR to `scripts/gptsapi-vlm.sh` (`gpt-4o-mini`), image generation to `scripts/gptsapi-image.sh`, TTS to `scripts/gptsapi-speech.sh`, and STT to `scripts/gptsapi-transcribe.sh` with Groq Whisper as fallback. Text scripts named `scripts/minimax-*.sh` still work because they route through `K2B_LLM_PROVIDER`, default `kimi` (Kimi K2.6); `K2B_LLM_PROVIDER=minimax` is inert until the subscription is restored. MiniMax MCP video/music tools may still exist in the agent tool list but K2B has no automated callers and they will fail while the subscription is dead. The legacy `scripts/minimax-speech.sh`, `scripts/minimax-image.sh`, and `scripts/minimax-vlm.sh` are deleted; `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created.
 - **`claude-minimaxi`** -- wrapper that runs Claude Code with MiniMax-M2.7 as the brain instead of Opus. Use for bulk/non-critical work; never for identity-heavy or durable-memory tasks. Depends on MiniMax text being live -- a lapsed MiniMax subscription returns `status_code 2061` and the wrapper fails. Decision rubric: `wiki/context/context_claude-minimaxi-routing.md`. Script at `scripts/claude-minimaxi.sh`, symlinked at `~/.local/bin/claude-minimaxi`.
@@ -29,10 +29,10 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 ## Commander/Worker Architecture
 
 - **Opus (Claude Code)** = commander: daily dialogue with Keith, orchestration, tool use, file changes
-- **MiniMax M2.7** = worker: background analysis, compilation, contradiction detection, bulk extraction (~30-50x cheaper)
-- Pattern: Opus calls bash scripts that invoke MiniMax API, receives structured JSON, applies changes
+- **Kimi K2.6** = worker: background analysis, compilation, contradiction detection, bulk extraction (much cheaper than Opus). Default text provider since 2026-04-25.
+- Pattern: Opus calls bash scripts that route text work to Kimi, receives structured JSON, applies changes. The scripts are still named `minimax-*.sh` (historical) and switch provider through `K2B_LLM_PROVIDER` (default `kimi`); see [[wiki/context/context_llm-providers]].
 - Used by: k2b-compile (wiki compilation), k2b-lint deep (contradictions), k2b-observer (background preference analysis), k2b-research (extraction on long sources, per wiki/projects/project_minimax-offload.md)
-- Migration history: observer and all background scripts upgraded M2.5 -> M2.7 on 2026-04-08. There are no M2.5 callers remaining in scripts/.
+- Migration history: observer and all background scripts ran MiniMax M2.7 from 2026-04-08; text routing migrated to Kimi K2.6 on 2026-04-25. MiniMax's subscription lapsed 2026-05-27, so `K2B_LLM_PROVIDER=minimax` is now an inert rollback. No M2.5 callers remain.
 
 ## Capture Stack
 
@@ -330,7 +330,7 @@ K2B requires a second-model adversarial review at two checkpoints: **plan review
 - **Codex** (primary, via the `/codex:` plugin) -- preferred when quota is available. Better at deep-context analysis (it can read referenced files, walk imports). Procedures, skip conditions, and presentation rules live in the **k2b-ship** skill body and the `/codex:*` plugin commands.
 - **MiniMax-M2.7 reviewer (now Kimi-backed)** (fallback, via `scripts/minimax-review.sh`) -- when Codex daily quota is depleted OR for fast iterative passes during a single commit. The script name is historical; the reviewer actually called is whichever provider `K2B_LLM_PROVIDER` selects. Default since 2026-04-25 is Kimi K2.6 (`kimi-for-coding`); set `K2B_LLM_PROVIDER=minimax` to route the same script back through MiniMax-M2.7 when needed. Scopes: `--scope working-tree` (default, full dirty tree), `--scope diff --files a,b` (specified files + their diffs), `--scope plan --plan path/to/plan.md` (plan + files it references), `--scope files --files a,b` (explicit list, no git context). ~30-60 seconds per pass on Kimi. Specs: [[wiki/concepts/Shipped/feature_minimax-adversarial-reviewer]] (Phase A) + [[wiki/concepts/feature_minimax-scope-phase-b]] (Phase B scope flag) + provider routing in [[wiki/context/context_llm-providers]]. Invoke with `/ship --skip-codex codex-quota-depleted` plus a manual `scripts/minimax-review.sh` run on the diff.
 
-**Never skip both reviewers.** Every commit needs at least one adversarial pass. If Codex is unavailable, MiniMax IS the gate -- not "skip review and ship." `/ship` should refuse to proceed without Keith's explicit override only if BOTH reviewers are unreachable.
+**Never skip both reviewers.** Every commit needs at least one adversarial pass. If Codex is unavailable, the Kimi-backed reviewer (`scripts/minimax-review.sh`, historically named) IS the gate -- not "skip review and ship." `/ship` should refuse to proceed without Keith's explicit override only if BOTH reviewers are unreachable.
 
 ## Session Discipline
 

@@ -7,8 +7,8 @@ Generate images, speech, audio transcriptions, video, and music. Images and spee
 - `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2`
 - `/media speech "text" [voice] [model] [slug]` -- Generate TTS audio via GPTsAPI `tts-1-hd`
 - `/media transcribe <audio-file> [language] [slug]` -- Transcribe audio via GPTsAPI Whisper (Chinese/English/50+ languages); Groq Whisper available as fallback
-- `/media video "prompt" [slug]` -- Generate video clip (requires Max tier; MiniMax)
-- `/media music "description" [slug]` -- Generate music track (requires Max tier; MiniMax)
+- `/media video "prompt" [slug]` -- Generate video clip (MiniMax; **non-functional since the MiniMax subscription lapsed 2026-05-27, status_code 2049**)
+- `/media music "description" [slug]` -- Generate music track (MiniMax; **non-functional since the MiniMax subscription lapsed 2026-05-27, status_code 2049**)
 - `/media for <idea-slug>` -- Auto-generate media for a content idea
 - `/media voices` -- List available voices
 
@@ -30,8 +30,8 @@ Use the bash wrapper for image generation:
 
 The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
 
-**Other media: MiniMax MCP Server** (when available in session)
-The MiniMax MCP server (`minimax-mcp-js`) provides direct tools:
+**Other media: MiniMax MCP Server** (DEAD since 2026-05-27 -- subscription lapsed; these tools return status_code 2049. Listed for reference only; do NOT call.)
+The MiniMax MCP server (`minimax-mcp-js`) exposes these tools, but its backend is dead:
 - `text_to_audio` -- TTS
 - `generate_video` -- video generation (Max tier)
 - `query_video_generation` -- poll async video task
@@ -260,5 +260,5 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 - Always print the Obsidian embed path so Keith can paste it into notes
 - API key error guidance, by command:
   - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard."
-  - `/media video`, `/media music` (MiniMax-only modalities) -- "Set `MINIMAX_API_KEY` in your shell environment. Get it from minimaxi.com dashboard." Current MiniMax subscription state may still make these fail with `status_code 2049`.
+  - `/media video`, `/media music` (MiniMax-only modalities) -- **NON-FUNCTIONAL. MiniMax subscription lapsed 2026-05-27; all calls fail with `status_code 2049`. No alternative provider for video/music is configured. Do NOT tell Keith to set `MINIMAX_API_KEY` for these -- a fresh key will not help while the subscription is dead.**
   - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in `~/Projects/K2B/k2b-remote/.env`."

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# minimax-weave.sh -- call MiniMax M2.7 to propose missing cross-links
+# minimax-weave.sh -- call the text worker (Kimi K2.6 by default, via minimax-common.sh) to propose missing cross-links
+# Name is historical; provider follows K2B_LLM_PROVIDER (default kimi).
 #
 # Input (stdin): JSON with shape {pages: [...], exclude: [...]}
 #   pages: array of {path, slug, title, type, category, body}
@@ -29,6 +30,8 @@ if [[ -n "${K2B_WEAVE_MOCK_RESPONSE:-}" ]]; then
   fi
 fi
 
+# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
+# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
 readonly MODEL="MiniMax-M2.7"
 readonly MAX_COMPLETION_TOKENS=6000
 readonly TEMPERATURE=0.1

@@ -16,7 +16,7 @@ The self-improvement system adapts Karpathy's autoresearch pattern: define ONE t
 
 K2B extends the original pattern with:
 - A **review queue** (human judgment layer between LLM suggestions and wiki promotion)
-- A **commander/worker architecture** (Opus orchestrates, MiniMax M2.7 handles heavy extraction at 30-50x cost savings)
+- A **commander/worker architecture** (Opus orchestrates, Kimi K2.6 handles heavy extraction at a fraction of Opus cost)
 - A **background observer** that continuously learns from vault behavior patterns
 - A **cross-link weaver** that proactively proposes semantic connections between wiki pages
 - A **content pipeline** that turns captured knowledge into LinkedIn posts, emails, and media
@@ -28,7 +28,7 @@ K2B extends the original pattern with:
 
 **Think** -- Pattern recognition across notes, content idea extraction, deep research on external topics, review triage. The wiki is searchable through `index.md` (content catalog) and `log.md` (chronological record) -- no vector DB or RAG infrastructure needed. For complex multi-source research, `/research deep` offloads analysis to Google NotebookLM (Gemini) at zero token cost.
 
-**Create** -- LinkedIn posts drafted from vault insights, multi-modal media generation (images, audio, video, music via MiniMax AI), email drafting via Google Workspace.
+**Create** -- LinkedIn posts drafted from vault insights, media generation (images, speech, transcription via GPTsAPI), email drafting via Google Workspace.
 
 **Learn** -- K2B improves itself continuously (see Self-Improvement System below).
 
@@ -64,9 +64,9 @@ A single source (YouTube video, meeting transcript, research article) triggers a
 ```
 Raw source dropped in raw/
     |
-k2b-compile calls MiniMax M2.7 for structured extraction
+k2b-compile calls Kimi K2.6 for structured extraction
     |
-MiniMax returns: pages_to_update, pages_to_create, content_seeds
+Kimi returns: pages_to_update, pages_to_create, content_seeds
     |
 Opus applies changes atomically:
     +-- Creates/updates person pages (who was mentioned)
@@ -85,7 +85,7 @@ Opus applies changes atomically:
 
 ## Deep Research with NotebookLM
 
-K2B integrates Google NotebookLM as a third worker model for multi-source research. While MiniMax handles single-source extraction and Opus handles orchestration, NotebookLM (powered by Gemini) handles multi-document synthesis across 10-50 sources at zero token cost to K2B.
+K2B integrates Google NotebookLM as a third worker model for multi-source research. While Kimi handles single-source extraction and Opus handles orchestration, NotebookLM (powered by Gemini) handles multi-document synthesis across 10-50 sources at zero token cost to K2B.
 
 **Setup:** `pip install "notebooklm-py[browser]"` + `notebooklm login` + `notebooklm skill install` (MacBook only).
 
@@ -127,7 +127,7 @@ Phase 6: Compile into wiki pages
 |------|-------|-------------|------|
 | Commander | Claude Opus | Source gathering, question design, K2B framing, vault integration | Standard |
 | Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers | Free |
-| Worker 2 | MiniMax M2.7 | Single-source bulk extraction (when source > 10K chars) | ~30-50x cheaper than Opus |
+| Worker 2 | Kimi K2.6 | Single-source bulk extraction (when source > 10K chars) | Much cheaper than Opus |
 
 The NotebookLM notebook persists on Google's servers. Keith can revisit it for follow-up queries anytime. Deep research runs on MacBook only (not via Telegram). Compiled wiki pages sync to Mac Mini via Syncthing.
 
@@ -178,7 +178,7 @@ Detects vault file changes, guesses which skill was active
     |
 Writes structured observation to observations.jsonl
     |
-Background observer (MiniMax M2.7, pm2 on Mac Mini)
+Background observer (Kimi K2.6, pm2 on Mac Mini)
     +-- Batches 20+ observations
     +-- Detects patterns: what gets promoted vs. archived,
     |   revision patterns, content adoption rates
@@ -238,7 +238,7 @@ Scheduled 3x/week (Sun/Tue/Thu at 04:00 HKT)
     |
 k2b-weave reads all wiki pages, extracts existing links
     |
-MiniMax M2.7 finds semantic gaps (missing cross-links)
+Kimi K2.6 finds semantic gaps (missing cross-links)
     |
 Top 10 proposals ranked by utility:
     +3 if target is orphan (zero inbound links)
@@ -252,7 +252,7 @@ crosslink-ledger.jsonl tracks applied/rejected/deferred pairs
 
 ### 5. Vault Lint
 
-`/lint` checks for: orphan pages, broken wikilinks, stale content, uncompiled raw sources, sparse articles, backlink gaps. `/lint deep` adds contradiction detection via MiniMax M2.7 across the full wiki.
+`/lint` checks for: orphan pages, broken wikilinks, stale content, uncompiled raw sources, sparse articles, backlink gaps. `/lint deep` adds contradiction detection via Kimi K2.6 across the full wiki.
 
 ## Commander/Worker Architecture
 
@@ -261,7 +261,7 @@ K2B uses a three-model pattern to balance capability, cost, and coverage:
 | Role | Model | What it does | Cost |
 |------|-------|-------------|------|
 | **Commander** | Claude Opus (Claude Code) | Daily dialogue, orchestration, tool use, file changes | Standard Opus pricing |
-| **Worker 1** | MiniMax M2.7 (minimaxi.com API) | Background analysis, compilation, contradiction detection, bulk extraction | ~30-50x cheaper than Opus |
+| **Worker 1** | Kimi K2.6 (api.kimi.com/coding) | Background analysis, compilation, contradiction detection, bulk extraction | Much cheaper than Opus |
 | **Worker 2** | Gemini (via NotebookLM) | Multi-source deep research, cross-referencing, citation-grounded synthesis | Free (Google pays) |
 
 Worker scripts in `scripts/`:
@@ -271,7 +271,7 @@ Worker scripts in `scripts/`:
 - `minimax-research-extract.sh` -- extraction on long external sources
 - `observer-loop.sh` -- background preference pattern detection
 
-Pattern: Opus calls bash scripts that invoke MiniMax API, receives structured JSON, applies changes to the vault.
+Pattern: Opus calls bash scripts that route text work to Kimi K2.6, receives structured JSON, applies changes to the vault. The worker scripts are still named `minimax-*.sh` for historical reasons; they switch provider through `K2B_LLM_PROVIDER` (default `kimi`). MiniMax was the original worker -- its subscription lapsed 2026-05-27, so `K2B_LLM_PROVIDER=minimax` is now an inert rollback path.
 
 ## Infrastructure
 
@@ -284,7 +284,7 @@ Mac Mini (always-on)          Claude Code + Hooks
     |   (Anthropic Agent SDK)      +-- Stop hook (observation capture)
     |                              |
     +-- k2b-observer-loop          +-- 22 Skills
-    |   (MiniMax M2.7)             |     Capture: /daily, /meeting, /tldr, /youtube, /email, /compile
+    |   (Kimi K2.6)                |     Capture: /daily, /meeting, /tldr, /youtube, /email, /compile
     |   Analyzes usage patterns    |     Think:   /review, /insight, /content, /research, /observe
     |   Writes observer-candidates |     Create:  /linkedin, /media
     |   Updates preference signals |     Teach:   /learn, /error, /request
@@ -293,7 +293,7 @@ Mac Mini (always-on)          Claude Code + Hooks
     |   Cross-link proposals       |
     |                              +-- Obsidian Vault (Syncthing-synced)
     +-- Syncthing (vault sync)     +-- Google Workspace (Gmail, Calendar, Drive)
-                                   +-- MiniMax API (image, audio, video, music, text)
+                                   +-- GPTsAPI (image, speech, transcription) + Kimi K2.6 (text)
                                    +-- YouTube API, LinkedIn API, Airtable
 ```
 
@@ -319,9 +319,10 @@ K2B/
   k2b-remote/           Telegram bot (Anthropic Agent SDK, runs on Mac Mini via pm2)
   scripts/
     hooks/              Claude Code hooks (session-start, stop-observe)
-    observer-loop.sh    Background MiniMax observer (pm2 on Mac Mini)
+    observer-loop.sh    Background observer, Kimi-backed (pm2 on Mac Mini)
     observer-prompt.md  Structured prompt for observer analysis
-    minimax-*.sh        MiniMax API utilities (compile, weave, lint, research, image, speech)
+    minimax-*.sh        Text-worker utilities, Kimi-backed (compile, weave, lint, research) -- historical name
+    gptsapi-*.sh        Media utilities (image, speech, transcribe, VLM/OCR)
     k2b-weave*.sh/.py   Cross-link weaver scripts
     yt-*.sh             YouTube API scripts (playlist poll, transcribe, auth)
     yt-search.py        YouTube Data API v3 search (topic-based video discovery)
@@ -339,12 +340,12 @@ K2B/
 | Component | Role |
 |-----------|------|
 | Claude Code (Opus) | Primary AI engine, interactive sessions, commander |
-| MiniMax M2.7 | Worker model: compilation, observer, weave, lint deep, research extraction (~30-50x cheaper, 204K context) |
+| Kimi K2.6 | Worker model: compilation, observer, weave, lint deep, research extraction (much cheaper than Opus) |
 | Google NotebookLM (Gemini) | Deep research worker: multi-source synthesis, citation-grounded answers (free, via teng-lin/notebooklm-py) |
 | Obsidian | Vault UI, graph view, cross-linking |
 | Anthropic Agent SDK | Telegram bot (k2b-remote) |
 | Google Workspace CLI | Gmail, Calendar, Drive integration |
-| MiniMax API | Image, audio, video, music generation |
+| GPTsAPI | Image, speech, transcription, VLM/OCR |
 | YouTube Data API | Playlist polling, video metadata, OAuth-authenticated |
 | Syncthing | Vault sync between MacBook and Mac Mini |
 | pm2 | Process management (k2b-remote, k2b-observer-loop) |
@@ -355,11 +356,11 @@ K2B/
 This architecture is domain-agnostic. The three-layer vault (raw/wiki/review), compile pipeline, observer, weave, autoresearch, lint, and active rules system can transfer to any knowledge domain by swapping:
 
 1. The wiki subfolder categories (e.g. `wiki/tickers/` instead of `wiki/people/`)
-2. The MiniMax extraction prompts (financial analysis instead of meeting notes)
+2. The Kimi extraction prompts (financial analysis instead of meeting notes)
 3. The eval assertions (analysis quality instead of note formatting)
 4. The active rules (trading discipline instead of content identity)
 
-The commander/worker pattern (Opus + MiniMax + NotebookLM), observation loop, and self-improvement infrastructure remain the same.
+The commander/worker pattern (Opus + Kimi + NotebookLM), observation loop, and self-improvement infrastructure remain the same.
 
 ## Note
 

@@ -6,7 +6,10 @@ Three guarantees:
      10s later if the child still hasn't exited.
   2. Fallback: if the primary reviewer (Codex by default) exits non-zero
      or hits the deadline, automatically retry on the secondary reviewer
-     (MiniMax) for the same scope. If both fail, exit code 2. Callers that
+     (the `minimax`-keyed reviewer, which is Kimi K2.6-backed by default via
+     scripts/lib/minimax_common.py -- the "minimax" key name is historical and
+     retained because it is load-bearing in the fallback-selection logic and
+     tests) for the same scope. If both fail, exit code 2. Callers that
      need a specific reviewer for model-family separation can disable this
      with --no-fallback.
   3. Visibility: a watchdog thread injects synthetic HEARTBEAT lines into
@@ -16,7 +19,8 @@ Three guarantees:
      what makes `scripts/review-poll.sh` always show *something* new, so
      Claude can never mistake "in final inference" for "wedged".
 
-Nothing in this file calls the Bash tool; Codex and MiniMax are spawned
+Nothing in this file calls the Bash tool; Codex and the Kimi-backed reviewer
+(scripts/minimax-review.sh) are spawned
 via subprocess.Popen, so the .claude PreToolUse guard hook does not block
 them -- the hook only fires on direct user-invoked Bash calls.
 
@@ -567,7 +571,7 @@ def run_one_reviewer(
             except OSError:
                 log_text = ""
             verdict_markers = (
-                "# Codex Review", "# MiniMax",
+                "# Codex Review", "# MiniMax", "# kimi-for-coding review",
                 "APPROVE", "NEEDS-ATTENTION",
                 '"verdict"', "Review output captured",
             )

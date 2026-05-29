@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generic MiniMax JSON-job wrapper
+# Generic JSON-job wrapper (Kimi-backed by default via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi; "minimax" in the name is historical)
 # Factors the shared plumbing out of minimax-research-extract / minimax-compile / minimax-lint-deep.
 # Caller builds a prompt + user input; this wrapper calls MiniMax, strips fences,
 # validates JSON strictly, logs the invocation, and prints the validated JSON on stdout.
@@ -39,6 +39,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
 # --- Defaults ---
+# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
+# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
 MODEL="MiniMax-M2.7"
 MAX_TOKENS=4000
 TEMPERATURE=0.2

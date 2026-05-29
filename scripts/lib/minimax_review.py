@@ -1,4 +1,4 @@
-"""Standalone MiniMax M2.7 adversarial code reviewer.
+"""Standalone adversarial code reviewer (Kimi K2.6 by default; historically MiniMax M2.7).
 
 Phase A MVP: working-tree scope, single-shot, JSON output validated against
 Codex's review-output schema. Touches nothing in /ship or the codex plugin.
@@ -723,7 +723,7 @@ def main() -> int:
         if args.json:
             print(json.dumps({"error": "unparseable", "raw": raw_text}, indent=2))
         else:
-            print("# MiniMax review -- UNPARSEABLE\n")
+            print("# kimi-for-coding review -- UNPARSEABLE\n")
             print("Raw response (truncated to 4KB):\n")
             print("```\n" + raw_text[:4096] + "\n```")
         return 3

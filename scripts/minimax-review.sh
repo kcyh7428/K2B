@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Standalone MiniMax M2.7 adversarial code reviewer.
+# Standalone adversarial code reviewer (Kimi K2.6 by default; the "minimax" in the name is historical).
 # Single-shot, JSON output. Touches nothing in /ship or the codex plugin --
 # runs as its own tool.
 #
@@ -7,7 +7,7 @@
 #   scripts/minimax-review.sh                                  # working-tree (default)
 #   scripts/minimax-review.sh --focus "auth path"              # extra focus area
 #   scripts/minimax-review.sh --json                           # raw JSON to stdout
-#   scripts/minimax-review.sh --model MiniMax-M2.5             # different model
+#   scripts/minimax-review.sh --model kimi-for-coding          # override model
 #
 # Scopes (Phase B):
 #   --scope working-tree                                       # default, all dirty files
@@ -15,8 +15,9 @@
 #   --scope plan --plan plans/2026-04-19_my-plan.md            # plan + files it references
 #   --scope files --files a.py,b.py                            # explicit list, no git context
 #
-# Endpoint pinned to https://api.minimaxi.com (global). Override with
-# MINIMAX_API_HOST env var if you really need to.
+# Provider routing lives in scripts/lib/minimax_common.py: K2B_LLM_PROVIDER (default
+# kimi) -> Kimi K2.6 at api.kimi.com/coding. Set K2B_LLM_PROVIDER=minimax to route to
+# MiniMax at MINIMAX_API_HOST (default https://api.minimaxi.com; subscription dead since 2026-05-27).
 
 set -euo pipefail
 

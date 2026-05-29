@@ -208,15 +208,15 @@ If audio overview or mind-map artifacts were generated in Phase 4, append them t
 
 ### Commander/Worker Pattern for Deep Research
 
-Deep research adds Gemini (via NotebookLM) as a third worker alongside MiniMax:
+Deep research adds Gemini (via NotebookLM) as a third worker alongside Kimi:
 
 | Role | Who | What they do in deep research |
 |------|-----|-------------------------------|
 | Commander | Opus | Source gathering, question design, K2B framing, vault integration |
 | Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers |
-| Worker 2 | MiniMax M2.7 | Bulk extraction on individual long sources (if needed, per size gate) |
+| Worker 2 | Kimi K2.6 | Bulk extraction on individual long sources (if needed, per size gate) |
 
-Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. MiniMax handles individual source extraction when sources exceed the 10K char size gate.
+Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. Kimi handles individual source extraction when sources exceed the 10K char size gate.
 
 ## Lens-Based Review Format
 
@@ -262,7 +262,7 @@ Each lens has a specific "already-have anchor" and a fixed set of "stake-a-claim
 
 #### Stack lens (Claude Code, agent harness, dev tool content)
 
-- **Already-have anchor**: K2B's harness -- Commander/Worker (Opus + MiniMax M2.7), adversarial review (Codex primary + MiniMax fallback), 30+ specialized skills, hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
+- **Already-have anchor**: K2B's harness -- Commander/Worker (Opus + Kimi K2.6), adversarial review (Codex primary + Kimi fallback), 30+ specialized skills, hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
 - **Check every claim against the anchor**: state explicitly "you already have this as X" or "new to you".
 - **Stake-a-claim options** (pick one): `Adopt` (rare -- whole-cloth migration justified) / `Retrofit` (steal specific ideas into existing stack, with file paths) / `Skip` / `Watch` (track, revisit later).
 
@@ -1559,21 +1559,21 @@ The `notebooklm` skill at `~/.claude/skills/notebooklm/` has full command docume
 - Do NOT skip the `--touch` / `--sources` update calls after `ask` or `add-source`. The registry's "Last Used" and "Sources" columns are how Keith (and `/improve`) know which notebooks are still live.
 - Do NOT attempt to rename a notebook in place by editing the registry. Use `remove` + `create` (registered names are the K2B-side handle, not the NBLM-side title -- `notebooklm rename` changes the latter and is a separate concern).
 
-## MiniMax extraction offload (added 2026-04-10)
+## Kimi extraction offload (added 2026-04-10)
 
-**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to MiniMax M2.7 and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
+**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.6 and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
 
 **Contract**:
-- MiniMax produces a compressed, citation-backed digest: `{tldr, source_type, key_claims[], entities[], methodology_notes[], open_questions[]}`.
+- Kimi produces a compressed, citation-backed digest: `{tldr, source_type, key_claims[], entities[], methodology_notes[], open_questions[]}`.
 - Every `key_claim` carries a verbatim `source_span`, a `confidence` rating, and an `ambiguity` note.
 - Opus reads the digest (not the raw source) and adds the K2B applicability section before writing the `raw/research/` note.
-- Fail-open: if MiniMax is unavailable or returns invalid JSON, fall back to Opus-direct extraction on the raw source with a visible warning. Research notes are not durable commitment memory, so fail-open is safe.
+- Fail-open: if Kimi is unavailable or returns invalid JSON, fall back to Opus-direct extraction on the raw source with a visible warning. Research notes are not durable commitment memory, so fail-open is safe.
 
 **When to use (size gate)**:
 - URL deep-dive mode (`/research <url>`) when the fetched source exceeds **~10,000 chars**.
 - Long YouTube transcripts, full papers, READMEs for large repos, long-form articles.
-- SKIP for short topic-scan findings, landing pages, or anything under 10K chars. On short sources, MiniMax's structured digest is typically LARGER than the original, so there are no token savings (this was measured empirically on 2026-04-10 against 3-9KB K2B research notes where the digest ran 1.0x-2.8x the input size). In that range, Opus-direct is cheaper AND faster.
-- Rule of thumb: if you would only read the source once to extract, Opus-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, MiniMax-extract wins.
+- SKIP for short topic-scan findings, landing pages, or anything under 10K chars. On short sources, Kimi's structured digest is typically LARGER than the original, so there are no token savings (this was measured empirically on 2026-04-10 against 3-9KB K2B research notes where the digest ran 1.0x-2.8x the input size). In that range, Opus-direct is cheaper AND faster.
+- Rule of thumb: if you would only read the source once to extract, Opus-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, Kimi-extract wins.
 
 **Workflow**:
 1. Fetch the source content as usual (WebFetch, YouTube transcript MCP, Read for GitHub README, etc.).
@@ -1588,12 +1588,12 @@ The `notebooklm` skill at `~/.claude/skills/notebooklm/` has full command docume
    ```
 5. Parse the returned JSON.
 6. Spot-check 3 random `source_span` values against the fetched content. A simple substring match after collapsing whitespace is sufficient (`python3 -c 'import json,re,sys; ...'` or just visual). If any spot-check fails, fall back to Opus-direct extraction on the full source and append a manual-override entry to `wiki/context/minimax-jobs.jsonl`.
-7. Write the K2B applicability section (this is Opus's job, NOT MiniMax's) using the digest as input plus Keith's framing (SJM/Signhub/TalentSignals positioning, content angle, his role).
+7. Write the K2B applicability section (this is Opus's job, NOT Kimi's) using the digest as input plus Keith's framing (SJM/Signhub/TalentSignals positioning, content angle, his role).
 8. Compose the final `raw/research/` note: frontmatter, Source, Key Takeaways (from digest), K2B Applicability (from Opus), Implementation Ideas.
 9. Delete the temp file.
 10. Trigger k2b-compile on the new note as usual.
 
-**Fallback behavior**: if the extractor script exits non-zero (network error, invalid JSON, empty content), do NOT retry the script. Instead read the raw source content directly and extract in Opus, mentioning "MiniMax extractor unavailable, using Opus-direct path" in the session. The `minimax-jobs.jsonl` log already captured the failure via the script's own logging, so no additional action is needed.
+**Fallback behavior**: if the extractor script exits non-zero (network error, invalid JSON, empty content), do NOT retry the script. Instead read the raw source content directly and extract in Opus, mentioning "Kimi extractor unavailable, using Opus-direct path" in the session. The `minimax-jobs.jsonl` log already captured the failure via the script's own logging, so no additional action is needed.
 
 **Observability**: every invocation appends a line to `wiki/context/minimax-jobs.jsonl` via the `log_job_invocation` helper in `scripts/minimax-common.sh`. Parse failure rate, cost, and duration are surfaced by `/improve`.
 

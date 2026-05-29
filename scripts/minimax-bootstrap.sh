@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time wiki bootstrap: cross-link enrichment pass
-# Reads all wiki pages in 3 batches, asks MiniMax to identify missing connections
+# Reads all wiki pages in 3 batches, asks the text worker (Kimi K2.6 by default, via minimax-common.sh) to identify missing connections
 #
 # Usage: minimax-bootstrap.sh
 # Output: JSON plan to stdout (pipe to file for later application)
@@ -8,6 +8,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
+# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
+# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
 MODEL="MiniMax-M2.7"
 MAX_TOKENS=16000
 TEMPERATURE=0.2

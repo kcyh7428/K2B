@@ -152,7 +152,7 @@ Using Keith's responses, the source material, and resource.md:
 After text is approved:
 
 1. Derive an image prompt from the post's hook + core insight. Go conceptual, not literal. Think editorial illustration, not stock photo.
-2. Generate via MiniMax: `mcp__minimax__text_to_image` with aspect ratio `4:3` (LinkedIn feed optimal)
+2. Generate the image via GPTsAPI -- the current image path is `scripts/gptsapi-image.sh` (`gpt-image-2-plus`) / `/media image`, aspect ratio `4:3` (LinkedIn feed optimal). Do NOT use `mcp__minimax__text_to_image` -- that MiniMax tool's backend is dead (status_code 2049).
 3. Save to `Assets/images/linkedin_YYYY-MM-DD_slug.png`
 4. Show the image to Keith
 5. Ask: approve, regenerate with different prompt, or skip image?
@@ -230,7 +230,7 @@ Insights with content potential:
 1. Read the draft
 2. Extract the hook and core insight
 3. Generate image prompt (conceptual, editorial, not literal)
-4. Generate via `mcp__minimax__text_to_image` with aspect ratio `4:3`
+4. Generate the image via GPTsAPI (`scripts/gptsapi-image.sh` / `/media image`), aspect ratio `4:3`. Do NOT use `mcp__minimax__text_to_image` (dead backend).
 5. Save to `Assets/images/linkedin_YYYY-MM-DD_slug.png`
 6. Show to Keith. Approve, regenerate, or skip.
 

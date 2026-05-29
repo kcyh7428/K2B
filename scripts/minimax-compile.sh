@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# MiniMax-powered knowledge compilation
+# Kimi-backed knowledge compilation (routes via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi).
+# The "minimax" in the name is historical; the worker is Kimi K2.6 unless K2B_LLM_PROVIDER=minimax.
 # Reads a raw source + wiki context, returns structured JSON for Opus to apply
 #
 # Usage: minimax-compile.sh <raw-source-path>
@@ -8,6 +9,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
+# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
+# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
 MODEL="MiniMax-M2.7"
 MAX_TOKENS=8000
 TEMPERATURE=0.2

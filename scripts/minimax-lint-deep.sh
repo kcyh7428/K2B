@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# MiniMax-powered contradiction detection for /lint deep
+# Kimi-backed contradiction detection for /lint deep (routes via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi).
+# The "minimax" in the name is historical.
 # Reads wiki pages within the same domain, finds contradictions
 #
 # Usage: minimax-lint-deep.sh [domain]
@@ -9,6 +10,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
+# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
+# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
 MODEL="MiniMax-M2.7"
 MAX_TOKENS=4000
 TEMPERATURE=0.1
