@@ -5,26 +5,28 @@ const BRAIN_ID = process.env.BRAIN_ID || 'k2b';
 const PROJECT_ROOT = process.env.PROJECT_ROOT || '/Users/fastshower/Projects/K2B';
 const VAULT_PATH = process.env.VAULT_PATH || '/Users/fastshower/Projects/K2B-Vault';
 
+const COMMON_ENV = {
+  NODE_ENV: 'production',
+  LOG_LEVEL: 'info',
+  CLAUDE_PROJECT_ROOT: PROJECT_ROOT,
+  VAULT_PATH: VAULT_PATH,
+  GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: "file",
+  MINIMAX_API_KEY: process.env.MINIMAX_API_KEY || "",
+  // Router-level VPN as of 2026-05-02 -- no local Clash Verge.
+  // Empty defaults so Telegram traffic goes direct via the router VPN.
+  // Set HTTP_PROXY/HTTPS_PROXY in the shell env if a local proxy returns.
+  HTTP_PROXY: process.env.HTTP_PROXY || "",
+  HTTPS_PROXY: process.env.HTTPS_PROXY || "",
+  NO_PROXY: "localhost,127.0.0.1",
+};
+
 module.exports = {
   apps: [{
     name: `${BRAIN_ID}-remote`,
     script: 'dist/index.js',
     cwd: `${PROJECT_ROOT}/k2b-remote`,
     node_args: '--max-old-space-size=512',
-    env: {
-      NODE_ENV: 'production',
-      LOG_LEVEL: 'info',
-      CLAUDE_PROJECT_ROOT: PROJECT_ROOT,
-      VAULT_PATH: VAULT_PATH,
-      GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: "file",
-      MINIMAX_API_KEY: process.env.MINIMAX_API_KEY || "",
-      // Router-level VPN as of 2026-05-02 -- no local Clash Verge.
-      // Empty defaults so Telegram traffic goes direct via the router VPN.
-      // Set HTTP_PROXY/HTTPS_PROXY in the shell env if a local proxy returns.
-      HTTP_PROXY: process.env.HTTP_PROXY || "",
-      HTTPS_PROXY: process.env.HTTPS_PROXY || "",
-      NO_PROXY: "localhost,127.0.0.1",
-    },
+    env: COMMON_ENV,
     autorestart: true,
     max_restarts: 10,
     min_uptime: '10s',
@@ -35,5 +37,17 @@ module.exports = {
     out_file: `${PROJECT_ROOT}/k2b-remote/store/logs/${BRAIN_ID}-out.log`,
     merge_logs: true,
     watch: false,
+  }, {
+    name: `${BRAIN_ID}-dispatcher`,
+    script: `${PROJECT_ROOT}/scripts/k2b-dispatcher.sh`,
+    interpreter: 'bash',
+    cwd: PROJECT_ROOT,
+    env: COMMON_ENV,
+    autorestart: true,
+    max_restarts: 10,
+    min_uptime: '10s',
+    restart_delay: 5000,
+    error_file: `${PROJECT_ROOT}/k2b-remote/store/logs/${BRAIN_ID}-dispatcher-error.log`,
+    out_file: `${PROJECT_ROOT}/k2b-remote/store/logs/${BRAIN_ID}-dispatcher-out.log`,
   }]
 };

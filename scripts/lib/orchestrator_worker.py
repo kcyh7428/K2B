@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Worker runner: heartbeat, allowlisted-command run, artifact, Telegram."""
+
+import os
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import after PYTHONPATH is set by dispatcher
+from scripts.lib import orchestrator_profiles as profiles
+from scripts.lib import orchestrator_store as store
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def main(task_id):
+    # 1. Validate task state
+    task = store.get_task(task_id)
+    if task is None or task.get("status") != "running":
+        print(f"Worker: task {task_id} not found or not running; exiting", file=sys.stderr)
+        return 0
+
+    # 2. Resolve command
+    argv = profiles.resolve_command(task["assignee_profile"], task["command_key"])
+    if argv is None:
+        reason = f"command_key not allowlisted: {task.get('command_key', '')}"
+        store.transition(task_id, "failed", blocker_reason=reason)
+        store.notify(f"[orchestrator] Task {task_id} FAILED. {reason}")
+        return 1
+
+    # 3. Resolve trusted workspace and record own PID. If the task is no longer
+    # 'running' at registration time (cancelled or reclaimed out from under us
+    # in the spawn window), BAIL before running the command -- another dispatch
+    # may own this entity now.
+    workspace = profiles.resolve_workspace(task["assignee_profile"])
+    if not store.set_worker_pid(task_id, os.getpid()):
+        print(
+            f"Worker: task {task_id} no longer 'running' at PID registration; "
+            f"exiting before command",
+            file=sys.stderr,
+        )
+        return 0
+    store.heartbeat(task_id)
+
+    # 4. Acquire worker lock for the whole run
+    profile = profiles.get_profile(task["assignee_profile"])
+    worker_lock = profile.get("worker_lock") if profile else None
+    lock_fd = None
+    if worker_lock:
+        try:
+            lock_fd = os.open(worker_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(lock_fd, str(os.getpid()).encode())
+        except FileExistsError:
+            reason = "K2Bi worker lock already held"
+            store.transition(task_id, "blocked", blocker_reason=reason)
+            store.notify(f"[orchestrator] Task {task_id} BLOCKED. {reason}")
+            return 1
+
+    try:
+        # 5. Start heartbeat daemon thread (crash-resilient)
+        stop_event = threading.Event()
+        last_beat_ok = [time.time()]
+
+        def _beat():
+            while not stop_event.wait(60):
+                try:
+                    store.heartbeat(task_id)
+                    last_beat_ok[0] = time.time()
+                except Exception as e:
+                    sys.stderr.write(f"heartbeat failed for {task_id}: {e}\n")
+
+        beat_thread = threading.Thread(target=_beat, daemon=True)
+        beat_thread.start()
+
+        # 6. Assert trusted cwd and run command
+        if os.path.realpath(workspace) != os.path.realpath(
+            profiles.resolve_workspace(task["assignee_profile"])
+        ):
+            reason = "workspace trust assertion failed"
+            store.transition(task_id, "failed", blocker_reason=reason)
+            store.notify(f"[orchestrator] Task {task_id} FAILED. {reason}")
+            return 1
+
+        # The command runs in THIS worker's process group (no start_new_session),
+        # which is deliberate: the dispatcher's zombie reclaim kills the worker's
+        # whole group, so a hung worker's command AND any descendants die in one
+        # killpg. Giving the command its own session would let it survive reclaim
+        # and cause the double-dispatch we are guarding against.
+        #
+        # On a worker-local timeout, subprocess.run SIGKILLs and reaps the direct
+        # child. Ship 1a's command allowlist is leaf-only (invest_screen --enrich,
+        # /bin/echo) -- neither forks a descendant -- so killing the direct child
+        # is complete. When Ship 1b adds commands that spawn children, the command
+        # must move to a tracked command-group that both this timeout path and
+        # reclaim kill explicitly (tracked as a Ship 1b hardening item).
+        timeout_s = int(os.environ.get("K2B_ORCH_CMD_TIMEOUT", "540"))
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                env={**os.environ},
+                shell=False,
+            )
+            returncode = result.returncode
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+        except subprocess.TimeoutExpired as te:
+            returncode = -1
+            stdout = te.stdout or ""
+            stderr = te.stderr or ""
+            if not stderr:
+                stderr = f"command timed out (>{timeout_s}s); direct child killed"
+
+        # On TimeoutExpired, captured output can come back as BYTES even though
+        # text=True; normalize to str so the artifact's `.encode('utf-8')` calls
+        # below cannot raise AttributeError and skip the failed-transition,
+        # which would leave the task stuck 'running'.
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+
+        # 7. Write result artifact
+        result_slug = profile.get("result_slug", "result") if profile else "result"
+        artifact_dir = store.RESULTS_DIR
+        os.makedirs(artifact_dir, exist_ok=True)
+        artifact_path = f"{artifact_dir}/{task_id}-{result_slug}.md"
+        started = task.get("started_at") or _now_iso()
+        finished = _now_iso()
+        artifact_body = (
+            f"---\n"
+            f"task: {task_id}\n"
+            f"assignee: {task['assignee_profile']}\n"
+            f"command_key: {task['command_key']}\n"
+            f"cwd: {workspace}\n"
+            f"exit_code: {returncode}\n"
+            f"started: {started}\n"
+            f"finished: {finished}\n"
+            f"stdout_bytes: {len(stdout.encode('utf-8'))}\n"
+            f"stderr_bytes: {len(stderr.encode('utf-8'))}\n"
+            f"type: orchestrator-result\n"
+            f"---\n\n"
+            f"## stdout\n\n"
+            f"```\n{stdout}\n```\n\n"
+            f"## stderr\n\n"
+            f"```\n{stderr}\n```\n"
+        )
+        tmp = f"{artifact_path}.tmp.{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(artifact_body)
+        os.replace(tmp, artifact_path)
+
+        # 8. Stop heartbeat
+        stop_event.set()
+        beat_thread.join(timeout=2)
+
+        # 9. Decide terminal status
+        current = store.get_task(task_id)
+        if current is None or current.get("status") != "running":
+            final_status = current.get("status") if current else "failed"
+        else:
+            if returncode == 0:
+                if time.time() - last_beat_ok[0] < 300:
+                    final_status = "done"
+                    final_reason = None
+                else:
+                    final_status = "failed"
+                    final_reason = (
+                        "completed but heartbeat went stale; treated as failed to avoid double-dispatch"
+                    )
+            else:
+                final_status = "failed"
+                final_reason = stderr[:200] if stderr else f"exit code {returncode}"
+            store.transition(task_id, final_status, blocker_reason=final_reason, result_url=artifact_path)
+
+        # 10. Render board
+        store.render_board()
+
+        # 11. Notify exactly once, label from final_status
+        store.notify(
+            f"[orchestrator] Task {task_id} {final_status.upper()}. Result: {artifact_path}"
+        )
+
+    finally:
+        # 12. Release worker lock
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(worker_lock)
+            except OSError:
+                pass
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1]))
