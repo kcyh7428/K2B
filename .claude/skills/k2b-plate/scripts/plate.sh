@@ -178,10 +178,10 @@ if [[ -f "$k2bi_index" ]]; then
   echo "## 🎩 K2Bi PM current checkpoint"
   echo ""
   awk '
-    /^> \*\*K2B PM checkpoint/ { in_cp=1; line_count=0 }
+    /^> \*\*K2Bi? PM checkpoint/ { in_cp=1; line_count=0 }
     in_cp { print; line_count++ }
     in_cp && line_count >= 30 { exit }
-    in_cp && /^> ---$/ && line_count > 1 { exit }
+    in_cp && /^(> )?---$/ && line_count > 1 { exit }
   ' "$k2bi_index"
   echo ""
 fi
