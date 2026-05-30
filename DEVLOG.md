@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-05-30 -- k2b-portfolio fix-forward: retry mode=ro on the post-write WAL transient
+
+**Commit:** `fbe57c1` fix(k2b-portfolio): retry mode=ro on the transient post-write WAL window
+
+**What shipped:** Fix for a live bug Keith hit minutes after Ship 2: running `/portfolio active` right after an orchestrator write (he cancelled a stale flight) printed `⚠ orchestrator board unreachable`. Root cause: `orchestrator.sqlite` is WAL mode, and a `sqlite3 file:...?mode=ro` open fails transiently (CANTOPEN / error 14) in the brief window while a just-exited writer's WAL index is torn down -- it settles in well under a second. `section_active()` now retries `mode=ro` up to 5x with a 0.2s backoff (happy path returns on the first try, no delay). The error handler from Ship 2 had degraded gracefully to "unreachable", but the read should succeed.
+
+**Why retry, not `immutable=1`:** the first fix attempt fell back to an unlocked `immutable=1` read. Codex flagged (correctly) that falling back on *any* error could turn a genuine concurrent write into a torn/stale read, since the skip-locking path was unconditional. Because WAL mode already lets a `mode=ro` reader coexist with an active writer, the only real failure is the writer-exit transient -- so retrying `mode=ro` recovers it while *keeping* the shared lock. No unlocked read path remains.
+
+**Codex review:** Tier 2. Pass 1 NEEDS-ATTENTION, 2 MEDIUM (unconditional unlocked fallback; test did not force/prove the fallback or post-write freshness) -- both addressed by removing `immutable=1` entirely and rewriting the read-after-write test to make a visible state change (cancel AMD), assert the cancelled row disappears (fresh, not stale), assert not-unreachable, and snapshot main+`-wal` before/after to prove read-only. Confirmation pass APPROVE, no findings. Logs `388f99`... see `.code-reviews/2026-05-30T08-1{1,6}*.log`. 21 tests green.
+
+**Feature status change:** none (fix-forward to the already-shipped feature_k2b-portfolio-view).
+
+**Follow-ups:** none. The same WAL-transient pattern would affect any future read-only consumer of `orchestrator.sqlite`; the retry idiom is the reference.
+
+**Key decisions:** Keep the locked-read guarantee absolute -- a momentary "unreachable" with retry-on-next-invocation is strictly safer than ever displaying an unlocked/torn read as authoritative board state.
+
+---
 ## 2026-05-30 -- k2b-portfolio Ship 2: active orchestrator flights in /portfolio
 
 **Commit:** `fc8fe6e` feat(k2b-portfolio): Ship 2 -- active orchestrator flights section + /portfolio active
