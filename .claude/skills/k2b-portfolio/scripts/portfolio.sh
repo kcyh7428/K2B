@@ -269,16 +269,28 @@ section_active() {
     echo ""
     return
   fi
-  # Read-only WAL access: mode=ro never checkpoints or writes, so the read can never
-  # mutate orchestrator state (day-one guard #1). The free-text blocker_reason is
-  # sanitized in SQL -- the unit-separator (0x1f) field delimiter, CR, and LF are all
-  # replaced with spaces -- so an embedded delimiter or newline cannot shift the
-  # remaining fields when bash `read` splits the row. blocked_by is selected so a
-  # `ready` task waiting on another assignee's lock is not mislabeled as freely queued.
-  local rows rc
-  rows=$(sqlite3 -separator $'\x1f' "file:${ORCH_DB}?mode=ro" \
-    "SELECT id, coalesce(entity_key,''), coalesce(command_key,''), status, coalesce(stage_name,''), replace(replace(replace(coalesce(blocker_reason,''), char(31), ' '), char(13), ' '), char(10), ' '), coalesce(blocked_by,''), coalesce(created_at,''), coalesce(heartbeat_at,'') FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY created_at;" 2>/dev/null)
-  rc=$?
+  # The free-text blocker_reason is sanitized in SQL -- the unit-separator (0x1f)
+  # field delimiter, CR, and LF are all replaced with spaces -- so an embedded
+  # delimiter or newline cannot shift the remaining fields when bash `read` splits
+  # the row. blocked_by is selected so a `ready` task waiting on another assignee's
+  # lock is not mislabeled as freely queued.
+  local query="SELECT id, coalesce(entity_key,''), coalesce(command_key,''), status, coalesce(stage_name,''), replace(replace(replace(coalesce(blocker_reason,''), char(31), ' '), char(13), ' '), char(10), ' '), coalesce(blocked_by,''), coalesce(created_at,''), coalesce(heartbeat_at,'') FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY created_at;"
+  local rows rc i
+  # mode=ro takes a shared lock and never checkpoints or writes, so it cannot mutate
+  # orchestrator state (day-one guard #1). WAL mode lets a mode=ro reader run fine
+  # alongside an active writer, so the ONLY time mode=ro fails is the brief window
+  # right after a writer exits, while its WAL index is torn down and a read-only open
+  # transiently cannot build the -shm (CANTOPEN/error 14). That clears in well under a
+  # second. We retry mode=ro a few times rather than dropping to an unlocked
+  # immutable=1 read -- keeping the locked-read guarantee means a genuine concurrent
+  # write can never be turned into a torn/stale read.
+  rc=1
+  for i in 1 2 3 4 5; do
+    rows=$(sqlite3 -separator $'\x1f' "file:${ORCH_DB}?mode=ro" "$query" 2>/dev/null)
+    rc=$?
+    [[ $rc -eq 0 ]] && break
+    sleep 0.2
+  done
   if [[ $rc -ne 0 ]]; then
     echo "⚠ orchestrator board unreachable (retry shortly)"
     echo ""

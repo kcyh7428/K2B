@@ -323,6 +323,31 @@ if [[ "$JMODE" != "wal" ]]; then
 fi
 echo "PASS: orchestrator DB + WAL sidecar read-only verified (journal_mode=wal)"
 
+# 8c. Read-after-write: resilience + freshness + read-only (live bug 2026-05-30).
+# mode=ro fails transiently right after a write while the WAL index tears down;
+# section_active retries mode=ro until it settles. Make a VISIBLE state change
+# (cancel AMD), then assert /portfolio active (a) is not "unreachable", (b) reflects
+# the post-write state -- the cancelled row is GONE, proving a fresh read not a stale
+# one, and (c) did not itself mutate the DB. Runs AFTER 8b so the deliberate write
+# does not trip that snapshot.
+sqlite3 "$K2B_ORCH_DB" "UPDATE tasks SET status='cancelled' WHERE id='T-RDY';" 2>/dev/null  # AMD ready -> cancelled
+RAW_SNAP_BEFORE=$(orch_snapshot)
+K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-after-write.md"
+RAW_SNAP_AFTER=$(orch_snapshot)
+if grep -q "orchestrator board unreachable" "$SANDBOX/active-after-write.md"; then
+  echo "FAIL: /portfolio active was unreachable right after a DB write (mode=ro retry insufficient?)"; cat "$SANDBOX/active-after-write.md"; exit 1
+fi
+if grep -q "AMD" "$SANDBOX/active-after-write.md"; then
+  echo "FAIL: read after write is stale -- AMD was cancelled but still shows as an active flight"; cat "$SANDBOX/active-after-write.md"; exit 1
+fi
+if ! grep -q "NVDA" "$SANDBOX/active-after-write.md"; then
+  echo "FAIL: active-after-write should still render the remaining flights"; cat "$SANDBOX/active-after-write.md"; exit 1
+fi
+if [[ "$RAW_SNAP_BEFORE" != "$RAW_SNAP_AFTER" ]]; then
+  echo "FAIL: the post-write /portfolio read mutated the DB:"; echo "--- before ---"; echo "$RAW_SNAP_BEFORE"; echo "--- after ---"; echo "$RAW_SNAP_AFTER"; exit 1
+fi
+echo "PASS: /portfolio active reads fresh post-write state and stays read-only"
+
 # 9. Performance check against real vault (skipped if not present)
 if [[ -d "$HOME/Projects/K2Bi-Vault/wiki" ]]; then
   echo "=== Performance check against real vault ==="
