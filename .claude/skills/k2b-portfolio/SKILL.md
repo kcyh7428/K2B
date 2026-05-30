@@ -1,6 +1,6 @@
 ---
 name: k2b-portfolio
-description: Surface K2Bi ticker pipeline state across all stages -- awaiting promotion, watchlist, drafted theses, proposed strategies, open positions, recently closed. Use when Keith says /portfolio, "show me my portfolio", "what tickers are in flight", "where are my K2Bi positions", "what theses am I working on", or asks for an at-a-glance K2Bi status view. Complements /plate (K2B-side) -- this one covers K2Bi-side state only.
+description: Surface K2Bi ticker pipeline state across all stages -- awaiting promotion, watchlist, active orchestrator flights, drafted theses, proposed strategies, open positions, recently closed. Use when Keith says /portfolio, "show me my portfolio", "what tickers are in flight", "where are my K2Bi positions", "what theses am I working on", "what orchestrator flights are running", or asks for an at-a-glance K2Bi status view. Complements /plate (K2B-side) -- this one covers K2Bi-side state only.
 ---
 
 # K2B Portfolio
@@ -30,6 +30,7 @@ Runs `~/Projects/K2B/.claude/skills/k2b-portfolio/scripts/portfolio.sh` and show
 |---|---|---|---|
 | Awaiting promotion | `K2BI_VAULT_PATH/wiki/macro-themes/theme_*.md` | Files whose body lists candidate tickers AND no corresponding watchlist entry exists yet. Themes older than 30 days are skipped as stale. | Theme slug · `waiting_for_promotion` · ⚠ pick ticker · age since theme mtime |
 | Watchlist (Stage 1-2) | `K2BI_VAULT_PATH/wiki/watchlist/<SYMBOL>.md` | Frontmatter `status:` field = `promoted` OR `screened`. Skip files where status is `dropped` or other terminal states. | symbol · status · auto (if `promoted` and Quick Score band exists) OR ⚠ enrich (if just `promoted` no Stage-2 yet) · age since file mtime |
+| Active orchestrator flights | `K2B_VAULT_PATH/System/orchestrator/orchestrator.sqlite` (override path with `K2B_ORCH_DB`) | `tasks` rows with `status NOT IN ('done','failed','cancelled')` -- i.e. `ready`, `running`, `blocked`, `zombie`. Read-only via `mode=ro` URI (never checkpoints the WAL). Missing DB = `(none)`; unreadable DB = `⚠ orchestrator board unreachable`. | label (entity_key ticker, else command_key) · status · next-action (blocked → ⚠ unblock: reason; zombie → ⚠ needs reclaim; running → auto · running; ready+blocked_by → auto · waiting on `<task>`; ready → auto · queued) · age (heartbeat age for running/zombie, else created age -- timezone-offset-aware via Python `fromisoformat`, since the orchestrator stores UTC `+00:00` timestamps) |
 | Theses drafted, awaiting review | `K2BI_VAULT_PATH/wiki/tickers/<SYMBOL>.md` | File body contains a `## Thesis` or `# Thesis` section heading AND frontmatter `thesis_approved_at:` is `null` or absent. | symbol · `thesis_drafted` · ⚠ review thesis · age since file mtime |
 | Strategies proposed, awaiting ship | `K2BI_VAULT_PATH/wiki/strategies/strategy_*.md` | Frontmatter `status: proposed` AND `approved_at: null`. | strategy slug · `proposed` · ⚠ ship via /invest-ship · age since file mtime |
 | Live strategies + open positions | `K2BI_VAULT_PATH/wiki/strategies/strategy_*.md` with `status: approved` AND `approved_at:` not null, joined with `K2BI_VAULT_PATH/raw/journal/<latest-date>.jsonl` events. | For each approved strategy: find the most recent `order_filled` BUY event for its ticker that has no matching SELL since. If a BUY-without-SELL exists, the position is open. | symbol · `position_open` · auto (engine holding) · age since fill OR `approved_no_fill_yet` if no BUY event |
@@ -46,7 +47,7 @@ With a section filter:
 bash ~/Projects/K2B/.claude/skills/k2b-portfolio/scripts/portfolio.sh strategies
 ```
 
-Valid section args: `awaiting`, `watchlist`, `theses`, `strategies`, `positions`, `closed`.
+Valid section args: `awaiting`, `watchlist`, `active`, `theses`, `strategies`, `positions`, `closed`. (`active` returns only the orchestrator-flights section -- the `/portfolio active` shortcut.)
 
 Or with a sandbox vault for testing:
 ```bash
@@ -63,10 +64,11 @@ Sections in fixed order:
 
 1. **⚠ Awaiting promotion** -- themes with candidate tickers not yet on watchlist
 2. **📋 Watchlist (Stage 1-2)** -- promoted / screened tickers awaiting enrichment or thesis
-3. **📝 Theses drafted, awaiting review** -- ticker notes with an unapproved thesis block
-4. **📊 Strategies proposed, awaiting ship** -- strategy specs awaiting `/invest-ship`
-5. **💼 Live strategies + open positions** -- approved strategies with open journal positions or awaiting first fill
-6. **✅ Recently closed (last 14 days)** -- SELL fills from journal with retro status
+3. **🛫 Active orchestrator flights** -- in-flight orchestrator tasks (ready / running / blocked / zombie) with status + next-action + age
+4. **📝 Theses drafted, awaiting review** -- ticker notes with an unapproved thesis block
+5. **📊 Strategies proposed, awaiting ship** -- strategy specs awaiting `/invest-ship`
+6. **💼 Live strategies + open positions** -- approved strategies with open journal positions or awaiting first fill
+7. **✅ Recently closed (last 14 days)** -- SELL fills from journal with retro status
 
 ## Rendering convention (Hybrid)
 
@@ -78,6 +80,7 @@ The agent (Claude Code) does NOT show the raw script output verbatim by default.
 |---|---|
 | ⚠ Awaiting promotion | **Full row verbatim** -- Keith needs to see which theme and how old it is to decide on promotion. |
 | 📋 Watchlist | **Full row verbatim** -- decision-gate items (⚠ enrich) need full context. Auto rows may be compacted to one line. |
+| 🛫 Active orchestrator flights | **Full row verbatim** -- ⚠ blocked/zombie flights need the unblock reason + age in one glance to act. Running/queued rows may be compacted. |
 | 📝 Theses drafted | **Full row verbatim** -- Keith needs the ticker + age to prioritize review. |
 | 📊 Strategies proposed | **Full row verbatim** -- the `/invest-ship` command and slug must be visible. |
 | 💼 Live positions | **Full row verbatim** for open positions; `approved_no_fill_yet` rows may be summarized if many. |
@@ -102,15 +105,17 @@ The agent (Claude Code) does NOT show the raw script output verbatim by default.
 - **Bash 3.2 + BSD awk compatible.** No `readarray`, `mapfile`, associative arrays, or `${var,,}`. Uses `index()` for literal-character matching to avoid BSD awk's `\|` illegal-primary error.
 - **`set -uo pipefail` but NOT `set -e`.** The script handles missing files gracefully (a missing journal file for today is normal on weekends, not an error).
 - **The script itself is read-only.** `portfolio.sh` performs zero writes to vault or memory state -- only `echo`/`awk`/`grep`/`sed`/`jq`/`find`/`cut` (all read operations).
-- **Stale-data guard.** If `K2BI_VAULT_PATH/` does not exist OR `K2BI_VAULT_PATH/wiki/` does not exist, the script prints `K2Bi vault unreachable at <path>` to stderr and exits 1. No partial rendering.
+- **Orchestrator SQLite is opened `mode=ro`.** The Active flights section reads `orchestrator.sqlite` (WAL-mode) via the `file:...?mode=ro` URI, NOT the `-readonly` flag (which fails CANTOPEN on a WAL DB that needs to create the shared-memory file) and NOT `immutable=1` (which risks stale/corrupt reads under a concurrent dispatcher write). `mode=ro` respects locks and never checkpoints, so the read can never mutate orchestrator state. On any sqlite error the section prints `⚠ orchestrator board unreachable` rather than partial data.
+- **Stale-data guard (scoped).** If `K2BI_VAULT_PATH/` or `K2BI_VAULT_PATH/wiki/` does not exist, the script prints `K2Bi vault unreachable at <path>` to stderr and exits 1 -- EXCEPT for `/portfolio active`, which reads only the orchestrator SQLite (K2B vault) and must not be hidden by a K2Bi vault sync/mount issue. The guard is skipped when `SECTION=active`.
 - **Defensive frontmatter parsing.** `fm_get_scalar` toggles on `^---$` and only emits matches within the first frontmatter block, preventing body-content leakage.
 - **`*.sync-conflict-*` files are skipped** at every read step. Syncthing can create these on the vault during cross-machine writes.
 - **Performance.** End-to-end runtime under 5 seconds on Keith's MacBook with the real K2Bi vault. Sections read sequentially; jq used for journal JSONL parsing.
 
 ## Error handling
 
-- If `K2B_VAULT_PATH` is unset, it is not used by this script (K2Bi-only skill).
+- If `K2B_VAULT_PATH` is unset, defaults to `~/Projects/K2B-Vault/` (used only to locate the orchestrator SQLite for the Active flights section). Override the DB path directly with `K2B_ORCH_DB`.
 - If `K2BI_VAULT_PATH` is unset, defaults to `~/Projects/K2Bi-Vault/`.
+- If the orchestrator SQLite does not exist (orchestrator never run), the Active flights section emits `(none)`; if it exists but cannot be read, it emits `⚠ orchestrator board unreachable`.
 - If a source file is missing (e.g., no journal files yet on a fresh vault), the corresponding section emits `(none)` and continues.
 - If frontmatter is malformed in a strategy or ticker note, that file is skipped silently (parsing errors do not abort the whole portfolio).
 

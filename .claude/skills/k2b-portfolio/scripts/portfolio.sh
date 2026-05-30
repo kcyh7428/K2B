@@ -5,11 +5,21 @@
 set -uo pipefail
 
 K2BI="${K2BI_VAULT_PATH:-$HOME/Projects/K2Bi-Vault}"
+K2B="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
+ORCH_DB="${K2B_ORCH_DB:-$K2B/System/orchestrator/orchestrator.sqlite}"
 
-# --- Stale-data guard ---
-if [[ ! -d "$K2BI" ]] || [[ ! -d "$K2BI/wiki" ]]; then
-  echo "K2Bi vault unreachable at ${K2BI}" >&2
-  exit 1
+# Parse the section up-front so the K2Bi reachability guard can be scoped.
+SECTION="${1:-all}"
+
+# --- Stale-data guard (K2Bi-backed sections only) ---
+# The `active` section reads ONLY the orchestrator SQLite (K2B vault), never K2Bi.
+# A K2Bi vault sync/mount issue must not hide active orchestrator flights, so the
+# guard is skipped for `active`. Every other section reads K2Bi and requires it.
+if [[ "$SECTION" != "active" ]]; then
+  if [[ ! -d "$K2BI" ]] || [[ ! -d "$K2BI/wiki" ]]; then
+    echo "K2Bi vault unreachable at ${K2BI}" >&2
+    exit 1
+  fi
 fi
 
 # --- Helpers ---
@@ -69,6 +79,44 @@ ts_age_days() {
   ts_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$ts_clean" +%s 2>/dev/null || date -d "$ts_clean" +%s 2>/dev/null)
   now=$(date +%s)
   echo $(( (now - ts_epoch) / 86400 ))
+}
+
+# Human-readable age from ISO timestamp (s/m/h/d). Used for orchestrator flights
+# where sub-day granularity matters (heartbeats), unlike the day-only vault ages.
+# MUST be timezone-offset-aware: the orchestrator stores UTC timestamps WITH a
+# +00:00 offset (datetime.now(timezone.utc).isoformat()). Stripping the offset and
+# parsing as local wall-clock makes a 2-minute-old heartbeat read ~8h old on a
+# UTC+8 machine -- which corrupts exactly the freshness signal this section exists
+# to show. Python's fromisoformat() honors the offset; naive timestamps (no offset,
+# as produced by `date -u` in test fixtures) are treated as UTC.
+ts_age_human() {
+  local ts="$1"
+  [[ -n "$ts" ]] || { echo "?"; return; }
+  # Python stderr is intentionally NOT suppressed: a malformed timestamp is a handled
+  # soft case (prints '?' on stdout, exits 0, no stderr), but a real failure (python3
+  # missing, stripped-PATH cron, unexpected datetime error) must surface to stderr so a
+  # blanket '?' is diagnosable rather than silent. The `|| echo "?"` keeps output graceful.
+  python3 - "$ts" <<'PY' || echo "?"
+import sys, datetime
+raw = sys.argv[1]
+try:
+    dt = datetime.datetime.fromisoformat(raw)
+except ValueError:
+    print("?"); sys.exit(0)
+if dt.tzinfo is None:
+    dt = dt.replace(tzinfo=datetime.timezone.utc)
+diff = int((datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds())
+if diff < 0:
+    diff = 0
+if diff < 60:
+    print(f"{diff}s")
+elif diff < 3600:
+    print(f"{diff // 60}m")
+elif diff < 86400:
+    print(f"{diff // 3600}h")
+else:
+    print(f"{diff // 86400}d")
+PY
 }
 
 # Date +1 day
@@ -208,6 +256,80 @@ section_watchlist() {
   if [[ $has_any -eq 0 ]]; then
     echo "(none)"
   fi
+  echo ""
+}
+
+section_active() {
+  echo "## 🛫 Active orchestrator flights"
+  echo ""
+  # Stale-data honesty: a missing DB means the orchestrator has never run (no flights);
+  # a present-but-unreadable DB means we report unreachable rather than show stale data.
+  if [[ ! -f "$ORCH_DB" ]]; then
+    echo "(none)"
+    echo ""
+    return
+  fi
+  # Read-only WAL access: mode=ro never checkpoints or writes, so the read can never
+  # mutate orchestrator state (day-one guard #1). The free-text blocker_reason is
+  # sanitized in SQL -- the unit-separator (0x1f) field delimiter, CR, and LF are all
+  # replaced with spaces -- so an embedded delimiter or newline cannot shift the
+  # remaining fields when bash `read` splits the row. blocked_by is selected so a
+  # `ready` task waiting on another assignee's lock is not mislabeled as freely queued.
+  local rows rc
+  rows=$(sqlite3 -separator $'\x1f' "file:${ORCH_DB}?mode=ro" \
+    "SELECT id, coalesce(entity_key,''), coalesce(command_key,''), status, coalesce(stage_name,''), replace(replace(replace(coalesce(blocker_reason,''), char(31), ' '), char(13), ' '), char(10), ' '), coalesce(blocked_by,''), coalesce(created_at,''), coalesce(heartbeat_at,'') FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY created_at;" 2>/dev/null)
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "⚠ orchestrator board unreachable (retry shortly)"
+    echo ""
+    return
+  fi
+  if [[ -z "$rows" ]]; then
+    echo "(none)"
+    echo ""
+    return
+  fi
+  local id ticker cmd status stage reason blocked_by created hb
+  while IFS=$'\x1f' read -r id ticker cmd status stage reason blocked_by created hb; do
+    [[ -n "$id" ]] || continue
+    local label="$ticker"
+    [[ -n "$label" ]] || label="${cmd:-$id}"
+    local prefix="" action="" age=""
+    case "$status" in
+      blocked)
+        prefix="⚠ "
+        local short="$reason"
+        if [[ -n "$short" && ${#short} -gt 64 ]]; then short="${short:0:64}…"; fi
+        [[ -n "$short" ]] || short="see board"
+        action="unblock: ${short}"
+        age=$(ts_age_human "$created")
+        ;;
+      zombie)
+        prefix="⚠ "
+        action="needs reclaim"
+        age=$(ts_age_human "${hb:-$created}")
+        ;;
+      running)
+        action="auto · running"
+        age=$(ts_age_human "${hb:-$created}")
+        ;;
+      ready)
+        if [[ -n "$blocked_by" ]]; then
+          action="auto · waiting on ${blocked_by}"
+        else
+          action="auto · queued"
+        fi
+        age=$(ts_age_human "$created")
+        ;;
+      *)
+        action="$status"
+        age=$(ts_age_human "$created")
+        ;;
+    esac
+    local stage_suffix=""
+    if [[ -n "$stage" && "$stage" != "dispatch" ]]; then stage_suffix=" (${stage})"; fi
+    echo "- ${prefix}${label}${stage_suffix} · ${status} · ${action} · ${age}"
+  done <<< "$rows"
   echo ""
 }
 
@@ -363,13 +485,13 @@ section_closed() {
 }
 
 # --- Dispatch ---
-
-SECTION="${1:-all}"
+# SECTION was parsed at the top of the script (before the scoped K2Bi guard).
 
 case "$SECTION" in
   all)
     section_awaiting
     section_watchlist
+    section_active
     section_theses
     section_strategies
     section_positions
@@ -380,6 +502,9 @@ case "$SECTION" in
     ;;
   watchlist)
     section_watchlist
+    ;;
+  active)
+    section_active
     ;;
   theses)
     section_theses
@@ -394,7 +519,7 @@ case "$SECTION" in
     section_closed
     ;;
   *)
-    echo "Unknown section: ${SECTION}. Known: awaiting watchlist theses strategies positions closed" >&2
+    echo "Unknown section: ${SECTION}. Known: awaiting watchlist active theses strategies positions closed" >&2
     exit 2
     ;;
 esac

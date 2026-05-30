@@ -57,6 +57,49 @@ up: "[[index]]"
 Post-trade retrospective for the CLOSED1 cycle.
 EOF
 
+# Orchestrator fixture DB for the Active flights section (Ship 2).
+# WAL mode (mirrors production: orchestrator_store sets journal_mode=WAL).
+# 5 active tasks + 2 terminal (done / cancelled) that MUST be excluded:
+#   T-RUN   running, heartbeat 2m ago            -> freshness via heartbeat
+#   T-BLK   blocked, dirty-tree reason            -> ⚠ unblock
+#   T-RDY   ready, no blocker                     -> auto · queued
+#   T-WAIT  ready, blocked_by=T-RUN               -> auto · waiting on T-RUN (Codex finding 2)
+#   T-PARSE blocked, blocker_reason w/ 0x1f+LF+CR -> field-shift regression (Codex finding 3)
+ORCH_HB2=$(date -u -v-2M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%S)
+ORCH_C10=$(date -u -v-10M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%S)
+ORCH_C1H=$(date -u -v-1H +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S)
+ORCH_C5=$(date -u -v-5M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S)
+export K2B_ORCH_DB="$SANDBOX/orchestrator.sqlite"
+sqlite3 "$K2B_ORCH_DB" <<SQL
+PRAGMA journal_mode=WAL;
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, flight_id TEXT, stage_name TEXT, entity_key TEXT,
+  assignee_profile TEXT, status TEXT, command_key TEXT, blocker_reason TEXT,
+  blocked_by TEXT, created_at TEXT, updated_at TEXT, heartbeat_at TEXT
+);
+INSERT INTO tasks VALUES('T-RUN','F1','dispatch','NVDA','k2bi','running','k2bi-smoke-enrich-nvda',NULL,NULL,'${ORCH_C10}','${ORCH_HB2}','${ORCH_HB2}');
+INSERT INTO tasks VALUES('T-BLK','F2','dispatch','','k2bi','blocked','k2bi-smoke-enrich-lrcx','K2Bi git tree dirty: M execution/connectors/ibkr.py',NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
+INSERT INTO tasks VALUES('T-RDY','F3','dispatch','AMD','k2bi','ready','test-echo-readonly',NULL,NULL,'${ORCH_C5}','${ORCH_C5}',NULL);
+INSERT INTO tasks VALUES('T-WAIT','F6','dispatch','MSFT','k2bi','ready','k2bi-smoke-enrich-msft',NULL,'T-RUN','${ORCH_C5}','${ORCH_C5}',NULL);
+INSERT INTO tasks VALUES('T-PARSE','F7','dispatch','PARSETEST','k2bi','blocked','k2bi-smoke-enrich-parse','dirty: a.py' || char(31) || 'x' || char(10) || 'y' || char(13) || 'z',NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
+INSERT INTO tasks VALUES('T-DONE','F4','dispatch','TSLA','k2bi','done','k2bi-smoke-enrich-tsla',NULL,NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
+INSERT INTO tasks VALUES('T-CAN','F5','dispatch','INTC','k2bi','cancelled','k2bi-smoke-enrich-intc',NULL,NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
+SQL
+
+# Read-only invariant snapshot: hash main DB + -wal sidecar (the authoritative state).
+# -shm is ephemeral shared-memory coordination and is intentionally excluded.
+orch_hash() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s %s\n' "$(basename "$f")" "$(shasum -a 256 "$f" | cut -d' ' -f1)"
+  else
+    printf '%s %s\n' "$(basename "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+  fi
+}
+orch_snapshot() { orch_hash "$K2B_ORCH_DB"; orch_hash "$K2B_ORCH_DB-wal"; }
+ORCH_SNAP_BEFORE=$(orch_snapshot)
+
 # Create a before marker for read-only check inside sandbox
 BEFORE_MARKER="$SANDBOX/.before-marker"
 touch "$BEFORE_MARKER"
@@ -70,14 +113,14 @@ K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" > "$SANDBOX/output.md" || {
 }
 cat "$SANDBOX/output.md"
 
-# 3. Assert 6 section headings in order
-for heading in "## ⚠ Awaiting promotion" "## 📋 Watchlist (Stage 1-2)" "## 📝 Theses drafted, awaiting review" "## 📊 Strategies proposed, awaiting ship" "## 💼 Live strategies + open positions" "## ✅ Recently closed (last 14 days)"; do
+# 3. Assert 7 section headings present
+for heading in "## ⚠ Awaiting promotion" "## 📋 Watchlist (Stage 1-2)" "## 🛫 Active orchestrator flights" "## 📝 Theses drafted, awaiting review" "## 📊 Strategies proposed, awaiting ship" "## 💼 Live strategies + open positions" "## ✅ Recently closed (last 14 days)"; do
   if ! grep -q "$heading" "$SANDBOX/output.md"; then
     echo "FAIL: missing section heading: $heading"
     exit 1
   fi
 done
-echo "PASS: all 6 section headings present"
+echo "PASS: all 7 section headings present"
 
 # 4. Assert expected rows appear in expected sections
 # Awaiting promotion: theme_test-ai-adopters should appear because GHI has no watchlist
@@ -98,6 +141,40 @@ if ! echo "$watchlist_section" | grep -q "DEF · screened · auto"; then
   exit 1
 fi
 echo "PASS: watchlist rows present"
+
+# Active orchestrator flights: NVDA running, LRCX blocked (entity_key empty -> label is command_key), AMD ready.
+# Terminal tasks (TSLA done, INTC cancelled) MUST be excluded.
+active_section=$(awk '/## 🛫 Active orchestrator flights/{flag=1;next}/^## /{flag=0}flag' "$SANDBOX/output.md")
+if ! echo "$active_section" | grep -q "NVDA · running · auto · running"; then
+  echo "FAIL: active running NVDA row missing or wrong"; echo "$active_section"; exit 1
+fi
+if ! echo "$active_section" | grep -q "⚠ k2bi-smoke-enrich-lrcx · blocked · unblock:"; then
+  echo "FAIL: active blocked LRCX row missing or wrong"; echo "$active_section"; exit 1
+fi
+if ! echo "$active_section" | grep -q "AMD · ready · auto · queued"; then
+  echo "FAIL: active ready AMD row missing or wrong"; echo "$active_section"; exit 1
+fi
+if echo "$active_section" | grep -qE "TSLA|INTC"; then
+  echo "FAIL: terminal (done/cancelled) tasks must be excluded from active flights"; echo "$active_section"; exit 1
+fi
+echo "PASS: active orchestrator flights rows present, terminal excluded"
+
+# Codex finding 2: a ready task with blocked_by must show the lock holder, not "queued".
+if ! echo "$active_section" | grep -q "MSFT · ready · auto · waiting on T-RUN"; then
+  echo "FAIL: ready+blocked_by MSFT not rendered as waiting-on (finding 2)"; echo "$active_section"; exit 1
+fi
+if ! echo "$active_section" | grep -q "AMD · ready · auto · queued"; then
+  echo "FAIL: plain ready AMD should still render as queued"; echo "$active_section"; exit 1
+fi
+echo "PASS: ready+blocked_by distinguished from plain queued"
+
+# Codex finding 3: blocker_reason with embedded 0x1f/CR/LF must not shift fields.
+# If the delimiter leaked, the trailing age field would be garbage ('?'), not '1h'.
+parse_line=$(echo "$active_section" | grep "PARSETEST")
+if ! echo "$parse_line" | grep -qE "PARSETEST · blocked · unblock:.*· 1h$"; then
+  echo "FAIL: special-char blocker_reason shifted fields (age not '1h'): $parse_line"; exit 1
+fi
+echo "PASS: special-char blocker_reason sanitized, no field shift"
 
 # Theses: ABC has thesis and thesis_approved_at: null
 theses_section=$(awk '/## 📝 Theses drafted/{flag=1;next}/^## /{flag=0}flag' "$SANDBOX/output.md")
@@ -153,6 +230,34 @@ if ! grep -q "## 📊 Strategies proposed, awaiting ship" "$SANDBOX/strategies-o
 fi
 echo "PASS: section dispatch works"
 
+# 5b. Section dispatch: `active` returns just the flights section with all active tasks
+K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-only.md"
+if grep -qE "## ⚠ Awaiting promotion|## 📋 Watchlist|## 📝 Theses|## 📊 Strategies|## 💼 Live|## ✅ Recently" "$SANDBOX/active-only.md"; then
+  echo "FAIL: active-only should contain only the flights section"; cat "$SANDBOX/active-only.md"; exit 1
+fi
+if ! grep -q "## 🛫 Active orchestrator flights" "$SANDBOX/active-only.md"; then
+  echo "FAIL: active-only missing flights heading"; exit 1
+fi
+for sym in NVDA k2bi-smoke-enrich-lrcx AMD MSFT PARSETEST; do
+  if ! grep -q "$sym" "$SANDBOX/active-only.md"; then
+    echo "FAIL: active-only missing $sym"; cat "$SANDBOX/active-only.md"; exit 1
+  fi
+done
+if grep -qE "TSLA|INTC" "$SANDBOX/active-only.md"; then
+  echo "FAIL: active-only must exclude terminal tasks"; cat "$SANDBOX/active-only.md"; exit 1
+fi
+echo "PASS: /portfolio active dispatch returns the active flights, terminal excluded"
+
+# 5c. Codex finding 1: a 2-min-old UTC heartbeat must render in MINUTES even under a
+# non-UTC TZ. The old code stripped the offset and parsed as local wall-clock, turning
+# 2m into ~8h on UTC+8. ts_age_human is now offset-aware (Python fromisoformat).
+TZ=Asia/Shanghai K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-tz.md"
+nvda_tz_line=$(grep "NVDA" "$SANDBOX/active-tz.md")
+if ! echo "$nvda_tz_line" | grep -qE "· [0-9]+m$"; then
+  echo "FAIL: NVDA heartbeat age not in minutes under Asia/Shanghai TZ (timezone bug regressed): $nvda_tz_line"; exit 1
+fi
+echo "PASS: heartbeat age timezone-correct under non-UTC TZ"
+
 # 6. Unknown section returns exit 2
 if K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" bogus-section > "$SANDBOX/bogus.md" 2>&1; then
   echo "FAIL: bogus section should exit non-zero"
@@ -181,6 +286,19 @@ if ! grep -q "unreachable" "$SANDBOX/unreachable.md"; then
 fi
 echo "PASS: unreachable vault handled"
 
+# 7b. Codex finding 5: `/portfolio active` reads only the orchestrator DB, so it must
+# still work when the K2Bi vault is unreachable (the guard is scoped to skip `active`).
+if ! K2BI_VAULT_PATH="/nonexistent-k2bi" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-no-k2bi.md" 2>&1; then
+  echo "FAIL: /portfolio active should succeed even when K2Bi vault is unreachable"; cat "$SANDBOX/active-no-k2bi.md"; exit 1
+fi
+if ! grep -q "## 🛫 Active orchestrator flights" "$SANDBOX/active-no-k2bi.md"; then
+  echo "FAIL: active-no-k2bi missing flights heading"; cat "$SANDBOX/active-no-k2bi.md"; exit 1
+fi
+if ! grep -q "NVDA" "$SANDBOX/active-no-k2bi.md"; then
+  echo "FAIL: active-no-k2bi should still render flights"; cat "$SANDBOX/active-no-k2bi.md"; exit 1
+fi
+echo "PASS: /portfolio active works with unreachable K2Bi vault"
+
 # 8. Read-only check (only fixture subdirs)
 modified=$(find "$SANDBOX/wiki" "$SANDBOX/raw" -newer "$BEFORE_MARKER" -type f 2>/dev/null || true)
 if [[ -n "$modified" ]]; then
@@ -189,6 +307,21 @@ if [[ -n "$modified" ]]; then
   exit 1
 fi
 echo "PASS: read-only verified"
+
+# 8b. Orchestrator DB (WAL mode) + -wal sidecar must be byte-for-byte untouched after
+# every read above (mode=ro read-only invariant -- Codex finding 4).
+ORCH_SNAP_AFTER=$(orch_snapshot)
+if [[ "$ORCH_SNAP_BEFORE" != "$ORCH_SNAP_AFTER" ]]; then
+  echo "FAIL: orchestrator DB/WAL changed under read (mode=ro must not mutate):"
+  echo "--- before ---"; echo "$ORCH_SNAP_BEFORE"
+  echo "--- after ---"; echo "$ORCH_SNAP_AFTER"
+  exit 1
+fi
+JMODE=$(sqlite3 "file:${K2B_ORCH_DB}?mode=ro" "PRAGMA journal_mode;" 2>/dev/null)
+if [[ "$JMODE" != "wal" ]]; then
+  echo "FAIL: fixture journal_mode='$JMODE', expected 'wal' (read-only WAL invariant not exercised)"; exit 1
+fi
+echo "PASS: orchestrator DB + WAL sidecar read-only verified (journal_mode=wal)"
 
 # 9. Performance check against real vault (skipped if not present)
 if [[ -d "$HOME/Projects/K2Bi-Vault/wiki" ]]; then
