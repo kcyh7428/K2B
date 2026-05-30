@@ -37,17 +37,5 @@ module.exports = {
     out_file: `${PROJECT_ROOT}/k2b-remote/store/logs/${BRAIN_ID}-out.log`,
     merge_logs: true,
     watch: false,
-  }, {
-    name: `${BRAIN_ID}-dispatcher`,
-    script: `${PROJECT_ROOT}/scripts/k2b-dispatcher.sh`,
-    interpreter: 'bash',
-    cwd: PROJECT_ROOT,
-    env: COMMON_ENV,
-    autorestart: true,
-    max_restarts: 10,
-    min_uptime: '10s',
-    restart_delay: 5000,
-    error_file: `${PROJECT_ROOT}/k2b-remote/store/logs/${BRAIN_ID}-dispatcher-error.log`,
-    out_file: `${PROJECT_ROOT}/k2b-remote/store/logs/${BRAIN_ID}-dispatcher-out.log`,
   }]
 };
