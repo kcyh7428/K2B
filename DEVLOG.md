@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-05-30 -- /ship Step 14: code-enforced auto-close of shipped-feature reminders
+
+**Commit:** `7629b8c` feat(ship): code-enforce Step 14 category 5 -- auto-close shipped-feature reminders
+
+**What shipped:** A real Step 14 (vault-note sweep) in the k2b-ship skill, with its most-skipped category (reminders) now enforced by code instead of a checklist line. New `scripts/ship-close-reminders.py`: on ship, it flips any open reminder in `wiki/context/reminders.md` that names the just-shipped feature to `[closed]`, annotates it `(closed YYYY-MM-DD via /ship <slug>)`, and moves it to the `## Closed` section. Matching is bounded-token (no loose-word or prefix-collision false positives), multi-slug runs attribute each closed line to the slug that actually matched, and the whole read-transform-replace is wrapped in `fcntl.flock` + fsync-before-atomic-replace. SKILL.md Step 14 guards unset `$SLUG` so `--no-feature` ships skip cleanly. 13 fixture tests in `scripts/tests/test-ship-close-reminders.sh`.
+
+**Why:** L-2026-03-25-002 has called for a 5-category vault-note sweep as "mandatory step 14 of /ship" since 2026-03-25, but the skill body never actually had a Step 14 -- it stopped at 13.5. The rule lived only in a learning file, so category 5 (reminder closure) kept getting skipped. On 2026-05-30 the orchestrator Ship 1a (`a439d5d`) shipped but left its "Build feature_k2b-orchestrator-v1 Ship 1a" reminder open, so it surfaced stale in `/plate` and Keith had to point it out. Producer-side root-cause fix: enforce in code, not prose.
+
+**Codex review:** 4 pre-commit rounds (tier-3, evidence in `.code-reviews/`). R1: stripped-token false-positive [high] + `$SLUG`-unset-on-no-feature [med] + multi-slug-attribution [med]. R2: prefix-collision (feature_foo vs feature_foo-v2) [med]. R3: unlocked read-modify-write race [med]. R4: APPROVE. All findings fixed inline with regression tests added per finding.
+
+**Feature status change:** none (`--no-feature` infrastructure ship; the change is to /ship discipline itself).
+
+**Follow-ups:** none. Categories 1-4 of the Step 14 sweep stay agent-driven (they need judgment about what each ship resolved); only category 5 is code-enforced.
+
+**Key decisions:** Match the full `feature_<slug>` form exactly (bounded) rather than auto-stripping/prefixing -- the caller controls specificity, which is what kills the false-positive class. flock guards the controllable risk (concurrent /ship runs); manual Obsidian edits are out of scope for a manual-edit file.
+
+---
 ## 2026-05-30 -- Orchestrator descope: MacBook on-demand, no Telegram/Mini daemon
 
 **Commit:** `d6286e8` chore(orchestrator): remove dead k2b-dispatcher pm2 entry (descope to MacBook on-demand)
