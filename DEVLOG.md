@@ -3821,3 +3821,17 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Feature status:** `feature_k2b-portfolio-view` multi-ship feature; Ship 1 shipped, Ship 2 pending orchestrator-v1.
 
 **Key decisions:** Used theme-slug (not individual ticker) for Awaiting-promotion rows since Keith's decision is "which ticker from this theme to promote". Used `jq` for journal JSONL parsing despite Bash 3.2 constraint because jq is already a project dependency. Date-relative test fixtures generated at test runtime to avoid time-bomb assertions.
+
+## 2026-05-30 -- /plate parser: match K2Bi PM checkpoint label
+
+**Commit:** `d120d8c` fix(k2b-plate): match both K2B and K2Bi PM checkpoint labels
+
+**What shipped:** The `/plate` awk parser (`scripts/plate.sh`) matched only `> **K2B PM checkpoint`. Codex relabeled the K2Bi Resume Card header to `K2Bi PM checkpoint` during the P4-1 deploy, so the K2Bi PM checkpoint section rendered blank. Regex now tolerates the optional "i" (`K2Bi?`); the blockquote terminator also stops on a plain `---` so it cannot overrun the card into the page table. SKILL.md doc line updated to note both labels.
+
+**Codex review:** Tier 2, APPROVE no findings. Checked optional-i over-match, terminator over-run, awk escaping -- all clear. Log: `.code-reviews/2026-05-30T15-30-27Z_f3a3f3.log`.
+
+**Feature status change:** none (--no-feature; bug fix to shipped skill k2b-plate).
+
+**Follow-ups:** needs /sync to land on Mac Mini.
+
+**Key decisions:** Fixed the consumer (parser tolerant of both labels) rather than the producer (forcing Codex to revert the more-accurate "K2Bi" label). Parser now label-agnostic so it can't silently break again on a future relabel.
