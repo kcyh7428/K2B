@@ -144,6 +144,92 @@ PY
 # We should have exactly 4 tasks from previous scenarios
 [[ "$COUNT" == "4" ]]; report $? "no extra task created"
 
+# === Add with --status waiting_for_kimi_output ===
+echo "=== Add with --status waiting_for_kimi_output ==="
+TID_PARK=$($CLI add --profile k2bi --command-key test-echo-readonly --success ok --permissions analyst-command --status waiting_for_kimi_output --entity "open-source AI" | awk '{print $NF}')
+STATUS_PARK=$($CLI show "$TID_PARK" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+[[ "$STATUS_PARK" == "waiting_for_kimi_output" ]]; report $? "status is waiting_for_kimi_output"
+
+# === poll_once does NOT spawn parked task ===
+echo "=== poll_once does NOT spawn parked task ==="
+$CLI poll-once >/dev/null
+STATUS_PARK2=$($CLI show "$TID_PARK" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+[[ "$STATUS_PARK2" == "waiting_for_kimi_output" ]]; report $? "parked task stays parked after poll_once"
+
+# === One-flight lock ===
+echo "=== One-flight lock ==="
+set +e
+OUTPUT_LOCK=$($CLI add --profile k2bi --command-key test-echo-readonly --success ok --permissions analyst-command --status waiting_for_kimi_output --entity "  Open-Source AI " 2>&1)
+RC_LOCK=$?
+set -e
+[[ "$RC_LOCK" -ne 0 ]]; report $? "duplicate entity_key exits non-zero"
+[[ "$OUTPUT_LOCK" == *"flight already active for"* ]]; report $? "lock error message present"
+
+# === Return acceptance gate (pass) ===
+echo "=== Return acceptance gate (pass) ==="
+GOOD_CONTENT=$(python3 -c '
+lines = [
+    "This is a comprehensive research report on open-source AI with detailed analysis and many words.",
+    "Here is a second substantive line with plenty of content to meet the threshold requirements fully.",
+    "Third line: the landscape of open-source AI has shifted dramatically in recent months worldwide.",
+    "Fourth line: companies like Meta and Google have released powerful models under permissive licenses.",
+    "Fifth line: the implications for enterprise adoption are significant and far-reaching across sectors.",
+]
+urls = ["https://example.com/source1", "https://example.org/source2", "http://example.net/source3"]
+print("\n".join(lines + urls))
+print("The conclusion wraps up the analysis with a firm and definitive statement.")
+')
+# Append the task-bound completion sentinel the gate requires as the last line.
+GOOD_CONTENT="${GOOD_CONTENT}
+=== END OF KIMI RESEARCH: ${TID_PARK} ==="
+$CLI return "$TID_PARK" --text "$GOOD_CONTENT" >/dev/null
+STATUS_RET=$($CLI show "$TID_PARK" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+[[ "$STATUS_RET" == "returned" ]]; report $? "return transitions to returned"
+[[ -f "$VAULT/raw/orchestrator-results/${TID_PARK}-kimi-raw.md" ]]; report $? "raw file stored"
+
+# === Return idempotency ===
+echo "=== Return idempotency ==="
+set +e
+OUTPUT_DUP=$($CLI return "$TID_PARK" --text "$GOOD_CONTENT" 2>&1)
+RC_DUP=$?
+set -e
+[[ "$RC_DUP" -ne 0 ]]; report $? "duplicate return exits non-zero"
+[[ "$OUTPUT_DUP" == *"already returned"* ]]; report $? "already returned message present"
+
+# === Complete from returned ===
+echo "=== Complete from returned ==="
+$CLI complete "$TID_PARK" >/dev/null
+STATUS_DONE=$($CLI show "$TID_PARK" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+[[ "$STATUS_DONE" == "done" ]]; report $? "complete moves returned to done"
+
+# === Return acceptance gate (reject too small) ===
+echo "=== Return acceptance gate (reject too small) ==="
+TID_SMALL=$($CLI add --profile k2bi --command-key test-echo-readonly --success ok --permissions analyst-command --status waiting_for_kimi_output --entity "small-test" | awk '{print $NF}')
+set +e
+OUTPUT_SMALL=$($CLI return "$TID_SMALL" --text "tiny" 2>&1)
+RC_SMALL=$?
+set -e
+[[ "$RC_SMALL" -ne 0 ]]; report $? "too-small return exits non-zero"
+[[ "$OUTPUT_SMALL" == *"rejected: size"* ]]; report $? "too-small rejection message present"
+
+# === TTL sweep ===
+echo "=== TTL sweep ==="
+TID_TTL=$($CLI add --profile k2bi --command-key test-echo-readonly --success ok --permissions analyst-command --status waiting_for_kimi_output --entity "ttl-test" | awk '{print $NF}')
+python3 - "$DB" "$TID_TTL" <<'PY'
+import sys, sqlite3, datetime
+conn = sqlite3.connect(sys.argv[1])
+old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=15)).isoformat()
+conn.execute("UPDATE tasks SET updated_at=? WHERE id=?", (old, sys.argv[2]))
+conn.commit()
+conn.close()
+PY
+TTL_RESULT=$($CLI poll-once)
+[[ "$TTL_RESULT" == *"\"ttl_expired\": [\"$TID_TTL\"]"* ]]; report $? "ttl_expired contains old task"
+STATUS_TTL=$($CLI show "$TID_TTL" --json | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+[[ "$STATUS_TTL" == "cancelled" ]]; report $? "old parked task cancelled by ttl"
+TTL_REASON=$($CLI show "$TID_TTL" --json | python3 -c "import sys,json; print(json.load(sys.stdin).get('blocker_reason',''))")
+[[ "$TTL_REASON" == "ttl-expired" ]]; report $? "ttl blocker_reason set"
+
 # === Child survives parent death (process-group kill) ===
 echo "=== Child survives parent death ==="
 # Run via inline Python inside the bash test to monkeypatch reclaim_zombies

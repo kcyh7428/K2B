@@ -82,6 +82,8 @@ INSERT INTO tasks VALUES('T-BLK','F2','dispatch','','k2bi','blocked','k2bi-smoke
 INSERT INTO tasks VALUES('T-RDY','F3','dispatch','AMD','k2bi','ready','test-echo-readonly',NULL,NULL,'${ORCH_C5}','${ORCH_C5}',NULL);
 INSERT INTO tasks VALUES('T-WAIT','F6','dispatch','MSFT','k2bi','ready','k2bi-smoke-enrich-msft',NULL,'T-RUN','${ORCH_C5}','${ORCH_C5}',NULL);
 INSERT INTO tasks VALUES('T-PARSE','F7','dispatch','PARSETEST','k2bi','blocked','k2bi-smoke-enrich-parse','dirty: a.py' || char(31) || 'x' || char(10) || 'y' || char(13) || 'z',NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
+INSERT INTO tasks VALUES('T-KIMI','F8','dispatch','KIMITEST','k2bi','waiting_for_kimi_output','k2bi-smoke-enrich-kimi',NULL,NULL,'${ORCH_C5}','${ORCH_C5}',NULL);
+INSERT INTO tasks VALUES('T-HUMAN','F9','dispatch','HUMANTEST','k2bi','needs_human','k2bi-smoke-enrich-human',NULL,NULL,'${ORCH_C5}','${ORCH_C5}',NULL);
 INSERT INTO tasks VALUES('T-DONE','F4','dispatch','TSLA','k2bi','done','k2bi-smoke-enrich-tsla',NULL,NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
 INSERT INTO tasks VALUES('T-CAN','F5','dispatch','INTC','k2bi','cancelled','k2bi-smoke-enrich-intc',NULL,NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
 SQL
@@ -238,7 +240,7 @@ fi
 if ! grep -q "## 🛫 Active orchestrator flights" "$SANDBOX/active-only.md"; then
   echo "FAIL: active-only missing flights heading"; exit 1
 fi
-for sym in NVDA k2bi-smoke-enrich-lrcx AMD MSFT PARSETEST; do
+for sym in NVDA k2bi-smoke-enrich-lrcx AMD MSFT PARSETEST KIMITEST HUMANTEST; do
   if ! grep -q "$sym" "$SANDBOX/active-only.md"; then
     echo "FAIL: active-only missing $sym"; cat "$SANDBOX/active-only.md"; exit 1
   fi
@@ -247,6 +249,17 @@ if grep -qE "TSLA|INTC" "$SANDBOX/active-only.md"; then
   echo "FAIL: active-only must exclude terminal tasks"; cat "$SANDBOX/active-only.md"; exit 1
 fi
 echo "PASS: /portfolio active dispatch returns the active flights, terminal excluded"
+
+# New state labels for Ship 1b
+if ! echo "$active_section" | grep -q "KIMITEST · waiting_for_kimi_output · waiting on your Kimi run"; then
+  echo "FAIL: waiting_for_kimi_output row missing or wrong"; echo "$active_section"; exit 1
+fi
+echo "PASS: waiting_for_kimi_output label correct"
+
+if ! echo "$active_section" | grep -q "⚠ HUMANTEST · needs_human · needs your input"; then
+  echo "FAIL: needs_human row missing or wrong"; echo "$active_section"; exit 1
+fi
+echo "PASS: needs_human label correct"
 
 # 5c. Codex finding 1: a 2-min-old UTC heartbeat must render in MINUTES even under a
 # non-UTC TZ. The old code stripped the offset and parsed as local wall-clock, turning

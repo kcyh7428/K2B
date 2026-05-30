@@ -333,6 +333,19 @@ section_active() {
         fi
         age=$(ts_age_human "$created")
         ;;
+      needs_human)
+        prefix="⚠ "
+        action="needs your input"
+        age=$(ts_age_human "$created")
+        ;;
+      waiting_for_kimi_output)
+        action="waiting on your Kimi run"
+        age=$(ts_age_human "${hb:-$created}")
+        ;;
+      returned)
+        action="returned -- K2B processing"
+        age=$(ts_age_human "$created")
+        ;;
       *)
         action="$status"
         age=$(ts_age_human "$created")

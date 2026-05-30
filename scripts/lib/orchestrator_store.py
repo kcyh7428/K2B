@@ -2,15 +2,17 @@
 """SQLite task store + dispatcher logic + CLI for K2B orchestrator."""
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     import fcntl
@@ -27,6 +29,34 @@ BOARD_PATH = f"{K2B_VAULT}/System/orchestrator/board.md"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LOCK_FILE = "/tmp/k2b-orchestrator.lock"
+
+
+class FlightLockError(Exception):
+    """Raised when a flight cannot be created because a non-terminal task
+    already exists for the same entity_key."""
+    pass
+
+
+# Centralized status enum (Codex round-1 finding 5). A task is terminal iff it
+# is one of these; everything else is non-terminal (holds the entity_key lock,
+# shows on /portfolio active, is sweepable). A task may be CREATED only in one
+# of VALID_INITIAL_STATUSES -- every other live state is reached via an explicit
+# transition, never a bare add_task, so a typo'd or terminal-looking initial
+# status cannot create a stuck or metadata-less row.
+TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
+ALL_STATUSES = frozenset({
+    "ready", "running", "blocked", "zombie",
+    "waiting_for_kimi_output", "needs_human", "returned",
+    "done", "failed", "cancelled",
+})
+VALID_INITIAL_STATUSES = frozenset({"ready", "waiting_for_kimi_output", "needs_human"})
+
+
+def _completion_sentinel(task_id: str) -> str:
+    """The task-bound completion marker the Kimi prompt instructs Kimi DR to
+    emit as its final line. Checked (leniently) by the return gate as the
+    primary non-truncation + paste-to-task-binding proof."""
+    return f"=== END OF KIMI RESEARCH: {task_id} ==="
 
 
 def telegram_cmd():
@@ -146,16 +176,44 @@ def add_task(
     payload=None,
     parent_task=None,
     depends_on=None,
+    status: str = "ready",
 ) -> str:
     # Import here to avoid circular dependency at module load
     from scripts.lib import orchestrator_profiles as profiles
 
+    # A task may only be created in a valid initial state. Rejects typos (which
+    # would otherwise become a stuck non-terminal row holding the entity lock)
+    # and terminal-looking creates (which would skip terminal metadata).
+    if status not in VALID_INITIAL_STATUSES:
+        raise ValueError(
+            f"invalid initial status {status!r}; allowed: {sorted(VALID_INITIAL_STATUSES)}"
+        )
+
     with _acquire_lock():
         conn = connect()
         init_db(conn)
+        conn.execute("BEGIN IMMEDIATE;")
         task_id = gen_task_id(conn)
         fid = flight_id if flight_id is not None else task_id
         now = now_iso()
+
+        # One-flight lock: at most one non-terminal task per entity_key
+        if entity_key is not None and entity_key.strip() != "":
+            row = conn.execute(
+                """
+                SELECT id FROM tasks
+                WHERE lower(trim(entity_key)) = lower(trim(?))
+                  AND status NOT IN ('done', 'failed', 'cancelled')
+                LIMIT 1
+                """,
+                (entity_key,),
+            ).fetchone()
+            if row:
+                conn.execute("ROLLBACK;")
+                conn.close()
+                raise FlightLockError(
+                    f"flight already active for {entity_key!r} (task {row['id']})"
+                )
 
         # Workspace trust boundary: k2bi workspace comes ONLY from profile config/env
         if assignee_profile == "k2bi":
@@ -179,7 +237,7 @@ def add_task(
                 assignee_profile,
                 parent_task,
                 json.dumps(depends_on if depends_on is not None else []),
-                "ready",
+                status,
                 command_key,
                 json.dumps(payload if payload is not None else {}),
                 stored_workspace,
@@ -295,6 +353,84 @@ def cas_cancel(task_id, expect_status, expect_pid) -> bool:
                 "UPDATE tasks SET status='cancelled', finished_at=?, updated_at=? "
                 "WHERE id=? AND status=? AND worker_pid=?",
                 (now, now, task_id, expect_status, expect_pid),
+            )
+        conn.commit()
+        changed = cur.rowcount == 1
+        conn.close()
+    return changed
+
+
+def _finalize_return(task_id, content, payload_json, return_path) -> bool:
+    """Serialize the publish + state claim under the orchestrator lock so two
+    concurrent return attempts (or a return racing a cancel / TTL sweep) cannot
+    interleave. Only the attempt that, while holding the lock, still finds the
+    flight 'waiting_for_kimi_output' writes the raw file and flips it to
+    'returned'. A loser rechecks under the lock, finds it no longer waiting, and
+    returns False WITHOUT writing anything -- so it can never overwrite the
+    winner's evidence (Codex round-3) and leaves no orphan file. The raw file is
+    fsync'd + os.replace'd BEFORE the in-transaction state flip, so the DB never
+    records 'returned' for a missing file (Codex round-2). Returns True iff this
+    attempt claimed the flight."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if row is None or row["status"] != "waiting_for_kimi_output":
+            conn.close()
+            return False
+        # Lock held + still waiting -> this attempt is the sole writer of this path.
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".tmp_{os.path.basename(return_path)}.",
+            suffix=".part",
+            dir=os.path.dirname(return_path),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, return_path)
+            now = now_iso()
+            conn.execute(
+                "UPDATE tasks SET status='returned', payload=?, updated_at=? "
+                "WHERE id=? AND status='waiting_for_kimi_output'",
+                (payload_json, now, task_id),
+            )
+            conn.commit()
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            conn.close()
+            raise
+        conn.close()
+    return True
+
+
+def cas_to_ready(task_id, expect_status, payload_json=None) -> bool:
+    """Locked compare-and-swap <expect_status> -> 'ready' (clearing blocker_reason).
+    Only flips a row STILL in expect_status, so a concurrent cancel / TTL-expiry
+    occurring between a caller's pre-lock read and this transition cannot be
+    silently undone (no resurrecting a terminal row back to ready). rowcount 0 ==
+    lost the race. Used by every blocked/needs_human/unblock -> ready path."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        now = now_iso()
+        if payload_json is not None:
+            cur = conn.execute(
+                "UPDATE tasks SET status='ready', blocker_reason=NULL, payload=?, updated_at=? "
+                "WHERE id=? AND status=?",
+                (payload_json, now, task_id, expect_status),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE tasks SET status='ready', blocker_reason=NULL, updated_at=? "
+                "WHERE id=? AND status=?",
+                (now, task_id, expect_status),
             )
         conn.commit()
         changed = cur.rowcount == 1
@@ -549,6 +685,56 @@ def poll_once() -> dict:
     from scripts.lib import orchestrator_profiles as profiles
 
     reclaimed = reclaim_zombies()
+    ttl_expired = []
+
+    # TTL sweep: auto-cancel parked flights older than their TTL
+    WAIT_TTL_DAYS = int(os.environ.get("K2B_ORCH_KIMI_TTL_DAYS", "14"))
+    NEEDS_HUMAN_TTL_DAYS = int(os.environ.get("K2B_ORCH_NEEDS_HUMAN_TTL_DAYS", "7"))
+    now = datetime.now(timezone.utc)
+
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        rows = conn.execute(
+            """
+            SELECT id, status, updated_at FROM tasks
+            WHERE status IN ('waiting_for_kimi_output', 'needs_human')
+            """
+        ).fetchall()
+        for row in rows:
+            updated_at = row["updated_at"]
+            if not updated_at:
+                continue
+            try:
+                updated_dt = datetime.fromisoformat(updated_at)
+            except (ValueError, TypeError):
+                continue
+            # A naive parsed timestamp (legacy / manual insert) would raise
+            # TypeError on subtraction from tz-aware `now` and abort poll_once.
+            # Normalize to UTC instead of crashing the whole dispatch cycle.
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+            age = now - updated_dt
+            # >= timedelta, NOT age.days > N: age.days floors, so `> 14` would
+            # not fire until ~15 days. Use exact-duration comparison.
+            expired = (
+                row["status"] == "waiting_for_kimi_output"
+                and age >= timedelta(days=WAIT_TTL_DAYS)
+            ) or (
+                row["status"] == "needs_human"
+                and age >= timedelta(days=NEEDS_HUMAN_TTL_DAYS)
+            )
+            if expired:
+                n = now_iso()
+                conn.execute(
+                    "UPDATE tasks SET status='cancelled', blocker_reason='ttl-expired', "
+                    "finished_at=?, updated_at=? WHERE id=?",
+                    (n, n, row["id"]),
+                )
+                ttl_expired.append(row["id"])
+        conn.commit()
+        conn.close()
+
     spawned = None
 
     for task in list_tasks(status="ready"):
@@ -608,7 +794,7 @@ def poll_once() -> dict:
             spawned = task["id"]
 
     render_board()
-    return {"reclaimed": reclaimed, "spawned": spawned}
+    return {"reclaimed": reclaimed, "spawned": spawned, "ttl_expired": ttl_expired}
 
 
 def _print_task(task: dict) -> str:
@@ -631,6 +817,7 @@ def _main():
     add_p.add_argument("--entity")
     add_p.add_argument("--payload")
     add_p.add_argument("--workspace")
+    add_p.add_argument("--status", default="ready")
 
     list_p = sub.add_parser("list", help="List tasks")
     list_p.add_argument("--status")
@@ -659,9 +846,10 @@ def _main():
     cancel_p = sub.add_parser("cancel", help="Cancel a task")
     cancel_p.add_argument("id")
 
-    return_p = sub.add_parser("return", help="Return a task (stub)")
+    return_p = sub.add_parser("return", help="Return a task")
     return_p.add_argument("id")
     return_p.add_argument("--text")
+    return_p.add_argument("--path")
 
     sub.add_parser("poll-once", help="Run one dispatcher poll")
     sub.add_parser("render-board", help="Render the board markdown")
@@ -688,16 +876,21 @@ def _main():
         payload = None
         if args.payload:
             payload = json.loads(args.payload)
-        tid = add_task(
-            assignee_profile=args.profile,
-            command_key=args.command_key,
-            success_criteria=args.success,
-            permissions=args.permissions,
-            flight_id=args.flight,
-            entity_key=args.entity,
-            workspace_path=args.workspace,
-            payload=payload,
-        )
+        try:
+            tid = add_task(
+                assignee_profile=args.profile,
+                command_key=args.command_key,
+                success_criteria=args.success,
+                permissions=args.permissions,
+                flight_id=args.flight,
+                entity_key=args.entity,
+                workspace_path=args.workspace,
+                payload=payload,
+                status=args.status,
+            )
+        except (FlightLockError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
         print(f"Added task {tid}")
         return
 
@@ -748,9 +941,42 @@ def _main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        transition(args.id, "done", result_url=args.result)
-        print(f"Task {args.id} marked done")
-        return
+        # A parked agent-managed flight must NOT be completed directly: that would
+        # bypass the return acceptance gate (raw output + sha256 + sentinel) and
+        # silently release the one-flight entity lock. It must go through `return`
+        # (-> returned) first; `complete` then finishes the returned flight.
+        if t["status"] in ("waiting_for_kimi_output", "needs_human"):
+            print(
+                f"Error: refusing to complete a '{t['status']}' task ({args.id}); "
+                f"resolve it via 'return' first (which runs the acceptance gate), or 'cancel' to drop it",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Locked CAS to 'done': the WHERE clause only flips from a completable live
+        # state, so a concurrent cancel / TTL-expiry between the read above and here
+        # cannot resurrect a terminal task to 'done' (Codex round-5 race class).
+        with _acquire_lock():
+            conn = connect()
+            init_db(conn)
+            now = now_iso()
+            cur = conn.execute(
+                "UPDATE tasks SET status='done', finished_at=?, updated_at=?, result_url=? "
+                "WHERE id=? AND status NOT IN "
+                "('done','failed','cancelled','running','zombie','waiting_for_kimi_output','needs_human')",
+                (now, now, args.result, args.id),
+            )
+            conn.commit()
+            done_ok = cur.rowcount == 1
+            conn.close()
+        if done_ok:
+            print(f"Task {args.id} marked done")
+            return
+        print(
+            f"Error: {args.id} is no longer in a completable state "
+            f"(terminal, running, or parked); not completing",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.cmd == "block":
         mark_blocked(args.id, args.reason)
@@ -768,9 +994,16 @@ def _main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        transition(args.id, "ready", blocker_reason=None)
-        print(f"Task {args.id} unblocked")
-        return
+        # Locked CAS so a concurrent cancel/TTL between the read above and here
+        # cannot be resurrected back to 'ready' (Codex round-5).
+        if cas_to_ready(args.id, "blocked"):
+            print(f"Task {args.id} unblocked")
+            return
+        print(
+            f"Error: {args.id} no longer blocked (cancelled or changed); not unblocking",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.cmd == "cancel":
         t = get_task(args.id)
@@ -816,30 +1049,155 @@ def _main():
         return
 
     if args.cmd == "return":
-        # Ship 1b stub: store payload, no chain
         t = get_task(args.id)
         if t is None:
             print(f"Task {args.id} not found", file=sys.stderr)
             sys.exit(1)
-        # Only PARKED states may be returned to ready. A 'zombie' is parked
-        # precisely because its process group death is UNCONFIRMED, so returning
-        # it would bypass the no-re-ready safety and risk double-dispatch; a
-        # 'running' task is live; 'done'/'cancelled' are terminal. To clear a
-        # zombie, confirm the process is dead and `cancel` it.
-        RETURNABLE = {"blocked", "needs_human", "waiting_for_kimi_output"}
-        if t["status"] not in RETURNABLE:
+        # blocked -> ready re-dispatch behavior (no gate)
+        if t["status"] == "blocked":
+            payload = {}
+            if args.text:
+                payload["return_text"] = args.text
+            # Locked CAS: do not resurrect a flight a concurrent cancel/TTL flipped
+            # out of 'blocked' between the read above and here.
+            if cas_to_ready(args.id, "blocked", json.dumps(payload)):
+                print(f"Task {args.id} returned")
+                return
             print(
-                f"Error: refusing to return a '{t['status']}' task ({args.id}); "
-                f"return is only valid from {sorted(RETURNABLE)}",
+                f"rejected: flight {args.id} no longer blocked (cancelled or changed)",
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Only PARKED states may be returned. A 'zombie' is parked precisely
+        # because its process group death is UNCONFIRMED, so returning it would
+        # bypass the no-re-ready safety and risk double-dispatch; a 'running'
+        # task is live; 'done'/'cancelled' are terminal.
+        RETURNABLE = {"blocked", "needs_human", "waiting_for_kimi_output"}
+        if t["status"] not in RETURNABLE:
+            if t["status"] == "returned":
+                print(
+                    f"rejected: already returned (task {args.id})",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Error: refusing to return a '{t['status']}' task ({args.id}); "
+                    f"return is only valid from {sorted(RETURNABLE)}",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        # Acceptance gate for waiting_for_kimi_output
+        if t["status"] == "waiting_for_kimi_output":
+            # Collect content from --text or --path (exactly one required)
+            if bool(args.text) + bool(args.path) != 1:
+                print(
+                    "Error: return for waiting_for_kimi_output requires exactly one of --text or --path",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if args.path:
+                with open(args.path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            else:
+                content = args.text
+
+            # 1. size gate
+            content_bytes = content.encode("utf-8")
+            size = len(content_bytes)
+            if size < 500 or size > 2_000_000:
+                print(
+                    f"rejected: size {size} bytes outside [500, 2000000]",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # 2. >= 3 distinct URLs
+            urls = set(re.findall(r"https?://[^\s)>\]\"']+", content))
+            if len(urls) < 3:
+                print(
+                    f"rejected: fewer than 3 source URLs (found {len(urls)})",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # 3. >= 5 substantive lines (stripped length > 40)
+            substantive = 0
+            for line in content.splitlines():
+                if len(line.strip()) > 40:
+                    substantive += 1
+            if substantive < 5:
+                print(
+                    f"rejected: fewer than 5 substantive lines (found {substantive})",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # 4. completion sentinel = the PRIMARY non-truncation + paste-to-flight
+            # binding proof. Tail punctuation heuristics alone can pass a partial
+            # paste that happens to stop at a clean sentence (Codex finding 3). The
+            # conductor instructs Kimi DR to end with `_completion_sentinel(id)`;
+            # we match it leniently (last non-empty line, lowercased, must contain
+            # "end of kimi research" AND this task's id) so minor formatting passes
+            # but a truncated paste -- or one pasted into the wrong flight -- fails.
+            nonempty = [ln.strip() for ln in content.splitlines() if ln.strip()]
+            last_line_lc = nonempty[-1].lower() if nonempty else ""
+            if not ("end of kimi research" in last_line_lc and args.id.lower() in last_line_lc):
+                print(
+                    f"rejected: missing completion sentinel (output must end with "
+                    f"'{_completion_sentinel(args.id)}'); looks truncated or not from this flight",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            # Supplemental cheap tail check (the sentinel already proves the end).
+            tail = content[-200:] if len(content) >= 200 else content
+            if (tail.count("[") + tail.count("(")) > (tail.count("]") + tail.count(")")):
+                print("rejected: looks truncated (unbalanced brackets in tail)", file=sys.stderr)
+                sys.exit(1)
+
+            # 5. PASS -> publish raw + claim the state, serialized under the
+            # orchestrator lock by _finalize_return (recheck-still-waiting + fsync'd
+            # file replace + in-txn state flip). A concurrent cancel / TTL-expiry /
+            # duplicate-return either loses (writes nothing, returns False) or the
+            # DB is left consistent -- never 'returned' pointing at a missing file,
+            # never a loser overwriting the winner's evidence (Codex rounds 1-3).
+            return_bytes = size
+            return_sha256 = hashlib.sha256(content_bytes).hexdigest()
+            returned_at = now_iso()
+            os.makedirs(RESULTS_DIR, exist_ok=True)
+            return_path = f"{RESULTS_DIR}/{args.id}-kimi-raw.md"
+            payload = json.loads(t.get("payload") or "{}")
+            payload.update({
+                "return_bytes": return_bytes,
+                "return_sha256": return_sha256,
+                "return_path": return_path,
+                "returned_at": returned_at,
+            })
+            # File published BEFORE the state is claimed (see _finalize_return).
+            if _finalize_return(args.id, content, json.dumps(payload), return_path):
+                print(
+                    f"Task {args.id} returned ({return_bytes} bytes, sha {return_sha256[:12]}) -> returned"
+                )
+                return
+            print(
+                f"rejected: flight {args.id} no longer waiting "
+                f"(already returned, cancelled, or TTL-expired)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # needs_human -> ready (no gate, same as blocked). Locked CAS so a
+        # concurrent cancel / TTL-expiry between the pre-lock read and here cannot
+        # be silently undone (Codex round-4).
         payload = {}
         if args.text:
             payload["return_text"] = args.text
-        transition(args.id, "ready", payload=json.dumps(payload))
-        print(f"Task {args.id} returned")
-        return
+        if cas_to_ready(args.id, "needs_human", json.dumps(payload)):
+            print(f"Task {args.id} returned")
+            return
+        print(
+            f"rejected: flight {args.id} no longer needs_human (cancelled or TTL-expired)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.cmd == "poll-once":
         result = poll_once()
