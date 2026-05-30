@@ -140,3 +140,19 @@ Add `section_active` labels: `needs_human` -> `⚠ needs your input`; `waiting_f
 
 ### 7.6 Scope statement
 ONLY Increment 1 is build-ready after this section. Increment 2 (Chat 2 narrative dispatch) is blocked on a full K2Bi-prerequisite enumeration (every required command, path, registry, credential, provider, writable output dir, clean-tree condition, expected artifact contract) turned into a read-only preflight with tests -- done at Increment-2's own Checkpoint-1, not here. Increment 3 reuses the hardened booster and gets a thin Checkpoint-1 before build.
+
+## 8. Execution model -- agent-managed, not worker-dispatched (decided 2026-05-30, build-time)
+
+The Increment-1 reasoning (news scan, prompt build, link repair) runs **inline as K2B-the-agent** using its own web-search/fetch tools, NOT as autonomous background worker scripts. Rationale: consistent with the on-demand / no-daemon descope; K2B (Claude) already has the search+fetch+reasoning tools natively, so Architecture A (build+key a standalone web-search API client + LLM-synthesis worker) would be both over-engineering and contradict the descope.
+
+Consequence for the orchestrator (verified against `poll_once`, which spawns a worker ONLY for `status='ready'` tasks): Chat-1 flights are **agent-managed** -- created DIRECTLY in a parked state (never `ready`), so the dispatcher never spawns a worker for them; K2B drives their lifecycle via CLI. Lifecycle:
+
+```
+K2B "go deeper" -> add_task(status=waiting_for_kimi_output, entity_key=<topic>)   [lock enforced; dispatcher ignores]
+Keith pastes Kimi output -> return <id> (acceptance gate) -> status=returned
+K2B repairs links inline, writes clean doc -> complete <id> -> done
+(insufficient pre-scan signal -> add_task(status=needs_human, payload.question=...))
+(forgotten flight -> TTL sweep in poll_once auto-cancels -> released)
+```
+
+Three new non-terminal states: `waiting_for_kimi_output`, `needs_human`, `returned`. Build split: **Kimi builds the plumbing** (these states + the one-flight `entity_key` lock + the return acceptance gate + the TTL sweep + portfolio labels + tests -- spec'd in `.kimi/job.md`); **the architect writes the conductor procedure** (how K2B does the scan/prompt/support-based-repair) into `k2b-orchestrator/SKILL.md` afterward, because that is runtime judgment, not mechanical code. The deferred `assignee_lock_held` extension stays out of Increment 1 (it only matters once K2Bi dispatch coexists with parked flights -- Increment 2).
