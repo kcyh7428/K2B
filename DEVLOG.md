@@ -2,6 +2,25 @@
 
 
 ---
+## 2026-05-31 -- Orchestrator Ship 1b Increment 1: Chat-1 deep-research booster
+
+**Commits:** `8d462c7` feat(orchestrator): Increment-1 plumbing + `6f0f300` feat(orchestrator): Increment-1 conductor
+
+**What shipped:** The first of the "3 chats" -- Chat 1 (news scan -> trends -> "go deeper" -> Kimi DR prompt + parked flight -> ingest the pasted output through an acceptance gate -> support-based link repair -> clean research doc). Two parts: the **plumbing** (orchestrator pause/lock/return machinery, built by Kimi K2.6 from `.kimi/job.md`) and the **conductor** (the `k2b-orchestrator` SKILL.md procedure K2B follows at runtime, written in-session). Built ON Ship 1a, no rebuild. Feature stays In Progress (Increments 2 + 3 remain); a `pending-action` tracks the one live MVP probe Keith owes.
+
+**Plumbing (`8d462c7`):** 3 parked task states (`waiting_for_kimi_output`/`needs_human`/`returned`) + a centralized status enum; `add_task --status` + a one-flight `entity_key` lock (case-insensitive, atomic under `BEGIN IMMEDIATE`); a `return` acceptance gate (size / >=3 URLs / >=5 lines / task-bound completion sentinel) storing raw + sha256; `_finalize_return` (file-before-state, fsync + os.replace + state flip in one lock-held status-rechecked txn); the whole stale-read resurrection race class CAS-guarded; TTL sweep for stale parked flights; `/portfolio active` labels. Agent-managed flights are created parked (never `ready`), so the dispatcher never runs them.
+
+**Conductor (`6f0f300`):** the runtime procedure -- news scan with K2B's own web tools, Kimi-prompt build (with the sentinel), and the support-based link repair (a repaired link must actually back the claim, else flag `unverified`; hard-stop under 60% supported). Stops at the clean doc; the K2Bi handoff is a later increment.
+
+**Codex review:** Plumbing = **6 pre-commit rounds** (round 1: 5 findings incl 2 HIGH -- return-not-CAS + complete-bypass; rounds 2-5: the same stale-read resurrection race in return/needs_human/unblock; `complete` closed proactively; round 6: APPROVE). Conductor = Tier-1 Kimi (2 passes); runtime findings verified FALSE-POSITIVE against a live CLI smoke (k2b profile works for parked flights, sentinel passes leniently, complete accepts returned, lock is case-insensitive); real doc fixes applied. 85 pytest + 32 bash + portfolio green; CLI lifecycle smoke passed.
+
+**Feature status change:** feature_k2b-orchestrator-v1 stays in-progress (Increment 1 of Ship 1b of 2 built; pending live probe).
+
+**Follow-ups:** Keith's live Chat-1 MVP probe (pending-action). Increments 2 (Chat 2 narrative dispatch -- needs a K2Bi-prereq preflight) + 3 (Chat 3 ticker) get their own Checkpoint-1 before build.
+
+**Key decisions:** Chat-1 reasoning runs inline as K2B-the-agent (its own web tools), NOT autonomous workers -- consistent with the no-daemon descope; the orchestrator is the pause/lock/return ledger only. Architecture B over A pinned in spec Section 8.
+
+---
 ## 2026-05-30 -- k2b-portfolio fix-forward: retry mode=ro on the post-write WAL transient
 
 **Commit:** `fbe57c1` fix(k2b-portfolio): retry mode=ro on the transient post-write WAL window
