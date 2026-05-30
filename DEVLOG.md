@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-05-30 -- k2b-portfolio Ship 2: active orchestrator flights in /portfolio
+
+**Commit:** `fc8fe6e` feat(k2b-portfolio): Ship 2 -- active orchestrator flights section + /portfolio active
+
+**What shipped:** The 7th and final `/portfolio` section, **Active orchestrator flights**, plus the `/portfolio active` shortcut. `section_active()` reads `K2B-Vault/System/orchestrator/orchestrator.sqlite` read-only (`file:...?mode=ro`, WAL-safe, never checkpoints) and renders in-flight tasks (`ready`/`running`/`blocked`/`zombie`) with label (entity_key ticker, else command_key), status, next-action, and age. Decision-gate flights (`blocked`/`zombie`) get a `⚠` prefix; missing DB shows `(none)`, unreadable shows `⚠ orchestrator board unreachable`. This closes the follow-up named in the `d6286e8` descope entry ("wire k2b-portfolio to read the orchestrator board"). The full feature MVP (one screen, all 7 sections, decision-gate items distinct, under 5s) is now met, so the feature is complete.
+
+**Why:** `/portfolio` Ship 1 (`53e0e71`) shipped 6 of 7 sections; the 7th was blocked on the orchestrator existing. Orchestrator Ship 1a (`a439d5d`) shipped this morning, unblocking it. Built in-session because the work was judgment-heavy: the pre-descope spec referenced Ship-1b task states (`needs_human`, `waiting_for_kimi_output`) that do not exist in Ship 1a, so the section had to be reconciled against the real schema (`tasks` table; terminal set = done/failed/cancelled).
+
+**Codex review:** Tier 2. Pass 1 (Codex, `388f99`) NEEDS-ATTENTION, 5 findings all fixed inline: [HIGH] `ts_age_human` stripped the `+00:00` offset and parsed UTC as local, making a 2-min heartbeat read ~8h on UTC+8 (verified 28920s vs 120s) -> rewritten to offset-aware Python `fromisoformat`; [MED] `ready`+`blocked_by` mislabeled as queued -> now `waiting on <task>`; [MED] unit-separator in `blocker_reason` could shift fields -> SQL-sanitized `char(31)`/CR/LF; [MED] test used plain DB not WAL -> WAL fixture + main/-wal checksum invariant; [MED] `/portfolio active` gated on K2Bi vault -> guard scoped to skip `active`. Confirmation pass (Kimi fallback, `144c14`) NEEDS-ATTENTION, 1 new MED (silent `python3` stderr suppression) fixed inline by dropping `2>/dev/null` (happy path stays 0 stderr bytes). 20 hermetic tests green; real-vault runtime 0s.
+
+**Feature status change:** feature_k2b-portfolio-view in-progress -> shipped (Ship 2 of 2 complete; moved to `wiki/concepts/Shipped/`).
+
+**Follow-ups:** `ts_age_days` (Ship 1 positions/closed sections) carries the same latent timezone-offset bug as the old `ts_age_human`, but is day-granular so the ~8h skew rarely flips a day count. Left unfixed to keep scope to the Codex-flagged new code; fix opportunistically.
+
+**Key decisions:** `mode=ro` URI chosen over the `-readonly` flag (which fails CANTOPEN on a WAL DB needing a shm) and over `immutable=1` (stale-read risk under concurrent dispatcher writes). The `active` section deliberately bypasses the K2Bi vault guard because it reads only the K2B-side orchestrator DB.
+
+---
 ## 2026-05-30 -- /ship Step 14: code-enforced auto-close of shipped-feature reminders
 
 **Commit:** `7629b8c` feat(ship): code-enforce Step 14 category 5 -- auto-close shipped-feature reminders
