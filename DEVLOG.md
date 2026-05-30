@@ -2,6 +2,31 @@
 
 
 ---
+## 2026-05-30 -- Orchestrator Ship 1a: durable task board + safe K2Bi dispatch
+
+**Commit:** `a439d5d` feat(orchestrator): Ship 1a -- durable task board + dispatcher + safe K2Bi dispatch
+
+**What shipped:** Ship 1a of `feature_k2b-orchestrator-v1` -- the control plane that lets K2B dispatch one safe analyst task into the sibling K2Bi workspace non-interactively. SQLite task store (WAL, atomic `BEGIN IMMEDIATE` claim), single-instance dispatcher poll loop (`scripts/k2b-dispatcher.sh`, flock + macOS mkdir fallback), `/orchestrator` slash command + `scripts/k2b-orchestrator.sh` CLI, three Python modules, the `k2b-dispatcher` pm2 entry, and 44 pytest + 18 bash tests. The single allowlisted command (`invest_screen --enrich LRCX`) runs under a workspace trust boundary (k2bi workspace is config/env-only, never task input -- closes a `python -m` cwd module-swap hole), a process-group zombie reclaim that confirms death before re-dispatch, a held worker lock, and state guards so a task leaves the running/zombie assignee-lock set ONLY when its worker group is confirmed dead.
+
+**Builder:** Kimi K2.6 from `.kimi/job.md` (handoff spec also Codex-reviewed before build).
+
+**Codex review:** 5 pre-commit rounds (evidence in `.code-reviews/`). Round 2 found 1 critical (caller-controlled workspace defeats the allowlist) + 2 high + 1 medium; rounds 3-5 found the second-order consequences of introducing a `zombie` non-terminal state (assignee-lock coverage, return/unblock/complete/cancel re-entrancy guards, timeout-bytes crash, cancel spawn-window NULL-pid race). All fixed except the round-5 NULL-pid reclaim residual, which Keith accepted (see Follow-ups). The deep fix was empirically establishing that a killed worker becomes an unreaped zombie whose `killpg` returns `PermissionError` forever on macOS, so death confirmation requires `waitpid` reaping + polling through transient `PermissionError`.
+
+**MVP gate (Ship 1a binary named-bug test) -- PASSED LIVE:** dirty `~/Projects/K2Bi` -> task `blocked`, Telegram blocker, no spawn; clean `git worktree` -> worker ran the real `invest_screen --enrich LRCX` (LRCX `promoted -> screened`, quick_score 66), wrote `raw/orchestrator-results/2026-05-29-002-k2bi-smoke.md` (exit 0), one DONE Telegram with result path, **13s elapsed**, no commit/push/engine touch.
+
+**Feature status change:** `feature_k2b-orchestrator-v1` `ideating -> in-progress` (Ship 1a done; Ship 1b -- Kimi-DR -> K2Bi narrative chain -- remains). Moved Backlog -> In Progress in `concepts/index.md`.
+
+**Follow-ups:**
+- **Manual:** `/sync` to push the dispatcher + skill + scripts to the Mac Mini (deferred or now -- see ship prompt).
+- **Ship 1b:** the K2B-side prompt-builder + citation-validator workers + the human-in-loop Kimi DR pause.
+- **`feature_orchestrator-fencing-token` (Ship 1b hardening):** spawn-generation/fencing token to make the NULL-pid reclaim decision provable (closes the accepted residual).
+- Also bundled: two `.gitkeep` files fixing a `k2b-portfolio` fixtures EISDIR hazard that was blocking Codex working-tree review repo-wide.
+
+**Key decisions:**
+- Kept the analyst command in the WORKER's process group (not its own session) so reclaim's group-kill takes down the command + descendants in one shot; documented Ship 1a's leaf-only allowlist as the invariant making direct-child timeout-kill complete.
+- Accepted the NULL-pid reclaim residual for Ship 1a (a worker would have to be alive 5 min without executing its 2nd line of code -- not realistically reachable) rather than block the ship on the fencing token; Keith's call after 5 review rounds.
+
+---
 ## 2026-05-28 -- Codex Forge audit launchd delivery bridge
 
 **Commit:** `cd1a7fb` feat(forge-audit): launchd bridge moves Codex audit reports into vault
