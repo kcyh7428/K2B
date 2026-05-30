@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-05-30 -- Orchestrator descope: MacBook on-demand, no Telegram/Mini daemon
+
+**Commit:** `d6286e8` chore(orchestrator): remove dead k2b-dispatcher pm2 entry (descope to MacBook on-demand)
+
+**What shipped:** Post-Ship-1a scope decision. Keith descoped the Telegram-driven / always-on operating model. The orchestrator is a MacBook, in-session, on-demand tool (`poll-once` or the session-foreground dispatcher loop) -- NOT a persistent daemon, and NOT triggered from Telegram. Removed the `k2b-dispatcher` pm2 entry from `ecosystem.config.cjs`: the Mac Mini has no K2Bi (Phase 3.9 VPS migration) and a Mini dispatcher would race the Syncthing-synced SQLite board. This dissolves the deployment problem rather than solving it -- only the MacBook ever runs the dispatcher, so there is no cross-machine board race. Outbound `notify()` kept (a K2B-orchestrator layer, separate from K2Bi's own invest-alert stream). Parked orchestrator flights will surface in `/portfolio` (follow-up). Ship 1b's size-safe Telegram return protocol collapses to in-session paste/file.
+
+**Codex review:** skipped (config-only, 12-line dead-entry deletion; the orchestrator code itself was hardened over 5 Codex rounds in `a439d5d`). `node -c` parse verified.
+
+**Feature status change:** feature_k2b-orchestrator-v1 unchanged (in-progress; Ship 1a shipped, Ship 1b pending). Scope-revision section added to the feature note.
+
+**Follow-ups:** wire `k2b-portfolio` to read the orchestrator board (surface parked flights); the spawn-generation/fencing token stays deferred to `feature_orchestrator-fencing-token` (Ship 1b).
+
+**Key decisions:** Telegram-inbound + always-on orchestrator dispatch removed from scope per Keith 2026-05-30. IF always-on is ever wanted, the candidate host is the Hostinger VPS (where K2Bi already lives always-on), NOT the Mac Mini -- deferred.
+
+---
 ## 2026-05-30 -- Orchestrator Ship 1a: durable task board + safe K2Bi dispatch
 
 **Commit:** `a439d5d` feat(orchestrator): Ship 1a -- durable task board + dispatcher + safe K2Bi dispatch
