@@ -912,6 +912,39 @@ fi
 
 Fail-open: helper crashes do NOT fail the ship. The summary file is already on disk before the bump runs, so the observer loop still picks it up.
 
+### 14. Vault-note sweep (proactive, mandatory)
+
+Per L-2026-03-25-002 (Reinforced 5+, last reinforced 2026-05-30): after a feature ships, the standard workflow (steps 6-9) updates the feature note, index lanes, DEVLOG, and wiki/log -- but it does NOT touch five other vault surfaces that drift stale if not swept. Do NOT wait for Keith to ask "did you update all the related notes." Sweep all five before declaring the ship complete.
+
+**Category 5 is code-enforced** -- run the script, do not eyeball it. It flips any open reminder naming the just-shipped feature to `[closed]` and moves it to the `## Closed` section. This was the category skipped on 2026-05-30 (orchestrator Ship 1a `a439d5d`), which let a stale reminder reach `/plate`:
+
+```bash
+# SLUG is the FULL feature-note basename from Step 2 (e.g. feature_k2b-orchestrator-v1).
+# Matching is exact-as-passed (literal case-insensitive substring), so the specific
+# feature_<slug> form will NOT close a reminder that only shares a loose word. No-match
+# is a clean no-op; the run is idempotent.
+#
+# --no-feature ships have no SLUG, so guard explicitly -- an unset var under `set -u`
+# would otherwise error into the fail-open warning and silently leave reminders stale.
+if [ -n "${SLUG:-}" ]; then
+  python3 "$HOME/Projects/K2B/scripts/ship-close-reminders.py" "$SLUG" || \
+    echo "[warn] ship-close-reminders failed; check reminders.md manually" >&2
+else
+  echo "category 5 skipped: no feature slug (--no-feature ship). If this ship resolved a reminder, close it by hand or re-run the helper with the matching token."
+fi
+```
+
+For a multi-ship feature where this ship closes a sub-task reminder, pass the specific matching token(s) -- the helper attributes each closed line to the slug that actually matched it, so the audit trail stays correct.
+
+**Categories 1-4 stay agent-driven** (they need judgment about what THIS ship resolved):
+
+1. **Supersession references** -- when shipping vN+1, add a "Superseded by vN+1" note to the predecessor feature note's Updates section.
+2. **R-ID closures** -- in `self_improve_requests.md`, flip any R-ID this ship resolved from `Status: open` to `✅ CLOSED YYYY-MM-DD via [feature]` with a one-line root-cause summary.
+3. **active-motivations Building rebuild** -- run `bash scripts/motivations-helper.sh sync-building` (the Building section is auto-derived from the In Progress + Next Up lanes; never hand-edit it).
+4. **raw/sessions/index.md** -- append a row for the new session-summary file from step 13.5 and bump the Last-updated + Entries count.
+
+Fail-open: a category-5 script error prints a warning but does NOT fail the ship (the commit already landed). Categories 1-4 are best-effort; if a category has nothing to update, note "category N: nothing to sweep" and move on.
+
 ## Error Handling
 
 - **Pre-commit hook fails** -> fix the underlying issue (per Active Rule 8, never `--no-verify`), re-stage, create a NEW commit (never `--amend`).
@@ -926,7 +959,7 @@ Fail-open: helper crashes do NOT fail the ship. The summary file is already on d
 ## What /ship Does NOT Do
 
 - Auto-sync to Mac Mini (Keith must run `/sync` explicitly)
-- Edit vault files other than the feature note, `wiki/concepts/index.md`, `wiki/log.md`, `DEVLOG.md`, the skill-usage-log, and `raw/sessions/`
+- Edit vault files other than the feature note, `wiki/concepts/index.md`, `wiki/log.md`, `DEVLOG.md`, the skill-usage-log, `raw/sessions/`, and the Step 14 sweep surfaces (`wiki/context/reminders.md`, `wiki/context/active-motivations.md` via the helper, `raw/sessions/index.md`, and `self_improve_requests.md` R-ID closures in the memory dir)
 - Overwrite `store/` (production SQLite on Mac Mini)
 - Touch `.env` files
 - Force-push, amend existing commits, rebase, or use any destructive git operation
