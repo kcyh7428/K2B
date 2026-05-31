@@ -3872,3 +3872,17 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Follow-ups:** needs /sync to land the conductor + gate on Mac Mini. Increment 2 (Chat 2 narrative dispatch) gets its own Checkpoint-1.
 
 **Key decisions:** Made the gate engine-neutral rather than standardizing Keith on one engine -- the link-repair step is the real quality equalizer, and the bake-off (Kimi citations weakest, ChatGPT ~= Perplexity stronger) is advice, not enforcement. Kept the raw-file name `<id>-kimi-raw.md` for all engines (cosmetic; avoids churn). Engine-agnostic sentinel was deferred pre-bake-off, then reopened by Keith with the 3 reports in hand and shipped here.
+
+## 2026-05-31 -- Orchestrator Full Scope Tracker + "where are we" trigger
+
+**Commit:** `5f99e09` docs(orchestrator): "where are we" trigger renders the Full Scope Tracker
+
+**What shipped:** Keith asked for a durable, always-available answer to "where are we in the orchestrator" -- the WHOLE Stage 0 -> journal vision, not just the current ship. Two parts: (1) a **Full Scope Tracker** section in `feature_k2b-orchestrator-v1.md` (vault) -- a condensed Stage 0->15 status map with a ✅/🖐/🟡/⛔/🔒 legend and a "Where we are now" line (today: end of Stage 1c; Stage 2 K2Bi handoff is the v1 finish line; Stages 12-14 journal already run in K2Bi; Stage 15 retro is the post-v1 self-improving loop). (2) a `where are we` / `orchestrator status` / `orchestrator scope` trigger group + render procedure in the `k2b-orchestrator` skill that reads that section and shows it verbatim, **fail-loud / never fabricate from memory** if the source is missing (lenient heading match + draft/old/deprecated tie-break + last-match-wins).
+
+**Codex review:** Tier-1 Kimi 2 passes (flagged the hallucination-if-source-missing risk + heading-match ambiguity, both fixed) -> Tier-2 Codex **APPROVE** no findings. Log `.code-reviews/2026-05-31T00-34-15Z_2ebc31.log`.
+
+**Feature status change:** none (doc/trigger addition; `feature_k2b-orchestrator-v1` stays in-progress).
+
+**Follow-ups:** needs /sync so the Mac Mini Telegram agent answers "where are we" with the tracker too.
+
+**Key decisions:** Tracker data lives in the feature note (canonical home per the ownership matrix); the skill is just the render path. Fail-loud-never-fabricate is the load-bearing rule -- a hallucinated status map is worse than no answer, which is exactly the failure the tracker exists to prevent.
