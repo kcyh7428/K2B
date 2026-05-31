@@ -18,6 +18,7 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 ## Your Environment
 
 - **Obsidian vault**: /Users/keithmbpm2/Projects/K2B-Vault
+- **NAS drive** (Synology) -- passwordless SSH from the MacBook as `codex-maint` over Tailscale: `ssh codex-maint@100.75.5.21`. 14TB; shared folders on `/volume1`: `Converto`, `Keith-Work`, `Shared Folder`, `homes`, `photo`. Key-based (`~/.ssh/id_ed25519`); not set up on the Mac Mini. Full access/revoke details in memory `reference_nas_access.md`.
 - All global Claude Code skills in ~/.claude/skills/
 - **Google Workspace CLI** (`gws`) -- Gmail, Calendar, Drive, Sheets, and more via `gws` commands. JSON output, works from bash.
 - MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image/speech/video/music tools still listed but backend DEAD since 2026-05-27; media now runs on GPTsAPI -- see the MiniMax API note below)
