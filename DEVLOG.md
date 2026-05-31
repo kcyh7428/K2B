@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-05-31 -- Orchestrator Stage-2 live MVP run (2 trends) + P3 preflight fix
+
+**Commit:** `8a3fd39` fix(orchestrator): P3 preflight resolves LLM key via ~/.zshrc fallback (no false-block)
+
+**What shipped:** Ran the Stage-2 live MVP test by dropping two real YouTube-short trends through the `k2bi-narrative` orchestrator dispatch (EDA-chokepoint, then AI-supply-chain). The orchestrator MECHANISM is validated end-to-end across both: trend distilled -> fail-closed flight create -> P3 preflight -> K2Bi `invest_narrative_pipeline` dispatched via the allowlisted door -> worker heartbeat/timeout -> terminal status + result artifact. Both failure modes were handled correctly (run 1 = fail-closed under-count gate; run 2 = pipeline-crash path, traceback captured -> `failed`). The P3 preflight was fixed mid-test (it only checked `os.environ` for the key; now `_provider_key_available()` also reads a quoted `~/.zshrc` export, mirroring K2Bi's provider). Also committed the research-to-K2Bi-staging Checkpoint-1 spec (Codex-reviewed earlier this session).
+
+**Codex review:** Tier-3 APPROVE on the P3 diff (`.code-reviews/2026-05-31T12-41-07Z_9726fa.log`). 136 pytest + 32 bash green.
+
+**Feature status change:** feature_k2b-orchestrator-v1 stays `in-progress`. The Stage-2 **>=5-candidate MVP did NOT pass** -- blocked downstream in K2Bi, not in the orchestrator: the narrative pipeline rejects candidates on dead Kimi citation URLs without repairing them (run 1 -> 1 candidate; run 2 -> 0 surviving 2nd/3rd-order). Trend-independent across both runs.
+
+**Follow-ups:** (1) **K2Bi citation link-repair build** (the unblock): proposal `K2Bi-Vault/proposals/2026-05-31_narrative-citation-repair.md` + builder handoff `raw/sessions/2026-05-31_handoff_k2bi-narrative-citation-repair.md`. After K2Bi ships it, re-run a trend -> expect >=5 incl. SNPS/CDNS -> closes Stage-2 / orchestrator-v1 finish line. (2) Chat-1 live MVP probe still owed.
+
+**Key decisions:** the >=5 failure is downstream (K2Bi pipeline), not the orchestrator -- so Increment 2's mechanism is validated and only the K2Bi-side citation repair gates the MVP. Did NOT mark shipped (MVP gate correctly held). Trying a second trend confirmed the gap is trend-independent rather than fixing it.
+
+---
 ## 2026-05-31 -- Orchestrator Ship 1b Increment 2: Chat-2 K2Bi narrative dispatch
 
 **Commit:** `6f86d1c` feat(orchestrator): Chat 2 narrative dispatch plumbing + conductor (Increment 2)
