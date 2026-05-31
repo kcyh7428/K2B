@@ -261,7 +261,16 @@ class TestReturnAcceptanceGate:
             status="waiting_for_kimi_output",
             entity_key="AI",
         )
-        content = "A" * 600 + "\nhttps://example.com\n"
+        # Body with >=5 substantive lines + a valid sentinel, but only 1 URL ->
+        # must reach the URL gate (now ordered after sentinel + body-substantive).
+        lines = [
+            "This is a comprehensive research report on open-source AI with detailed analysis here.",
+            "Here is a second substantive line with plenty of content to meet the threshold easily.",
+            "Third line: the landscape of open-source AI has shifted dramatically over recent months.",
+            "Fourth line: companies like Meta and Google have released powerful permissive models now.",
+            "Fifth line: the implications for enterprise adoption are significant and quite far-reaching.",
+        ]
+        content = "\n".join(lines) + "\nhttps://example.com\n" + f"=== END OF KIMI RESEARCH: {tid} ==="
         r = self._cli(store, "return", tid, "--text", content)
         assert r.returncode == 1
         assert "rejected: fewer than 3 source URLs (found 1)" in r.stderr
@@ -285,12 +294,13 @@ class TestReturnAcceptanceGate:
             "https://b.com/2",
             "https://c.com/3",
         ]
-        # Pad to meet size requirement with short lines (<=40 chars) so they don't count
+        # Pad to meet size requirement with short lines (<=40 chars) so they don't count.
+        # A valid sentinel is required before the substantive-body gate is reached.
         padding = "\n".join(["xx"] * 250)
-        content = "\n".join(lines + urls) + "\n" + padding + "."
+        content = "\n".join(lines + urls) + "\n" + padding + f"\n=== END OF KIMI RESEARCH: {tid} ==="
         r = self._cli(store, "return", tid, "--text", content)
         assert r.returncode == 1
-        assert "rejected: fewer than 5 substantive lines (found 3)" in r.stderr
+        assert "rejected: fewer than 5 substantive lines before the sentinel (found 3)" in r.stderr
 
     def test_return_waiting_for_kimi_output_truncated_last_line(self, store):
         tid = store.add_task(
@@ -478,6 +488,248 @@ class TestReturnAcceptanceGate:
         r = self._cli(store, "return", tid, "--text", content)
         assert r.returncode == 1
         assert "unbalanced brackets" in r.stderr
+
+    # --- Engine-agnostic + position-tolerant sentinel (multi-engine DR, 2026-05-31) ---
+
+    def test_return_engine_agnostic_chatgpt_sentinel(self, store):
+        # Same valid body, but a CHATGPT-branded sentinel. The engine-agnostic gate
+        # must accept it (the hardcoded "KIMI" requirement blocked ChatGPT before).
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = self._good_content(tid).replace("END OF KIMI RESEARCH", "END OF CHATGPT RESEARCH")
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 0, r.stderr
+        assert store.get_task(tid)["status"] == "returned"
+
+    def test_return_engine_agnostic_perplexity_sentinel(self, store):
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = self._good_content(tid).replace("END OF KIMI RESEARCH", "END OF PERPLEXITY RESEARCH")
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 0, r.stderr
+        assert store.get_task(tid)["status"] == "returned"
+
+    def test_return_references_after_sentinel_pass(self, store):
+        # Perplexity-style: a `[^N]: url` reference block + HTML artifacts AFTER the
+        # sentinel. Position-tolerant gate accepts it (sentinel present; only a
+        # trailing citation block follows). URLs in the refs still count toward >=3.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        lines = [
+            "This is a comprehensive research report on open-source AI with detailed analysis here.",
+            "Here is a second substantive line with plenty of content to meet the threshold easily.",
+            "Third line: the landscape of open-source AI has shifted dramatically over recent months.",
+            "Fourth line: companies like Meta and Google have released powerful permissive models now.",
+            "Fifth line: the implications for enterprise adoption are significant and quite far-reaching.",
+        ]
+        content = (
+            "\n".join(lines)
+            + f"\n=== END OF PERPLEXITY RESEARCH: {tid} ==="
+            + "\n<span style=\"display:none\">[^70][^71]</span>"
+            + "\n<div align=\"center\">⁂</div>"
+            + "\n## References"
+            + "\n[^1]: https://example.com/source1"
+            + "\n[^2]: https://example.org/source2"
+            + "\n[^3]: https://example.net/source3"
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 0, r.stderr
+        assert store.get_task(tid)["status"] == "returned"
+
+    def test_return_prose_after_sentinel_rejected(self, store):
+        # Substantive prose AFTER the sentinel -> truncated/garbled paste -> reject.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            self._good_content(tid)
+            + "\nAnd then the report inexplicably keeps going with a whole new substantive paragraph here."
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "substantive content after the completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_sentinel_last_match_wins(self, store):
+        # Perplexity echoes the sentinel on its OWN line near the top AND emits the
+        # real one at the end -> two EXACT sentinel lines. Last-match-wins picks the
+        # final one; content between the two is body (validated), refs after the last.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            f"=== END OF PERPLEXITY RESEARCH: {tid} ===\n"
+            + "(that was the instruction echoed back; the real report follows below now)\n"
+            + self._good_content(tid).replace("END OF KIMI RESEARCH", "END OF PERPLEXITY RESEARCH")
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 0, r.stderr
+        assert store.get_task(tid)["status"] == "returned"
+
+    def test_return_url_bearing_prose_after_sentinel_rejected(self, store):
+        # Codex finding 1: a prose line that merely CONTAINS a URL must NOT pass as a
+        # trailing citation line (else substantive prose disguises as a citation now
+        # that the prompt mandates URLs on claims).
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            self._good_content(tid)
+            + "\nSee the SEC filing at https://sec.gov/foo for the full breakdown and a lot more analysis."
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "substantive content after the completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_thin_body_sentinel_near_top_rejected(self, store):
+        # Codex finding 2: sentinel near the top with an empty body and all URLs/size
+        # supplied by a trailing reference block -> the body-substantive gate (run on
+        # the PRE-sentinel body) must reject.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        refs = "\n".join(
+            f"[^{i}]: https://example.com/very/long/reference/path/source-entry-number-{i}-with-padding-xyz"
+            for i in range(1, 12)
+        )
+        content = f"=== END OF KIMI RESEARCH: {tid} ===\n{refs}"
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "fewer than 5 substantive lines before the sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_embedded_sentinel_phrase_not_matched(self, store):
+        # Codex finding 3: a sentinel-shaped phrase embedded in a prose sentence (not
+        # its own line) is NOT the sentinel -> missing-sentinel rejection.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        lines = [
+            "This is a comprehensive research report on open-source AI with detailed analysis here.",
+            "Here is a second substantive line with plenty of content to meet the threshold easily.",
+            "Third line: the landscape of open-source AI has shifted dramatically over recent months.",
+            "Fourth line: companies like Meta and Google have released powerful permissive models now.",
+            "Fifth line: the implications for enterprise adoption are significant and quite far-reaching.",
+        ]
+        urls = ["https://a.com/1", "https://b.com/2", "https://c.com/3"]
+        content = (
+            "\n".join(lines + urls)
+            + f"\nIn summary, this marks the end of deep research: {tid} for our present purposes here."
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "missing completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_prose_footnote_without_url_after_sentinel_rejected(self, store):
+        # Codex round-2 finding 1: a footnote def with prose but NO url after the
+        # sentinel must not pass as a citation line.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            self._good_content(tid)
+            + "\n[^note]: more analysis continues here at length without any link present on this line."
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "substantive content after the completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_url_bearing_footnote_prose_after_sentinel_rejected(self, store):
+        # Codex round-3: a footnote def with PROSE before the url
+        # (`[^x]: more analysis ... https://...`) is substantive continuation in
+        # disguise -- only `[^x]: https://...` (url right after the marker) is a
+        # citation. Must reject.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            self._good_content(tid)
+            + "\n[^x]: more analysis continues here with a sourced claim https://example.com/source-here"
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "substantive content after the completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_html_prose_after_sentinel_rejected(self, store):
+        # Codex round-2 finding 1: an html tag wrapping substantive prose after the
+        # sentinel must not pass.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            self._good_content(tid)
+            + "\n<p>more analysis continues here at length as substantive prose inside a paragraph tag.</p>"
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "substantive content after the completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_references_only_body_rejected(self, store):
+        # Codex round-2 finding 2: a body made ONLY of long footnote-with-url lines
+        # before the sentinel has no real prose body -> reject (citation lines are
+        # excluded from the substantive-body count).
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        refs = "\n".join(
+            f"[^{i}]: https://example.com/very/long/reference/path/source-entry-number-{i}-with-padding-xyz"
+            for i in range(1, 9)
+        )
+        content = refs + f"\n=== END OF KIMI RESEARCH: {tid} ==="
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "fewer than 5 substantive lines before the sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
+
+    def test_return_url_then_prose_footnote_after_sentinel_rejected(self, store):
+        # Codex round-4: a footnote with the url right after the marker but PROSE
+        # AFTER the url (`[^x]: https://... more prose`) is substantive continuation
+        # in disguise, not a pure citation -> reject.
+        tid = store.add_task(
+            assignee_profile="k2bi", command_key="test-echo-readonly",
+            success_criteria="ok", permissions="analyst-command",
+            status="waiting_for_kimi_output", entity_key="AI",
+        )
+        content = (
+            self._good_content(tid)
+            + "\n[^x]: https://example.com/source more substantive prose continues here after the url at length."
+        )
+        r = self._cli(store, "return", tid, "--text", content)
+        assert r.returncode == 1
+        assert "substantive content after the completion sentinel" in r.stderr
+        assert store.get_task(tid)["status"] == "waiting_for_kimi_output"
 
     def test_complete_rejects_waiting_for_kimi_output(self, store):
         # complete must NOT bypass the return gate / release the lock.

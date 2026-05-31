@@ -53,10 +53,66 @@ VALID_INITIAL_STATUSES = frozenset({"ready", "waiting_for_kimi_output", "needs_h
 
 
 def _completion_sentinel(task_id: str) -> str:
-    """The task-bound completion marker the Kimi prompt instructs Kimi DR to
-    emit as its final line. Checked (leniently) by the return gate as the
-    primary non-truncation + paste-to-task-binding proof."""
+    """The task-bound completion marker the deep-research prompt instructs the
+    engine to emit as its final content line: `=== END OF <ENGINE> RESEARCH: <id> ===`.
+    The conductor defaults to the KIMI form below, but the return gate is
+    ENGINE-AGNOSTIC -- it accepts any engine token (KIMI / CHATGPT / PERPLEXITY /
+    GEMINI / ...) via _sentinel_line_re(). Anti-truncation + paste-to-task binding;
+    the engine *name* is irrelevant to either purpose."""
     return f"=== END OF KIMI RESEARCH: {task_id} ==="
+
+
+def _sentinel_line_re(task_id: str):
+    """Engine-agnostic completion-sentinel matcher, ANCHORED to a whole line. The
+    sentinel must BE its own line `=== END OF <ENGINE> RESEARCH: <id> ===` (the `===`
+    wrapper is optional; the engine token is bounded to <=40 chars of one or more
+    words). Used with .fullmatch() on the stripped+lowercased line so embedded prose
+    like 'at the end of market research: <id> and more...' is NOT treated as the
+    sentinel (Codex finding 3). Binds to this task's id so a wrong-flight paste fails."""
+    return re.compile(
+        r"=*\s*end of\s+[a-z0-9][a-z0-9 ._\-]{0,40}\s+research\s*[:\-]?\s*"
+        + re.escape(task_id.lower())
+        + r"\s*=*"
+    )
+
+
+def _is_trailing_citation_line(stripped: str) -> bool:
+    """After the completion sentinel, ONLY a genuine trailing citation/reference line
+    is allowed -- a footnote definition, a line that IS a URL, a *named* references
+    heading, or the HTML/decorative artifacts platforms (e.g. Perplexity) append.
+    A line that merely *contains* a URL inside prose is NOT allowed: now that the
+    prompt mandates a URL on every claim, substantive prose could otherwise disguise
+    itself as a citation and slip past after the sentinel (Codex finding 1). Any
+    disallowed non-empty line after the sentinel -> truncated / garbled / wrong-flight
+    paste -> reject. `stripped` is assumed already .strip()'d and non-empty."""
+    s = stripped
+    low = s.lower()
+    # footnote definition that is a pure URL reference -- FULL-LINE: marker, then one
+    # or more whitespace-separated URL tokens, then nothing but trailing punctuation /
+    # whitespace. `[^1]: https://...` passes (the shape every engine emits in a
+    # trailing block, e.g. Perplexity); `[^x]: prose ... https://...` (prose before)
+    # AND `[^x]: https://... more prose` (prose after) both FAIL -- substantive
+    # continuation in disguise is not a citation (Codex round-2 -> round-4). Verbose
+    # author/title/date citations belong in the body's References section ABOVE the
+    # sentinel, where they are not gated by this allowlist.
+    if re.match(r"^\[\^?[^\]]+\]:(\s*<?https?://\S+>?[.,;]?)+\s*$", s):
+        return True
+    if re.match(r"^<?https?://\S+>?[.,;]?$", s):         # a line that IS a url (not prose-with-url)
+        return True
+    # references heading / bold label -- heading-only text (no trailing prose).
+    if re.match(r"^#{1,6}\s*(references|sources|citations|bibliography|notes|footnotes|works cited)\s*:?\s*$", low):
+        return True
+    if re.match(r"^\*\*\s*(references|sources|citations|bibliography|notes|footnotes|works cited)\s*\*\*:?$", low):
+        return True
+    # standalone html artifact line -- allowed ONLY if, after stripping tags, the
+    # residue is non-prose (footnote markers / symbols / digits only). `<p>more
+    # analysis</p>` carries prose and must NOT pass (Codex round-2 finding 1).
+    if re.match(r"^<[^>]+>.*</[^>]+>$", s) or re.match(r"^<[^>]+/?>$", s):
+        detagged = re.sub(r"<[^>]+>", "", s)
+        return re.match(r"^[\s\W0-9_]*$", detagged) is not None
+    if re.match(r"^[\W_]+$", s):                          # ***, ---, ⁂ decorative separators
+        return True
+    return False
 
 
 def telegram_cmd():
@@ -1101,7 +1157,7 @@ def _main():
             else:
                 content = args.text
 
-            # 1. size gate
+            # 1. size gate (whole paste)
             content_bytes = content.encode("utf-8")
             size = len(content_bytes)
             if size < 500 or size > 2_000_000:
@@ -1111,7 +1167,75 @@ def _main():
                 )
                 sys.exit(1)
 
-            # 2. >= 3 distinct URLs
+            # 2. completion sentinel = the PRIMARY non-truncation + paste-to-flight
+            # binding proof. Located FIRST so the body-quality gates below run on the
+            # real pre-sentinel report body, not on trailing reference lines that a
+            # near-the-top sentinel would otherwise let satisfy the gates (Codex
+            # finding 2).
+            #
+            # ENGINE-AGNOSTIC: accept `=== END OF <ENGINE> RESEARCH: <id> ===` for any
+            # engine token (KIMI / CHATGPT / PERPLEXITY / ...); the engine *name* is
+            # irrelevant to anti-truncation or paste-binding.
+            #
+            # WHOLE-LINE: the sentinel must be its own line (anchored .fullmatch), so
+            # prose that merely contains a sentinel-shaped phrase cannot pose as it
+            # (Codex finding 3).
+            #
+            # POSITION-TOLERANT: the sentinel need not be the strict last line -- some
+            # engines (Perplexity) append a `[^N]: url` reference block after it AND
+            # echo the sentinel instruction near the top, so multiple exact-sentinel
+            # lines is a NORMAL case. Take the LAST exact-line match as the boundary.
+            sentinel_re = _sentinel_line_re(args.id)
+            lines = content.splitlines()
+            sentinel_idx = -1
+            for i, ln in enumerate(lines):
+                if sentinel_re.fullmatch(ln.strip().lower()):
+                    sentinel_idx = i  # last exact whole-line match wins
+            if sentinel_idx < 0:
+                print(
+                    f"rejected: missing completion sentinel (output must end with a line "
+                    f"'=== END OF <ENGINE> RESEARCH: {args.id} ===', e.g. KIMI / CHATGPT / "
+                    f"PERPLEXITY); looks truncated or not from this flight",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # 3. everything AFTER the sentinel must be a genuine trailing citation
+            # block only (footnote defs / bare-url lines / named references heading /
+            # html / decorative). Substantive prose after the sentinel -> truncated,
+            # garbled, or a second report appended -> reject.
+            stray = next(
+                (ln.strip() for ln in lines[sentinel_idx + 1:]
+                 if ln.strip() and not _is_trailing_citation_line(ln.strip())),
+                None,
+            )
+            if stray is not None:
+                print(
+                    "rejected: substantive content after the completion sentinel "
+                    f"(line: {stray[:80]!r}); looks like a truncated or garbled paste",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # 4. >= 5 substantive lines in the PRE-SENTINEL body. Citation/reference
+            # lines are EXCLUDED from the count (Codex round-2 finding 2): a body made
+            # only of long `[^N]: url` reference lines (or a sentinel near the top with
+            # all content in trailing refs) is not a real research body and must fail.
+            body_lines = lines[:sentinel_idx]
+            substantive = sum(
+                1 for ln in body_lines
+                if len(ln.strip()) > 40 and not _is_trailing_citation_line(ln.strip())
+            )
+            if substantive < 5:
+                print(
+                    f"rejected: fewer than 5 substantive lines before the sentinel (found {substantive})",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # 5. >= 3 distinct URLs across the whole paste (sources legitimately live
+            # in a trailing references block, so count whole-doc; the substantive-body
+            # gate above already guarantees a real body exists).
             urls = set(re.findall(r"https?://[^\s)>\]\"']+", content))
             if len(urls) < 3:
                 print(
@@ -1120,39 +1244,19 @@ def _main():
                 )
                 sys.exit(1)
 
-            # 3. >= 5 substantive lines (stripped length > 40)
-            substantive = 0
-            for line in content.splitlines():
-                if len(line.strip()) > 40:
-                    substantive += 1
-            if substantive < 5:
-                print(
-                    f"rejected: fewer than 5 substantive lines (found {substantive})",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-            # 4. completion sentinel = the PRIMARY non-truncation + paste-to-flight
-            # binding proof. Tail punctuation heuristics alone can pass a partial
-            # paste that happens to stop at a clean sentence (Codex finding 3). The
-            # conductor instructs Kimi DR to end with `_completion_sentinel(id)`;
-            # we match it leniently (last non-empty line, lowercased, must contain
-            # "end of kimi research" AND this task's id) so minor formatting passes
-            # but a truncated paste -- or one pasted into the wrong flight -- fails.
-            nonempty = [ln.strip() for ln in content.splitlines() if ln.strip()]
-            last_line_lc = nonempty[-1].lower() if nonempty else ""
-            if not ("end of kimi research" in last_line_lc and args.id.lower() in last_line_lc):
-                print(
-                    f"rejected: missing completion sentinel (output must end with "
-                    f"'{_completion_sentinel(args.id)}'); looks truncated or not from this flight",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            # Supplemental cheap tail check (the sentinel already proves the end).
-            tail = content[-200:] if len(content) >= 200 else content
-            if (tail.count("[") + tail.count("(")) > (tail.count("]") + tail.count(")")):
-                print("rejected: looks truncated (unbalanced brackets in tail)", file=sys.stderr)
-                sys.exit(1)
+            # 6. cheap truncation heuristic -- unbalanced opening brackets in EITHER
+            # the body tail (mid-body truncation) OR the whole-paste tail (a truncated
+            # trailing reference, Codex finding 5). Real footnote defs `[^N]:` and url
+            # lines are bracket-balanced, so a genuine reference block passes.
+            body_text = "\n".join(lines[:sentinel_idx + 1])
+            for label, chunk in (("body", body_text), ("tail", content)):
+                tail = chunk[-200:] if len(chunk) >= 200 else chunk
+                if (tail.count("[") + tail.count("(")) > (tail.count("]") + tail.count(")")):
+                    print(
+                        f"rejected: looks truncated (unbalanced brackets in {label})",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
             # 5. PASS -> publish raw + claim the state, serialized under the
             # orchestrator lock by _finalize_return (recheck-still-waiting + fsync'd

@@ -41,7 +41,7 @@ Runs `~/Projects/K2B/scripts/k2b-orchestrator.sh <subcommand>` and shows the out
 | `block` | `<id> --reason R` | Block a task |
 | `unblock` | `<id>` | Return a blocked task to ready |
 | `cancel` | `<id>` | Cancel a task |
-| `return` | `<id> (--text T \| --path P)` | For a `waiting_for_kimi_output` flight: run the acceptance gate on the pasted/file Kimi output (size 500B-2MB, >=3 URLs, >=5 substantive lines, and a task-bound completion sentinel -- the last non-empty line must contain `END OF KIMI RESEARCH` plus the task id, case-insensitive), store raw + sha256 -> `returned`. For `blocked`/`needs_human`: re-ready it (no gate). Prefer `--path` for multi-line content (see the conductor). |
+| `return` | `<id> (--text T \| --path P)` | For a `waiting_for_kimi_output` flight: run the acceptance gate on the pasted/file DR output (size 500B-2MB, >=3 URLs, >=5 substantive lines, and a task-bound completion sentinel `=== END OF <ENGINE> RESEARCH: <id> ===` -- ENGINE-AGNOSTIC, any engine token KIMI/CHATGPT/PERPLEXITY/..., and POSITION-TOLERANT so a trailing `## References`/footnote block may follow it), store raw + sha256 -> `returned`. For `blocked`/`needs_human`: re-ready it (no gate). Prefer `--path` for multi-line content (see the conductor). |
 | `poll-once` | — | Run one dispatcher tick (reclaim zombies, spawn one ready task) |
 | `render-board` | — | Write `board.md` from current DB state |
 
@@ -75,11 +75,15 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
      --status waiting_for_kimi_output --entity "<canonical topic or TICKER>" | awk '{print $NF}')
    ```
    - `--entity`: canonicalize (lowercase-trim a topic; uppercase a ticker). If `add` errors `flight already active for ...`, a live flight for that topic exists -- tell Keith and offer to reuse or `cancel` it. Do NOT use the `k2bi` profile (that path resolves a K2Bi workspace); `k2b` keeps it agent-managed and K2Bi-free.
-2. **Build the Kimi DR prompt**, seeded by your scan findings for that trend: a falsifiable thesis, the driver chain, 5-8 seed queries, 8-15 source anchors, a counter-thesis, and an avoid-list. The prompt **MUST end with this exact instruction** (fill in the real TID):
-   > Finish your output with this exact line and nothing after it: `=== END OF KIMI RESEARCH: <TID> ===`
-   This sentinel is the gate's anti-truncation + paste-binding proof -- without it the return is rejected. (You instruct the exact line for reliability; the gate itself matches *leniently* -- the last non-empty line need only contain `END OF KIMI RESEARCH` and the task id, case-insensitive -- so small formatting differences still pass.)
+2. **Build the Kimi DR prompt**, seeded by your scan findings for that trend: a falsifiable thesis, the driver chain, 5-8 seed queries, 8-15 source anchors, a counter-thesis, and an avoid-list. The prompt **MUST include both of these instructions**:
+   - **Citation mandate (fill the gate AND survive link-repair):** Tell the engine, verbatim:
+     > Every factual claim must carry a real, working source URL. Either put the full `https://` URL inline right after the claim, OR use footnote markers `[^N]` **and** end with a `## References` section that lists each marker with its real URL (e.g. `[^31]: https://...`). Never emit a footnote marker without its URL. Any claim you cannot source, mark `(unverified)`. The `## References` section may sit just before OR just after the final completion line below.
+     Without this, engines emit bare `[^N]` markers with zero URLs and the gate rejects `fewer than 3 source URLs` (verified live, JOBY probe 2026-05-31 -- Kimi's first pass had 0 URLs). Repairing fabricated URLs in step C is the conductor's core value, but the gate needs >=3 real `https://` links present to admit the doc at all.
+   - **Completion sentinel (anti-truncation + paste-binding)** -- the engine's final *content* line (a trailing references block may follow it). Fill in the real TID (and, if you like, the engine's own name -- the gate accepts any):
+     > Finish your output with this exact line: `=== END OF KIMI RESEARCH: <TID> ===`
+     The gate is **engine-agnostic** (it matches `end of <engine> research` + the task id, case-insensitive, for KIMI / CHATGPT / PERPLEXITY / any token) and **position-tolerant** (it accepts a trailing `## References`/footnote block after the sentinel; only *substantive prose* after the sentinel is rejected). This is why all three engines pass with the same prompt -- you do NOT need to standardize the engine name or reorder references.
 3. If the scan found too little signal to write a focused prompt, park as `needs_human` instead (`--status needs_human --payload '{"question":"<one clarifying question>"}'`) and ask Keith that one question rather than emitting a generic prompt.
-4. Hand Keith the prompt (tap-to-copy) and tell him: run it on kimi.com, paste the result back here.
+4. Hand Keith the prompt (tap-to-copy) and tell him: run it on his deep-research engine (kimi.com / ChatGPT / Perplexity -- the gate accepts any), paste the result back here. Note for citation-heavy work: the 3-engine JOBY bake-off (2026-05-31) found Kimi's URLs were the least reliable (often fabricated 404s) and ChatGPT/Perplexity grounded in primary sources -- prefer those when source fidelity matters.
 
 ### C. Keith pastes the Kimi output back -> gate + link repair -> clean research
 
@@ -89,6 +93,7 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
    bash ~/Projects/K2B/scripts/k2b-orchestrator.sh return <TID> --path <file>
    ```
    (`--text` is for short single-line returns only.)
+   - **The gate is engine-agnostic + position-tolerant** (no manual fix-up needed). It accepts the sentinel from ANY engine (`=== END OF KIMI/CHATGPT/PERPLEXITY/... RESEARCH: <TID> ===`) and tolerates a trailing `## References`/footnote block (`[^N]: https://...`) *after* the sentinel -- this is how Perplexity-style outputs (refs below the sentinel) pass. It rejects only *substantive prose* after the sentinel (reason `substantive content after the completion sentinel` = genuinely truncated/garbled -> re-paste the full output).
    - On **reject** the gate prints the exact reason; tell Keith which, with the recovery:
      - `missing completion sentinel` -> the paste is likely cut off (or from a different flight) -> re-paste the full output.
      - `fewer than 3 source URLs` / `fewer than 5 substantive lines` -> the Kimi output was thin -> re-run Kimi with a fuller prompt and paste again.
