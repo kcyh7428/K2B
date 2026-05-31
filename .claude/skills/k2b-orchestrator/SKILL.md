@@ -1,6 +1,6 @@
 ---
 name: k2b-orchestrator
-description: Dispatch and monitor K2Bi analyst tasks via the orchestrator board, AND run the Chat-1 "deep-research booster" (read the news on a domain, build a Kimi Deep Research prompt, pause for Keith's manual Kimi run, then validate-and-repair the returned source links). Use when Keith says /orchestrator, "dispatch a k2bi task", "orchestrator board", "what's on the board", "show flights", "read the news on <domain>", "what's forming in <area>", "deep research on <topic-or-ticker>", "go deeper", or pastes Kimi Deep Research output back for a waiting flight.
+description: Dispatch and monitor K2Bi analyst tasks via the orchestrator board, run the Chat-1 "deep-research booster" (read the news on a domain, build a Kimi Deep Research prompt, pause for Keith's manual Kimi run, then validate-and-repair the returned source links), AND answer "where are we in the orchestrator" by rendering the Full Scope Tracker. Use when Keith says /orchestrator, "dispatch a k2bi task", "orchestrator board", "what's on the board", "show flights", "read the news on <domain>", "what's forming in <area>", "deep research on <topic-or-ticker>", "go deeper", "where are we in the orchestrator", "orchestrator status", "orchestrator scope", "how much does the orchestrator do", or pastes Kimi Deep Research output back for a waiting flight.
 ---
 
 # K2B Orchestrator
@@ -22,6 +22,20 @@ Keith says any of:
 - "read the news on `<domain>`" / "what's forming in `<area>`" / "what trends are happening in `<X>`"
 - "take trend N deeper" / "go deeper on `<X>`" / "deep research on `<topic-or-ticker>`"
 - Keith pastes Kimi Deep Research output back (for a flight waiting on his Kimi run)
+
+**"Where are we" status (render the Full Scope Tracker):**
+- "where are we (now) in the orchestrator" / "orchestrator status" / "orchestrator scope" / "orchestrator full picture"
+- "how much does the orchestrator do / orchestrate now" / "what's built in the orchestrator"
+
+## Where are we? -- render the Full Scope Tracker
+
+When Keith asks any "where are we" / status / scope / how-much question above, **render the canonical Full Scope Tracker -- do NOT recompute or synthesize it from memory.**
+
+1. Read `~/Projects/K2B-Vault/wiki/concepts/feature_k2b-orchestrator-v1.md` and locate the section whose heading **contains "Full scope tracker"** (match leniently on those three words -- do not depend on the exact arrow glyph or whitespace). **Tie-break if more than one matches:** ignore any heading marked `draft` / `old` / `deprecated`; among the rest, use the LAST one in the file (newest). That section is the single source of truth: the condensed Stage 0->15 status map with the ✅/🖐/🟡/⛔/🔒 legend.
+2. **Fail loud, never fabricate.** If the file cannot be read, or no qualifying "Full scope tracker" heading is found (file renamed/moved, section removed, Syncthing lag, Mac Mini not yet synced), say plainly: "Full Scope Tracker source unavailable at `wiki/concepts/feature_k2b-orchestrator-v1.md` -- not rendering from memory." and STOP. Do NOT improvise a tracker; a hallucinated status map is worse than no answer.
+3. On success, show that table verbatim, then the "**Where we are now**" one-liner from the same section.
+4. ONLY after a successful render (step 3), you MAY append live flight state from `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh list` (what's actually on the board right now) as a supplement -- the tracker table is the headline answer. If step 2 stopped, do NOT run this; emit nothing but the unavailable message.
+5. The tracker's Status column is updated on every orchestrator ship (`/ship` step 6). If it looks stale vs the feature note's Updates log, say so rather than guessing.
 
 ## What it does
 
