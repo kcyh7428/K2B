@@ -2,6 +2,25 @@
 
 
 ---
+## 2026-05-31 -- Orchestrator Ship 1b Increment 2: Chat-2 K2Bi narrative dispatch
+
+**Commit:** `6f86d1c` feat(orchestrator): Chat 2 narrative dispatch plumbing + conductor (Increment 2)
+
+**What shipped:** The second of the "3 chats" -- Chat 2 (drop a trend -> distill a 1-3 sentence seed -> dispatch the existing K2Bi `invest_narrative_pipeline` through the Ship-1a allowlisted door -> land a `theme_<slug>.md` with >=5 candidate tickers). Plumbing (Kimi K2.6 from `.kimi/job.md`) + conductor (architect, in `k2b-orchestrator` SKILL.md). Builds ON Ship 1a; store/CLI/dispatcher reused unchanged (the `--entity` one-flight lock + `payload` column already existed). Feature stays In Progress -- CODE half of Stage 2 (v1's finish line) done, live MVP test owed.
+
+**Plumbing:** `k2bi-narrative` allowlisted command; `resolve_command(payload)` appends `--narrative=<seed>` (`=` form, leading-dash safe, single argv, `shell=False`); `preflight_k2bi` branches P0-P5 (module-importable, macro-themes writable, registry+AAPL-schema, KIMI/MINIMAX key, seed length 40-500, provider reachability derived from `KIMI_API_HOST`/`MINIMAX_API_HOST`) and drops the repo git-status gate for the vault-writing lane; worker forces `K2BI_VAULT_ROOT` in the child env (checked vault == written vault) and a fail-closed YAML frontmatter parse of the post-run `candidate-count>=5` gate (malformed -> failed, never done).
+
+**Conductor:** Chat-2 SKILL.md procedure -- read source (YT/article/paragraph) -> distill to a 40-500-char seed -> fail-closed `add` (`exit 1` guards) with the Chat-1-matching lowercase-trim `entity_key` (so the one-flight lock collides cross-lane) -> `poll-once` -> read the worker-emitted theme path (not a reconstructed slug, which auto-versioning makes stale) -> report with K2Bi's own citations (not K2B-validated).
+
+**Codex review:** code = round-1 NEEDS-ATTENTION (P5 probed hard-coded `api.moonshot.cn`; post-run gate could mark malformed frontmatter `done`) -> both fixed + regression tests -> round-2 APPROVE. Conductor pass = 4 findings (Chat-2 slug wouldn't collide with Chat-1's lock; result step read a stale reconstructable path; add not fail-closed; plan self-contradiction) -> all fixed -> Kimi reliable-capture confirm caught one residual (fail-closed snippet lacked `exit 1`) -> fixed. 132 pytest + 32 bash green.
+
+**Feature status change:** feature_k2b-orchestrator-v1 stays `in-progress` (Increment 2 of Ship 1b built; live MVP test owed per `pending-action`). NOT marked shipped -- the MVP gate requires the live run.
+
+**Follow-ups:** (1) Keith's live Chat-2 MVP test (drop a real trend -> >=5-ticker theme file) + the still-owed Chat-1 live probe -- both now in the feature `pending-action`. (2) Increment 3 (Chat 3 ticker deep-research) gets its own Checkpoint-1. (3) Per-session git worktrees: this shipped during a 4-session window on one shared working tree; strict scope guards held, but worktree isolation is the durable fix.
+
+**Key decisions:** the executable safety lives in the (twice-reviewed) plumbing -- preflight + allowlist + arg-form all fail closed -- so the conductor prose is backstopped by code, not trusted alone. P5 reachability derives its host from the same provider config the child uses, never a hard-coded endpoint.
+
+---
 ## 2026-05-31 -- /portfolio: read at-rest WAL orchestrator DB (idle-board false "unreachable" fix)
 
 **Commit:** `70694e7` fix(portfolio): read at-rest WAL orchestrator DB via immutable fallback
