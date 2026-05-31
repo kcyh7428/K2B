@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-05-31 -- /portfolio: read at-rest WAL orchestrator DB (idle-board false "unreachable" fix)
+
+**Commit:** `70694e7` fix(portfolio): read at-rest WAL orchestrator DB via immutable fallback
+
+**What shipped:** Fixed `/portfolio active` falsely reporting `⚠ orchestrator board unreachable` on an idle board. Root cause: `orchestrator.sqlite` is WAL mode; when it is at rest (no `-wal`/`-shm` sidecars, last writer checkpointed and exited) a `mode=ro` open fails CANTOPEN(14) permanently -- the retry loop added on 2026-05-30 never clears it. Verified live on the production DB. `section_active()` now falls back to `immutable=1` when `mode=ro` fails AND no `-wal` exists, bracketed by a python3 nanosecond fingerprint (`st_mtime_ns`+`st_ctime_ns`+size+inode) so any mid-read mutation (or an empty fingerprint) forces an authoritative `mode=ro` reread instead of rendering unlocked rows. This re-introduces -- safely gated -- the immutable fallback a prior session had removed on a torn-read concern.
+
+**Codex review:** 6 tier-2 rounds. Findings fixed in order: (1) TOCTOU race on the bare `-wal` check; (2) failed-reread leak that kept suspect rows; (3) transient appear+disappear writer leaving no `-wal`; (4) whole-second `stat` mtime granularity; (5) low-res `stat` fallback trust when python3 absent. Final verdict APPROVE.
+
+**Tests:** added 8d-8h to `test-portfolio.sh` (deterministic via a `sqlite3` PATH shim that CANTOPENs the fixture's `mode=ro` and delegates `immutable=1`): at-rest read, writer-detected+failed-reread, transient writer, same-second same-size in-place mutation, python3-unavailable degraded path. Mutation-tested that removing the fallback reproduces "unreachable". 27 total green.
+
+**Feature status change:** none -- fix-forward to the shipped `feature_k2b-portfolio-view` (Updates entry appended).
+
+**Follow-ups:** none. The producer-side note: the orchestrator DB reaches the at-rest no-sidecar state whenever the dispatcher isn't running, which is the normal MacBook on-demand mode, so this path is the common case, not an edge case.
+
+**Key decisions:** the immutable fallback is gated to the provably-no-writer case (`mode=ro` failed AND no `-wal`) and fingerprint-verified, which preserves the no-torn-read property the earlier removal protected while fixing the idle-board read. python3-only fingerprint with no whole-second fallback -- a low-res fingerprint can't prove same-second safety, and python3 is already required by `ts_age_human`.
+
+---
 ## 2026-05-31 -- Orchestrator Ship 1b Increment 1: Chat-1 deep-research booster
 
 **Commits:** `8d462c7` feat(orchestrator): Increment-1 plumbing + `6f0f300` feat(orchestrator): Increment-1 conductor
