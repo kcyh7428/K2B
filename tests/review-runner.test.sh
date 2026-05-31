@@ -433,20 +433,19 @@ for a in att:
   pass "$t"
 }
 
-# ---------- Test 7: plan scope always routes to MiniMax ----------
-test_plan_scope_always_routes_to_minimax() {
-  local t="test_plan_scope_always_routes_to_minimax"
+# ---------- Test 7: plan scope runs Codex as PRIMARY (regression fix 2026-05-31) ----------
+# Codex reviews the plan file via the `task` subcommand (read-only sandbox,
+# --prompt-file). The old code hard-skipped plan scope to MiniMax claiming
+# codex-companion.mjs needs a --path flag it "dropped" -- but no companion
+# version ever had --path, and `task` does not need it. Codex is primary again;
+# MiniMax stays the fallback (see test 7b).
+test_plan_scope_runs_codex_primary() {
+  local t="test_plan_scope_runs_codex_primary"
   local d; d="$(mktmp)"
-  # NOTE: clean working tree (no EISDIR hazards beyond what seed_repo creates).
-  # seed_repo puts target.py dirty; remove it for a clean tree.
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
   cd "$d"
-  git checkout -q -- target.py
-  # Now no EISDIR hazards. If Codex were eligible it would approve. But plan
-  # scope must still route to MiniMax because Codex doesn't support plan files.
-
-  # Create a plan file inside the repo
+  git checkout -q -- target.py   # clean tree (plan scope does not walk it)
   mkdir -p plans
   cat > plans/tiny.md <<'EOF'
 # Tiny plan
@@ -475,28 +474,200 @@ print(data.get("log_path", ""))
 ')
   state_path="${log_path%.log}.json"
 
-  local first_result first_reason
+  # First reviewer attempt must be codex with result ok (Codex is primary).
+  local first_reviewer first_result fallback_used
+  first_reviewer=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+att=d.get('reviewer_attempts', [])
+print(att[0].get('reviewer')) if att else print('NONE')
+")
   first_result=$(python3 -c "
 import json
 d=json.loads(open('$state_path').read())
 att=d.get('reviewer_attempts', [])
 print(att[0].get('result')) if att else print('NONE')
 ")
-  first_reason=$(python3 -c "
+  fallback_used=$(python3 -c "
 import json
 d=json.loads(open('$state_path').read())
-att=d.get('reviewer_attempts', [])
-print(att[0].get('reason')) if att else print('NONE')
+print(d.get('fallback_used'))
 ")
-
-  if [ "$first_result" != "unavailable" ]; then
-    fail "$t" "expected first attempt unavailable, got $first_result"
+  if [ "$first_reviewer" != "codex" ]; then
+    fail "$t" "expected first reviewer codex, got $first_reviewer. state=$(cat "$state_path")"
     return
   fi
-  case "$first_reason" in
-    *plan*|*Plan*) : ;;
+  if [ "$first_result" != "ok" ]; then
+    fail "$t" "expected codex result ok, got $first_result. state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$fallback_used" != "False" ]; then
+    fail "$t" "expected fallback_used False (Codex primary handled it), got $fallback_used"
+    return
+  fi
+  # Codex must be invoked via the `task` subcommand with a prompt file -- the
+  # only path that lets Codex review an arbitrary plan markdown file.
+  if ! grep -q "REVIEWER_START reviewer=codex" "$log_path"; then
+    fail "$t" "expected codex reviewer to start. log=$(cat "$log_path")"
+    return
+  fi
+  if ! grep -Eq "SPAWN argv=.*'task'.*'--prompt-file'" "$log_path"; then
+    fail "$t" "expected Codex spawned via task --prompt-file. log=$(cat "$log_path")"
+    return
+  fi
+  if ! grep -q "# Codex Review" "$log_path"; then
+    fail "$t" "expected Codex review output in log. log=$(cat "$log_path")"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 7b: plan scope falls back to MiniMax when Codex fails ----------
+# Also proves the fallback actually receives plan SCOPE + the plan PATH (not a
+# bare working-tree review): the shim below exits non-zero unless argv carries
+# `--scope plan` and `--plan plans/tiny.md`, so a passing test guarantees Kimi
+# reviews the plan file. (Without this argv guard the fake shim ignored argv and
+# the regression guarantee was untested -- Codex plan-review P1 #4.)
+test_plan_scope_codex_fails_falls_back_to_minimax() {
+  local t="test_plan_scope_codex_fails_falls_back_to_minimax"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" error approve)"
+
+  cd "$d"
+  git checkout -q -- target.py   # clean tree
+  mkdir -p plans
+  cat > plans/tiny.md <<'EOF'
+# Tiny plan
+
+Placeholder for plan-scope fallback test.
+EOF
+
+  # Replace the standard shim with one that ASSERTS plan scope + plan path.
+  cat > "$d/scripts/minimax-review.sh" <<'EOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"--scope plan"*"--plan plans/tiny.md"*) ;;
+  *)
+    echo "FALLBACK-ARGV-MISSING-PLAN-SCOPE: $args" >&2
+    exit 1 ;;
+esac
+echo "# MiniMax MiniMax-M2.7 review -- APPROVE"
+echo '{"verdict":"approve"}'
+exit 0
+EOF
+  chmod +x "$d/scripts/minimax-review.sh"
+
+  local out
+  out=$(python3 "$RUNNER" plan --plan plans/tiny.md --wait \
+      --codex-plugin "$plugin" --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0 after MiniMax fallback, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  state_path="${log_path%.log}.json"
+
+  local reviewers fallback_used
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  fallback_used=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('fallback_used'))
+")
+  if [ "$reviewers" != "codex,minimax" ]; then
+    fail "$t" "expected attempts codex,minimax, got $reviewers. state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$fallback_used" != "True" ]; then
+    fail "$t" "expected fallback_used True, got $fallback_used"
+    return
+  fi
+  if ! grep -q "# MiniMax" "$log_path"; then
+    fail "$t" "expected MiniMax fallback output in log. log=$(cat "$log_path")"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 7c: plan-scope Codex runs with ISOLATED task state ----------
+# Proves the runner relocates the companion's job store via CLAUDE_PLUGIN_DATA to
+# a per-job dir, removing the PRIMARY resume-discovery path (the job store) for
+# the plan-review `task`. This does NOT cover the documented residual where the
+# app-server thread is still findable by name prefix; see build_codex_cmd in
+# review_runner.py (Codex plan-review rounds 2-3 #2).
+test_plan_scope_isolates_codex_state() {
+  local t="test_plan_scope_isolates_codex_state"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  git checkout -q -- target.py   # clean tree
+  mkdir -p plans
+  cat > plans/tiny.md <<'EOF'
+# Tiny plan
+
+Placeholder for plan-scope state-isolation test.
+EOF
+
+  # Fake codex echoes the CLAUDE_PLUGIN_DATA it was spawned with.
+  cat > "$plugin/scripts/codex-companion.mjs" <<'EOF'
+process.stdout.write("# Codex Review\n");
+process.stdout.write("CLAUDE_PLUGIN_DATA=[" + (process.env.CLAUDE_PLUGIN_DATA || "UNSET") + "]\n");
+process.stdout.write("APPROVE\n");
+process.exit(0);
+EOF
+
+  local out
+  out=$(python3 "$RUNNER" plan --plan plans/tiny.md --wait \
+      --codex-plugin "$plugin" --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+
+  if ! grep -q "CODEX_PLAN_ISOLATED_STATE" "$log_path"; then
+    fail "$t" "no CODEX_PLAN_ISOLATED_STATE marker. log=$(cat "$log_path")"
+    return
+  fi
+  # The env the child actually saw must point at the per-job isolated dir,
+  # not the default/unset store.
+  local seen
+  seen=$(grep -o 'CLAUDE_PLUGIN_DATA=\[[^]]*\]' "$log_path" | head -1)
+  case "$seen" in
+    *UNSET*)
+      fail "$t" "codex spawned without isolated CLAUDE_PLUGIN_DATA: $seen"
+      return ;;
+    *.code-reviews/*codex-plan-state*) : ;;
     *)
-      fail "$t" "expected reason to mention plan scope, got: $first_reason"
+      fail "$t" "CLAUDE_PLUGIN_DATA not isolated per-job: $seen"
       return ;;
   esac
   pass "$t"
@@ -726,7 +897,9 @@ test_both_fail_returns_exit_2
 test_deadline_kill_after_n_seconds
 test_quality_gate_no_verdict_forces_fallback
 test_codex_unavailable_reason_eisdir
-test_plan_scope_always_routes_to_minimax
+test_plan_scope_runs_codex_primary
+test_plan_scope_codex_fails_falls_back_to_minimax
+test_plan_scope_isolates_codex_state
 test_watchdog_injects_heartbeat
 test_minimax_key_inherited_from_parent_env
 test_primary_minimax_diff_requires_files_before_fallback

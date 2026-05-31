@@ -385,7 +385,7 @@ fi
 
 ##### 3b.2 Tier 2 flow
 
-Single-pass adversarial review via the unified runner `scripts/review.sh`. The runner handles Codex primary, Kimi automatic fallback (on deadline / quality-gate-fail / EISDIR hazard / plan scope), and `--skip-codex` routing. Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior).
+Single-pass adversarial review via the unified runner `scripts/review.sh`. The runner handles Codex primary, Kimi automatic fallback (on deadline / quality-gate-fail / EISDIR hazard), and `--skip-codex` routing. Plan scope (`scripts/review.sh plan --plan <file>`) is also Codex-primary: Codex reviews the plan file via the read-only `task` subcommand, with Kimi as the fallback only if Codex fails (fixed 2026-05-31; it previously hard-skipped every plan review to Kimi). Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior).
 
 ```bash
 if [ "$TIER" = "2" ]; then
@@ -543,6 +543,7 @@ K2B uses a second-model reviewer (Codex primary, Kimi K2.6 fallback) to catch bl
 **Checkpoint 1: Plan Review.** Before implementing any new feature, skill, or significant refactor, after the plan is written but before code is touched:
 
 - **Codex (primary)**: `/codex:adversarial-review challenge the plan` with the plan file path. Codex has Read tool access, so it can fetch any plan file from any path -- the typical locations (`~/.claude/plans/`, `<repo>/plans/`) are both reachable.
+  - **One-command alternative (for plans inside a repo):** `scripts/review.sh plan --plan <repo-relative-path> --wait` now runs Codex-primary plan review through the read-only `task` subcommand and auto-falls-back to Kimi if Codex fails -- no manual workaround needed. This is the same runner `/ship` Checkpoint 2 uses, so the Kimi-context caveats below only apply to a bare `minimax-review.sh` invocation, not to `scripts/review.sh plan` (whose `--scope plan --plan` form passes the plan file to Kimi too).
 - **Kimi fallback** when Codex unavailable: Kimi CANNOT see files outside the git working tree, and plan files live at `~/.claude/plans/` (Claude Code plans, outside any repo) or `<repo>/plans/` (gitignored or untracked) -- `minimax-review.sh` gathers context from `git status` / `git diff` only, so a bare invocation would produce a generic review with no plan content. Workarounds:
   - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/minimax-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` Kimi K2.6 has a generous prompt window so even multi-thousand-line plans fit.
   - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .minimax-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
@@ -552,7 +553,7 @@ K2B uses a second-model reviewer (Codex primary, Kimi K2.6 fallback) to catch bl
 
 This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If neither Codex nor Kimi was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped via `--skip-codex`.
 
-**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` (Codex primary, Kimi automatic fallback on failure / deadline / quality-gate / EISDIR / plan-scope). Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` (Codex primary, Kimi automatic fallback on failure / deadline / quality-gate / EISDIR; plan scope is also Codex-primary via the read-only `task` subcommand, Kimi only on Codex failure). Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
 
 **When pre-commit review can be skipped (gate-not-applicable cases):**
 
