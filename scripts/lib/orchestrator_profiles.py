@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import socket
 import subprocess
 from pathlib import Path
@@ -124,6 +125,28 @@ def _provider_probe_target() -> tuple[str, int]:
     return (parsed.hostname or api_host, parsed.port or 443)
 
 
+def _provider_key_available(provider: str) -> bool:
+    """True if the provider's API key is resolvable the SAME way the K2Bi
+    pipeline resolves it: os.environ first, then a quoted ~/.zshrc export
+    fallback (mirrors scripts.lib.minimax_common.load_kimi_api_key). Without
+    the ~/.zshrc fallback, P3 false-blocks when the key lives in ~/.zshrc but
+    is not exported to the dispatch shell, even though the pipeline WOULD find
+    it via its own fallback (live MVP test 2026-05-31, flight 2026-05-31-001).
+    """
+    env_var = "KIMI_API_KEY" if provider == "kimi" else "MINIMAX_API_KEY"
+    if os.environ.get(env_var, "").strip():
+        return True
+    zshrc = Path.home() / ".zshrc"
+    if zshrc.exists():
+        try:
+            pattern = rf'^\s*export\s+{env_var}\s*=\s*"([^"]+)"'
+            if re.search(pattern, zshrc.read_text(), re.MULTILINE):
+                return True
+        except OSError:
+            return False
+    return False
+
+
 def _preflight_narrative(task) -> tuple[bool, str]:
     """Narrative-specific preflight checks P0-P5."""
     workspace = resolve_workspace("k2bi")
@@ -192,16 +215,11 @@ def _preflight_narrative(task) -> tuple[bool, str]:
             "canonical ticker registry missing/empty/malformed -- run: python3 -m scripts.build_canonical_registry",
         )
 
-    # P3 -- LLM key present
-    provider = os.environ.get("K2B_LLM_PROVIDER", "kimi")
-    if provider == "kimi":
-        key = os.environ.get("KIMI_API_KEY", "")
-        if not key:
-            return (False, "LLM API key not configured (KIMI_API_KEY)")
-    else:
-        key = os.environ.get("MINIMAX_API_KEY", "")
-        if not key:
-            return (False, "LLM API key not configured (MINIMAX_API_KEY)")
+    # P3 -- LLM key resolvable (env OR ~/.zshrc, mirroring the K2Bi provider)
+    provider = os.environ.get("K2B_LLM_PROVIDER", "kimi").strip() or "kimi"
+    if not _provider_key_available(provider):
+        env_var = "KIMI_API_KEY" if provider == "kimi" else "MINIMAX_API_KEY"
+        return (False, f"LLM API key not configured ({env_var})")
 
     # P4 -- narrative seed length
     narrative = payload.get("narrative", "")

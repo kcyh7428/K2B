@@ -189,6 +189,8 @@ class TestNarrativePreflightP3:
         _setup_registry_for_p2(tmp_path / "vault")
         monkeypatch.delenv("KIMI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        # Neutralize the ~/.zshrc fallback so "missing" means missing everywhere.
+        monkeypatch.setattr(profiles.Path, "home", lambda: tmp_path / "nohome")
         tid = _make_task(store, {"narrative": "AI capex is booming across all sectors globally now"})
         ok, reason = profiles.preflight_k2bi(store.get_task(tid))
         assert not ok
@@ -203,6 +205,8 @@ class TestNarrativePreflightP3:
         _setup_registry_for_p2(tmp_path / "vault")
         monkeypatch.setenv("K2B_LLM_PROVIDER", "minimax")
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        # Neutralize the ~/.zshrc fallback so "missing" means missing everywhere.
+        monkeypatch.setattr(profiles.Path, "home", lambda: tmp_path / "nohome")
         tid = _make_task(store, {"narrative": "AI capex is booming across all sectors globally now"})
         ok, reason = profiles.preflight_k2bi(store.get_task(tid))
         assert not ok
@@ -375,3 +379,40 @@ class TestProviderProbeTarget:
         monkeypatch.delenv("KIMI_API_HOST", raising=False)
         host, _ = profiles._provider_probe_target()
         assert host != "api.moonshot.cn"
+
+
+class TestProviderKeyAvailable:
+    """P3 must resolve the key the same way the K2Bi provider does: env OR a
+    quoted ~/.zshrc export. The live MVP test (flight 2026-05-31-001) blocked
+    because the key was in ~/.zshrc but not exported to the dispatch shell."""
+
+    def test_key_in_env(self, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_profiles as profiles
+        monkeypatch.setenv("KIMI_API_KEY", "env-key")
+        monkeypatch.setattr(profiles.Path, "home", lambda: tmp_path / "nohome")
+        assert profiles._provider_key_available("kimi") is True
+
+    def test_key_absent_everywhere(self, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_profiles as profiles
+        monkeypatch.delenv("KIMI_API_KEY", raising=False)
+        monkeypatch.setattr(profiles.Path, "home", lambda: tmp_path / "nohome")
+        assert profiles._provider_key_available("kimi") is False
+
+    def test_key_in_zshrc_not_env_resolves(self, tmp_path, monkeypatch):
+        """THE regression: key only in ~/.zshrc (quoted export), not env -> available."""
+        from scripts.lib import orchestrator_profiles as profiles
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / ".zshrc").write_text('export KIMI_API_KEY="from-zshrc-12345"\n')
+        monkeypatch.delenv("KIMI_API_KEY", raising=False)
+        monkeypatch.setattr(profiles.Path, "home", lambda: fake_home)
+        assert profiles._provider_key_available("kimi") is True
+
+    def test_minimax_key_in_zshrc_not_env_resolves(self, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_profiles as profiles
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / ".zshrc").write_text('export MINIMAX_API_KEY="mm-zshrc-key"\n')
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setattr(profiles.Path, "home", lambda: fake_home)
+        assert profiles._provider_key_available("minimax") is True
