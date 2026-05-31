@@ -361,6 +361,256 @@ if [[ "$RAW_SNAP_BEFORE" != "$RAW_SNAP_AFTER" ]]; then
 fi
 echo "PASS: /portfolio active reads fresh post-write state and stays read-only"
 
+# 8d. AT-REST WAL DB regression (live bug 2026-05-31): a WAL-mode DB whose -wal/-shm
+# sidecars are gone (last writer checkpointed + exited, or Syncthing dropped them)
+# cannot be opened `mode=ro` -- a read-only open can't create the -shm a WAL header
+# demands, so it fails CANTOPEN(14) permanently and the retry loop never clears it.
+# The -wal-gated `immutable=1` fallback (rung 2) must read it correctly instead of
+# printing "unreachable". The main fixture above keeps its -wal, so mode=ro works there
+# and rung 2 was never exercised before the bug shipped.
+#
+# Whether a real at-rest WAL DB trips CANTOPEN is sqlite/build/filesystem dependent
+# (non-deterministic across machines -- production reliably fails, a fresh CLI fixture
+# often does not). To pin the test on rung 2 DETERMINISTICALLY everywhere, we shim
+# `sqlite3` on PATH: the shim returns CANTOPEN(14) for exactly this fixture's `mode=ro`
+# URI and delegates every other call (including the `immutable=1` fallback) to the real
+# sqlite3. So the script's rung-1 always fails here and rung-2 is the only way to read --
+# deleting the immutable fallback makes this case print "unreachable" and FAIL the test.
+REST_DB="$SANDBOX/orchestrator-atrest.sqlite"
+sqlite3 "$REST_DB" <<SQL
+PRAGMA journal_mode=WAL;
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, flight_id TEXT, stage_name TEXT, entity_key TEXT,
+  assignee_profile TEXT, status TEXT, command_key TEXT, blocker_reason TEXT,
+  blocked_by TEXT, created_at TEXT, updated_at TEXT, heartbeat_at TEXT
+);
+INSERT INTO tasks VALUES('R-RUN','F1','dispatch','COIN','k2bi','running','k2bi-smoke-enrich-coin',NULL,NULL,'${ORCH_C10}','${ORCH_HB2}','${ORCH_HB2}');
+INSERT INTO tasks VALUES('R-DONE','F2','dispatch','PLTR','k2bi','done','k2bi-smoke-enrich-pltr',NULL,NULL,'${ORCH_C1H}','${ORCH_C1H}',NULL);
+PRAGMA wal_checkpoint(TRUNCATE);
+SQL
+# At-rest shape: no -wal/-shm sidecars (checkpoint above flushed every row into the main
+# DB, so immutable=1 reads a complete, consistent snapshot).
+rm -f "$REST_DB-wal" "$REST_DB-shm"
+# Build the PATH shim: CANTOPEN for this fixture's mode=ro, real sqlite3 otherwise.
+REAL_SQLITE3="$(command -v sqlite3)"
+SHIM_DIR="$SANDBOX/shimbin"
+mkdir -p "$SHIM_DIR"
+cat > "$SHIM_DIR/sqlite3" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *orchestrator-atrest*mode=ro*) echo "Error: in prepare, unable to open database file (14)" >&2; exit 1 ;;
+  esac
+done
+exec "$REAL_SQLITE3" "\$@"
+SHIM
+chmod +x "$SHIM_DIR/sqlite3"
+# Sanity: the shim must fail mode=ro and pass immutable for THIS fixture.
+if PATH="$SHIM_DIR:$PATH" sqlite3 "file:${REST_DB}?mode=ro" "SELECT 1;" >/dev/null 2>&1; then
+  echo "FAIL: 8d shim did not force mode=ro CANTOPEN"; exit 1
+fi
+if ! PATH="$SHIM_DIR:$PATH" sqlite3 "file:${REST_DB}?immutable=1" "SELECT 1;" >/dev/null 2>&1; then
+  echo "FAIL: 8d shim broke the immutable=1 delegate path"; exit 1
+fi
+PATH="$SHIM_DIR:$PATH" K2B_ORCH_DB="$REST_DB" K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-atrest.md"
+if grep -q "orchestrator board unreachable" "$SANDBOX/active-atrest.md"; then
+  echo "FAIL: at-rest WAL DB reported unreachable (rung-2 immutable fallback missing/broken)"; cat "$SANDBOX/active-atrest.md"; exit 1
+fi
+if ! grep -q "COIN · running" "$SANDBOX/active-atrest.md"; then
+  echo "FAIL: at-rest read missing the running COIN flight"; cat "$SANDBOX/active-atrest.md"; exit 1
+fi
+if grep -q "PLTR" "$SANDBOX/active-atrest.md"; then
+  echo "FAIL: at-rest read should exclude terminal PLTR"; cat "$SANDBOX/active-atrest.md"; exit 1
+fi
+# The immutable fallback must not recreate the -wal/-shm sidecars (read-only invariant).
+if [[ -f "$REST_DB-wal" || -f "$REST_DB-shm" ]]; then
+  echo "FAIL: rung-2 immutable read recreated a -wal/-shm sidecar (not read-only)"; exit 1
+fi
+echo "PASS: at-rest WAL DB read via deterministic rung-2 immutable fallback (no unreachable, fresh, read-only)"
+
+# 8e. POST-READ WRITER-DETECTED, REREAD-FAILS regression: if a writer appears DURING the
+# immutable=1 fallback (a -wal materializes mid-read), the immutable snapshot is suspect.
+# The script must re-read via mode=ro; if that reread cannot be obtained, it must report
+# "unreachable" rather than render the known-suspect immutable rows. We simulate the
+# writer-appears-mid-read deterministically with a shim: its immutable=1 handler touches
+# the -wal (so the script's post-read `-f -wal` check fires) then delegates the read;
+# its mode=ro handler always CANTOPENs (so both rung-1 and the post-read reread fail).
+REST_DB2="$SANDBOX/orchestrator-atrest2.sqlite"
+sqlite3 "$REST_DB2" <<SQL
+PRAGMA journal_mode=WAL;
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, flight_id TEXT, stage_name TEXT, entity_key TEXT,
+  assignee_profile TEXT, status TEXT, command_key TEXT, blocker_reason TEXT,
+  blocked_by TEXT, created_at TEXT, updated_at TEXT, heartbeat_at TEXT
+);
+INSERT INTO tasks VALUES('R-RUN','F1','dispatch','COIN','k2bi','running','k2bi-smoke-enrich-coin',NULL,NULL,'${ORCH_C10}','${ORCH_HB2}','${ORCH_HB2}');
+PRAGMA wal_checkpoint(TRUNCATE);
+SQL
+rm -f "$REST_DB2-wal" "$REST_DB2-shm"
+SHIM_DIR2="$SANDBOX/shimbin2"
+mkdir -p "$SHIM_DIR2"
+cat > "$SHIM_DIR2/sqlite3" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *orchestrator-atrest2*mode=ro*) echo "Error: in prepare, unable to open database file (14)" >&2; exit 1 ;;
+    *orchestrator-atrest2*immutable=1*) touch "${REST_DB2}-wal" ;;  # writer "appears" mid-read
+  esac
+done
+exec "$REAL_SQLITE3" "\$@"
+SHIM
+chmod +x "$SHIM_DIR2/sqlite3"
+PATH="$SHIM_DIR2:$PATH" K2B_ORCH_DB="$REST_DB2" K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-reread-fail.md"
+if ! grep -q "orchestrator board unreachable" "$SANDBOX/active-reread-fail.md"; then
+  echo "FAIL: writer-detected + failed mode=ro reread must report unreachable, not render suspect immutable rows"; cat "$SANDBOX/active-reread-fail.md"; exit 1
+fi
+if grep -q "COIN" "$SANDBOX/active-reread-fail.md"; then
+  echo "FAIL: suspect immutable rows leaked after writer detected + reread failed"; cat "$SANDBOX/active-reread-fail.md"; exit 1
+fi
+rm -f "$REST_DB2-wal" "$REST_DB2-shm"
+echo "PASS: writer-detected-mid-read + failed reread -> unreachable (no suspect rows rendered)"
+
+# 8f. TRANSIENT-WRITER regression: a writer that appears AND disappears during the
+# immutable=1 read (creates a -wal, checkpoints the main file, removes the -wal again)
+# leaves NO -wal at the post-read check, so the -wal-presence check alone would miss it
+# and render a suspect immutable snapshot. The main-file fingerprint (mtime/size/inode)
+# must catch the mid-read mutation and force the authoritative mode=ro reread (which here
+# CANTOPENs) -> "unreachable", not suspect rows. The shim simulates the transient writer
+# by stamping the main DB's mtime to a fixed past value during the immutable call WITHOUT
+# leaving a -wal, so the post-read -f -wal check is false but the fingerprint differs.
+REST_DB3="$SANDBOX/orchestrator-atrest3.sqlite"
+sqlite3 "$REST_DB3" <<SQL
+PRAGMA journal_mode=WAL;
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, flight_id TEXT, stage_name TEXT, entity_key TEXT,
+  assignee_profile TEXT, status TEXT, command_key TEXT, blocker_reason TEXT,
+  blocked_by TEXT, created_at TEXT, updated_at TEXT, heartbeat_at TEXT
+);
+INSERT INTO tasks VALUES('R-RUN','F1','dispatch','COIN','k2bi','running','k2bi-smoke-enrich-coin',NULL,NULL,'${ORCH_C10}','${ORCH_HB2}','${ORCH_HB2}');
+PRAGMA wal_checkpoint(TRUNCATE);
+SQL
+rm -f "$REST_DB3-wal" "$REST_DB3-shm"
+SHIM_DIR3="$SANDBOX/shimbin3"
+mkdir -p "$SHIM_DIR3"
+cat > "$SHIM_DIR3/sqlite3" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *orchestrator-atrest3*mode=ro*) echo "Error: in prepare, unable to open database file (14)" >&2; exit 1 ;;
+    *orchestrator-atrest3*immutable=1*) touch -t 202001010000 "${REST_DB3}" ;;  # transient writer: mutate main file, no -wal left behind
+  esac
+done
+exec "$REAL_SQLITE3" "\$@"
+SHIM
+chmod +x "$SHIM_DIR3/sqlite3"
+PATH="$SHIM_DIR3:$PATH" K2B_ORCH_DB="$REST_DB3" K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-transient.md"
+if [[ -f "$REST_DB3-wal" ]]; then
+  echo "FAIL: 8f setup invalid -- a -wal was left behind, so this would just be the 8e path"; exit 1
+fi
+if ! grep -q "orchestrator board unreachable" "$SANDBOX/active-transient.md"; then
+  echo "FAIL: transient mid-read writer (fingerprint changed, no -wal) must report unreachable, not render suspect rows"; cat "$SANDBOX/active-transient.md"; exit 1
+fi
+if grep -q "COIN" "$SANDBOX/active-transient.md"; then
+  echo "FAIL: suspect immutable rows leaked after a fingerprint-detected mid-read mutation"; cat "$SANDBOX/active-transient.md"; exit 1
+fi
+echo "PASS: transient mid-read writer caught by main-file fingerprint -> unreachable (no suspect rows)"
+
+# 8g. SAME-SECOND IN-PLACE mutation: a transient writer can update existing pages and
+# checkpoint within a single whole second WITHOUT changing file size or inode. A
+# whole-second mtime fingerprint would see identical before/after and render suspect
+# rows; the nanosecond st_mtime_ns/st_ctime_ns fingerprint must still catch it. The shim
+# `touch`es the main file (no -t, so mtime=now -- same whole second as the pre-read
+# fingerprint in this sub-millisecond test, but a different nanosecond; size+inode
+# unchanged; no -wal left behind). Asserts the guard still forces the reread -> unreachable.
+REST_DB4="$SANDBOX/orchestrator-atrest4.sqlite"
+sqlite3 "$REST_DB4" <<SQL
+PRAGMA journal_mode=WAL;
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, flight_id TEXT, stage_name TEXT, entity_key TEXT,
+  assignee_profile TEXT, status TEXT, command_key TEXT, blocker_reason TEXT,
+  blocked_by TEXT, created_at TEXT, updated_at TEXT, heartbeat_at TEXT
+);
+INSERT INTO tasks VALUES('R-RUN','F1','dispatch','COIN','k2bi','running','k2bi-smoke-enrich-coin',NULL,NULL,'${ORCH_C10}','${ORCH_HB2}','${ORCH_HB2}');
+PRAGMA wal_checkpoint(TRUNCATE);
+SQL
+rm -f "$REST_DB4-wal" "$REST_DB4-shm"
+SHIM_DIR4="$SANDBOX/shimbin4"
+mkdir -p "$SHIM_DIR4"
+cat > "$SHIM_DIR4/sqlite3" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *orchestrator-atrest4*mode=ro*) echo "Error: in prepare, unable to open database file (14)" >&2; exit 1 ;;
+    *orchestrator-atrest4*immutable=1*) touch "${REST_DB4}" ;;  # in-place mtime bump, same size/inode, no -wal
+  esac
+done
+exec "$REAL_SQLITE3" "\$@"
+SHIM
+chmod +x "$SHIM_DIR4/sqlite3"
+ssz_before=$(stat -f '%z-%i' "$REST_DB4" 2>/dev/null || stat -c '%s-%i' "$REST_DB4" 2>/dev/null)
+PATH="$SHIM_DIR4:$PATH" K2B_ORCH_DB="$REST_DB4" K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-samesec.md"
+ssz_after=$(stat -f '%z-%i' "$REST_DB4" 2>/dev/null || stat -c '%s-%i' "$REST_DB4" 2>/dev/null)
+if [[ "$ssz_before" != "$ssz_after" ]]; then
+  echo "FAIL: 8g setup invalid -- size/inode changed ($ssz_before -> $ssz_after), not a same-size in-place case"; exit 1
+fi
+if [[ -f "$REST_DB4-wal" ]]; then
+  echo "FAIL: 8g setup invalid -- a -wal was left behind (would collapse into the 8e path)"; exit 1
+fi
+if ! grep -q "orchestrator board unreachable" "$SANDBOX/active-samesec.md"; then
+  echo "FAIL: same-size in-place mid-read mutation must report unreachable (nanosecond fingerprint regressed to whole-second?)"; cat "$SANDBOX/active-samesec.md"; exit 1
+fi
+if grep -q "COIN" "$SANDBOX/active-samesec.md"; then
+  echo "FAIL: suspect rows leaked after a same-size in-place mid-read mutation"; cat "$SANDBOX/active-samesec.md"; exit 1
+fi
+echo "PASS: same-size in-place mid-read mutation caught by nanosecond fingerprint -> unreachable"
+
+# 8h. PYTHON3-UNAVAILABLE degraded path: orch_fp() is python3-only with no whole-second
+# stat fallback, so if python3 fails the fingerprint is empty and MUST be treated as
+# suspect -- never trusting the unlocked immutable rows. We mask python3 with a stub that
+# exits non-zero and also CANTOPEN mode=ro, then drive the same-size in-place case. The
+# script must NOT render rows: empty fingerprint -> suspect -> mode=ro reread -> CANTOPEN
+# -> unreachable. (python3 is a hard dep of this section anyway; this guards the degraded
+# path against silently reopening the same-second race Codex flagged.)
+REST_DB5="$SANDBOX/orchestrator-atrest5.sqlite"
+sqlite3 "$REST_DB5" <<SQL
+PRAGMA journal_mode=WAL;
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, flight_id TEXT, stage_name TEXT, entity_key TEXT,
+  assignee_profile TEXT, status TEXT, command_key TEXT, blocker_reason TEXT,
+  blocked_by TEXT, created_at TEXT, updated_at TEXT, heartbeat_at TEXT
+);
+INSERT INTO tasks VALUES('R-RUN','F1','dispatch','COIN','k2bi','running','k2bi-smoke-enrich-coin',NULL,NULL,'${ORCH_C10}','${ORCH_HB2}','${ORCH_HB2}');
+PRAGMA wal_checkpoint(TRUNCATE);
+SQL
+rm -f "$REST_DB5-wal" "$REST_DB5-shm"
+SHIM_DIR5="$SANDBOX/shimbin5"
+mkdir -p "$SHIM_DIR5"
+cat > "$SHIM_DIR5/sqlite3" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *orchestrator-atrest5*mode=ro*) echo "Error: in prepare, unable to open database file (14)" >&2; exit 1 ;;
+    *orchestrator-atrest5*immutable=1*) touch "${REST_DB5}" ;;
+  esac
+done
+exec "$REAL_SQLITE3" "\$@"
+SHIM
+chmod +x "$SHIM_DIR5/sqlite3"
+# python3 stub that always fails -> orch_fp emits empty -> suspect path must fire.
+cat > "$SHIM_DIR5/python3" <<'PYSTUB'
+#!/usr/bin/env bash
+exit 127
+PYSTUB
+chmod +x "$SHIM_DIR5/python3"
+PATH="$SHIM_DIR5:$PATH" K2B_ORCH_DB="$REST_DB5" K2BI_VAULT_PATH="$SANDBOX" bash "$PORTFOLIO_SH" active > "$SANDBOX/active-nopy.md" 2>/dev/null
+if ! grep -q "orchestrator board unreachable" "$SANDBOX/active-nopy.md"; then
+  echo "FAIL: with python3 unavailable, empty fingerprint must be treated as suspect -> unreachable (low-res trust regressed?)"; cat "$SANDBOX/active-nopy.md"; exit 1
+fi
+if grep -q "COIN" "$SANDBOX/active-nopy.md"; then
+  echo "FAIL: suspect rows leaked on the python3-unavailable degraded path"; cat "$SANDBOX/active-nopy.md"; exit 1
+fi
+echo "PASS: python3-unavailable -> empty fingerprint treated as suspect -> unreachable (no low-res trust)"
+
 # 9. Performance check against real vault (skipped if not present)
 if [[ -d "$HOME/Projects/K2Bi-Vault/wiki" ]]; then
   echo "=== Performance check against real vault ==="

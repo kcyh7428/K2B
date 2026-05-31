@@ -259,6 +259,26 @@ section_watchlist() {
   echo ""
 }
 
+# High-resolution fingerprint of a file: mtime_ns, ctime_ns, size, inode. Brackets the
+# unlocked immutable read so any mid-read mutation of the orchestrator DB is detected.
+# Nanosecond mtime+ctime catch same-second, same-size, in-place page updates that a
+# whole-second `stat` mtime would miss (st_ctime_ns changes on ANY write to the inode).
+#
+# Deliberately python3-only with NO whole-second `stat` fallback: a low-resolution
+# fingerprint cannot prove the file was unchanged within the same second, so trusting it
+# would silently reopen the same-second stale-read race in the degraded path. python3 is
+# already a hard dependency of this section (ts_age_human), so its absence is not a real
+# scenario; if it ever fails here we emit NOTHING, and the caller treats an empty
+# fingerprint as "suspect" -- forcing the authoritative mode=ro reread rather than
+# trusting the unlocked immutable rows.
+orch_fp() {
+  python3 -c 'import os,sys
+try:
+    s=os.stat(sys.argv[1]); print(f"{s.st_mtime_ns}-{s.st_ctime_ns}-{s.st_size}-{s.st_ino}")
+except OSError:
+    sys.exit(1)' "$1" 2>/dev/null
+}
+
 section_active() {
   echo "## 🛫 Active orchestrator flights"
   echo ""
@@ -276,14 +296,22 @@ section_active() {
   # lock is not mislabeled as freely queued.
   local query="SELECT id, coalesce(entity_key,''), coalesce(command_key,''), status, coalesce(stage_name,''), replace(replace(replace(coalesce(blocker_reason,''), char(31), ' '), char(13), ' '), char(10), ' '), coalesce(blocked_by,''), coalesce(created_at,''), coalesce(heartbeat_at,'') FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY created_at;"
   local rows rc i
-  # mode=ro takes a shared lock and never checkpoints or writes, so it cannot mutate
-  # orchestrator state (day-one guard #1). WAL mode lets a mode=ro reader run fine
-  # alongside an active writer, so the ONLY time mode=ro fails is the brief window
-  # right after a writer exits, while its WAL index is torn down and a read-only open
-  # transiently cannot build the -shm (CANTOPEN/error 14). That clears in well under a
-  # second. We retry mode=ro a few times rather than dropping to an unlocked
-  # immutable=1 read -- keeping the locked-read guarantee means a genuine concurrent
-  # write can never be turned into a torn/stale read.
+  # WAL-mode read strategy (strictly read-only -- never mutates orchestrator state):
+  #
+  #   1. mode=ro takes a shared lock and never checkpoints. It works while a writer is
+  #      active (the -shm already exists then) and once a just-exited writer's -shm is
+  #      rebuilt -- so we retry a few times to ride out that brief transient.
+  #   2. If mode=ro still fails AND there is no -wal sidecar, the DB is AT REST: the last
+  #      writer checkpointed and removed -wal/-shm. A read-only open then cannot create
+  #      the -shm a WAL DB needs, so it fails CANTOPEN(14) *permanently* -- retrying never
+  #      helps (this was the false "unreachable" seen 2026-05-31 on an idle board). In this
+  #      no-writer state immutable=1 is provably SAFE: with no -wal there is no active
+  #      writer and no checkpoint in progress, so the main DB file is a static, fully
+  #      committed snapshot. We fall back to immutable=1 ONLY here.
+  #   3. If mode=ro fails WHILE a -wal exists, a writer is active but we could not build
+  #      the -shm. We do NOT drop to an unlocked immutable read (it would ignore the WAL
+  #      and return a stale snapshot). We report unreachable and let the caller retry.
+  local rows2 rc2 fp_before fp_after
   rc=1
   for i in 1 2 3 4 5; do
     rows=$(sqlite3 -separator $'\x1f' "file:${ORCH_DB}?mode=ro" "$query" 2>/dev/null)
@@ -291,6 +319,37 @@ section_active() {
     [[ $rc -eq 0 ]] && break
     sleep 0.2
   done
+  if [[ $rc -ne 0 && ! -f "${ORCH_DB}-wal" ]]; then
+    # DB at rest, no active writer -> immutable read is safe and consistent. immutable=1
+    # is unlocked, so we bracket it with a fingerprint of the main DB file (mtime, size,
+    # inode -- BSD `stat -f`, GNU `stat -c` fallback) to detect ANY writer that touches
+    # the DB during the read. That catches not just a writer that leaves a -wal behind,
+    # but also a transient one that creates a -wal, checkpoints the main file, and removes
+    # the sidecar again before the post-read check -- such a writer still changes the main
+    # file's mtime/size, so the fingerprint differs even though no -wal remains.
+    fp_before=$(orch_fp "$ORCH_DB")
+    rows=$(sqlite3 -separator $'\x1f' "file:${ORCH_DB}?immutable=1" "$query" 2>/dev/null)
+    rc=$?
+    fp_after=$(orch_fp "$ORCH_DB")
+    # Suspect if a writer left ANY evidence during the unlocked read: a -wal or -shm now
+    # exists, OR the main-file fingerprint changed. In that case the immutable snapshot
+    # may be stale/torn, so we must NOT render it. The mode=ro reread is authoritative
+    # (the writer's -shm now exists, so it should succeed); retry it briefly. Its result
+    # REPLACES the immutable rows; if it cannot be obtained, rc goes nonzero and the
+    # caller reports "unreachable" rather than showing suspect data. (A write landing
+    # AFTER this reread is outside our point-in-time read -- correct, not stale.)
+    if [[ $rc -eq 0 && ( -f "${ORCH_DB}-wal" || -f "${ORCH_DB}-shm" || "$fp_before" != "$fp_after" || -z "$fp_before" ) ]]; then
+      rc2=1
+      for i in 1 2 3; do
+        rows2=$(sqlite3 -separator $'\x1f' "file:${ORCH_DB}?mode=ro" "$query" 2>/dev/null)
+        rc2=$?
+        [[ $rc2 -eq 0 ]] && break
+        sleep 0.2
+      done
+      rows="$rows2"
+      rc=$rc2
+    fi
+  fi
   if [[ $rc -ne 0 ]]; then
     echo "⚠ orchestrator board unreachable (retry shortly)"
     echo ""
