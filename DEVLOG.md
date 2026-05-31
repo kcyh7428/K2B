@@ -3854,3 +3854,21 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Follow-ups:** needs /sync to land on Mac Mini.
 
 **Key decisions:** Fixed the consumer (parser tolerant of both labels) rather than the producer (forcing Codex to revert the more-accurate "K2Bi" label). Parser now label-agnostic so it can't silently break again on a future relabel.
+
+## 2026-05-31 -- Orchestrator return gate: engine-agnostic + position-tolerant (Chat-1 MVP probe passed)
+
+**Commit:** `86d12a3` feat(orchestrator): engine-agnostic + position-tolerant return-gate sentinel
+
+**What shipped:** The orchestrator return acceptance gate (`scripts/lib/orchestrator_store.py`) no longer hardcodes `END OF KIMI RESEARCH`. It now accepts a completion sentinel from ANY deep-research engine (KIMI / CHATGPT / PERPLEXITY / ...) and tolerates a trailing `[^N]: url` references block AFTER the sentinel (Perplexity's shape). The conductor SKILL.md gained a citation-URL mandate in the Kimi prompt, an engine-neutral hand-off, and a 3-engine bake-off note. This was forced by a live MVP probe: Keith ran the same JOBY deep-research prompt on all three engines, and the KIMI-only gate would have rejected the two stronger ones.
+
+**Gate redesign (security boundary, hardened over 5 Codex pre-commit rounds -> APPROVE):** the sentinel is now an anchored whole-line match (no embedded-prose match) located FIRST, so body-quality gates run on the pre-sentinel body only; the substantive-line count excludes citation lines (no references-only body passes); the trailing-citation grammar is strict (full-line url-only footnotes, named-references heading-only, html artifacts must de-tag to non-prose, bare-url lines); dual bracket-balance (body tail + whole-paste tail); last-match-wins handles engines that echo the sentinel instruction near the top. Each Codex round closed a real post-sentinel-prose or thin-body bypass (5 -> 2 -> 1 -> 1 -> APPROVE). 98 pytest green (13 new/updated return-gate tests); ChatGPT + Perplexity real outputs admitted live, Kimi earlier.
+
+**Live MVP probe (the reason this exists):** flight `2026-05-30-001` (JOBY). The gate rejected Kimi's first paste (`fewer than 3 source URLs` -- footnote markers, 0 actual links). After Kimi regenerated with a References section, the gate passed but the link-repair step found 6+ of 10 load-bearing citations DEAD (404 / wrong-domain / expired-cert) -- the facts were real, the URLs fabricated. K2B re-sourced every load-bearing claim to a real working URL, corrected one factual error, and flagged 3 unverifiable claims. Clean doc + per-claim ledger at `K2B-Vault/raw/orchestrator-results/2026-05-30-001-joby-clean.md`. This is the feature paying for itself on its first real run.
+
+**Codex review:** Tier 2, 5 rounds, final APPROVE. Logs `.code-reviews/2026-05-31T00-*.log` (rounds at 23-47, 23-56, 00-02, 00-07, 00-11).
+
+**Feature status change:** `feature_k2b-orchestrator-v1` stays **in-progress** (multi-ship; Increment 2 next). `pending-action` (the live Chat-1 probe) RESOLVED.
+
+**Follow-ups:** needs /sync to land the conductor + gate on Mac Mini. Increment 2 (Chat 2 narrative dispatch) gets its own Checkpoint-1.
+
+**Key decisions:** Made the gate engine-neutral rather than standardizing Keith on one engine -- the link-repair step is the real quality equalizer, and the bake-off (Kimi citations weakest, ChatGPT ~= Perplexity stronger) is advice, not enforcement. Kept the raw-file name `<id>-kimi-raw.md` for all engines (cosmetic; avoids churn). Engine-agnostic sentinel was deferred pre-bake-off, then reopened by Keith with the 3 reports in hand and shipped here.
