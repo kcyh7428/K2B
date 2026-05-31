@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Worker-profile registry, allowlist, and K2Bi preflight for K2B orchestrator."""
 
+import json
 import os
+import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _expand(p):
@@ -27,6 +30,11 @@ def k2bi_allowed_commands():
             "--enrich",
             "LRCX",
         ],
+        "k2bi-narrative": [
+            "python3",
+            "-m",
+            "scripts.lib.invest_narrative_pipeline",
+        ],
         "test-echo-readonly": ["/bin/echo", "orchestrator-smoke-ok"],
     }
 
@@ -44,11 +52,16 @@ def get_profile(name) -> dict | None:
     return None
 
 
-def resolve_command(profile_name, command_key) -> list[str] | None:
+def resolve_command(profile_name, command_key, payload=None) -> list[str] | None:
     if profile_name == "k2bi":
         cmds = k2bi_allowed_commands()
         if command_key in cmds:
-            return list(cmds[command_key])  # copy
+            argv = list(cmds[command_key])  # copy
+            if command_key == "k2bi-narrative":
+                if payload and isinstance(payload, dict):
+                    narrative = payload.get("narrative", "")
+                    argv.append(f"--narrative={narrative}")
+            return argv
     return None
 
 
@@ -92,10 +105,140 @@ def _worker_lock_is_stale(path) -> bool:
         return False  # alive under another owner / unconfirmable -> not stale
 
 
+def _provider_probe_target() -> tuple[str, int]:
+    """Resolve the (host, port) to probe for P5 reachability.
+
+    Derived from the SAME provider config the narrative child will use
+    (scripts.lib.minimax_common): KIMI_API_HOST for provider kimi (the
+    default), MINIMAX_API_HOST for minimax, honoring env overrides. A
+    hard-coded host would let P5 pass while the real provider is down, or
+    block a healthy configured provider -- defeating the unmet-prerequisite
+    gate the narrative lane depends on.
+    """
+    provider = os.environ.get("K2B_LLM_PROVIDER", "kimi").strip() or "kimi"
+    if provider == "kimi":
+        api_host = os.environ.get("KIMI_API_HOST", "https://api.kimi.com/coding")
+    else:
+        api_host = os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com")
+    parsed = urlparse(api_host if "://" in api_host else f"https://{api_host}")
+    return (parsed.hostname or api_host, parsed.port or 443)
+
+
+def _preflight_narrative(task) -> tuple[bool, str]:
+    """Narrative-specific preflight checks P0-P5."""
+    workspace = resolve_workspace("k2bi")
+    vault = k2bi_vault()
+
+    # Parse payload
+    payload = {}
+    raw_payload = task.get("payload")
+    if raw_payload:
+        try:
+            parsed = json.loads(raw_payload)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except json.JSONDecodeError:
+            pass
+
+    # P0 -- module importable
+    try:
+        result = subprocess.run(
+            ["python3", "-c", "import scripts.lib.invest_narrative_pipeline"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return (
+                False,
+                "narrative pipeline module not importable -- check K2Bi deploy state",
+            )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return (
+            False,
+            "narrative pipeline module not importable -- check K2Bi deploy state",
+        )
+
+    # P1 -- macro-themes dir writable
+    macro_themes = os.path.join(vault, "wiki", "macro-themes")
+    if not os.path.isdir(macro_themes) or not os.access(macro_themes, os.W_OK):
+        return (False, "macro-themes output dir missing or not writable")
+
+    # P2 -- ticker registry sane
+    registry_path = os.path.join(vault, "wiki", "tickers", "canonical-registry.json")
+    try:
+        if not os.path.exists(registry_path) or os.path.getsize(registry_path) == 0:
+            return (
+                False,
+                "canonical ticker registry missing/empty/malformed -- run: python3 -m scripts.build_canonical_registry",
+            )
+        with open(registry_path) as f:
+            registry = json.load(f)
+        if not isinstance(registry, dict) or not registry:
+            return (
+                False,
+                "canonical ticker registry missing/empty/malformed -- run: python3 -m scripts.build_canonical_registry",
+            )
+        aapl = registry.get("AAPL")
+        if not isinstance(aapl, dict) or not aapl.get("name"):
+            return (
+                False,
+                "canonical ticker registry missing/empty/malformed -- run: python3 -m scripts.build_canonical_registry",
+            )
+    except (json.JSONDecodeError, OSError):
+        return (
+            False,
+            "canonical ticker registry missing/empty/malformed -- run: python3 -m scripts.build_canonical_registry",
+        )
+
+    # P3 -- LLM key present
+    provider = os.environ.get("K2B_LLM_PROVIDER", "kimi")
+    if provider == "kimi":
+        key = os.environ.get("KIMI_API_KEY", "")
+        if not key:
+            return (False, "LLM API key not configured (KIMI_API_KEY)")
+    else:
+        key = os.environ.get("MINIMAX_API_KEY", "")
+        if not key:
+            return (False, "LLM API key not configured (MINIMAX_API_KEY)")
+
+    # P4 -- narrative seed length
+    narrative = payload.get("narrative", "")
+    if narrative is None:
+        narrative = ""
+    narrative = str(narrative).strip()
+    if not narrative:
+        return (False, "narrative seed empty")
+    if len(narrative) < 40:
+        return (False, "narrative seed empty")
+    if len(narrative) > 500:
+        return (False, "narrative seed too long -- distill to 1-3 sentences")
+
+    # P5 -- provider reachability (LIGHT, best-effort). Probe the host the child
+    # will actually call, not a hard-coded one (see _provider_probe_target).
+    if os.environ.get("K2B_ORCH_SKIP_PROVIDER_PING") != "1":
+        host, port = _provider_probe_target()
+        try:
+            sock = socket.create_connection((host, port), timeout=5)
+            sock.close()
+        except socket.gaierror:
+            return (False, "LLM provider unreachable")
+        except ConnectionRefusedError:
+            return (False, "LLM provider unreachable")
+        except (OSError, socket.timeout, TimeoutError):
+            # timeout or uncertainty -> pass (do not false-block on a slow network)
+            pass
+
+    return (True, "")
+
+
 def preflight_k2bi(task) -> tuple[bool, str]:
+    command_key = task.get("command_key", "")
+
     # 1. allowlist check first
-    if resolve_command("k2bi", task.get("command_key", "")) is None:
-        return (False, f"command_key not allowlisted: {task.get('command_key', '')}")
+    if resolve_command("k2bi", command_key) is None:
+        return (False, f"command_key not allowlisted: {command_key}")
 
     # 2. workspace exists
     workspace = resolve_workspace("k2bi")
@@ -125,7 +268,11 @@ def preflight_k2bi(task) -> tuple[bool, str]:
     if human_lock and os.path.exists(human_lock):
         return (False, "active K2Bi human-session lock present")
 
-    # 6. git status
+    # Narrative lane: run P0-P5, skip git status
+    if command_key == "k2bi-narrative":
+        return _preflight_narrative(task)
+
+    # 6. git status (existing behavior for non-narrative commands)
     try:
         result = subprocess.run(
             ["git", "-C", workspace, "status", "--short"],

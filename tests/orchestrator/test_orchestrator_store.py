@@ -565,7 +565,7 @@ class TestWorkerTimeout:
         # Command writes output, then sleeps well past the 1s timeout.
         monkeypatch.setattr(
             profiles, "resolve_command",
-            lambda p, k: [sys.executable, "-c",
+            lambda p, k, payload=None: [sys.executable, "-c",
                           "import sys,time; sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(8)"],
         )
         tid = store.add_task(

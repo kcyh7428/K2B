@@ -369,3 +369,357 @@ class TestWorkerFailPaths:
         t = store.get_task(tid2)
         assert t["status"] == "blocked"
         assert "lock already held" in (t.get("blocker_reason") or "").lower()
+
+
+class TestNarrativeCommand:
+    def test_resolve_command_argv_shape(self):
+        from scripts.lib import orchestrator_profiles as profiles
+
+        argv = profiles.resolve_command(
+            "k2bi",
+            "k2bi-narrative",
+            payload={"narrative": "-AI capex --help so what"},
+        )
+        assert argv == [
+            "python3",
+            "-m",
+            "scripts.lib.invest_narrative_pipeline",
+            "--narrative=-AI capex --help so what",
+        ]
+
+    def test_resolve_command_without_payload(self):
+        from scripts.lib import orchestrator_profiles as profiles
+
+        # allowlist check path: returns base argv even without payload
+        argv = profiles.resolve_command("k2bi", "k2bi-narrative")
+        assert argv == [
+            "python3",
+            "-m",
+            "scripts.lib.invest_narrative_pipeline",
+        ]
+
+    def test_worker_sets_k2bi_vault_root_env(self, store, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        real_ws = tmp_path / "real_k2bi"
+        real_ws.mkdir()
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(real_ws))
+        monkeypatch.setenv("K2B_ORCH_CMD_TIMEOUT", "1")
+
+        # Reload to pick up env
+        to_remove = [k for k in sys.modules if "orchestrator" in k]
+        for k in to_remove:
+            del sys.modules[k]
+        from scripts.lib import orchestrator_store as store2
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        store2.init_db(store2.connect())
+        os.makedirs(store2.RESULTS_DIR, exist_ok=True)
+
+        tid = store2.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-narrative",
+            success_criteria="ok",
+            permissions="analyst-command",
+            payload={"narrative": "AI capex is booming across all sectors globally now"},
+        )
+        store2.mark_running(tid)
+
+        original_run = worker.subprocess.run
+        captured_env = {}
+
+        def fake_run(*args, **kwargs):
+            captured_env["env"] = kwargs.get("env")
+            class R:
+                returncode = 0
+                stdout = "/tmp/theme.md"
+                stderr = ""
+            return R()
+
+        original_notify = store2.notify
+        store2.notify = lambda msg: None
+
+        worker.subprocess.run = fake_run
+        try:
+            worker.main(tid)
+        finally:
+            worker.subprocess.run = original_run
+            store2.notify = original_notify
+
+        assert captured_env.get("env") is not None
+        assert captured_env["env"].get("K2BI_VAULT_ROOT") == profiles.k2bi_vault()
+
+    def test_post_run_count_gate_pass(self, store, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        real_ws = tmp_path / "real_k2bi"
+        real_ws.mkdir()
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(real_ws))
+
+        to_remove = [k for k in sys.modules if "orchestrator" in k]
+        for k in to_remove:
+            del sys.modules[k]
+        from scripts.lib import orchestrator_store as store2
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        store2.init_db(store2.connect())
+        os.makedirs(store2.RESULTS_DIR, exist_ok=True)
+
+        tid = store2.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-narrative",
+            success_criteria="ok",
+            permissions="analyst-command",
+            payload={"narrative": "AI capex is booming across all sectors globally now"},
+        )
+        store2.mark_running(tid)
+
+        # Create a fixture theme file with candidate-count: 6
+        theme_path = tmp_path / "theme_ai_capex.md"
+        theme_path.write_text(
+            "---\n"
+            "candidate-count: 6\n"
+            "type: macro-theme\n"
+            "---\n\n"
+            "## Candidates\n\n"
+            "- AAPL\n"
+        )
+
+        original_run = worker.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = str(theme_path)
+                stderr = ""
+            return R()
+
+        original_notify = store2.notify
+        store2.notify = lambda msg: None
+
+        worker.subprocess.run = fake_run
+        try:
+            worker.main(tid)
+        finally:
+            worker.subprocess.run = original_run
+            store2.notify = original_notify
+
+        t = store2.get_task(tid)
+        assert t["status"] == "done"
+
+    def test_post_run_count_gate_fail_under_count(self, store, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        real_ws = tmp_path / "real_k2bi"
+        real_ws.mkdir()
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(real_ws))
+
+        to_remove = [k for k in sys.modules if "orchestrator" in k]
+        for k in to_remove:
+            del sys.modules[k]
+        from scripts.lib import orchestrator_store as store2
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        store2.init_db(store2.connect())
+        os.makedirs(store2.RESULTS_DIR, exist_ok=True)
+
+        tid = store2.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-narrative",
+            success_criteria="ok",
+            permissions="analyst-command",
+            payload={"narrative": "AI capex is booming across all sectors globally now"},
+        )
+        store2.mark_running(tid)
+
+        theme_path = tmp_path / "theme_ai_capex.md"
+        theme_path.write_text(
+            "---\n"
+            "candidate-count: 3\n"
+            "type: macro-theme\n"
+            "---\n\n"
+            "## Candidates\n\n"
+            "- AAPL\n"
+        )
+
+        original_run = worker.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = str(theme_path)
+                stderr = ""
+            return R()
+
+        original_notify = store2.notify
+        store2.notify = lambda msg: None
+
+        worker.subprocess.run = fake_run
+        try:
+            worker.main(tid)
+        finally:
+            worker.subprocess.run = original_run
+            store2.notify = original_notify
+
+        t = store2.get_task(tid)
+        assert t["status"] == "failed"
+        assert "theme file malformed or under-count" in (t.get("blocker_reason") or "")
+
+    def test_post_run_count_gate_fail_missing_file(self, store, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        real_ws = tmp_path / "real_k2bi"
+        real_ws.mkdir()
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(real_ws))
+
+        to_remove = [k for k in sys.modules if "orchestrator" in k]
+        for k in to_remove:
+            del sys.modules[k]
+        from scripts.lib import orchestrator_store as store2
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        store2.init_db(store2.connect())
+        os.makedirs(store2.RESULTS_DIR, exist_ok=True)
+
+        tid = store2.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-narrative",
+            success_criteria="ok",
+            permissions="analyst-command",
+            payload={"narrative": "AI capex is booming across all sectors globally now"},
+        )
+        store2.mark_running(tid)
+
+        original_run = worker.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = "/nonexistent/theme.md"
+                stderr = ""
+            return R()
+
+        original_notify = store2.notify
+        store2.notify = lambda msg: None
+
+        worker.subprocess.run = fake_run
+        try:
+            worker.main(tid)
+        finally:
+            worker.subprocess.run = original_run
+            store2.notify = original_notify
+
+        t = store2.get_task(tid)
+        assert t["status"] == "failed"
+        assert "theme file malformed or under-count" in (t.get("blocker_reason") or "")
+
+    def test_post_run_count_gate_fail_unparseable_frontmatter(self, store, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        real_ws = tmp_path / "real_k2bi"
+        real_ws.mkdir()
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(real_ws))
+
+        to_remove = [k for k in sys.modules if "orchestrator" in k]
+        for k in to_remove:
+            del sys.modules[k]
+        from scripts.lib import orchestrator_store as store2
+        from scripts.lib import orchestrator_worker as worker
+        from scripts.lib import orchestrator_profiles as profiles
+
+        store2.init_db(store2.connect())
+        os.makedirs(store2.RESULTS_DIR, exist_ok=True)
+
+        tid = store2.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-narrative",
+            success_criteria="ok",
+            permissions="analyst-command",
+            payload={"narrative": "AI capex is booming across all sectors globally now"},
+        )
+        store2.mark_running(tid)
+
+        theme_path = tmp_path / "theme_bad.md"
+        theme_path.write_text("not frontmatter at all\n")
+
+        original_run = worker.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = str(theme_path)
+                stderr = ""
+            return R()
+
+        original_notify = store2.notify
+        store2.notify = lambda msg: None
+
+        worker.subprocess.run = fake_run
+        try:
+            worker.main(tid)
+        finally:
+            worker.subprocess.run = original_run
+            store2.notify = original_notify
+
+        t = store2.get_task(tid)
+        assert t["status"] == "failed"
+        assert "theme file malformed or under-count" in (t.get("blocker_reason") or "")
+
+
+class TestParseCandidateCountFailClosed:
+    """_parse_candidate_count must be a fail-closed frontmatter parser, not a
+    line scanner. A garbled YAML block that merely contains a candidate-count
+    line must NOT yield an int (the old scanner's fail-OPEN bug)."""
+
+    def test_valid_frontmatter_returns_count(self, tmp_path):
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_ok.md"
+        p.write_text("---\ntype: macro-theme\ncandidate-count: 6\n---\n\nbody\n")
+        assert worker._parse_candidate_count(str(p)) == 6
+
+    def test_valid_under_count_returns_low_int(self, tmp_path):
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_low.md"
+        p.write_text("---\ncandidate-count: 3\n---\n")
+        assert worker._parse_candidate_count(str(p)) == 3
+
+    def test_invalid_yaml_with_count_line_fails_closed(self, tmp_path):
+        """THE regression: invalid YAML between valid fences, count line present.
+        Old line scanner returned 6 (fail-open); parser must return None."""
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_garbled.md"
+        p.write_text("---\ncandidate-count: 6\nbad: [unterminated flow\n---\n")
+        assert worker._parse_candidate_count(str(p)) is None
+
+    def test_no_closing_fence_fails_closed(self, tmp_path):
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_open.md"
+        p.write_text("---\ncandidate-count: 6\nno closing fence here\n")
+        assert worker._parse_candidate_count(str(p)) is None
+
+    def test_non_dict_frontmatter_fails_closed(self, tmp_path):
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_scalar.md"
+        p.write_text("---\njust a bare string\n---\n")
+        assert worker._parse_candidate_count(str(p)) is None
+
+    def test_non_int_count_fails_closed(self, tmp_path):
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_str_count.md"
+        p.write_text("---\ncandidate-count: six\n---\n")
+        assert worker._parse_candidate_count(str(p)) is None
+
+    def test_bool_count_fails_closed(self, tmp_path):
+        from scripts.lib import orchestrator_worker as worker
+        p = tmp_path / "theme_bool_count.md"
+        p.write_text("---\ncandidate-count: true\n---\n")
+        assert worker._parse_candidate_count(str(p)) is None

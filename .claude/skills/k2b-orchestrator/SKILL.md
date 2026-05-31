@@ -127,6 +127,43 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
 
 Parked flights show on `/portfolio active` ("waiting on your Kimi run" / "needs your input"). Forgotten flights auto-expire via the TTL sweep on `poll-once` (14 days for `waiting_for_kimi_output`, 7 for `needs_human`).
 
+## Chat 2 conductor -- trend -> K2Bi narrative -> candidate-ticker theme file (Increment 2)
+
+This is the runtime procedure K2B (you, the agent) follows when Keith drops a trend and wants it mapped to non-obvious tickers. Unlike Chat 1 (which parks for a manual Kimi run), Chat 2 dispatches **immediately** through the allowlisted K2Bi door -- the same `ready -> running -> done` path the LRCX smoke proved. The plumbing (the `k2bi-narrative` command_key, the P0-P5 + vault-root preflight, the post-run `candidate-count>=5` fail-closed gate) is built in `orchestrator_profiles.py` + `orchestrator_worker.py`; this section is the judgment half. Design + reviews: [[feature_k2b-orchestrator-v1]] "the 3 chats" + `plans/2026-05-31_orchestrator-increment-2-narrative-checkpoint1.md`.
+
+**Honest-scope rule (non-negotiable):** the theme file's citations are **K2Bi's own** -- do NOT claim K2B validated them. Only Chat 1 / Chat 3 deliver K2B link-repaired docs. When you present the theme file, say "K2Bi's citations (not K2B-validated)".
+
+### Triggers
+
+- "map this trend / video / article to tickers", "what stocks does this touch", "drop into K2Bi narrative", "run a narrative on `<X>`"
+- Keith pastes a YouTube link / article / paragraph and asks for the tickers behind it.
+
+### Procedure
+
+1. **Read the source.** YouTube link -> the transcript-prefetch hook already provides the transcript (do not re-fetch). Article URL -> fetch and read it. Pasted paragraph -> use as-is. If nothing readable resolves, say so and stop; never invent a trend.
+2. **Distill to a focused seed (load-bearing).** Compress the source into a **1-3 sentence** falsifiable macro statement -- this is the narrative seed. It MUST be 40-500 characters (preflight P4 rejects outside that). Do NOT dump a raw transcript; distillation is the whole point of "K2B reads it". If the source is too thin to distill a real thesis, ask Keith one clarifying question instead of dispatching junk.
+3. **(Optional) deepen first.** If Keith says "go deeper" before mapping, run the Chat-1 booster on the trend first, then distill from the cleaned research. Not required.
+4. **Create the flight (immediate, not parked).** `entity_key` = the topic **lowercase-trimmed**, the SAME canonicalization Chat 1 uses (a topic STRING with spaces, e.g. `grid power ai bottleneck`) -- NOT a hyphenated slug. The store lock compares `lower(trim(entity_key))` only, so a Chat-1 `grid power ai bottleneck` and a Chat-2 `grid-power-ai-bottleneck` would NOT collide; they must be byte-identical after lower+trim to share the one-flight lock. Write the payload via a small JSON file (the seed may contain quotes/`$`/backticks that break an inline `--payload` arg), and capture `add` **fail-closed** so a failed create never falls through to a global dispatch:
+   ```bash
+   # Write {"narrative": "<distilled seed>"} to a temp file with your Write tool, then:
+   out=$(bash ~/Projects/K2B/scripts/k2b-orchestrator.sh add \
+     --profile k2bi --command-key k2bi-narrative \
+     --success "K2Bi theme file with >=5 candidate tickers for <topic>" \
+     --entity "<topic lowercase-trimmed, spaces kept>" \
+     --payload "$(cat /tmp/<tid>-payload.json)") \
+     || { echo "add FAILED: $out"; exit 1; }   # genuinely stops -- relay $out to Keith, do NOT poll-once
+   TID=$(printf '%s\n' "$out" | awk '{print $NF}')
+   test -n "$TID" || { echo "empty task id -- add did not return one"; exit 1; }
+   ```
+   The `exit 1` guards are load-bearing: without them the block would print the error and FALL THROUGH to step 5's `poll-once`, which dispatches the first ready task globally and could fire an unrelated flight. Fail-closed means actually stopping, not just printing "STOP".
+   Only proceed to step 5 when `TID` is non-empty. If `add` errored `flight already active for ...`, a live flight for that topic exists (possibly a parked Chat-1 booster on the same lowercase-trimmed `entity_key`) -- tell Keith and offer to reuse or `cancel` it. This cross-lane block is intentional: finish or cancel one flight on a topic before mapping the same topic.
+5. **Dispatch.** Only after `TID` is confirmed non-empty, run one dispatcher tick: `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh poll-once`. (`poll-once` dispatches the first ready task globally, so never run it on a failed/empty add -- it could fire an unrelated task.) The preflight runs P0-P5 + vault-root alignment; if a prerequisite is missing the task goes `blocked`/`failed` with a **specific named reason** (e.g. `canonical ticker registry missing/empty/malformed ...`, `LLM provider unreachable`, `narrative seed too long ...`) -- relay that reason to Keith verbatim; do NOT retry blindly.
+6. **Report the result.** On `done`, the worker has already verified `candidate-count >= 5` (fail-closed: a malformed/short theme file is marked `failed`, reason `theme file malformed or under-count`). Read the **exact theme path the worker emitted** -- get it from the task's result artifact via `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh show "$TID"` (the `result_url` / stdout the worker captured), NOT a reconstructed `theme_<slug>.md`. K2Bi auto-versions slug collisions to `theme_<slug>_2.md`, so a reconstructed slug path can show a STALE prior run's candidates instead of this run's. Present the candidate tickers from that exact file (flag the 2nd/3rd-order / non-obvious ones, since those are the value), and state plainly the citations are K2Bi's own. Then **stop** -- Increment 2 ends here; Keith picks which ticker to promote (Stage 3 is a permanent human gate).
+
+### Monitoring
+
+Narrative flights are `k2bi`-profile dispatched tasks -- they show on the board (`list`) and `/portfolio`. A failed preflight surfaces its named reason; fix the prerequisite (e.g. rebuild the registry) and re-dispatch.
+
 ## Canonical add example
 
 ```bash

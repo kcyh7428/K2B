@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Worker runner: heartbeat, allowlisted-command run, artifact, Telegram."""
 
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,63 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _extract_theme_path(stdout: str) -> str | None:
+    """Extract the theme file path from pipeline stdout."""
+    for line in reversed(stdout.strip().splitlines()):
+        line = line.strip()
+        if line:
+            return line
+    return None
+
+
+def _parse_candidate_count(path: str) -> int | None:
+    """Parse candidate-count from theme frontmatter, FAILING CLOSED.
+
+    Returns an int ONLY when the file opens with a well-formed YAML
+    frontmatter block (--- ... ---) that parses to a dict carrying an integer
+    candidate-count. Any malformation -- bad/absent delimiters, invalid YAML,
+    non-dict frontmatter, or a missing/non-int count -- returns None so the
+    caller marks the run failed rather than done. A naive line scan would
+    return an int from a garbled file that merely contains a candidate-count:
+    line, which is exactly the fail-OPEN bug this guards against.
+    """
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return None
+    lines = text.splitlines()
+    # Opening fence must be the very first line.
+    if not lines or lines[0].strip() != "---":
+        return None
+    # Find the closing fence.
+    close_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        return None
+    fm_text = "\n".join(lines[1:close_idx])
+    try:
+        import yaml
+    except ImportError:
+        return None  # cannot validate -> fail closed
+    try:
+        data = yaml.safe_load(fm_text)
+    except yaml.YAMLError:
+        return None
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    count = data.get("candidate-count")
+    # bool is a subclass of int; exclude it explicitly.
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return count
+
+
 def main(task_id):
     # 1. Validate task state
     task = store.get_task(task_id)
@@ -26,8 +84,17 @@ def main(task_id):
         print(f"Worker: task {task_id} not found or not running; exiting", file=sys.stderr)
         return 0
 
-    # 2. Resolve command
-    argv = profiles.resolve_command(task["assignee_profile"], task["command_key"])
+    command_key = task.get("command_key", "")
+
+    # 2. Resolve command (with payload for parameterized keys)
+    payload = None
+    raw_payload = task.get("payload")
+    if raw_payload:
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            payload = None
+    argv = profiles.resolve_command(task["assignee_profile"], command_key, payload)
     if argv is None:
         reason = f"command_key not allowlisted: {task.get('command_key', '')}"
         store.transition(task_id, "failed", blocker_reason=reason)
@@ -100,6 +167,12 @@ def main(task_id):
         # must move to a tracked command-group that both this timeout path and
         # reclaim kill explicitly (tracked as a Ship 1b hardening item).
         timeout_s = int(os.environ.get("K2B_ORCH_CMD_TIMEOUT", "540"))
+
+        # A1 -- force K2BI_VAULT_ROOT alignment for narrative lane
+        child_env = {**os.environ}
+        if command_key == "k2bi-narrative":
+            child_env["K2BI_VAULT_ROOT"] = profiles.k2bi_vault()
+
         try:
             result = subprocess.run(
                 argv,
@@ -107,7 +180,7 @@ def main(task_id):
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
-                env={**os.environ},
+                env=child_env,
                 shell=False,
             )
             returncode = result.returncode
@@ -131,6 +204,8 @@ def main(task_id):
 
         # 7. Write result artifact
         result_slug = profile.get("result_slug", "result") if profile else "result"
+        if command_key == "k2bi-narrative":
+            result_slug = "k2bi-narrative"
         artifact_dir = store.RESULTS_DIR
         os.makedirs(artifact_dir, exist_ok=True)
         artifact_path = f"{artifact_dir}/{task_id}-{result_slug}.md"
@@ -152,7 +227,7 @@ def main(task_id):
             f"## stdout\n\n"
             f"```\n{stdout}\n```\n\n"
             f"## stderr\n\n"
-            f"```\n{stderr}\n```\n"
+            f"```\n{stderr}\n```"
         )
         tmp = f"{artifact_path}.tmp.{os.getpid()}"
         with open(tmp, "w") as f:
@@ -177,6 +252,19 @@ def main(task_id):
                     final_reason = (
                         "completed but heartbeat went stale; treated as failed to avoid double-dispatch"
                     )
+
+                # Narrative post-run: verify theme file candidate-count >= 5.
+                # The pipeline self-enforces >=4 sub-themes, >=5 candidates, and
+                # >=1 2nd/3rd-order beneficiary on its successful-exit path; we
+                # trust the 2nd/3rd rail to K2Bi and gate only on candidate-count.
+                if command_key == "k2bi-narrative" and final_status == "done":
+                    theme_path = _extract_theme_path(stdout)
+                    count = None
+                    if theme_path and os.path.exists(theme_path):
+                        count = _parse_candidate_count(theme_path)
+                    if not isinstance(count, int) or count < 5:
+                        final_status = "failed"
+                        final_reason = "theme file malformed or under-count"
             else:
                 final_status = "failed"
                 final_reason = stderr[:200] if stderr else f"exit code {returncode}"
