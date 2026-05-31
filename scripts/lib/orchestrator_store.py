@@ -13,6 +13,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 
 try:
     import fcntl
@@ -47,9 +48,17 @@ TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 ALL_STATUSES = frozenset({
     "ready", "running", "blocked", "zombie",
     "waiting_for_kimi_output", "needs_human", "returned",
+    "waiting_for_agent_theme",
     "done", "failed", "cancelled",
 })
-VALID_INITIAL_STATUSES = frozenset({"ready", "waiting_for_kimi_output", "needs_human"})
+# waiting_for_agent_theme: Chat-2 agent-native parked state. The in-session agent
+# generates candidates + validates/repairs citations + writes the theme itself
+# (no Kimi, no dispatched command); the flight is created PARKED here so poll_once
+# never dispatches it. The ONLY exit is `verify-theme` (gate -> done); `complete`
+# refuses it, mirroring the other parked states.
+VALID_INITIAL_STATUSES = frozenset(
+    {"ready", "waiting_for_kimi_output", "needs_human", "waiting_for_agent_theme"}
+)
 
 
 def _completion_sentinel(task_id: str) -> str:
@@ -494,6 +503,215 @@ def cas_to_ready(task_id, expect_status, payload_json=None) -> bool:
     return changed
 
 
+def _verify_theme_gate(theme_path) -> tuple[bool, str]:
+    """Fail-closed gate for an AGENT-WRITTEN Chat-2 theme (no Kimi in the path).
+
+    PASS requires, parsed from the theme's YAML frontmatter:
+      * candidate-count is an int >= 5
+      * a citation_ledger list, each row a mapping with status in
+        {cite-ok, repaired, unverified}
+      * >= 5 SUPPORTED rows (status cite-ok|repaired), each carrying a non-empty
+        url + support_note + checked_at (proves the agent actually fetched/repaired)
+      * >= 1 supported row with order in {2nd, 3rd} (a non-obvious beneficiary)
+      * supported-ratio (supported / total ledger rows) >= 0.60
+
+    Any malformation or shortfall returns (False, reason) -- the caller leaves the
+    flight parked. Counting alone (the old dispatched-path gate) cannot prove a
+    citation is real/supporting; the ledger makes the honesty rule checkable.
+    """
+    try:
+        with open(theme_path) as f:
+            text = f.read()
+    except OSError:
+        return (False, f"theme file unreadable: {theme_path}")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return (False, "theme has no opening frontmatter fence")
+    close_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        return (False, "theme frontmatter not closed")
+    try:
+        import yaml
+    except ImportError:
+        return (False, "yaml unavailable -- cannot validate (fail closed)")
+    try:
+        data = yaml.safe_load("\n".join(lines[1:close_idx]))
+    except Exception:
+        return (False, "theme frontmatter not parseable")
+    if not isinstance(data, dict):
+        return (False, "theme frontmatter is not a mapping")
+
+    cc = data.get("candidate-count")
+    if isinstance(cc, bool) or not isinstance(cc, int) or cc < 5:
+        return (False, f"candidate-count must be an int >= 5 (got {cc!r})")
+
+    ledger = data.get("citation_ledger")
+    if not isinstance(ledger, list) or not ledger:
+        return (False, "citation_ledger missing or empty")
+
+    SUPPORTED = {"cite-ok", "repaired"}
+    VALID_STATUS = {"cite-ok", "repaired", "unverified"}
+    supported_symbols = set()
+    supported_count = 0
+    has_non_obvious = False
+    seen_symbols = set()
+    for r in ledger:
+        if not isinstance(r, dict):
+            return (False, "citation_ledger row is not a mapping")
+        sym = str(r.get("symbol", "")).strip().upper()
+        if not sym:
+            return (False, "citation_ledger row missing symbol")
+        # F3: one canonical candidate set -- no duplicate symbols inflating the count.
+        if sym in seen_symbols:
+            return (False, f"duplicate citation_ledger row for {sym}")
+        seen_symbols.add(sym)
+        st = str(r.get("status", "")).strip()
+        if st not in VALID_STATUS:
+            return (False, f"citation_ledger row {sym} has invalid status {st!r}")
+        if st in SUPPORTED:
+            url = str(r.get("url", "")).strip()
+            note = str(r.get("support_note", "")).strip()
+            checked = str(r.get("checked_at", "")).strip()
+            if not (url and note and checked):
+                return (False, f"supported ledger row {sym} missing url/support_note/checked_at")
+            # F4 (r2): citations cannot be self-attested junk -- a structurally valid
+            # http(s) URL (scheme + non-empty netloc, no whitespace/control chars), not
+            # just an "http"-prefixed string like "https://" or "https://not a url".
+            parsed = urlparse(url)
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or any(ch.isspace() for ch in url)
+            ):
+                return (False, f"supported ledger row {sym} url is not a valid http(s) URL: {url!r}")
+            try:
+                datetime.fromisoformat(checked.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return (False, f"supported ledger row {sym} checked_at is not ISO-8601: {checked!r}")
+            supported_count += 1
+            supported_symbols.add(sym)
+            if str(r.get("order", "")).strip() in ("2nd", "3rd"):
+                has_non_obvious = True
+
+    if len(supported_symbols) < 5:
+        return (False, f"fewer than 5 distinct supported candidates ({len(supported_symbols)})")
+    # F3: candidate-count must equal the distinct supported set (no inflation/mismatch).
+    if cc != len(supported_symbols):
+        return (
+            False,
+            f"candidate-count ({cc}) != distinct supported candidates ({len(supported_symbols)})",
+        )
+    if not has_non_obvious:
+        return (False, "no 2nd/3rd-order beneficiary among supported candidates")
+    ratio = supported_count / len(ledger)
+    if ratio < 0.60:
+        return (False, f"citation supported-ratio {ratio:.0%} < 60%")
+
+    # F5 (r3 finding): the DISPLAYED candidate set must EXACTLY equal the supported
+    # ledger symbols -- both the structured frontmatter `candidate_ark_scores` (what
+    # K2Bi promotion reads) AND the body candidate-table ticker rows (what Keith reads
+    # to pick). Otherwise a theme could pass on a clean ledger while displaying no
+    # candidates, an extra unsupported ticker, or a different one -- and Keith could
+    # promote an unvalidated body row.
+    ark = data.get("candidate_ark_scores")
+    if not isinstance(ark, dict):
+        return (False, "candidate_ark_scores missing or not a mapping")
+    ark_syms = {str(k).strip().upper() for k in ark.keys()}
+    if ark_syms != supported_symbols:
+        return (
+            False,
+            f"candidate_ark_scores symbols {sorted(ark_syms)} != supported ledger "
+            f"symbols {sorted(supported_symbols)}",
+        )
+    body = "\n".join(lines[close_idx + 1:])
+    body_syms = set()
+    for m in re.finditer(r"(?m)^\|\s*([A-Za-z][A-Za-z0-9.]{0,6})\s*\|", body):
+        tok = m.group(1).strip().upper()
+        if tok in ("SYMBOL", "TICKER", "SYM", "NAME"):  # header cells
+            continue
+        if tok.isupper() or any(c.isdigit() for c in tok):
+            body_syms.add(tok)
+    if body_syms != supported_symbols:
+        return (
+            False,
+            f"body candidate-table symbols {sorted(body_syms)} != supported ledger "
+            f"symbols {sorted(supported_symbols)}",
+        )
+    return (True, "")
+
+
+def verify_theme_complete(task_id, theme_path) -> tuple[bool, str]:
+    """Run the Chat-2 theme gate and, on PASS, transition the parked
+    waiting_for_agent_theme flight -> done (locked CAS, like _finalize_return).
+    On gate failure the flight stays parked. Returns (ok, reason)."""
+    # F2: the theme must be a DURABLE, INDEXED vault artifact -- not an arbitrary
+    # temp file. Otherwise a temp file could pass the gate and release the
+    # one-flight lock while no durable K2Bi macro-theme (or index row) exists.
+    real = os.path.realpath(theme_path)
+    vault = os.environ.get("K2BI_VAULT_PATH") or os.path.expanduser("~/Projects/K2Bi-Vault")
+    macro_dir = os.path.realpath(os.path.join(vault, "wiki", "macro-themes"))
+    base = os.path.basename(real)
+    try:
+        under = os.path.commonpath([real, macro_dir]) == macro_dir
+    except ValueError:
+        under = False
+    if not under or real == macro_dir:
+        return (False, f"theme must live under {macro_dir}/ (got {real})")
+    if not (base.startswith("theme_") and base.endswith(".md")):
+        return (False, f"theme filename must match theme_*.md (got {base})")
+    try:
+        with open(os.path.join(macro_dir, "index.md")) as f:
+            idx = f.read()
+    except OSError:
+        return (False, "macro-themes/index.md unreadable -- theme not indexed")
+    stem = base[:-3]  # theme_<slug>
+    # F2 (r2): EXACT bounded membership, not substring -- a wikilink target
+    # [[theme_slug|... / [[theme_slug\|... / [[theme_slug]] / [[theme_slug#..., or
+    # the bare filename theme_slug.md as a whole token. Prevents theme_ai.md from
+    # passing on a prefix match against theme_ai-compute-... .
+    indexed = bool(
+        re.search(r"\[\[" + re.escape(stem) + r"(?![\w-])", idx)
+        or re.search(r"(?<![\w.-])" + re.escape(base) + r"(?![\w-])", idx)
+    )
+    if not indexed:
+        return (False, f"theme {base} is not referenced in macro-themes/index.md")
+
+    ok, reason = _verify_theme_gate(real)
+    if not ok:
+        return (False, reason)
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        if row["status"] != "waiting_for_agent_theme":
+            conn.close()
+            return (
+                False,
+                f"task {task_id} not in waiting_for_agent_theme (is {row['status']})",
+            )
+        now = now_iso()
+        cur = conn.execute(
+            "UPDATE tasks SET status='done', finished_at=?, updated_at=?, result_url=? "
+            "WHERE id=? AND status='waiting_for_agent_theme'",
+            (now, now, real, task_id),
+        )
+        conn.commit()
+        won = cur.rowcount == 1
+        conn.close()
+    if won:
+        return (True, "")
+    return (False, "lost the transition race (concurrent cancel / TTL-expiry)")
+
+
 def mark_blocked(task_id, reason) -> None:
     with _acquire_lock():
         conn = connect()
@@ -746,6 +964,10 @@ def poll_once() -> dict:
     # TTL sweep: auto-cancel parked flights older than their TTL
     WAIT_TTL_DAYS = int(os.environ.get("K2B_ORCH_KIMI_TTL_DAYS", "14"))
     NEEDS_HUMAN_TTL_DAYS = int(os.environ.get("K2B_ORCH_NEEDS_HUMAN_TTL_DAYS", "7"))
+    # Agent-native Chat-2 theme work completes in one in-session pass, so an
+    # abandoned waiting_for_agent_theme flight (agent crashed mid-build) should
+    # clean up fast -- short TTL, default 2 days.
+    AGENT_THEME_TTL_DAYS = int(os.environ.get("K2B_ORCH_AGENT_THEME_TTL_DAYS", "2"))
     now = datetime.now(timezone.utc)
 
     with _acquire_lock():
@@ -754,7 +976,7 @@ def poll_once() -> dict:
         rows = conn.execute(
             """
             SELECT id, status, updated_at FROM tasks
-            WHERE status IN ('waiting_for_kimi_output', 'needs_human')
+            WHERE status IN ('waiting_for_kimi_output', 'needs_human', 'waiting_for_agent_theme')
             """
         ).fetchall()
         for row in rows:
@@ -779,6 +1001,9 @@ def poll_once() -> dict:
             ) or (
                 row["status"] == "needs_human"
                 and age >= timedelta(days=NEEDS_HUMAN_TTL_DAYS)
+            ) or (
+                row["status"] == "waiting_for_agent_theme"
+                and age >= timedelta(days=AGENT_THEME_TTL_DAYS)
             )
             if expired:
                 n = now_iso()
@@ -891,6 +1116,13 @@ def _main():
     complete_p = sub.add_parser("complete", help="Complete a task")
     complete_p.add_argument("id")
     complete_p.add_argument("--result")
+
+    verify_p = sub.add_parser(
+        "verify-theme",
+        help="Gate an agent-written Chat-2 theme + complete the parked flight",
+    )
+    verify_p.add_argument("id")
+    verify_p.add_argument("path", help="Path to the agent-written theme_<slug>.md")
 
     block_p = sub.add_parser("block", help="Block a task")
     block_p.add_argument("id")
@@ -1008,6 +1240,16 @@ def _main():
                 file=sys.stderr,
             )
             sys.exit(1)
+        # A parked agent-native Chat-2 flight must go through `verify-theme` (which
+        # runs the >=5 + 2nd/3rd-order + citation-ledger gate), never `complete` --
+        # otherwise the gate is bypassed and an unvalidated theme is marked done.
+        if t["status"] == "waiting_for_agent_theme":
+            print(
+                f"Error: refusing to complete a 'waiting_for_agent_theme' task ({args.id}); "
+                f"resolve it via 'verify-theme <id> <theme-path>' (which runs the candidate+citation gate), or 'cancel' to drop it",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # Locked CAS to 'done': the WHERE clause only flips from a completable live
         # state, so a concurrent cancel / TTL-expiry between the read above and here
         # cannot resurrect a terminal task to 'done' (Codex round-5 race class).
@@ -1018,7 +1260,7 @@ def _main():
             cur = conn.execute(
                 "UPDATE tasks SET status='done', finished_at=?, updated_at=?, result_url=? "
                 "WHERE id=? AND status NOT IN "
-                "('done','failed','cancelled','running','zombie','waiting_for_kimi_output','needs_human')",
+                "('done','failed','cancelled','running','zombie','waiting_for_kimi_output','needs_human','waiting_for_agent_theme')",
                 (now, now, args.result, args.id),
             )
             conn.commit()
@@ -1032,6 +1274,15 @@ def _main():
             f"(terminal, running, or parked); not completing",
             file=sys.stderr,
         )
+        sys.exit(1)
+
+    if args.cmd == "verify-theme":
+        ok, reason = verify_theme_complete(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} verified + marked done. theme: {args.path}")
+            return
+        print(f"verify-theme rejected {args.id}: {reason}", file=sys.stderr)
         sys.exit(1)
 
     if args.cmd == "block":

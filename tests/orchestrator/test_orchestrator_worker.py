@@ -26,6 +26,9 @@ def temp_env(tmp_path, monkeypatch):
     ws = tmp_path / "k2bi"
     ws.mkdir()
     monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(ws))
+    # These tests exercise the LEGACY dispatched k2bi-narrative worker/resolve path,
+    # which resolve_command now gates off by default; enable the explicit override.
+    monkeypatch.setenv("K2B_ORCH_ALLOW_LEGACY_NARRATIVE", "1")
     # Remove any cached orchestrator modules
     to_remove = [k for k in sys.modules if "orchestrator" in k]
     for k in to_remove:

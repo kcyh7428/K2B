@@ -69,7 +69,7 @@ Runs `~/Projects/K2B/scripts/k2b-orchestrator.sh <subcommand>` and shows the out
 - `--workspace` is rejected for `k2bi` (workspace is operator-config only).
 - **Increment-1 note:** Chat-1 deep-research flights use a `k2b` profile + `k2b-kimi-research` command_key. They are created PARKED (`--status waiting_for_kimi_output`) and NEVER dispatched, so the K2Bi allowlist + preflight -- which only run when the dispatcher claims a `ready` task -- never apply to them. The `k2bi` allowlist above is unchanged; the `k2b` profile is K2Bi-free (no workspace, no engine).
 
-## Chat 1 conductor -- news scan + Kimi deep-research booster (Increment 1)
+## Chat 1 conductor -- news scan + deep-research booster (Increment 1)
 
 This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- the news scan, the prompt writing, the link repair -- is done by YOU with your own web-search/fetch tools. The orchestrator is only the durable pause/lock/return ledger. Flights are created **directly parked** (never `ready`), so the dispatcher never spawns a worker for them; you drive the lifecycle by hand. Design: [[feature_k2b-orchestrator-v1]] "the 3 chats" + `plans/2026-05-30_orchestrator-ship-1b-spec.md`.
 
@@ -77,9 +77,9 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
 
 1. Web-search recent news in the domain (your tools; ~12 searches max). If no provider is reachable, say "news search unavailable -- can't scan now" and stop; never fabricate.
 2. Synthesize **2-4 emerging trends**. For each: a one-line *why it's forming*, 2-3 source links that you **HTTP-verify** (drop or replace any that don't resolve -- never show a broken link as good), and a few rough candidate names (starting points for Keith's judgment, NOT picks).
-3. Present them. Offer: "want me to take any of these deeper with Kimi DR?"
+3. Present them. Offer: "want me to take any of these deeper with a deep-research run?"
 
-### B. "go deeper on trend N" / "deep research on `<topic-or-ticker>`" -> build the Kimi prompt + park the flight
+### B. "go deeper on trend N" / "deep research on `<topic-or-ticker>`" -> build the DR prompt + park the flight
 
 1. **Create the flight first** (so the task-id and the one-flight lock exist), parked:
    ```bash
@@ -89,7 +89,7 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
      --status waiting_for_kimi_output --entity "<canonical topic or TICKER>" | awk '{print $NF}')
    ```
    - `--entity`: canonicalize (lowercase-trim a topic; uppercase a ticker). If `add` errors `flight already active for ...`, a live flight for that topic exists -- tell Keith and offer to reuse or `cancel` it. Do NOT use the `k2bi` profile (that path resolves a K2Bi workspace); `k2b` keeps it agent-managed and K2Bi-free.
-2. **Build the Kimi DR prompt**, seeded by your scan findings for that trend: a falsifiable thesis, the driver chain, 5-8 seed queries, 8-15 source anchors, a counter-thesis, and an avoid-list. The prompt **MUST include both of these instructions**:
+2. **Build the deep-research prompt**, seeded by your scan findings for that trend: a falsifiable thesis, the driver chain, 5-8 seed queries, 8-15 source anchors, a counter-thesis, and an avoid-list. The prompt **MUST include both of these instructions**:
    - **Citation mandate (fill the gate AND survive link-repair):** Tell the engine, verbatim:
      > Every factual claim must carry a real, working source URL. Either put the full `https://` URL inline right after the claim, OR use footnote markers `[^N]` **and** end with a `## References` section that lists each marker with its real URL (e.g. `[^31]: https://...`). Never emit a footnote marker without its URL. Any claim you cannot source, mark `(unverified)`. The `## References` section may sit just before OR just after the final completion line below.
      Without this, engines emit bare `[^N]` markers with zero URLs and the gate rejects `fewer than 3 source URLs` (verified live, JOBY probe 2026-05-31 -- Kimi's first pass had 0 URLs). Repairing fabricated URLs in step C is the conductor's core value, but the gate needs >=3 real `https://` links present to admit the doc at all.
@@ -97,7 +97,7 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
      > Finish your output with this exact line: `=== END OF KIMI RESEARCH: <TID> ===`
      The gate is **engine-agnostic** (it matches `end of <engine> research` + the task id, case-insensitive, for KIMI / CHATGPT / PERPLEXITY / any token) and **position-tolerant** (it accepts a trailing `## References`/footnote block after the sentinel; only *substantive prose* after the sentinel is rejected). This is why all three engines pass with the same prompt -- you do NOT need to standardize the engine name or reorder references.
 3. If the scan found too little signal to write a focused prompt, park as `needs_human` instead (`--status needs_human --payload '{"question":"<one clarifying question>"}'`) and ask Keith that one question rather than emitting a generic prompt.
-4. Hand Keith the prompt (tap-to-copy) and tell him: run it on his deep-research engine (kimi.com / ChatGPT / Perplexity -- the gate accepts any), paste the result back here. Note for citation-heavy work: the 3-engine JOBY bake-off (2026-05-31) found Kimi's URLs were the least reliable (often fabricated 404s) and ChatGPT/Perplexity grounded in primary sources -- prefer those when source fidelity matters.
+4. Hand Keith the prompt (tap-to-copy) and tell him: run it on **his deep-research engine of choice (ChatGPT / Perplexity / Claude Deep Research / kimi.com -- the gate accepts any)**, paste the result back here. Note for citation-heavy work: the 3-engine JOBY bake-off (2026-05-31) found Kimi's URLs were the least reliable (often fabricated 404s) while ChatGPT/Perplexity grounded in primary sources -- prefer those when source fidelity matters.
 
 ### C. Keith pastes the Kimi output back -> gate + link repair -> clean research
 
@@ -127,42 +127,53 @@ This is the procedure K2B (you, the agent) follows at runtime. The reasoning -- 
 
 Parked flights show on `/portfolio active` ("waiting on your Kimi run" / "needs your input"). Forgotten flights auto-expire via the TTL sweep on `poll-once` (14 days for `waiting_for_kimi_output`, 7 for `needs_human`).
 
-## Chat 2 conductor -- trend -> K2Bi narrative -> candidate-ticker theme file (Increment 2)
+## Chat 2 conductor -- trend -> candidate-ticker theme file (AGENT-NATIVE, no Kimi)
 
-This is the runtime procedure K2B (you, the agent) follows when Keith drops a trend and wants it mapped to non-obvious tickers. Unlike Chat 1 (which parks for a manual Kimi run), Chat 2 dispatches **immediately** through the allowlisted K2Bi door -- the same `ready -> running -> done` path the LRCX smoke proved. The plumbing (the `k2bi-narrative` command_key, the P0-P5 + vault-root preflight, the post-run `candidate-count>=5` fail-closed gate) is built in `orchestrator_profiles.py` + `orchestrator_worker.py`; this section is the judgment half. Design + reviews: [[feature_k2b-orchestrator-v1]] "the 3 chats" + `plans/2026-05-31_orchestrator-increment-2-narrative-checkpoint1.md`.
+This is the runtime procedure K2B (you, the agent) follows when Keith drops a trend and wants it mapped to non-obvious tickers. Chat 2 is **agent-native**, the same shape as Chat 1: YOU (Claude Code / Codex) do the candidate generation AND the citation validation/repair in-session -- there is **NO Kimi call and NO dispatched K2Bi command** anywhere in this path. (Why: K2Bi's `invest_narrative_pipeline` used Kimi to invent candidates + citation URLs; Kimi fabricates URLs and the pipeline dropped every dead-link candidate, so 2 live MVP runs failed for the same trend-independent cause. Kimi is a code worker, not a grounded-research generator. Fix = retire Kimi from this path. Design + reviews: [[feature_k2b-orchestrator-v1]] + `plans/2026-05-31_chat2-agent-native-spec.md`.)
 
-**Honest-scope rule (non-negotiable):** the theme file's citations are **K2Bi's own** -- do NOT claim K2B validated them. Only Chat 1 / Chat 3 deliver K2B link-repaired docs. When you present the theme file, say "K2Bi's citations (not K2B-validated)".
+The flight is created **PARKED** (`waiting_for_agent_theme`) so `poll-once` never dispatches it; the agent writes the theme directly and the `verify-theme` gate (>=5 supported candidates + >=1 2nd/3rd-order + citation-ledger >=60% supported) is the ONLY exit to `done`. Plumbing in `orchestrator_store.py` (parked state, `verify-theme`, `_verify_theme_gate`).
+
+**Honest-scope rule (UPGRADED):** the agent fetches + repairs every citation live, so the theme's citations **ARE K2B-validated**. When you present the theme, say "citations K2B-validated (fetched + repaired)". (This replaces the old "K2Bi's own, not K2B-validated" caveat -- that was true only for the retired Kimi-dispatch path.)
 
 ### Triggers
 
-- "map this trend / video / article to tickers", "what stocks does this touch", "drop into K2Bi narrative", "run a narrative on `<X>`"
+- "map this trend / video / article to tickers", "what stocks does this touch", "what's the supply chain", "run a narrative on `<X>`"
 - Keith pastes a YouTube link / article / paragraph and asks for the tickers behind it.
 
 ### Procedure
 
 1. **Read the source.** YouTube link -> the transcript-prefetch hook already provides the transcript (do not re-fetch). Article URL -> fetch and read it. Pasted paragraph -> use as-is. If nothing readable resolves, say so and stop; never invent a trend.
-2. **Distill to a focused seed (load-bearing).** Compress the source into a **1-3 sentence** falsifiable macro statement -- this is the narrative seed. It MUST be 40-500 characters (preflight P4 rejects outside that). Do NOT dump a raw transcript; distillation is the whole point of "K2B reads it". If the source is too thin to distill a real thesis, ask Keith one clarifying question instead of dispatching junk.
+2. **Distill to a focused seed (load-bearing).** Compress the source into a **1-3 sentence** falsifiable macro statement (40-500 chars). Do NOT dump a raw transcript. If too thin to distill a real thesis, ask Keith one clarifying question.
 3. **(Optional) deepen first.** If Keith says "go deeper" before mapping, run the Chat-1 booster on the trend first, then distill from the cleaned research. Not required.
-4. **Create the flight (immediate, not parked).** `entity_key` = the topic **lowercase-trimmed**, the SAME canonicalization Chat 1 uses (a topic STRING with spaces, e.g. `grid power ai bottleneck`) -- NOT a hyphenated slug. The store lock compares `lower(trim(entity_key))` only, so a Chat-1 `grid power ai bottleneck` and a Chat-2 `grid-power-ai-bottleneck` would NOT collide; they must be byte-identical after lower+trim to share the one-flight lock. Write the payload via a small JSON file (the seed may contain quotes/`$`/backticks that break an inline `--payload` arg), and capture `add` **fail-closed** so a failed create never falls through to a global dispatch:
+4. **Create the flight PARKED (fail-closed).** `entity_key` = the topic **lowercase-trimmed** (a STRING with spaces, e.g. `ai supply chain`), the SAME canonicalization Chat 1 uses, so a Chat-1 booster and a Chat-2 narrative on the same topic share the one-flight lock. The flight is a tracking + lock ledger only -- never dispatched (k2b profile, parked):
    ```bash
    # Write {"narrative": "<distilled seed>"} to a temp file with your Write tool, then:
    out=$(bash ~/Projects/K2B/scripts/k2b-orchestrator.sh add \
-     --profile k2bi --command-key k2bi-narrative \
-     --success "K2Bi theme file with >=5 candidate tickers for <topic>" \
+     --profile k2b --command-key k2b-narrative-agent \
+     --status waiting_for_agent_theme \
+     --success "agent-native candidate-ticker theme for <topic>" \
      --entity "<topic lowercase-trimmed, spaces kept>" \
      --payload "$(cat /tmp/<tid>-payload.json)") \
-     || { echo "add FAILED: $out"; exit 1; }   # genuinely stops -- relay $out to Keith, do NOT poll-once
+     || { echo "add FAILED: $out"; exit 1; }
    TID=$(printf '%s\n' "$out" | awk '{print $NF}')
-   test -n "$TID" || { echo "empty task id -- add did not return one"; exit 1; }
+   test -n "$TID" || { echo "empty task id"; exit 1; }
    ```
-   The `exit 1` guards are load-bearing: without them the block would print the error and FALL THROUGH to step 5's `poll-once`, which dispatches the first ready task globally and could fire an unrelated flight. Fail-closed means actually stopping, not just printing "STOP".
-   Only proceed to step 5 when `TID` is non-empty. If `add` errored `flight already active for ...`, a live flight for that topic exists (possibly a parked Chat-1 booster on the same lowercase-trimmed `entity_key`) -- tell Keith and offer to reuse or `cancel` it. This cross-lane block is intentional: finish or cancel one flight on a topic before mapping the same topic.
-5. **Dispatch.** Only after `TID` is confirmed non-empty, run one dispatcher tick: `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh poll-once`. (`poll-once` dispatches the first ready task globally, so never run it on a failed/empty add -- it could fire an unrelated task.) The preflight runs P0-P5 + vault-root alignment; if a prerequisite is missing the task goes `blocked`/`failed` with a **specific named reason** (e.g. `canonical ticker registry missing/empty/malformed ...`, `LLM provider unreachable`, `narrative seed too long ...`) -- relay that reason to Keith verbatim; do NOT retry blindly.
-6. **Report the result.** On `done`, the worker has already verified `candidate-count >= 5` (fail-closed: a malformed/short theme file is marked `failed`, reason `theme file malformed or under-count`). Read the **exact theme path the worker emitted** -- get it from the task's result artifact via `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh show "$TID"` (the `result_url` / stdout the worker captured), NOT a reconstructed `theme_<slug>.md`. K2Bi auto-versions slug collisions to `theme_<slug>_2.md`, so a reconstructed slug path can show a STALE prior run's candidates instead of this run's. Present the candidate tickers from that exact file (flag the 2nd/3rd-order / non-obvious ones, since those are the value), and state plainly the citations are K2Bi's own. Then **stop** -- Increment 2 ends here; Keith picks which ticker to promote (Stage 3 is a permanent human gate).
+   If `add` errored `flight already active for ...`, a live flight for that topic exists -- tell Keith, offer to reuse or `cancel` it.
+5. **Generate candidates YOURSELF (in-session, no Kimi).** Decompose the seed into **>=4 sub-themes**. Produce **>=5 candidate tickers** with **>=1 non-obvious 2nd/3rd-order beneficiary** (the value is the non-obvious names, not the headline play). Validate every symbol against the K2Bi canonical registry (`K2Bi-Vault/wiki/tickers/canonical-registry.json`) -- drop hallucinated/unlisted symbols. For each candidate produce a reasoning chain, an `order` (1st/2nd/3rd), and the ARK 6-metric score (people_culture, rd_execution, moat, product_leadership, thesis_risk, valuation, each /10).
+6. **Validate + repair every citation (the honesty rule -- non-negotiable).** For each candidate's load-bearing claim: **fetch** the source URL with your web tools. Resolves AND supports the claim -> `cite-ok`. Resolves but does NOT support it, or broken -> **web-search a real replacement that ACTUALLY backs the same claim**; found -> `repaired` (record old->new); none -> `unverified` (drop the candidate from the displayed set). NEVER use a link that merely loads but does not support the claim. **Hard-stop** if fewer than 60% of all candidate claims end `cite-ok` or `repaired` -- tell Keith the trend's sourcing is too weak, do not write a theme.
+7. **Write the theme via the LOCKED HELPER (the lock must span the actual write -- a bash flock that releases before your Write-tool edits is theatre, Codex F5).** Compose the FULL theme markdown (frontmatter contract below + body) and Write it to a temp file (e.g. `/tmp/<tid>-theme.md`). Then call the helper, which holds ONE `fcntl.flock` across slug-derivation (`_2`/`_3` auto-version -- NEVER overwrites an existing theme), the atomic theme write, and the `index.md` row append:
+   ```bash
+   THEME=$(python3 ~/Projects/K2B/scripts/macro-theme-write.py /tmp/<tid>-theme.md "<distilled topic phrase>") \
+     || { echo "theme-write rejected/failed (nothing published on exit 4 -- fix the theme and re-run)"; exit 1; }
+   echo "wrote: $THEME"   # final path incl. any _2/_3 suffix -- use it for verify-theme
+   ```
+   The helper runs the SAME `_verify_theme_gate` on the temp content BEFORE it publishes (Codex r4): a theme that fails the gate is NEVER moved to `theme_<slug>.md` and NEVER appended to the index, so a bad theme can never appear as a K2Bi-promotable `candidates-pending-review` row. Exit 4 = gate-rejected, nothing written -- read the printed clause, fix the theme, re-run. The theme frontmatter MUST carry the existing contract (`type: macro-theme`, `date`, `origin: k2b-extract`, `narrative`, `sub-themes`, `candidate-count` = the number of **distinct supported candidates**, `candidate_ark_scores: {SYM: {...6 metrics...}}`, `status: candidates-pending-review`, `up: "[[index]]"`) PLUS the **`citation_ledger`** list, one row per candidate: `{symbol, order, claim, url (a real http(s) URL), status: cite-ok|repaired|unverified, support_note, checked_at (ISO-8601)}`. Distinct symbols only; `candidate-count` MUST equal the count of distinct `cite-ok|repaired` rows (the gate rejects duplicates / mismatch / non-http URL / non-ISO time). Body: the candidate table + sub-themes (match the existing macro-theme layout). K2Bi-Vault docs are directly writable by K2B (L-2026-05-31-001: K2Bi-owned artifact, staging not pipeline -- promotion stays Keith's gate).
+8. **Verify + complete (the gate).** Run `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh verify-theme "$TID" "$THEME"`. The gate first confirms `$THEME` is a durable vault artifact (under `wiki/macro-themes/`, `theme_*.md`, referenced in `index.md` -- Codex F2), then requires `candidate-count>=5`, >=5 DISTINCT `cite-ok|repaired` candidates (each with a real http(s) url + support_note + ISO checked_at), >=1 of those `order` 2nd/3rd, and ledger supported-ratio >=60%; on pass it flips the parked flight -> `done`. On reject it prints the specific failing clause and leaves the flight parked -- fix the theme (add candidates / repair more citations) and re-run `verify-theme`. Do NOT use `complete` (it refuses the parked state by design).
+9. **Report.** Present the candidate tickers from the theme (flag the 2nd/3rd-order / non-obvious ones), and state the citations are **K2B-validated (fetched + repaired)**. Then **stop** -- Keith picks which ticker to promote (Stage 3 is a permanent human gate; do NOT write the watchlist).
 
 ### Monitoring
 
-Narrative flights are `k2bi`-profile dispatched tasks -- they show on the board (`list`) and `/portfolio`. A failed preflight surfaces its named reason; fix the prerequisite (e.g. rebuild the registry) and re-dispatch.
+Chat-2 flights are parked `waiting_for_agent_theme` (k2b profile) -- they show on `/portfolio` as agent-owned and auto-expire via the TTL sweep (2 days) if abandoned. A failed `verify-theme` prints the exact gate clause that failed.
 
 ## Canonical add example
 

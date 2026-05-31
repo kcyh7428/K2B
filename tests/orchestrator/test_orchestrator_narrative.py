@@ -24,6 +24,10 @@ def temp_env(tmp_path, monkeypatch):
     ws = tmp_path / "k2bi"
     ws.mkdir()
     monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(ws))
+    # These tests exercise the LEGACY dispatched k2bi-narrative preflight (P0-P5),
+    # which is retired by default as of the agent-native Chat-2 change. Enable the
+    # explicit legacy override so the legacy-path tests still exercise P0-P5.
+    monkeypatch.setenv("K2B_ORCH_ALLOW_LEGACY_NARRATIVE", "1")
     # Remove any cached orchestrator modules
     to_remove = [k for k in sys.modules if "orchestrator" in k]
     for k in to_remove:

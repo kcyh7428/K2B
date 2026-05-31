@@ -23,6 +23,16 @@ def k2bi_vault():
 
 
 def k2bi_allowed_commands():
+    # NOTE: `k2bi-narrative` (the dispatched path that runs K2Bi's
+    # invest_narrative_pipeline, which uses Kimi to generate candidates +
+    # citations) is SUPERSEDED for the Chat-2 conductor by the agent-native path
+    # (waiting_for_agent_theme parked state + `verify-theme`). The conductor now
+    # generates candidates + validates/repairs citations in-session (no Kimi) and
+    # writes the theme directly, then verify-theme gates it. This entry is
+    # retained only so the Ship-1a/Increment-2 dispatch invariants + tests stay
+    # green; the conductor does NOT create ready k2bi-narrative flights, so the
+    # Kimi pipeline is never reached via the live Chat-2 path. Do not re-route
+    # Chat-2 through this command.
     return {
         "k2bi-smoke-enrich-lrcx": [
             "python3",
@@ -57,6 +67,16 @@ def resolve_command(profile_name, command_key, payload=None) -> list[str] | None
     if profile_name == "k2bi":
         cmds = k2bi_allowed_commands()
         if command_key in cmds:
+            # k2bi-narrative (the Kimi-backed dispatch) is RETIRED -- the agent-native
+            # Chat-2 path replaces it. Gate it at the EXECUTION boundary: resolve_command
+            # is called by BOTH preflight AND orchestrator_worker, so refusing here means
+            # a manually-claimed / 'running' task cannot reach the Kimi pipeline even when
+            # preflight is bypassed -- unless an explicit operator override is set
+            # (Codex Checkpoint-2 round-2 F1).
+            if command_key == "k2bi-narrative" and os.environ.get(
+                "K2B_ORCH_ALLOW_LEGACY_NARRATIVE"
+            ) != "1":
+                return None
             argv = list(cmds[command_key])  # copy
             if command_key == "k2bi-narrative":
                 if payload and isinstance(payload, dict):
@@ -254,7 +274,22 @@ def _preflight_narrative(task) -> tuple[bool, str]:
 def preflight_k2bi(task) -> tuple[bool, str]:
     command_key = task.get("command_key", "")
 
-    # 1. allowlist check first
+    # 0. k2bi-narrative dispatch is RETIRED (checked BEFORE the generic allowlist
+    # check so the message is clear, not "not allowlisted"). Chat 2 is now
+    # agent-native (waiting_for_agent_theme + verify-theme; the agent generates
+    # candidates + validates/repairs citations in-session -- no Kimi). resolve_command
+    # ALSO gates this at the worker boundary; this is the clear-message preflight half.
+    if command_key == "k2bi-narrative" and os.environ.get(
+        "K2B_ORCH_ALLOW_LEGACY_NARRATIVE"
+    ) != "1":
+        return (
+            False,
+            "k2bi-narrative dispatch is RETIRED (Kimi path); use the agent-native "
+            "Chat-2 path (waiting_for_agent_theme + verify-theme). Set "
+            "K2B_ORCH_ALLOW_LEGACY_NARRATIVE=1 only to force the legacy Kimi pipeline.",
+        )
+
+    # 1. allowlist check
     if resolve_command("k2bi", command_key) is None:
         return (False, f"command_key not allowlisted: {command_key}")
 
