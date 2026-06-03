@@ -3970,3 +3970,17 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Follow-ups:** needs /sync (scripts + skills changed). If Codex resume hygiene ever matters for K2B, the clean fix is upstream: an ephemeral/non-task review mode in codex-companion.mjs.
 
 **Key decisions:** `task` is the only Codex mechanism that reviews an arbitrary plan file, so hardening it (snapshot + nonce fence + state isolation) was preferred over reverting to Kimi-only. Stopped iterating after R3 on the resume-pollution finding per systematic-debugging Phase 4.5 -- the complete fix is disproportionate to a residual with no automated K2B exposure.
+
+## 2026-06-03 -- Orchestrator tracker home migrated v1 -> v2
+
+**Commit:** `8eeb974` docs(orchestrator): repoint "where are we" tracker read-path v1 -> v2
+
+**What shipped:** Follow-up to closing orchestrator-v1. The canonical Full Scope Tracker (the Stage 0->15 status map the `k2b-orchestrator` skill renders for "where are we") moved out of `feature_k2b-orchestrator-v1.md` into `feature_k2b-orchestrator-v2.md`. v1 shipped 2026-06-01 (Stages 0-2); v2 now owns the live forward-looking tracker (Stages 0-2 ✅, 4-11 🟡 "K2Bi skill exists, not yet orchestrated", 15 ⛔ Phase B, 12-14 🔒). Three edits: (1) added the tracker section to v2 with an extended legend (added 🚦 human-gate); (2) froze v1's tracker + marked the heading SUPERSEDED with a callout pointing to v2; (3) repointed the skill's step-1 read path + step-2 fail-loud message (2 occurrences) to the v2 file. The Chat-1/Chat-2 conductor *design* wikilinks stay pointed at v1 on purpose -- the 3-chats + agent-native (Kimi-retired) design lives there, not in v2.
+
+**Codex review:** Tier-1 Kimi `--scope diff` -> NEEDS-ATTENTION, 5 findings, ALL accepted (none actioned). F5 (no proof v2 has the tracker) verified false-positive via grep (v2 has exactly one "Full scope tracker" heading + Stage 0-15 table + legend). F1-F4 rest on the reviewer's incorrect "v1 is deprecated" premise -- v1 is shipped, only its tracker section was superseded, so the design wikilinks correctly resolve to v1's accurate record (which documents the Kimi retirement). Archive `.minimax-reviews/2026-06-03T15-12-38Z_diff.json`.
+
+**Feature status change:** none (`--no-feature` follow-up; v1 already shipped 2026-06-01, v2 stays `designed` in Backlog). Closes v1 Updates follow-up (1).
+
+**Follow-ups:** needs /sync so the Mac Mini Telegram agent renders the tracker from v2 too. v2 Phase A still trails K2Bi's manual second-strategy proof.
+
+**Key decisions:** one canonical tracker home (v2, the active feature) per the ownership matrix; v1's copy frozen as history, not a second live source. Design-reference wikilinks deliberately NOT moved -- pointing them at v2 would break them since v2 doesn't carry the chat-design content.
