@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-03 -- Orchestrator v1+v2 merged into one in-progress note
+
+**Commit:** `e0130f2` docs(orchestrator): repoint tracker read-path to merged feature_k2b-orchestrator note
+
+**What shipped:** Per Keith, the orchestrator now tracks as ONE In-Progress feature instead of v1-shipped + v2-backlog. (It had dropped off `/plate`: v1 was shipped but stayed in `wiki/concepts/` as the live tracker source, and the recently-shipped grep only matches `[[Shipped/...]]` rows, so it was invisible.) Merged `feature_k2b-orchestrator-v1.md` + `feature_k2b-orchestrator-v2.md` into a single live note `feature_k2b-orchestrator.md` (status: in-progress) carrying a Shipping Status table: Ship 1 (Stages 0-2) = shipped 2026-06-01, Ship 2 (Stages 3-15) = in progress (designed, blocked on K2Bi second-strategy proof). The detailed v1 design + build history was archived to `wiki/concepts/Shipped/feature_k2b-orchestrator-v1.md` (basename preserved so all `[[...v1]]` backlinks still resolve). `index.md`: removed the v1 Shipped row + v2 Backlog row, added `feature_k2b-orchestrator` to In Progress. The only committed code is this skill change: the k2b-orchestrator "where are we" Full-Scope-Tracker read-path repointed v2 -> the merged note. All other edits are vault (ride Syncthing).
+
+**Codex review:** Tier 1 (docs-only skill change). Kimi `--scope diff`: 1 HIGH + 3 MEDIUM, all triaged false-positive (Kimi cannot see K2B-Vault -- it is not in this git repo) or out-of-scope (pre-existing fail-loud design). Verified locally: merged file exists, exactly one unmarked "Full scope tracker" heading (line 52), archived-v1 link resolves.
+
+**Feature status change:** `feature_k2b-orchestrator-v1` + `feature_k2b-orchestrator-v2` -> merged into `feature_k2b-orchestrator` (status: in-progress). No shipped transition -- Ship 1's shipped state is preserved as a Shipping Status table row, not the feature-level status.
+
+**Follow-ups:** (1) needs /sync to deploy SKILL.md to the Mini; the vault rename rides Syncthing, so on the Mini "where are we in the orchestrator" fail-louds until both land. (2) Ship 2 Phase A still trails K2Bi's manual second-strategy proof.
+
+**Key decisions:** kept the archived v1 in `Shipped/` with its original basename rather than deleting it, so the ~700-line design+build history survives and every existing `[[feature_k2b-orchestrator-v1]]` backlink auto-resolves -- only `[[...v2]]` links (index + v1-internal) needed rewriting. The one-In-Progress-note-with-a-Shipping-Status-table shape matches the existing minimax-offload multi-ship precedent, so this is consistent with K2B convention rather than a one-off.
+
+---
 ## 2026-05-31 -- Orchestrator Chat-2 rebuilt agent-native: Kimi retired from the narrative path
 
 **Commit:** `7b155c8` feat(orchestrator): agent-native Chat-2 narrative path (retire Kimi from narrative)
