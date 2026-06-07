@@ -82,6 +82,16 @@ def k2bi_allowed_commands():
             str(A1_ADAPTER_RUNNER),
             "run-bear-case",
         ],
+        "k2bi-write-strategy-spec": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "write-strategy-spec",
+        ],
+        "k2bi-run-backtest": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "run-backtest",
+        ],
         "test-echo-readonly": ["/bin/echo", "orchestrator-smoke-ok"],
     }
 
@@ -177,7 +187,12 @@ def resolve_command(profile_name, command_key, payload=None) -> list[str] | None
                 if symbol is None:
                     return None
                 argv.append(symbol)
-            if command_key in {"k2bi-verify-and-generate-thesis", "k2bi-run-bear-case"}:
+            if command_key in {
+                "k2bi-verify-and-generate-thesis",
+                "k2bi-run-bear-case",
+                "k2bi-write-strategy-spec",
+                "k2bi-run-backtest",
+            }:
                 payload_args = _adapter_payload_args(payload_view if isinstance(payload_view, dict) else None)
                 if payload_args is None:
                     return None
@@ -511,6 +526,22 @@ def _preflight_a1_adapter_payload_shape(command_key: str, payload: dict) -> tupl
         bear_input = adapter_payload.get("bear_input")
         if not isinstance(bear_input, dict) or not bear_input:
             return (False, "A1 bear payload missing bear_input object")
+    if command_key == "k2bi-write-strategy-spec":
+        # Fail-fast shape ONLY -- the K2Bi StrategySpecDecision validators are the
+        # real gate; the runner enforces symbol == decision.symbol == order.ticker
+        # and nested forward-guidance types (Checkpoint-1 C1/C4) for BOTH carriers.
+        decision = adapter_payload.get("decision")
+        if not isinstance(decision, dict) or not decision.get("slug"):
+            return (False, "A2 strategy payload missing decision.slug")
+        if not decision.get("symbol"):
+            return (False, "A2 strategy payload missing decision.symbol")
+        order = decision.get("order")
+        if not isinstance(order, dict) or not order.get("ticker"):
+            return (False, "A2 strategy payload missing decision.order.ticker")
+    if command_key == "k2bi-run-backtest":
+        slug = adapter_payload.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            return (False, "A2 backtest payload missing slug")
     return (True, "")
 
 
@@ -570,17 +601,24 @@ def _preflight_a1_verified_thesis_artifact(payload: dict) -> tuple[bool, str]:
 
 
 def _preflight_a1_vault_root_matches_profile(payload: dict) -> tuple[bool, str]:
-    explicit_root = payload.get("vault_root") or payload.get("k2bi_vault_root")
-    if not explicit_root:
-        return (True, "")
-    payload_root = Path(str(explicit_root)).expanduser().resolve(strict=False)
+    # Validate EVERY root key present against the profile K2Bi vault: thesis/bear
+    # carry `vault_root`, A2 strategy carries `repo_root` (the base under which
+    # wiki/strategies/ lives -- the K2Bi vault), A2 backtest carries `vault_root`.
+    # None may point anywhere but the profile K2Bi vault (Checkpoint-1 C2). This is
+    # the inline-payload half; the runner's _resolve_allowed_k2bi_root is the
+    # carrier-uniform gate for payload_path-carried payloads.
     profile_root = Path(k2bi_vault()).expanduser().resolve(strict=False)
-    if payload_root != profile_root:
-        return (
-            False,
-            f"A1 payload vault_root {payload_root} does not match profile K2Bi vault "
-            f"{profile_root}",
-        )
+    for key in ("vault_root", "k2bi_vault_root", "repo_root"):
+        explicit_root = payload.get(key)
+        if not explicit_root:
+            continue
+        payload_root = Path(str(explicit_root)).expanduser().resolve(strict=False)
+        if payload_root != profile_root:
+            return (
+                False,
+                f"A1 payload {key} {payload_root} does not match profile K2Bi vault "
+                f"{profile_root}",
+            )
     return (True, "")
 
 
@@ -596,6 +634,8 @@ def _preflight_a1_symbol_matches_entity(task, payload: dict) -> tuple[bool, str]
         "k2bi-screen-enrich",
         "k2bi-verify-and-generate-thesis",
         "k2bi-run-bear-case",
+        "k2bi-write-strategy-spec",
+        "k2bi-run-backtest",
     }:
         return (True, "")
     symbol = _payload_symbol(payload)
@@ -682,6 +722,20 @@ def preflight_k2bi(task) -> tuple[bool, str]:
             ok, reason = _preflight_a1_verified_thesis_artifact(payload)
             if not ok:
                 return (False, reason)
+
+    # A2 (strategy half): no promoted precondition (that is thesis-specific) and no
+    # capital path. Chain-validity ("thesis approved before strategy") is owned by
+    # the resume oracle, not this child preflight -- keeping the preflight narrow
+    # avoids re-introducing an over-strict gate like the A1.1 bug. The strategy file
+    # writes to the K2Bi VAULT (a separate non-git dir), so the clean-tree git
+    # preflight on ~/Projects/K2Bi below still applies and stays satisfied.
+    if command_key in {"k2bi-write-strategy-spec", "k2bi-run-backtest"}:
+        ok, reason = _preflight_a1_vault_root_matches_profile(payload)
+        if not ok:
+            return (False, reason)
+        ok, reason = _preflight_a1_adapter_payload_shape(command_key, payload)
+        if not ok:
+            return (False, reason)
 
     # 6. git status (existing behavior for non-narrative commands)
     try:

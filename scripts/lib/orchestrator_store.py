@@ -861,6 +861,7 @@ def transition(task_id, status, **fields) -> None:
 
 
 A1_MAX_REVISIONS = 3
+A1_BACKTEST_LOOK_AHEAD_VALUES = frozenset({"passed", "suspicious"})
 TERMINAL_TTL_CREATED_AT_FLOOR = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 
@@ -1021,7 +1022,10 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
         revision_count = int(payload.get("revision_count") or 0)
     except (TypeError, ValueError):
         revision_count = 0
-    if payload.get("terminal_reason") == "revision_limit_exceeded":
+    # Any terminal_reason (thesis revision-limit OR A2 strategy revision-limit) is
+    # logically terminal -- the flight holds the entity lock and needs a fresh human
+    # decision, not another dispatch.
+    if payload.get("terminal_reason"):
         return "needs_human_terminal"
     if revision_count > A1_MAX_REVISIONS:
         return "needs_human_terminal"
@@ -1048,7 +1052,45 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
         return "thesis_artifact_invalid"
     if not payload.get("bear_done"):
         return "dispatch_bear_case"
-    return "thesis_approval_gate"
+    # Fail closed unless the bear verdict is exactly PROCEED (Checkpoint-2 #1). VETO
+    # is already terminalized above; a bear_done payload with a missing/!=PROCEED
+    # verdict (only reachable via a hand-built/partially-recovered payload, since
+    # a1_mark_bear_verdict enforces the enum) must re-run bear, never silently open A2.
+    if payload.get("bear_verdict") != "PROCEED":
+        return "dispatch_bear_case"
+    # A1 ends at the thesis gate. A2 (strategy half, Stages 9-10) extends past an
+    # APPROVED thesis. Backward-compatible: with no thesis_approved flag (every A1
+    # flight + every existing test), this returns "thesis_approval_gate" exactly as
+    # A1 did -- A2 only advances once the operator records approval via approve-thesis.
+    if not payload.get("thesis_approved"):
+        return "thesis_approval_gate"
+    if not payload.get("strategy_spec_written"):
+        return "dispatch_strategy"
+    if payload.get("strategy_artifact_drift_detected_at"):
+        return "strategy_artifact_invalid"
+    if not payload.get("strategy_artifact_verified"):
+        return "verify_strategy_artifact"
+    ok, reason = _a1_strategy_artifact_payload_valid(payload)
+    if not ok:
+        payload["strategy_artifact_verified"] = False
+        payload.pop("strategy_artifact_verified_at", None)
+        payload["strategy_artifact_drift_detected_at"] = now_iso()
+        payload["strategy_artifact_drift_reason"] = reason
+        _update_payload_locked(conn, task_id, payload, status=status)
+        conn.commit()
+        return "strategy_artifact_invalid"
+    if not payload.get("backtest_done"):
+        return "dispatch_backtest"
+    # Fail closed at the gate on a missing/invalid sanity verdict (Checkpoint-2
+    # round-2 #3): a stale/hand-recovered backtest_done without a valid
+    # look_ahead_check must re-run the backtest, not expose the approval gate.
+    if not _a1_backtest_payload_valid(payload)[0]:
+        return "dispatch_backtest"
+    if not payload.get("strategy_approved"):
+        return "strategy_approval_gate"
+    # A2 is complete; A3 (Stage 11, ship-to-engine -- the capital path) is the next
+    # increment and is not built yet, so the chain parks here.
+    return "strategy_approved_await_ship"
 
 
 def _parse_iso_dt(value: str | None):
@@ -1092,6 +1134,145 @@ def _a1_thesis_artifact_payload_valid(payload: dict) -> tuple[bool, str]:
         if artifact_dt < dispatch_dt:
             return (False, f"thesis artifact older than dispatch: {path}")
     return (True, "")
+
+
+def _a1_strategy_artifact_payload_valid(payload: dict) -> tuple[bool, str]:
+    """Integrity check for the A2 strategy artifact.
+
+    Unlike the thesis file (which bear-case legitimately appends to), the
+    strategy file is NEVER written by the backtest (K2Bi Check-D immutability),
+    so once the sha is recorded it is stable across the backtest dispatch -- no
+    re-anchor is needed here.
+    """
+    raw_path = payload.get("strategy_path")
+    if not raw_path:
+        return (False, "strategy artifact path missing")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        return (False, f"strategy artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"strategy artifact is empty: {path}")
+    expected_sha = payload.get("strategy_artifact_sha256")
+    if expected_sha:
+        if expected_sha != _sha256_file(path):
+            return (False, f"strategy artifact sha256 mismatch: {path}")
+    return (True, "")
+
+
+_BEAR_SECTION_RE = re.compile(r"(?im)^#{1,6}\s*bear case\b")
+
+
+def _thesis_file_has_bear_section(path: Path) -> bool:
+    """True iff the ticker file carries a `## Bear Case` heading -- the visible
+    evidence that the bear worker legitimately appended its section. Used to gate
+    re-anchoring so a corrupted/truncated file (which would NOT carry the marker)
+    cannot become the new trusted baseline (Checkpoint-2 #2)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _BEAR_SECTION_RE.search(text) is not None
+
+
+def _parse_md_frontmatter(path: Path) -> tuple[dict | None, str]:
+    """Parse a markdown file's YAML frontmatter to a dict (or (None, reason)).
+
+    Used to read evidence from the ARTIFACT itself rather than a caller's CLI claim:
+    the backtest capture's strategy_slug + look_ahead_check (Checkpoint-2 round-3),
+    and the strategy file's ticker/order.ticker for entity binding (round-5)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return (None, f"unreadable: {path}")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return (None, "no opening frontmatter fence")
+    close_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        return (None, "frontmatter not closed")
+    try:
+        import yaml
+    except ImportError:
+        return (None, "yaml unavailable -- cannot validate frontmatter")
+    try:
+        data = yaml.safe_load("\n".join(lines[1:close_idx]))
+    except Exception:
+        return (None, "frontmatter not parseable")
+    if not isinstance(data, dict):
+        return (None, "frontmatter is not a mapping")
+    return (data, "")
+
+
+def _a1_backtest_payload_valid(payload: dict) -> tuple[bool, str]:
+    """Durable, ARTIFACT-bound backtest-evidence invariant used by BOTH the resume
+    oracle and a1_approve_strategy (Checkpoint-2 round-2 #3 + round-4): the gate
+    must not rest on a cached DB enum alone. It re-opens the capture and re-binds
+    it to the recorded sha (symmetric to the thesis + strategy artifact checks), so
+    a deleted/edited/stale capture fails the gate closed rather than leaving the
+    chain approvable on evidence that no longer exists."""
+    if not payload.get("backtest_done"):
+        return (False, "backtest not done")
+    lac = str(payload.get("backtest_look_ahead_check") or "").strip().lower()
+    if lac not in A1_BACKTEST_LOOK_AHEAD_VALUES:
+        return (False, "backtest look_ahead_check missing or invalid")
+    raw_path = payload.get("backtest_artifact_path")
+    if not raw_path:
+        return (False, "backtest artifact path missing")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        return (False, f"backtest artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"backtest artifact is empty: {path}")
+    expected_sha = payload.get("backtest_artifact_sha256")
+    if expected_sha:
+        if expected_sha != _sha256_file(path):
+            return (False, f"backtest artifact sha256 mismatch: {path}")
+        return (True, "")
+    # No recorded sha (flight recorded before this fix): re-validate by reparsing the
+    # capture and confirming its verdict still matches the recorded enum, so a
+    # post-record edit to the capture is still caught.
+    fm, perr = _parse_md_frontmatter(path)
+    if fm is None:
+        return (False, f"backtest capture invalid: {perr}")
+    bt_block = fm.get("backtest")
+    capture_lac = ""
+    if isinstance(bt_block, dict):
+        capture_lac = str(bt_block.get("look_ahead_check", "")).strip().lower()
+    if capture_lac != lac:
+        return (False, "backtest capture verdict no longer matches the recorded value")
+    return (True, "")
+
+
+def _reanchor_thesis_sha_in_payload(payload: dict) -> bool:
+    """Re-anchor thesis_artifact_sha256 to the CURRENT thesis file content.
+
+    Bear-case appends a `## Bear Case` section to the SAME wiki/tickers/<SYM>.md
+    file the thesis verify recorded a sha for, so the pre-bear sha no longer
+    matches after bear runs (latent A1 finding #5). This advances the verified
+    baseline to the post-bear content. Returns True iff re-anchored. Re-anchors
+    ONLY when the current file carries the bear-section marker (Checkpoint-2 #2),
+    so a corrupted/truncated file is NOT blessed -- the caller leaves the recorded
+    sha as-is and the resume oracle then surfaces drift for operator recovery.
+    """
+    if payload.get("thesis_artifact_verified") is not True:
+        return False
+    raw_path = payload.get("thesis_path") or payload.get("thesis_artifact_path")
+    if not raw_path:
+        return False
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file() or path.stat().st_size == 0:
+        return False
+    if not _thesis_file_has_bear_section(path):
+        return False
+    payload["thesis_artifact_sha256"] = _sha256_file(path)
+    payload["thesis_artifact_reanchored_at"] = now_iso()
+    payload.pop("thesis_artifact_drift_detected_at", None)
+    payload.pop("thesis_artifact_drift_reason", None)
+    return True
 
 
 def a1_verify_thesis_artifact(
@@ -1278,6 +1459,14 @@ def a1_mark_bear_verdict(task_id: str, verdict: str, *, conviction=None) -> bool
         payload["bear_verdict"] = normalized
         if conviction is not None:
             payload["bear_conviction"] = conviction
+        # Forward drift fix (latent A1 finding #5): bear-case appended to the SAME
+        # ticker file the thesis verify recorded a sha for. Re-anchor the verified
+        # baseline to the post-bear content NOW -- synchronously, the moment the
+        # conductor records the worker's `done`, so no other writer is in the window
+        # (same threat model as A1.2's deferred post-claim race). Only on PROCEED:
+        # a VETO flight is terminal_bear_veto and never resumes.
+        if normalized == "PROCEED":
+            _reanchor_thesis_sha_in_payload(payload)
         status = "terminal_bear_veto" if normalized == "VETO" else "needs_human"
         changed = _update_payload_locked(conn, task_id, payload, status=status)
         conn.commit()
@@ -1358,6 +1547,469 @@ def a1_register_revision(task_id: str) -> bool:
             "vendor_provenance",
         ):
             payload.pop(key, None)
+        changed = _update_payload_locked(conn, task_id, payload, status="needs_human")
+        conn.commit()
+        conn.close()
+    return changed
+
+
+def a1_reanchor_thesis_artifact(
+    task_id: str,
+    artifact_path: str | None = None,
+    *,
+    checked_log: bool,
+    reason: str | None = None,
+) -> tuple[bool, str]:
+    """Operator-attested recovery: re-anchor the thesis sha to the current file.
+
+    The ONLY legitimate cause of post-thesis drift is bear-case appending to the
+    shared wiki/tickers/<SYM>.md, so this is guarded by `bear_done=True`. Because
+    the bear child result carries no post-write sha (the bear runner returns
+    path/verdict only; capturing a child sha would need a K2Bi change), the
+    operator must explicitly attest via `--i-checked-the-log` that the current
+    file is the legitimate post-bear thesis+bear artifact and not corruption
+    (Checkpoint-1 C3). Without the ack, refuse. Pre-bear thesis drift is real
+    corruption -> use clear-thesis-artifact, not this.
+    """
+    if not checked_log:
+        return (
+            False,
+            "re-anchor requires --i-checked-the-log (operator must confirm the "
+            "current file is the legitimate post-bear thesis artifact, not corruption)",
+        )
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("bear_done") is not True:
+            conn.close()
+            return (
+                False,
+                "re-anchor is only valid after bear_done=true; pre-bear thesis drift "
+                "is corruption -- use clear-thesis-artifact",
+            )
+        # Evidence of a PRIOR verification (a recorded sha or verified-at), NOT the
+        # live thesis_artifact_verified flag -- the resume oracle clears that flag the
+        # moment it detects the bear-append drift, so requiring it True here would
+        # make recovery impossible exactly when it is needed.
+        if not (
+            payload.get("thesis_artifact_sha256")
+            or payload.get("thesis_artifact_verified_at")
+        ):
+            conn.close()
+            return (False, "re-anchor requires a previously verified thesis artifact")
+        raw_path = (
+            artifact_path
+            or payload.get("thesis_path")
+            or payload.get("thesis_artifact_path")
+        )
+        if not raw_path:
+            conn.close()
+            return (False, "thesis artifact path missing")
+        path = Path(str(raw_path)).expanduser()
+        if not path.is_file():
+            conn.close()
+            return (False, f"thesis artifact missing or not a file: {path}")
+        if path.stat().st_size == 0:
+            conn.close()
+            return (False, f"thesis artifact is empty: {path}")
+        # Even with the operator ack, require the bear-section marker (Checkpoint-2
+        # #2): a corrupted/truncated file would not carry it, so re-anchoring it
+        # would bless corruption. Absent the marker, refuse -- the operator must
+        # clear + redispatch instead.
+        if not _thesis_file_has_bear_section(path):
+            conn.close()
+            return (
+                False,
+                "thesis file is missing the '## Bear Case' section; it is not the "
+                "expected post-bear artifact -- use clear-thesis-artifact + redispatch",
+            )
+        payload["thesis_path"] = str(path)
+        payload["thesis_artifact_sha256"] = _sha256_file(path)
+        payload["thesis_artifact_verified"] = True
+        payload["thesis_artifact_reanchored_at"] = now_iso()
+        payload["thesis_recovery_log_checked_at"] = now_iso()
+        if reason:
+            payload["thesis_artifact_reanchor_reason"] = reason
+        payload.pop("thesis_artifact_drift_detected_at", None)
+        payload.pop("thesis_artifact_drift_reason", None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_approve_thesis(task_id: str) -> tuple[bool, str]:
+    """Record operator approval at the thesis gate (Stage 8), opening A2.
+
+    Guard: the thesis must actually be AT the gate -- thesis written + artifact
+    verified + bear done with a non-VETO verdict. A1 ended here conversationally;
+    A2 needs the approval recorded as a flag so the resume oracle can advance.
+    """
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        # Require an explicit PROCEED, not merely "not VETO" (Checkpoint-2 #1) -- a
+        # missing/invalid verdict must not be approvable.
+        if payload.get("bear_verdict") != "PROCEED":
+            conn.close()
+            return (
+                False,
+                f"bear verdict must be PROCEED to approve (got {payload.get('bear_verdict')!r})",
+            )
+        if not (
+            payload.get("thesis_written")
+            and payload.get("thesis_artifact_verified")
+            and payload.get("bear_done")
+        ):
+            conn.close()
+            return (
+                False,
+                "thesis is not at the approval gate "
+                "(need thesis_written + thesis_artifact_verified + bear_done)",
+            )
+        if payload.get("thesis_artifact_drift_detected_at"):
+            conn.close()
+            return (
+                False,
+                "thesis artifact drift detected; re-anchor or clear before approving",
+            )
+        payload["thesis_approved"] = True
+        payload["thesis_approved_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_record_strategy_done(task_id: str, artifact_path: str) -> tuple[bool, str]:
+    """Verify a strategy artifact and mark strategy_spec_written on the parent.
+
+    Mirrors a1_record_screen_done: record the flag ONLY after the worker reached
+    `done` AND the artifact exists + is non-empty. Refuses before the thesis is
+    approved (chain validity).
+    """
+    path = Path(str(artifact_path)).expanduser()
+    if not path.is_file():
+        return (False, f"strategy artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"strategy artifact is empty: {path}")
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if not payload.get("thesis_approved"):
+            conn.close()
+            return (False, "strategy cannot be recorded before the thesis is approved")
+        # Bind the strategy artifact to the parent ticker (Checkpoint-2 round-5):
+        # A2 dispatches use payload_path, so profile preflight only sees the task
+        # payload's top-level symbol while the adapter writes the FILE's own decision
+        # ticker. Validate the recorded strategy's frontmatter ticker == entity_key
+        # so a wrong/stale carrier file (e.g. strategy_spy.md) can never become a
+        # CDNS flight's strategy and SHA-bind the gate to the wrong ticker.
+        entity = str(task.get("entity_key") or "").strip().upper()
+        if entity:
+            fm, perr = _parse_md_frontmatter(path)
+            if fm is None:
+                conn.close()
+                return (False, f"strategy artifact invalid: {perr}")
+            order = fm.get("order")
+            order_ticker = (
+                str(order.get("ticker", "")).strip().upper()
+                if isinstance(order, dict)
+                else ""
+            )
+            strat_ticker = order_ticker or str(fm.get("ticker", "")).strip().upper()
+            if strat_ticker != entity:
+                conn.close()
+                return (
+                    False,
+                    f"strategy artifact ticker {strat_ticker!r} does not match the "
+                    f"parent flight entity {entity!r}",
+                )
+        payload["strategy_spec_written"] = True
+        payload["strategy_path"] = str(path)
+        payload["strategy_done_at"] = now_iso()
+        # A fresh strategy supersedes any prior verification/drift AND any downstream
+        # backtest/approval evidence from a prior strategy (Checkpoint-2 #3): a
+        # re-recorded strategy must not inherit a stale backtest or approval, which
+        # would let resume skip dispatch_backtest or jump to the ship gate with old
+        # evidence attached to a new artifact.
+        payload["strategy_artifact_verified"] = False
+        payload["backtest_done"] = False
+        for key in (
+            "strategy_artifact_verified_at",
+            "strategy_artifact_sha256",
+            "strategy_artifact_drift_detected_at",
+            "strategy_artifact_drift_reason",
+            "backtest_artifact_path",
+            "backtest_artifact_sha256",
+            "backtest_look_ahead_check",
+            "backtest_done_at",
+            "strategy_approved",
+            "strategy_approved_at",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_verify_strategy_artifact(
+    task_id: str, artifact_path: str | None = None
+) -> tuple[bool, str]:
+    """Verify and record the strategy artifact before A2 can dispatch the backtest."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if not payload.get("strategy_spec_written"):
+            conn.close()
+            return (False, "strategy artifact not recorded yet (run record-strategy-done)")
+        if payload.get("strategy_artifact_drift_detected_at"):
+            conn.close()
+            return (
+                False,
+                "strategy artifact drift detected; re-run record-strategy-done after redispatch",
+            )
+        raw_path = artifact_path or payload.get("strategy_path")
+        if not raw_path:
+            conn.close()
+            return (False, "strategy artifact path missing")
+        path = Path(str(raw_path)).expanduser()
+        if not path.is_file():
+            conn.close()
+            return (False, f"strategy artifact missing or not a file: {path}")
+        if path.stat().st_size == 0:
+            conn.close()
+            return (False, f"strategy artifact is empty: {path}")
+        existing_sha = payload.get("strategy_artifact_sha256")
+        actual_sha = _sha256_file(path)
+        if existing_sha and existing_sha != actual_sha:
+            conn.close()
+            return (False, f"strategy artifact sha256 mismatch: {path}")
+        payload["strategy_path"] = str(path)
+        payload["strategy_artifact_sha256"] = actual_sha
+        payload["strategy_artifact_verified"] = True
+        payload["strategy_artifact_verified_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_record_backtest_done(
+    task_id: str, artifact_path: str, *, look_ahead_check: str | None = None
+) -> tuple[bool, str]:
+    """Verify a backtest capture and mark backtest_done on the parent.
+
+    Records the sanity-gate verdict (`passed` / `suspicious`) so the strategy
+    gate can surface the overfit/look-ahead flag. Refuses before the strategy
+    artifact is verified, and refuses a missing/unknown sanity verdict
+    (Checkpoint-2 #4) -- the strategy gate must never approve on an absent or
+    garbage look_ahead_check.
+    """
+    path = Path(str(artifact_path)).expanduser()
+    if not path.is_file():
+        return (False, f"backtest artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"backtest artifact is empty: {path}")
+    normalized_lac = str(look_ahead_check or "").strip().lower()
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if not payload.get("strategy_artifact_verified"):
+            conn.close()
+            return (False, "backtest cannot be recorded before the strategy artifact is verified")
+        # Evidence comes from the ARTIFACT (Checkpoint-2 round-3): parse the capture
+        # frontmatter for strategy_slug + backtest.look_ahead_check rather than
+        # trusting the CLI claim.
+        fm, perr = _parse_md_frontmatter(path)
+        if fm is None:
+            conn.close()
+            return (False, f"backtest capture invalid: {perr}")
+        capture_slug = str(fm.get("strategy_slug", "")).strip()
+        bt_block = fm.get("backtest")
+        capture_lac = ""
+        if isinstance(bt_block, dict):
+            capture_lac = str(bt_block.get("look_ahead_check", "")).strip().lower()
+        # Bind the capture to the recorded strategy by its frontmatter strategy_slug
+        # (Checkpoint-2 round-2/round-3): a capture for a different strategy must not
+        # attach to this chain.
+        strategy_path = payload.get("strategy_path")
+        if strategy_path:
+            strat_base = Path(str(strategy_path)).name
+            if strat_base.startswith("strategy_") and strat_base.endswith(".md"):
+                strat_slug = strat_base[len("strategy_"):-len(".md")]
+                if capture_slug != strat_slug:
+                    conn.close()
+                    return (
+                        False,
+                        f"backtest capture strategy_slug {capture_slug!r} does not "
+                        f"match the recorded strategy slug {strat_slug!r}",
+                    )
+        if capture_lac not in A1_BACKTEST_LOOK_AHEAD_VALUES:
+            conn.close()
+            return (
+                False,
+                "backtest capture look_ahead_check must be one of "
+                f"{sorted(A1_BACKTEST_LOOK_AHEAD_VALUES)} (got {capture_lac!r})",
+            )
+        # If the caller supplied a verdict, it must MATCH the artifact (typo catch);
+        # but the persisted value is always the artifact's, never the CLI claim.
+        if look_ahead_check is not None and normalized_lac != capture_lac:
+            conn.close()
+            return (
+                False,
+                f"supplied look_ahead_check {normalized_lac!r} does not match the "
+                f"backtest capture's verdict {capture_lac!r}",
+            )
+        payload["backtest_done"] = True
+        payload["backtest_artifact_path"] = str(path)
+        payload["backtest_artifact_sha256"] = _sha256_file(path)
+        payload["backtest_look_ahead_check"] = capture_lac
+        payload["backtest_done_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_approve_strategy(task_id: str) -> tuple[bool, str]:
+    """Record operator approval at the strategy gate (Stage 9) -- the END of A2.
+
+    A2 ends parked here; A3 (Stage 11 ship-to-engine, the capital path) is the
+    next increment. Guard: the backtest must be recorded first.
+    """
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        ok, reason = _a1_backtest_payload_valid(payload)
+        if not ok:
+            conn.close()
+            return (False, f"strategy cannot be approved: {reason}")
+        payload["strategy_approved"] = True
+        payload["strategy_approved_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_register_strategy_revision(task_id: str) -> bool:
+    """Bounded A2 strategy-revision loop (max 3), paralleling a1_register_revision.
+
+    A revision re-runs Stage 9-10 from a fresh strategy spec: clears the strategy
+    + backtest progress and resumes at `dispatch_strategy`. The fourth request
+    leaves the flight parked `needs_human` with terminal_reason
+    `strategy_revision_limit_exceeded`. Uses a SEPARATE `strategy_revision_count`
+    so it never disturbs the thesis `revision_count`.
+    """
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT payload, status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return False
+        if row["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return False
+        if row["status"] not in {"needs_human", "blocked", "returned"}:
+            conn.close()
+            raise ValueError(f"cannot register strategy revision while task is {row['status']}")
+        payload = _payload_dict(row["payload"])
+        if not payload.get("thesis_approved"):
+            conn.close()
+            raise ValueError("cannot register a strategy revision before the thesis is approved")
+        count = int(payload.get("strategy_revision_count") or 0) + 1
+        payload["strategy_revision_count"] = count
+        payload["strategy_spec_written"] = False
+        payload["backtest_done"] = False
+        for key in (
+            "strategy_path",
+            "strategy_artifact_verified",
+            "strategy_artifact_verified_at",
+            "strategy_artifact_sha256",
+            "strategy_artifact_drift_detected_at",
+            "strategy_artifact_drift_reason",
+            "strategy_dispatch_started_at",
+            "strategy_approved",
+            "strategy_approved_at",
+            "backtest_artifact_path",
+            "backtest_artifact_sha256",
+            "backtest_look_ahead_check",
+            "backtest_done_at",
+        ):
+            payload.pop(key, None)
+        if count > A1_MAX_REVISIONS:
+            payload["terminal_reason"] = "strategy_revision_limit_exceeded"
+            payload.setdefault("terminal_reason_at", now_iso())
+            _update_payload_locked(
+                conn,
+                task_id,
+                payload,
+                status="needs_human",
+                blocker_reason=(
+                    "strategy revision limit exceeded; this flight keeps the entity lock. "
+                    "Cancel it before starting a fresh A1 chain."
+                ),
+            )
+            conn.commit()
+            conn.close()
+            return False
         changed = _update_payload_locked(conn, task_id, payload, status="needs_human")
         conn.commit()
         conn.close()
@@ -1770,6 +2422,42 @@ def poll_once() -> dict:
                         f"[orchestrator] Task {task['id']} CANCELLED: parent chain no longer live"
                     )
                     continue
+                # A2 child dispatch must match the parent's resume action
+                # (Checkpoint-2 #6): the chain lock only proves the parent is live,
+                # not that it is at the right STAGE. A hand-queued strategy/backtest
+                # child must not run before thesis approval / strategy verification.
+                # The resume oracle is authoritative and ALSO re-validates the
+                # strategy artifact, so a backtest child is refused if the strategy
+                # drifted. Cancel (terminal) an out-of-order child to release the
+                # entity lock, mirroring the orphan path.
+                a2_expected = {
+                    "k2bi-write-strategy-spec": "dispatch_strategy",
+                    "k2bi-run-backtest": "dispatch_backtest",
+                }.get(task.get("command_key", ""))
+                if a2_expected is not None:
+                    try:
+                        parent_action = a1_resume_action_locked(conn, parent_task_id)
+                    except KeyError:
+                        parent_action = None
+                    if parent_action != a2_expected:
+                        conn.execute(
+                            "UPDATE tasks SET status='cancelled', blocker_reason=?, "
+                            "finished_at=?, updated_at=? WHERE id=? AND status='ready'",
+                            (
+                                f"parent chain stage is {parent_action!r}, not "
+                                f"{a2_expected!r}; A2 child out of order, cancelled",
+                                now,
+                                now,
+                                task["id"],
+                            ),
+                        )
+                        conn.commit()
+                        conn.close()
+                        notify(
+                            f"[orchestrator] Task {task['id']} CANCELLED: parent stage "
+                            f"{parent_action!r} != {a2_expected!r}"
+                        )
+                        continue
             ok, reason = profiles.preflight(task)
             if not ok:
                 cur = conn.execute(
@@ -1898,6 +2586,59 @@ def _main():
         help="Increment the bounded A1 thesis revision counter",
     )
     register_revision_p.add_argument("id")
+
+    reanchor_thesis_p = sub.add_parser(
+        "reanchor-thesis-artifact",
+        help="Operator-attested re-anchor of the thesis sha after a legit bear append",
+    )
+    reanchor_thesis_p.add_argument("id")
+    reanchor_thesis_p.add_argument("path", nargs="?")
+    reanchor_thesis_p.add_argument(
+        "--i-checked-the-log",
+        action="store_true",
+        help="Required ack that the current file is the legitimate post-bear thesis artifact",
+    )
+    reanchor_thesis_p.add_argument("--reason")
+
+    approve_thesis_p = sub.add_parser(
+        "approve-thesis",
+        help="Record operator approval at the A1 thesis gate (opens A2)",
+    )
+    approve_thesis_p.add_argument("id")
+
+    record_strategy_p = sub.add_parser(
+        "record-strategy-done",
+        help="Verify an A2 strategy artifact and mark strategy_spec_written",
+    )
+    record_strategy_p.add_argument("id")
+    record_strategy_p.add_argument("path")
+
+    verify_strategy_p = sub.add_parser(
+        "verify-strategy-artifact",
+        help="Verify an A2 strategy artifact before backtest dispatch",
+    )
+    verify_strategy_p.add_argument("id")
+    verify_strategy_p.add_argument("path", nargs="?")
+
+    record_backtest_p = sub.add_parser(
+        "record-backtest-done",
+        help="Verify an A2 backtest capture and mark backtest_done",
+    )
+    record_backtest_p.add_argument("id")
+    record_backtest_p.add_argument("path")
+    record_backtest_p.add_argument("--look-ahead-check")
+
+    approve_strategy_p = sub.add_parser(
+        "approve-strategy",
+        help="Record operator approval at the A2 strategy gate (end of A2)",
+    )
+    approve_strategy_p.add_argument("id")
+
+    register_strategy_revision_p = sub.add_parser(
+        "register-strategy-revision",
+        help="Increment the bounded A2 strategy revision counter",
+    )
+    register_strategy_revision_p.add_argument("id")
 
     block_p = sub.add_parser("block", help="Block a task")
     block_p.add_argument("id")
@@ -2121,6 +2862,73 @@ def _main():
         ok = a1_register_revision(args.id)
         render_board()
         print(f"Task {args.id} revision registered: {ok}")
+        return
+
+    if args.cmd == "reanchor-thesis-artifact":
+        ok, reason = a1_reanchor_thesis_artifact(
+            args.id,
+            args.path,
+            checked_log=args.i_checked_the_log,
+            reason=args.reason,
+        )
+        if ok:
+            render_board()
+            print(f"Task {args.id} thesis artifact re-anchored")
+            return
+        print(f"reanchor-thesis-artifact rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "approve-thesis":
+        ok, reason = a1_approve_thesis(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} thesis approved")
+            return
+        print(f"approve-thesis rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-strategy-done":
+        ok, reason = a1_record_strategy_done(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} strategy artifact recorded")
+            return
+        print(f"record-strategy-done rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "verify-strategy-artifact":
+        ok, reason = a1_verify_strategy_artifact(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} strategy artifact verified")
+            return
+        print(f"verify-strategy-artifact rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-backtest-done":
+        ok, reason = a1_record_backtest_done(
+            args.id, args.path, look_ahead_check=args.look_ahead_check
+        )
+        if ok:
+            render_board()
+            print(f"Task {args.id} backtest recorded")
+            return
+        print(f"record-backtest-done rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "approve-strategy":
+        ok, reason = a1_approve_strategy(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} strategy approved")
+            return
+        print(f"approve-strategy rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "register-strategy-revision":
+        ok = a1_register_strategy_revision(args.id)
+        render_board()
+        print(f"Task {args.id} strategy revision registered: {ok}")
         return
 
     if args.cmd == "block":

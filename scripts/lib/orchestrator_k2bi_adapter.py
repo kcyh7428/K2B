@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import datetime as _dt
 import errno
 import fcntl
 import io
@@ -166,6 +167,36 @@ def _resolve_allowed_vault_root(path_value: Any) -> Path:
     raise ValueError(f"vault_root {vault_root} is outside allowed vault root")
 
 
+def _allowed_k2bi_vault_roots() -> list[Path]:
+    """K2Bi-vault-only allowlist for A2 strategy/backtest roots (Checkpoint-1 C2 +
+    Checkpoint-2 #5).
+
+    Resolves ONLY to the profile K2Bi vault: `K2BI_VAULT_PATH` (the SAME env the
+    profile's k2bi_vault() trusts, so the runner's resolution is identical to the
+    trusted preflight's profile check) plus the `~/Projects/K2Bi-Vault` default.
+    Resolves to EXACTLY ONE root -- the profile vault: `K2BI_VAULT_PATH` if set, else
+    the `~/Projects/K2Bi-Vault` default. NOT both (Checkpoint-2 round-2 #2): allowing
+    both would let an env-overridden profile validate preflight against K2BI_VAULT_PATH
+    while a payload_path-carried `repo_root=~/Projects/K2Bi-Vault` still passes the
+    runner, leaving a residual wrong-vault write under profile/env skew. Deliberately
+    EXCLUDES `K2B_VAULT_PATH` and the generic `K2B_ORCH_ADAPTER_VAULT_ROOT` override.
+    """
+    k2bi_vault = os.environ.get("K2BI_VAULT_PATH")
+    only = Path(k2bi_vault).expanduser() if k2bi_vault else Path("~/Projects/K2Bi-Vault").expanduser()
+    return [only.resolve(strict=False)]
+
+
+def _resolve_allowed_k2bi_root(path_value: Any, field_name: str) -> Path:
+    """Resolve a strategy `repo_root` / backtest `vault_root` to the K2Bi vault ONLY."""
+    if not path_value:
+        raise ValueError(f"payload missing required field {field_name!r}")
+    root = Path(os.path.realpath(os.path.expanduser(str(path_value))))
+    for allowed_root in _allowed_k2bi_vault_roots():
+        if root == Path(os.path.realpath(str(allowed_root))):
+            return root
+    raise ValueError(f"{field_name} {root} is outside allowed K2Bi vault root")
+
+
 def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
     if sum(value is not None for value in (args.payload_json, args.payload_path)) != 1:
         raise ValueError("exactly one of --payload-json or --payload-path is required")
@@ -304,6 +335,12 @@ def _result_to_jsonable(value: Any, *, _depth: int = 0) -> Any:
         }
     if isinstance(value, Path):
         return str(value)
+    # datetime is a subclass of date; .isoformat() covers both. BacktestResult
+    # carries date/datetime (window.start/end, last_run, trade dates) that json
+    # cannot serialize -- map them to ISO strings (additive; thesis/bear results
+    # carry none).
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.isoformat()
     if isinstance(value, (list, tuple)):
         return [_result_to_jsonable(item, _depth=_depth + 1) for item in value]
     if isinstance(value, dict):
@@ -410,6 +447,106 @@ def _validate_position_size_hkd(value: Any) -> int | float | None:
     return value
 
 
+def _validate_strategy_decision_payload(decision: Any, payload_symbol: str) -> None:
+    """Runner-side fail-fast gates the strict dataclass coercion cannot do
+    (Checkpoint-1 C1 + C4), enforced for BOTH the payload_json and payload_path
+    carriers (the inline preflight shape check only sees payload_json)."""
+    if not isinstance(decision, dict):
+        raise ValueError("decision must be a JSON object")
+    decision_symbol = str(decision.get("symbol", "")).strip().upper()
+    if not decision_symbol:
+        raise ValueError("decision missing symbol")
+    order = decision.get("order")
+    if not isinstance(order, dict):
+        raise ValueError("decision.order must be a JSON object")
+    order_ticker = str(order.get("ticker", "")).strip().upper()
+    if not order_ticker:
+        raise ValueError("decision.order.ticker missing")
+    # C1: K2Bi derives the strategy file's top-level `ticker` from decision.symbol
+    # but preserves decision.order.ticker verbatim, and run_backtest fetches bars for
+    # order.ticker. If they diverge, a CDNS chain could write strategy_cdns.md yet
+    # backtest a DIFFERENT ticker -> false gate evidence. Require all three equal.
+    if not (payload_symbol == decision_symbol == order_ticker):
+        raise ValueError(
+            "symbol mismatch: payload symbol "
+            f"{payload_symbol!r}, decision.symbol {decision_symbol!r}, and "
+            f"decision.order.ticker {order_ticker!r} must all be the same ticker"
+        )
+    # C4: forward_guidance_metrics is typed list[dict[str, Any]], so the strict
+    # coercer treats nested values as Any. K2Bi's writer does
+    # bool(m["sits_inside_guide"]), so a string "false" would silently flip to True.
+    # Enforce required keys + a REAL boolean here.
+    metrics = decision.get("forward_guidance_metrics")
+    if not isinstance(metrics, list) or not metrics:
+        raise ValueError("decision.forward_guidance_metrics must be a non-empty list")
+    required_metric_keys = (
+        "metric",
+        "locked_threshold_text",
+        "guide_source_text",
+        "guide_range_text",
+        "sits_inside_guide",
+    )
+    for i, metric in enumerate(metrics):
+        if not isinstance(metric, dict):
+            raise ValueError(f"forward_guidance_metrics[{i}] must be a JSON object")
+        for key in required_metric_keys:
+            if key not in metric:
+                raise ValueError(f"forward_guidance_metrics[{i}] missing {key!r}")
+        if not isinstance(metric["sits_inside_guide"], bool):
+            raise ValueError(
+                f"forward_guidance_metrics[{i}].sits_inside_guide must be a JSON boolean, "
+                f"got {type(metric['sits_inside_guide']).__name__}"
+            )
+
+
+def _write_strategy_spec(payload: dict[str, Any]) -> dict[str, Any]:
+    """A2 Stage 9: author the proposed strategy file via the merged K2Bi adapter.
+
+    repo_root is the K2Bi VAULT (where wiki/strategies/ lives). No capital path,
+    no engine touch -- this writes a `status: proposed` strategy file only.
+    """
+    repo_root = _resolve_allowed_k2bi_root(payload.get("repo_root"), "repo_root")
+    from scripts.lib import invest_orchestrator_adapters as ioa
+
+    payload_symbol = str(payload.get("symbol", "")).strip().upper()
+    if not payload_symbol:
+        raise ValueError("payload missing required field 'symbol'")
+    decision = _load_json_value(payload, "decision")
+    _validate_strategy_decision_payload(decision, payload_symbol)
+    decision_obj = _dataclass_from_dict(ioa.StrategySpecDecision, decision)
+    result = ioa.write_complete_strategy_spec(decision_obj, repo_root=repo_root)
+    return {"status": "ok", "result": _result_to_jsonable(result)}
+
+
+def _run_backtest(payload: dict[str, Any]) -> dict[str, Any]:
+    """A2 Stage 10: run the yfinance sanity-check backtest for a written strategy.
+
+    Reads vault_root/wiki/strategies/strategy_<slug>.md (order.ticker), pulls live
+    bars, writes an immutable capture under raw/backtests/, and NEVER touches the
+    strategy file. The sanity gate's look_ahead_check is the overfit rejector.
+    """
+    vault_root = _resolve_allowed_k2bi_root(payload.get("vault_root"), "vault_root")
+    from scripts.lib import invest_backtest as ibt
+
+    slug = payload.get("slug")
+    if not isinstance(slug, str) or not slug.strip():
+        raise ValueError("payload missing required field 'slug'")
+    payload_symbol = str(payload.get("symbol", "")).strip().upper()
+    if not payload_symbol:
+        raise ValueError("payload missing required field 'symbol'")
+    result = ibt.run_backtest(slug.strip(), vault_root=vault_root)
+    # Bind the backtest to the dispatched ticker (Checkpoint-2 round-2 #1): the
+    # capture's symbol is the strategy file's order.ticker, so a mismatch means the
+    # backtest fetched bars for the wrong ticker -- refuse rather than record it.
+    result_symbol = str(getattr(result, "symbol", "")).strip().upper()
+    if result_symbol != payload_symbol:
+        raise ValueError(
+            f"backtest symbol {result_symbol!r} does not match dispatched symbol "
+            f"{payload_symbol!r} (slug {slug!r} resolves to the wrong ticker)"
+        )
+    return {"status": "ok", "result": _result_to_jsonable(result)}
+
+
 TRANSIENT_ERRNOS = {
     errno.EAGAIN,
     getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
@@ -500,7 +637,12 @@ def _restore_module_snapshot(original_modules: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run K2Bi adapter from K2B orchestrator")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("verify-and-generate-thesis", "run-bear-case"):
+    for name in (
+        "verify-and-generate-thesis",
+        "run-bear-case",
+        "write-strategy-spec",
+        "run-backtest",
+    ):
         p = sub.add_parser(name)
         p.add_argument("--workspace", required=True)
         p.add_argument("--payload-json")
@@ -528,6 +670,10 @@ def main(argv: list[str] | None = None) -> int:
             output = _verify_and_generate_thesis(payload)
         elif args.cmd == "run-bear-case":
             output = _run_bear_case(payload)
+        elif args.cmd == "write-strategy-spec":
+            output = _write_strategy_spec(payload)
+        elif args.cmd == "run-backtest":
+            output = _run_backtest(payload)
         else:  # pragma: no cover - argparse enforces choices
             raise ValueError(f"unknown command {args.cmd!r}")
         encoded_output = _dump_bounded_output(output)

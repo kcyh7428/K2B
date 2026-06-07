@@ -246,7 +246,118 @@ Rules:
 2. **Screen (Stage 4).** Dispatch screen enrichment through the K2Bi allowlisted worker door. Record the verified screen artifact only after the worker task reaches `done` and the result artifact exists, using `python3 -m scripts.lib.orchestrator_store record-screen-done <parent-task-id> <artifact-path>`. Surface the score/band and ask Keith whether to run the chain. Only after Keith explicitly says yes, run `python3 -m scripts.lib.orchestrator_store approve-screen <parent-task-id>`; resume returns `await_screen_approval` until that approval is recorded.
 3. **Thesis source fetch + T7 (Stages 5-7).** Gather sources inline with the Chat-1 honesty rule: fetch/repair every load-bearing citation. Build the full `ThesisInput` JSON and the exact `claim_decisions` list above. Surface each load-bearing claim to Keith and capture `verified`, `refused`, `override`, or `advisory` without changing his mark. Dispatch `k2bi-verify-and-generate-thesis`. Record `thesis_written=true` and `thesis_artifact_verified=true` only after the worker reaches `done` and the expected thesis artifact exists. On adapter refusal, show the refusal and keep the parent parked; do not write K2Bi state yourself.
 4. **Bear case (Stage 7).** Dispatch `k2bi-run-bear-case`. Record `bear_done=true` only after the worker task reaches `done` and the result shows a verdict. If verdict is `VETO`, call the A1 VETO transition and stop terminally. If `PROCEED`, park at the thesis gate.
-5. **Thesis gate (Stage 8).** Surface: thesis path, bear verdict/conviction, claim count and any refused/override/advisory claims. Keith may answer `approve` or `revise`. `approve` is the end of A1; leave the flight parked for the ship manager/future A2. `revise` must run `python3 -m scripts.lib.orchestrator_store register-revision <parent-task-id>`, then re-run Stages 5-7 with a fresh source fetch, previous `claim_decisions` resurfaced for amendment, and `refresh=true`.
+5. **Thesis gate (Stage 8).** Surface: thesis path, bear verdict/conviction, claim count and any refused/override/advisory claims. Keith may answer `approve` or `revise`. `approve` opens A2 -- run `python3 -m scripts.lib.orchestrator_store approve-thesis <parent-task-id>` (see the A2 conductor). `revise` must run `python3 -m scripts.lib.orchestrator_store register-revision <parent-task-id>`, then re-run Stages 5-7 with a fresh source fetch, previous `claim_decisions` resurfaced for amendment, and `refresh=true`.
+
+## A2 chain conductor -- approved thesis -> strategy spec -> backtest -> strategy gate
+
+Ship-2 Phase-A2 (contract Stages 9-10). A2 EXTENDS the same A1 parent chain flight past an APPROVED thesis. It is agent-native like A1: YOU conduct the single conversation and dispatch only bounded K2Bi calls through the allowlisted worker door. **A2 has NO capital path:** do not dispatch `run_full_ship`/`/invest-ship`, do not ship a strategy to the engine, do not commit or touch the K2Bi engine. A2 ends parked at the strategy-approval gate (the 2nd of the 4 human gates) or in a bounded-revision terminal park.
+
+### A2 durable model (adds to the A1 model)
+
+- Same parent flight (`profile=k2b`, `entity=<TICKER>`, `needs_human`). New parent-payload flags:
+  `thesis_approved`, `strategy_spec_written`, `strategy_path`, `strategy_artifact_verified`,
+  `strategy_artifact_sha256`, `backtest_done`, `backtest_artifact_path`, `backtest_look_ahead_check`,
+  `strategy_approved`, `strategy_revision_count`.
+- `a1_resume_action` extends past the thesis gate: with `thesis_approved` set it returns
+  `dispatch_strategy` -> `verify_strategy_artifact` -> `dispatch_backtest` -> `strategy_approval_gate` ->
+  (after approve) `strategy_approved_await_ship` (A3 not built yet). Backward-compatible: with no
+  `thesis_approved`, it returns `thesis_approval_gate` exactly as A1.
+- **Thesis/bear shared-file sha drift (latent A1 finding #5):** thesis + bear-case write the SAME
+  `wiki/tickers/<SYM>.md`, so the pre-bear `thesis_artifact_sha256` no longer matches after bear appends.
+  Fixed: `a1_mark_bear_verdict` re-anchors the sha synchronously on PROCEED (forward); for a flight created
+  before that fix the resume oracle reports `thesis_artifact_invalid` and you recover with
+  `python3 -m scripts.lib.orchestrator_store reanchor-thesis-artifact <task-id> [path] --i-checked-the-log
+  --reason "<why>"` -- the `--i-checked-the-log` ack is MANDATORY (you attest the current file is the
+  legitimate post-bear thesis+bear artifact, not corruption) and it only works after `bear_done=true`. Pre-bear
+  thesis drift is real corruption -> use `clear-thesis-artifact`, not re-anchor.
+- Strategy revisions are bounded at 3 (separate `strategy_revision_count`); a 4th `register-strategy-revision`
+  terminalizes the flight `needs_human` with `terminal_reason=strategy_revision_limit_exceeded` (cancel it for
+  a fresh chain).
+
+### A2 allowlisted dispatches
+
+Same Ship-1a worker preflight (trusted K2Bi workspace, worker lock, clean `~/Projects/K2Bi` git tree). New
+command keys, dispatched through the `payload_path` carrier (allowed payload dir + adapter fd-guard) exactly
+like A1's thesis/bear:
+
+- `k2bi-write-strategy-spec` -> the K2B runner calls
+  `invest_orchestrator_adapters.write_complete_strategy_spec(decision, repo_root=<K2Bi VAULT>)`. **NOTE the
+  kwarg is `repo_root`** (where `wiki/strategies/` lives -- the K2Bi vault), not `vault_root`. The runner
+  resolves `repo_root` to the K2Bi vault ONLY (a K2B-vault repo_root is refused).
+- `k2bi-run-backtest` -> the runner calls `invest_backtest.run_backtest(slug, vault_root=<K2Bi VAULT>)`. The
+  strategy writer does NOT chain the backtest, so this is a SECOND bounded dispatch (strategy child terminal
+  before the backtest child is created -- strictly sequential). It pulls live yfinance bars and writes an
+  immutable capture under `raw/backtests/`; it NEVER writes the strategy file.
+
+Set `K2B_ORCH_ADAPTER_PAYLOAD_DIR` on the `poll-once` env (the allowed payload dir for the carrier). Children
+are created with `--parent-task <parent> --flight <parent flight>` so the chain-scoped lock admits them.
+
+### Exact StrategySpecDecision contract (no inferred schema)
+
+`write_complete_strategy_spec`'s `decision` is a frozen dataclass; the runner builds it via the SAME strict
+coercion thesis uses, which requires EVERY field present (it ignores dataclass defaults). Build the decision
+JSON with all 20 fields (the 5 optionals as explicit `null`/`[]`):
+
+```yaml
+slug: str                       # ^[A-Za-z0-9][A-Za-z0-9_-]*$
+symbol: str                     # MUST equal order.ticker (and the dispatched payload symbol)
+sigid: str
+risk_envelope_pct: str|float    # e.g. "0.0025" for 0.25% NAV-at-risk
+order:                          # ticker == symbol; qty positive int; order_type MKT|LMT
+  ticker: str
+  side: str                     # e.g. "buy"
+  qty: int
+  order_type: MKT | LMT
+  limit_price: str|null         # REQUIRED for LMT; MUST be null for MKT
+  stop_loss: str
+  time_in_force: str            # e.g. "DAY"
+forward_guidance_metrics:       # non-empty list; sits_inside_guide MUST be a real bool
+  - {metric, locked_threshold_text, guide_source_text, guide_range_text, sits_inside_guide}
+forward_guidance_status: pass | override | waive
+how_this_works: str             # non-empty -- the plain-English gate
+bucket_rules: [str, ...]        # all of these are NON-EMPTY string lists
+entry_rules:  [str, ...]
+stop_rules:   [str, ...]
+target_rules: [str, ...]
+hold_rules:   [str, ...]
+kill_rules:   [str, ...]
+accepted_gaps:[str, ...]
+forward_guidance_override_reason: str|null
+forward_guidance_waive_reason: str|null
+regime_filter: [..]|null        # [] is fine
+date: str|null                  # ISO-8601
+extra_frontmatter: dict|null
+```
+
+The runner refuses (status `error`, exit 2) if `payload.symbol != decision.symbol != decision.order.ticker`
+or if any `sits_inside_guide` is not a real boolean (the K2Bi writer would otherwise coerce a string to True).
+The K2Bi `write_complete_strategy_spec` is the REAL gate (slug/order/forward-guidance validators, atomic
+write + sha verification); it raises `OrchestratorGateError` (adapter status `error`) on any violation -- this
+is the A2 negative path (e.g. an empty `how_this_works` writes NO file).
+
+### Procedure
+
+1. **Approve the thesis gate (Stage 8 -> A2 open).** Resume returns `thesis_approval_gate`. Surface the thesis
+   path + bear verdict/conviction + claim summary. On Keith's `approve`, run
+   `python3 -m scripts.lib.orchestrator_store approve-thesis <parent-task-id>`. (`revise` stays the A1 path.)
+   If resume reports `thesis_artifact_invalid` first, recover with
+   `reanchor-thesis-artifact ... --i-checked-the-log` after confirming the ticker file is the legit post-bear
+   artifact.
+2. **Strategy spec (Stage 9).** Build the `decision` from the approved thesis (entry/stop/targets/hold/kill +
+   plain-English How-This-Works). `~/Projects/K2Bi` MUST be a CLEAN tree on origin/main (worker preflight
+   enforces; if dirty, surface to Keith -- do not mutate). Write the decision JSON to the payload dir, create
+   the child (`k2bi-write-strategy-spec`, `--parent-task` + `--flight`, `--entity <TICKER>`, payload carries
+   `symbol`, `repo_root=<K2Bi VAULT>`, `payload_path`), set `K2B_ORCH_ADAPTER_PAYLOAD_DIR`, `poll-once`. After
+   the worker reaches `done` AND the strategy file exists, run `record-strategy-done <parent> <path>` then
+   `verify-strategy-artifact <parent>`. On adapter refusal, show it and keep parked -- do not write K2Bi state.
+3. **Backtest (Stage 10).** Create the second child (`k2bi-run-backtest`, same parent/flight/entity, payload
+   carries `symbol`, `vault_root=<K2Bi VAULT>`, `slug`), `poll-once`. After `done` + the capture exists, run
+   `record-backtest-done <parent> <capture-path> --look-ahead-check <passed|suspicious>`. Surface Sharpe /
+   max-DD / win-rate and the `look_ahead_check` (the overfit/look-ahead rejector).
+4. **Strategy gate (Stage 9 approval -- END of A2).** Resume returns `strategy_approval_gate`. Surface the
+   strategy spec + backtest result. Keith answers `approve` -> `approve-strategy <parent>` (A2 done; the chain
+   parks `strategy_approved_await_ship` for the future A3 ship-to-engine increment) or `revise` ->
+   `register-strategy-revision <parent>` + re-run Stage 9-10 with an amended decision.
 
 ## Canonical add example
 
