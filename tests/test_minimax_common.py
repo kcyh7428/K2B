@@ -66,6 +66,8 @@ class TestChatCompletion(unittest.TestCase):
     def setUp(self) -> None:
         # Neutralize the real API key lookup + the backoff sleeps so the test
         # suite runs in <1s regardless of the backoff ladder (10+20+40s).
+        self._provider_before = minimax_common.K2B_LLM_PROVIDER
+        minimax_common.K2B_LLM_PROVIDER = "minimax"
         self.patchers = [
             patch.object(minimax_common, "load_api_key", return_value="fake-key"),
             patch("time.sleep", return_value=None),
@@ -76,6 +78,7 @@ class TestChatCompletion(unittest.TestCase):
     def tearDown(self) -> None:
         for p in self.patchers:
             p.stop()
+        minimax_common.K2B_LLM_PROVIDER = self._provider_before
 
     def _run(self):
         return minimax_common.chat_completion(

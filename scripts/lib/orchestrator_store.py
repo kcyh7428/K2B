@@ -13,6 +13,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from urllib.parse import urlparse
 
 try:
@@ -44,13 +45,23 @@ class FlightLockError(Exception):
 # of VALID_INITIAL_STATUSES -- every other live state is reached via an explicit
 # transition, never a bare add_task, so a typo'd or terminal-looking initial
 # status cannot create a stuck or metadata-less row.
-TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
+TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled", "terminal_bear_veto"})
 ALL_STATUSES = frozenset({
     "ready", "running", "blocked", "zombie",
     "waiting_for_kimi_output", "needs_human", "returned",
     "waiting_for_agent_theme",
-    "done", "failed", "cancelled",
+    "done", "failed", "cancelled", "terminal_bear_veto",
 })
+NON_COMPLETABLE_STATUSES = tuple(sorted(
+    TERMINAL_STATUSES
+    | {
+        "running",
+        "zombie",
+        "waiting_for_kimi_output",
+        "needs_human",
+        "waiting_for_agent_theme",
+    }
+))
 # waiting_for_agent_theme: Chat-2 agent-native parked state. The in-session agent
 # generates candidates + validates/repairs citations + writes the theme itself
 # (no Kimi, no dispatched command); the flight is created PARKED here so poll_once
@@ -268,7 +279,7 @@ def add_task(
                 """
                 SELECT id FROM tasks
                 WHERE lower(trim(entity_key)) = lower(trim(?))
-                  AND status NOT IN ('done', 'failed', 'cancelled')
+                  AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
                 LIMIT 1
                 """,
                 (entity_key,),
@@ -409,13 +420,13 @@ def cas_cancel(task_id, expect_status, expect_pid) -> bool:
         now = now_iso()
         if expect_pid is None:
             cur = conn.execute(
-                "UPDATE tasks SET status='cancelled', finished_at=?, updated_at=? "
+                "UPDATE tasks SET status='cancelled', blocker_reason=NULL, finished_at=?, updated_at=? "
                 "WHERE id=? AND status=? AND worker_pid IS NULL",
                 (now, now, task_id, expect_status),
             )
         else:
             cur = conn.execute(
-                "UPDATE tasks SET status='cancelled', finished_at=?, updated_at=? "
+                "UPDATE tasks SET status='cancelled', blocker_reason=NULL, finished_at=?, updated_at=? "
                 "WHERE id=? AND status=? AND worker_pid=?",
                 (now, now, task_id, expect_status, expect_pid),
             )
@@ -755,15 +766,35 @@ def clear_blocked_by(task_id) -> None:
 
 
 def transition(task_id, status, **fields) -> None:
+    if status not in ALL_STATUSES:
+        raise ValueError(f"invalid status {status!r}")
     with _acquire_lock():
         conn = connect()
         init_db(conn)
         now = now_iso()
+        row = conn.execute("SELECT status, payload FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is not None and row["status"] in TERMINAL_STATUSES and status != row["status"]:
+            conn.close()
+            raise ValueError(f"terminal status is irreversible: {row['status']}")
+        if row is not None:
+            payload = _payload_dict(row["payload"])
+            try:
+                revision_count = int(payload.get("revision_count") or 0)
+            except (TypeError, ValueError):
+                revision_count = 0
+            if (
+                payload.get("terminal_reason") == "revision_limit_exceeded"
+                or revision_count > A1_MAX_REVISIONS
+            ) and status != "cancelled":
+                conn.close()
+                raise ValueError("revision limit exceeded; use a fresh human decision")
         updates = ["status = ?", "updated_at = ?"]
         params = [status, now]
-        if status in {"done", "failed", "cancelled"}:
+        if status in TERMINAL_STATUSES:
             updates.append("finished_at = ?")
             params.append(now)
+        if status == "cancelled" and "blocker_reason" not in fields:
+            fields["blocker_reason"] = None
         for k, v in fields.items():
             updates.append(f"{k} = ?")
             params.append(v)
@@ -772,6 +803,492 @@ def transition(task_id, status, **fields) -> None:
         conn.execute(sql, params)
         conn.commit()
         conn.close()
+
+
+A1_MAX_REVISIONS = 3
+TERMINAL_TTL_CREATED_AT_FLOOR = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+def _payload_dict(raw_payload) -> dict:
+    if raw_payload is None:
+        return {}
+    if isinstance(raw_payload, dict):
+        return dict(raw_payload)
+    if isinstance(raw_payload, str) and raw_payload.strip():
+        parsed = json.loads(raw_payload)
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _update_payload_locked(
+    conn,
+    task_id: str,
+    payload: dict,
+    *,
+    status: str | None = None,
+    blocker_reason: str | None = None,
+) -> bool:
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if row and row["status"] in TERMINAL_STATUSES and status != row["status"]:
+        raise ValueError(
+            f"terminal status is irreversible: {row['status']} cannot update payload/status"
+        )
+    now = now_iso()
+    updates = ["payload=?", "updated_at=?"]
+    params = [json.dumps(payload, sort_keys=True), now]
+    if status is not None:
+        if status not in ALL_STATUSES:
+            raise ValueError(f"invalid status {status!r}")
+        updates.insert(0, "status=?")
+        params.insert(0, status)
+        if status in TERMINAL_STATUSES:
+            updates.append("finished_at=?")
+            params.append(now)
+    if blocker_reason is not None:
+        updates.append("blocker_reason=?")
+        params.append(blocker_reason)
+    params.append(task_id)
+    cur = conn.execute(
+        f"UPDATE tasks SET {', '.join(updates)} WHERE id=?",
+        params,
+    )
+    return cur.rowcount == 1
+
+
+def a1_claim_decisions_hash(claim_decisions) -> str:
+    """Stable digest for a T7 claim-decision package.
+
+    The digest is used only for idempotency bookkeeping; the adapter still
+    receives the exact claim dicts and enforces the real safety contract.
+    """
+    canonical = json.dumps(claim_decisions, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def a1_t7_context_hash(chain_payload: dict, claim_decisions: list[dict]) -> str:
+    """Stable digest for the full T7 decision context that affects thesis output."""
+    payload = chain_payload or {}
+    package = {
+        "thesis_input": payload.get("thesis_input"),
+        "claim_decisions": claim_decisions,
+        "operator_override_reason": payload.get("operator_override_reason"),
+        "calx_override_acknowledged": bool(payload.get("calx_override_acknowledged", False)),
+        "vendor_warning_acknowledged": bool(payload.get("vendor_warning_acknowledged", False)),
+        "vendor_provenance": payload.get("vendor_provenance"),
+    }
+    return a1_claim_decisions_hash(package)
+
+
+def a1_prepare_thesis_dispatch_payload(chain_payload: dict, claim_decisions: list[dict]) -> dict:
+    """Build the adapter payload for a thesis re/dispatch.
+
+    If a thesis has already been written, a repeated or revised Stage 5-7 run
+    must overwrite through the K2Bi adapter's `refresh=True` kwarg rather than
+    appending a duplicate thesis.
+    """
+    payload = dict(chain_payload or {})
+    digest = a1_t7_context_hash(payload, claim_decisions)
+    existing_digest = payload.get("claim_decisions_hash")
+    if existing_digest and existing_digest != digest:
+        raise ValueError(
+            "claim_decisions_hash mismatch; call a1_register_revision before "
+            "dispatching amended T7 decisions"
+        )
+    existing_claim_decisions = payload.get("claim_decisions")
+    if existing_claim_decisions is not None:
+        existing_claim_digest = a1_t7_context_hash(payload, existing_claim_decisions)
+        if existing_claim_digest != digest:
+            raise ValueError(
+                "claim_decisions changed without a registered revision; call "
+                "a1_register_revision before dispatching amended T7 decisions"
+            )
+    payload["claim_decisions"] = claim_decisions
+    payload["claim_decisions_hash"] = digest
+    payload["thesis_dispatch_started_at"] = now_iso()
+    if payload.get("thesis_written"):
+        if not payload.get("thesis_artifact_verified"):
+            raise ValueError("cannot refresh thesis before thesis_artifact_verified=true")
+        payload["refresh"] = True
+    else:
+        payload["refresh"] = bool(payload.get("refresh", False))
+    return payload
+
+
+def a1_resume_action(task_id: str) -> str:
+    """Return the next A1 conductor action from payload completion flags.
+
+    This deliberately ignores legacy/freeform `payload.stage`: partial resume
+    is driven by the explicit subtask flags required by the A1 contract.
+    """
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        try:
+            return a1_resume_action_locked(conn, task_id)
+        finally:
+            conn.close()
+
+
+def a1_resume_action_locked(conn, task_id: str) -> str:
+    """Locked A1 resume oracle for callers already holding `_acquire_lock()`."""
+    row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"task {task_id} not found")
+    task = dict(row)
+    status = task.get("status")
+    if status == "terminal_bear_veto":
+        return "terminal_bear_veto"
+    if status in TERMINAL_STATUSES:
+        return f"terminal_{status}"
+    payload = _payload_dict(task.get("payload"))
+    if payload.get("bear_verdict") == "VETO":
+        return "terminal_bear_veto"
+    try:
+        revision_count = int(payload.get("revision_count") or 0)
+    except (TypeError, ValueError):
+        revision_count = 0
+    if payload.get("terminal_reason") == "revision_limit_exceeded":
+        return "needs_human_terminal"
+    if revision_count > A1_MAX_REVISIONS:
+        return "needs_human_terminal"
+    if not payload.get("promote_done"):
+        return "await_promote"
+    if not payload.get("screen_done"):
+        return "dispatch_screen"
+    if not payload.get("thesis_written") and not payload.get("screen_approved_by_operator"):
+        return "await_screen_approval"
+    if not payload.get("thesis_written"):
+        return "dispatch_thesis"
+    if payload.get("thesis_artifact_drift_detected_at"):
+        return "thesis_artifact_invalid"
+    if not payload.get("thesis_artifact_verified"):
+        return "verify_thesis_artifact"
+    ok, reason = _a1_thesis_artifact_payload_valid(payload)
+    if not ok:
+        payload["thesis_artifact_verified"] = False
+        payload.pop("thesis_artifact_verified_at", None)
+        payload["thesis_artifact_drift_detected_at"] = now_iso()
+        payload["thesis_artifact_drift_reason"] = reason
+        _update_payload_locked(conn, task_id, payload, status=status)
+        conn.commit()
+        return "thesis_artifact_invalid"
+    if not payload.get("bear_done"):
+        return "dispatch_bear_case"
+    return "thesis_approval_gate"
+
+
+def _parse_iso_dt(value: str | None):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _a1_thesis_artifact_payload_valid(payload: dict) -> tuple[bool, str]:
+    raw_path = payload.get("thesis_path") or payload.get("thesis_artifact_path")
+    if not raw_path:
+        return (False, "thesis artifact path missing")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        return (False, f"thesis artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"thesis artifact is empty: {path}")
+    expected_sha = payload.get("thesis_artifact_sha256")
+    actual_sha = _sha256_file(path)
+    if expected_sha:
+        if expected_sha != actual_sha:
+            return (False, f"thesis artifact sha256 mismatch: {path}")
+        return (True, "")
+    dispatch_dt = _parse_iso_dt(payload.get("thesis_dispatch_started_at"))
+    if dispatch_dt is not None:
+        artifact_dt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if artifact_dt < dispatch_dt:
+            return (False, f"thesis artifact older than dispatch: {path}")
+    return (True, "")
+
+
+def a1_verify_thesis_artifact(
+    task_id: str,
+    artifact_path: str | None = None,
+    *,
+    recovery_log_checked: bool = False,
+) -> tuple[bool, str]:
+    """Verify and record the thesis artifact before A1 can dispatch bear-case."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("thesis_artifact_drift_detected_at"):
+            conn.close()
+            return (
+                False,
+                "thesis artifact drift already detected; run clear-thesis-artifact before re-verifying",
+            )
+        raw_path = (
+            artifact_path
+            or payload.get("thesis_path")
+            or payload.get("thesis_artifact_path")
+        )
+        if not raw_path:
+            conn.close()
+            return (False, "thesis artifact path missing")
+        if artifact_path and not payload.get("thesis_dispatch_started_at"):
+            conn.close()
+            return (False, "explicit thesis artifact path requires thesis_dispatch_started_at")
+        path = Path(str(raw_path)).expanduser()
+        ok, reason = _a1_thesis_artifact_payload_valid({**payload, "thesis_path": str(path)})
+        if not ok:
+            conn.close()
+            return (False, reason)
+        payload["thesis_path"] = str(path)
+        payload["thesis_artifact_sha256"] = _sha256_file(path)
+        payload["thesis_artifact_verified"] = True
+        verified_at = now_iso()
+        payload["thesis_artifact_verified_at"] = verified_at
+        if recovery_log_checked:
+            payload["thesis_recovery_log_checked_at"] = verified_at
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_force_verify_thesis_artifact(
+    task_id: str,
+    artifact_path: str,
+    *,
+    checked_log: bool,
+) -> tuple[bool, str]:
+    """Recovery helper for operator-verified artifacts after worker death/reclaim."""
+    if not checked_log:
+        return (False, "force verification requires --i-checked-the-log")
+    if not artifact_path:
+        return (False, "force verification requires an explicit thesis artifact path")
+    return a1_verify_thesis_artifact(
+        task_id,
+        artifact_path,
+        recovery_log_checked=True,
+    )
+
+
+def a1_clear_thesis_artifact(task_id: str, *, reason: str | None = None) -> tuple[bool, str]:
+    """Explicitly clear invalid thesis/bear progress after the resume oracle reports drift."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        payload["thesis_written"] = False
+        payload["bear_done"] = False
+        for key in (
+            "bear_verdict",
+            "bear_conviction",
+            "thesis_artifact_verified",
+            "thesis_artifact_verified_at",
+            "thesis_artifact_sha256",
+            "thesis_recovery_log_checked_at",
+            "thesis_artifact_drift_detected_at",
+            "thesis_artifact_drift_reason",
+        ):
+            payload.pop(key, None)
+        payload["thesis_artifact_invalid_at"] = now_iso()
+        if reason:
+            payload["thesis_artifact_invalid_reason"] = reason
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_record_screen_done(task_id: str, artifact_path: str) -> tuple[bool, str]:
+    """Verify a screen artifact and mark the A1 parent screen stage complete."""
+    path = Path(str(artifact_path)).expanduser()
+    if not path.is_file():
+        return (False, f"screen artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"screen artifact is empty: {path}")
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        payload["screen_done"] = True
+        payload["screen_artifact_path"] = str(path)
+        payload["screen_done_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_approve_screen(task_id: str) -> tuple[bool, str]:
+    """Record Keith/operator approval to continue from A1 screen into thesis."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("screen_done") is not True:
+            conn.close()
+            return (False, "screen artifact must be recorded before approval")
+        payload["screen_approved_by_operator"] = True
+        payload["screen_approved_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_mark_bear_verdict(task_id: str, verdict: str, *, conviction=None) -> bool:
+    """Record the bear-case outcome and hard-stop VETO flights."""
+    normalized = str(verdict or "").strip().upper()
+    if normalized not in {"PROCEED", "VETO"}:
+        raise ValueError("bear verdict must be PROCEED or VETO")
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT payload, status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            raise KeyError(f"task {task_id} not found")
+        if row["status"] in TERMINAL_STATUSES:
+            conn.close()
+            raise ValueError(f"task {task_id} is already terminal: {row['status']}")
+        payload = _payload_dict(row["payload"])
+        if payload.get("bear_done"):
+            conn.close()
+            return False
+        payload["bear_done"] = True
+        payload["bear_verdict"] = normalized
+        if conviction is not None:
+            payload["bear_conviction"] = conviction
+        status = "terminal_bear_veto" if normalized == "VETO" else "needs_human"
+        changed = _update_payload_locked(conn, task_id, payload, status=status)
+        conn.commit()
+        conn.close()
+    return changed
+
+
+def a1_register_revision(task_id: str) -> bool:
+    """Increment the bounded thesis-revision loop.
+
+    Returns True while the conductor may re-run Stage 5-7. On the fourth
+    request, leaves the flight parked in `needs_human` with a terminal reason
+    so resume will surface escalation instead of dispatching again.
+    """
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT payload, status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return False
+        if row["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return False
+        if row["status"] not in {"needs_human", "blocked", "returned"}:
+            conn.close()
+            raise ValueError(f"cannot register revision while task is {row['status']}")
+        payload = _payload_dict(row["payload"])
+        count = int(payload.get("revision_count") or 0) + 1
+        payload["revision_count"] = count
+        if count > A1_MAX_REVISIONS:
+            payload["terminal_reason"] = "revision_limit_exceeded"
+            payload.setdefault("terminal_reason_at", now_iso())
+            payload["thesis_written"] = False
+            payload["bear_done"] = False
+            for key in (
+                "bear_verdict",
+                "claim_decisions",
+                "claim_decisions_hash",
+                "thesis_artifact_verified",
+                "thesis_artifact_verified_at",
+                "thesis_artifact_sha256",
+                "thesis_dispatch_started_at",
+                "operator_override_reason",
+                "calx_override_acknowledged",
+                "vendor_warning_acknowledged",
+                "vendor_provenance",
+            ):
+                payload.pop(key, None)
+            _update_payload_locked(
+                conn,
+                task_id,
+                payload,
+                status="needs_human",
+                blocker_reason=(
+                    "revision limit exceeded; this flight keeps the entity lock. "
+                    "Cancel it before starting a fresh A1 chain."
+                ),
+            )
+            conn.commit()
+            conn.close()
+            return False
+        # A revision restarts Stage 5-7 from a fresh source fetch and keeps the
+        # previous decisions available for amendment.
+        payload["thesis_written"] = False
+        payload["bear_done"] = False
+        for key in (
+            "bear_verdict",
+            "claim_decisions",
+            "claim_decisions_hash",
+            "thesis_artifact_verified",
+            "thesis_artifact_verified_at",
+            "thesis_artifact_sha256",
+            "thesis_dispatch_started_at",
+            "operator_override_reason",
+            "calx_override_acknowledged",
+            "vendor_warning_acknowledged",
+            "vendor_provenance",
+        ):
+            payload.pop(key, None)
+        changed = _update_payload_locked(conn, task_id, payload, status="needs_human")
+        conn.commit()
+        conn.close()
+    return changed
 
 
 def heartbeat(task_id) -> None:
@@ -847,6 +1364,42 @@ def _kill_group_and_confirm(worker_pid) -> bool:
     return _poll_gone(3)
 
 
+def _cleared_a1_partial_worker_progress(payload: dict, reason: str) -> dict | None:
+    a1_keys = {
+        "thesis_written",
+        "thesis_artifact_verified",
+        "thesis_artifact_verified_at",
+        "thesis_artifact_sha256",
+        "thesis_artifact_drift_detected_at",
+        "thesis_artifact_drift_reason",
+        "bear_done",
+        "bear_verdict",
+        "bear_conviction",
+        "screen_approved_by_operator",
+        "screen_approved_at",
+    }
+    if not any(key in payload for key in a1_keys):
+        return None
+    cleared = dict(payload)
+    cleared["thesis_written"] = False
+    cleared["bear_done"] = False
+    for key in (
+        "thesis_artifact_verified",
+        "thesis_artifact_verified_at",
+        "thesis_artifact_sha256",
+        "thesis_artifact_drift_detected_at",
+        "thesis_artifact_drift_reason",
+        "bear_verdict",
+        "bear_conviction",
+        "screen_approved_by_operator",
+        "screen_approved_at",
+    ):
+        cleared.pop(key, None)
+    cleared["worker_reclaim_reset_at"] = now_iso()
+    cleared["worker_reclaim_reset_reason"] = reason
+    return cleared
+
+
 def reclaim_zombies(timeout_s=300) -> list[str]:
     # KNOWN SHIP 1a RESIDUAL (accepted 2026-05-30; Ship 1b fencing token):
     # a task whose worker_pid is still NULL when its heartbeat goes >5min stale
@@ -867,7 +1420,7 @@ def reclaim_zombies(timeout_s=300) -> list[str]:
         # Find running tasks with stale heartbeat
         rows = conn.execute(
             """
-            SELECT id, worker_pid, COALESCE(heartbeat_at, started_at) AS last_beat
+            SELECT id, worker_pid, payload, COALESCE(heartbeat_at, started_at) AS last_beat
             FROM tasks
             WHERE status = 'running'
             """
@@ -885,7 +1438,9 @@ def reclaim_zombies(timeout_s=300) -> list[str]:
             except Exception:
                 stale_ids.append((row["id"], row["worker_pid"]))
 
+        row_by_id = {row["id"]: row for row in rows}
         for task_id, worker_pid in stale_ids:
+            stale_row = row_by_id.get(task_id)
             reason = f"zombie reclaim: no heartbeat > {timeout_s}s"
             conn.execute(
                 "UPDATE tasks SET status='zombie', blocker_reason=?, updated_at=? WHERE id=?",
@@ -900,14 +1455,27 @@ def reclaim_zombies(timeout_s=300) -> list[str]:
             if not _kill_group_and_confirm(worker_pid):
                 continue
 
-            # Now flip back to ready
-            conn.execute(
-                """
-                UPDATE tasks SET status='ready', worker_pid=NULL, started_at=NULL,
-                heartbeat_at=NULL, blocker_reason=?, updated_at=? WHERE id=?
-                """,
-                (reason, now_iso(), task_id),
-            )
+            # Now flip back to ready. A confirmed-dead A1 worker may have died
+            # after writing partial K2Bi files but before verification; clear the
+            # optimistic thesis/bear flags so resume must re-run/verify.
+            payload = _payload_dict(stale_row["payload"] if stale_row is not None else None)
+            cleared_payload = _cleared_a1_partial_worker_progress(payload, reason)
+            if cleared_payload is not None:
+                conn.execute(
+                    """
+                    UPDATE tasks SET status='ready', worker_pid=NULL, started_at=NULL,
+                    heartbeat_at=NULL, blocker_reason=?, payload=?, updated_at=? WHERE id=?
+                    """,
+                    (reason, json.dumps(cleared_payload, sort_keys=True), now_iso(), task_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE tasks SET status='ready', worker_pid=NULL, started_at=NULL,
+                    heartbeat_at=NULL, blocker_reason=?, updated_at=? WHERE id=?
+                    """,
+                    (reason, now_iso(), task_id),
+                )
             conn.commit()
             reclaimed.append(task_id)
         conn.close()
@@ -964,6 +1532,7 @@ def poll_once() -> dict:
     # TTL sweep: auto-cancel parked flights older than their TTL
     WAIT_TTL_DAYS = int(os.environ.get("K2B_ORCH_KIMI_TTL_DAYS", "14"))
     NEEDS_HUMAN_TTL_DAYS = int(os.environ.get("K2B_ORCH_NEEDS_HUMAN_TTL_DAYS", "7"))
+    TERMINAL_REASON_TTL_DAYS = int(os.environ.get("K2B_ORCH_TERMINAL_REASON_TTL_DAYS", "7"))
     # Agent-native Chat-2 theme work completes in one in-session pass, so an
     # abandoned waiting_for_agent_theme flight (agent crashed mid-build) should
     # clean up fast -- short TTL, default 2 days.
@@ -975,11 +1544,15 @@ def poll_once() -> dict:
         init_db(conn)
         rows = conn.execute(
             """
-            SELECT id, status, updated_at FROM tasks
+            SELECT id, status, created_at, updated_at, payload FROM tasks
             WHERE status IN ('waiting_for_kimi_output', 'needs_human', 'waiting_for_agent_theme')
             """
         ).fetchall()
         for row in rows:
+            terminal_reason = None
+            if row["status"] == "needs_human":
+                payload = _payload_dict(row["payload"])
+                terminal_reason = payload.get("terminal_reason")
             updated_at = row["updated_at"]
             if not updated_at:
                 continue
@@ -992,6 +1565,17 @@ def poll_once() -> dict:
             # Normalize to UTC instead of crashing the whole dispatch cycle.
             if updated_dt.tzinfo is None:
                 updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+            if terminal_reason:
+                terminal_dt = _parse_iso_dt(payload.get("terminal_reason_at"))
+                if terminal_dt is not None:
+                    updated_dt = min(terminal_dt, updated_dt, now)
+                else:
+                    created_dt = _parse_iso_dt(row["created_at"])
+                    if (
+                        created_dt is not None
+                        and created_dt >= TERMINAL_TTL_CREATED_AT_FLOOR
+                    ):
+                        updated_dt = min(created_dt, updated_dt, now)
             age = now - updated_dt
             # >= timedelta, NOT age.days > N: age.days floors, so `> 14` would
             # not fire until ~15 days. Use exact-duration comparison.
@@ -1000,6 +1584,11 @@ def poll_once() -> dict:
                 and age >= timedelta(days=WAIT_TTL_DAYS)
             ) or (
                 row["status"] == "needs_human"
+                and terminal_reason
+                and age >= timedelta(days=TERMINAL_REASON_TTL_DAYS)
+            ) or (
+                row["status"] == "needs_human"
+                and not terminal_reason
                 and age >= timedelta(days=NEEDS_HUMAN_TTL_DAYS)
             ) or (
                 row["status"] == "waiting_for_agent_theme"
@@ -1007,6 +1596,21 @@ def poll_once() -> dict:
             )
             if expired:
                 n = now_iso()
+                if terminal_reason:
+                    payload = _payload_dict(row["payload"])
+                    history = payload.get("terminal_history")
+                    if not isinstance(history, list):
+                        history = []
+                    history.append({
+                        "reason": terminal_reason,
+                        "expired_at": n,
+                        "task_id": row["id"],
+                    })
+                    payload["terminal_history"] = history
+                    conn.execute(
+                        "UPDATE tasks SET payload=? WHERE id=?",
+                        (json.dumps(payload, sort_keys=True), row["id"]),
+                    )
                 conn.execute(
                     "UPDATE tasks SET status='cancelled', blocker_reason='ttl-expired', "
                     "finished_at=?, updated_at=? WHERE id=?",
@@ -1124,6 +1728,51 @@ def _main():
     verify_p.add_argument("id")
     verify_p.add_argument("path", help="Path to the agent-written theme_<slug>.md")
 
+    verify_thesis_p = sub.add_parser(
+        "verify-thesis-artifact",
+        help="Verify an A1 thesis artifact before bear-case dispatch",
+    )
+    verify_thesis_p.add_argument("id")
+    verify_thesis_p.add_argument("path", nargs="?")
+
+    force_verify_thesis_p = sub.add_parser(
+        "force-verify-thesis-artifact",
+        help="Recovery-only A1 thesis verification after worker death/log inspection",
+    )
+    force_verify_thesis_p.add_argument("id")
+    force_verify_thesis_p.add_argument("path")
+    force_verify_thesis_p.add_argument(
+        "--i-checked-the-log",
+        action="store_true",
+        help="Required acknowledgement that the worker artifact/log was manually inspected",
+    )
+
+    clear_thesis_p = sub.add_parser(
+        "clear-thesis-artifact",
+        help="Explicitly clear invalid A1 thesis/bear progress after resume drift",
+    )
+    clear_thesis_p.add_argument("id")
+    clear_thesis_p.add_argument("--reason")
+
+    screen_done_p = sub.add_parser(
+        "record-screen-done",
+        help="Verify an A1 screen artifact and mark screen_done on the parent flight",
+    )
+    screen_done_p.add_argument("id")
+    screen_done_p.add_argument("path")
+
+    approve_screen_p = sub.add_parser(
+        "approve-screen",
+        help="Record operator approval to continue A1 after screen artifact review",
+    )
+    approve_screen_p.add_argument("id")
+
+    register_revision_p = sub.add_parser(
+        "register-revision",
+        help="Increment the bounded A1 thesis revision counter",
+    )
+    register_revision_p.add_argument("id")
+
     block_p = sub.add_parser("block", help="Block a task")
     block_p.add_argument("id")
     block_p.add_argument("--reason", required=True)
@@ -1229,6 +1878,12 @@ def _main():
                 file=sys.stderr,
             )
             sys.exit(1)
+        if t["status"] in TERMINAL_STATUSES:
+            print(
+                f"Cannot complete: task is {t['status']}; no longer in a completable state",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # A parked agent-managed flight must NOT be completed directly: that would
         # bypass the return acceptance gate (raw output + sha256 + sentinel) and
         # silently release the one-flight entity lock. It must go through `return`
@@ -1257,11 +1912,12 @@ def _main():
             conn = connect()
             init_db(conn)
             now = now_iso()
+            non_completable = NON_COMPLETABLE_STATUSES
+            placeholders = ",".join("?" for _ in non_completable)
             cur = conn.execute(
                 "UPDATE tasks SET status='done', finished_at=?, updated_at=?, result_url=? "
-                "WHERE id=? AND status NOT IN "
-                "('done','failed','cancelled','running','zombie','waiting_for_kimi_output','needs_human','waiting_for_agent_theme')",
-                (now, now, args.result, args.id),
+                f"WHERE id=? AND status NOT IN ({placeholders})",
+                (now, now, args.result, args.id, *non_completable),
             )
             conn.commit()
             done_ok = cur.rowcount == 1
@@ -1284,6 +1940,61 @@ def _main():
             return
         print(f"verify-theme rejected {args.id}: {reason}", file=sys.stderr)
         sys.exit(1)
+
+    if args.cmd == "verify-thesis-artifact":
+        ok, reason = a1_verify_thesis_artifact(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} thesis artifact verified")
+            return
+        print(f"verify-thesis-artifact rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "force-verify-thesis-artifact":
+        ok, reason = a1_force_verify_thesis_artifact(
+            args.id,
+            args.path,
+            checked_log=args.i_checked_the_log,
+        )
+        if ok:
+            render_board()
+            print(f"Task {args.id} thesis artifact force-verified")
+            return
+        print(f"force-verify-thesis-artifact rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "clear-thesis-artifact":
+        ok, reason = a1_clear_thesis_artifact(args.id, reason=args.reason)
+        if ok:
+            render_board()
+            print(f"Task {args.id} thesis artifact cleared")
+            return
+        print(f"clear-thesis-artifact rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-screen-done":
+        ok, reason = a1_record_screen_done(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} screen artifact recorded")
+            return
+        print(f"record-screen-done rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "approve-screen":
+        ok, reason = a1_approve_screen(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} screen approved")
+            return
+        print(f"approve-screen rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "register-revision":
+        ok = a1_register_revision(args.id)
+        render_board()
+        print(f"Task {args.id} revision registered: {ok}")
+        return
 
     if args.cmd == "block":
         mark_blocked(args.id, args.reason)

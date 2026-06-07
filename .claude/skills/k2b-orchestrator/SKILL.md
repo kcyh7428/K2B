@@ -61,8 +61,8 @@ Runs `~/Projects/K2B/scripts/k2b-orchestrator.sh <subcommand>` and shows the out
 
 ## Ship 1a scope
 
-- Only the `k2bi` profile exists.
-- Only two `command_key` values are allowlisted:
+- Ship 1a introduced the `k2bi` dispatched profile.
+- Historical Ship-1a `command_key` values:
   - `k2bi-smoke-enrich-lrcx` (live K2Bi analyst command)
   - `test-echo-readonly` (test-only, harmless)
 - The orchestrator never approves strategies, never commits, never touches the K2Bi engine directly. Approval / commit / journal-retro are post-v1.
@@ -174,6 +174,79 @@ The flight is created **PARKED** (`waiting_for_agent_theme`) so `poll-once` neve
 ### Monitoring
 
 Chat-2 flights are parked `waiting_for_agent_theme` (k2b profile) -- they show on `/portfolio` as agent-owned and auto-expire via the TTL sweep (2 days) if abandoned. A failed `verify-theme` prints the exact gate clause that failed.
+
+## A1 chain conductor -- promote -> screen -> thesis+T7 -> bear -> thesis gate
+
+This is the Ship-2 Phase-A1 procedure for contract Stages 3-8. It is **agent-native** like Chat 1 / Chat 2: YOU conduct the single K2B conversation, gather Keith's decisions inline, and dispatch only bounded K2Bi adapter/helper calls through the allowlisted worker door. A1 has **NO capital path**: do not dispatch `write_complete_strategy_spec`, do not dispatch `run_full_ship`, do not approve a strategy, do not commit or touch the K2Bi engine. A1 ends parked at the thesis-approval gate or terminally rejected by bear VETO.
+
+### A1 durable model
+
+- Create one parent chain flight per ticker with `profile=k2b`, `entity=<TICKER>`, and `status=needs_human`. The parent is the conversation/portfolio ledger; it is not dispatched.
+- Store resume flags in the parent payload. Use these flags, not a single `stage` string: `promote_done`, `screen_done`, `thesis_written`, `thesis_artifact_verified`, `bear_done`.
+- Store T7 evidence in payload for replay/amendment: `claim_decisions`, `claim_decisions_hash`, `operator_override_reason`, `calx_override_acknowledged`, `vendor_warning_acknowledged`, `vendor_provenance`.
+- `scripts.lib.orchestrator_store.a1_resume_action(<tid>)` is the resume oracle. It ignores stale `payload.stage` and returns the next missing subtask.
+- Bear VETO is terminal: status `terminal_bear_veto`. Show the rejection and stop. Never offer approve/revise, never re-dispatch bear-case, never advance to A2 for that flight. A fresh chain is required.
+- Revisions are bounded: at most 3. A fourth revise call leaves the flight in `needs_human` with `terminal_reason=revision_limit_exceeded`; surface that Keith must make a fresh human decision.
+
+### A1 allowlisted dispatches
+
+A1 uses the existing Ship-1a worker preflight: trusted K2Bi workspace, worker lock, human lock, clean K2Bi git tree. New K2Bi command keys:
+
+- `k2bi-verify-and-generate-thesis` -> K2B runner calls K2Bi `invest_orchestrator_adapters.verify_and_generate_thesis(...)`.
+- `k2bi-run-bear-case` -> K2B runner calls K2Bi `invest_bear_case.run_bear_case(...)`.
+- `k2bi-screen-enrich` -> parameterized `python3 -m scripts.lib.invest_screen --enrich <TICKER>` with strict ticker validation.
+- `k2bi-smoke-enrich-lrcx` remains the Ship-1a screen smoke.
+
+The runner converts JSON into K2Bi dataclasses and delegates. It must not infer missing adapter fields, default source evidence, or rewrite operator marks. If a field cannot be filled honestly, mark that claim `advisory` or `refused` in the T7 conversation; let the adapter refuse if the claim is load-bearing and not framed.
+
+### Exact T7 adapter contract
+
+For every claim, emit exactly this shape:
+
+```yaml
+claim_id: str
+claim_text: str
+claim_load_bearing: bool
+source_url: str | null
+source_excerpt: str
+curated_framing: str
+operator_mark: verified | refused | override | advisory
+operator_note: str | null
+source_vendor: str
+spot_check_vendor: str | null
+```
+
+Function kwargs passed to `verify_and_generate_thesis(...)`:
+
+```yaml
+operator_override_reason: str | null
+calx_override_acknowledged: bool
+vendor_warning_acknowledged: bool
+vendor_provenance: object | null
+refresh: bool
+```
+
+Rules:
+- Do not coerce missing `source_excerpt`, `source_vendor`, `curated_framing`, or `source_url` to make the adapter happy.
+- If any load-bearing claim is `refused` or `override`, collect a framed `operator_override_reason` and explicit `calx_override_acknowledged=true`.
+- If `vendor_provenance` is supplied, collect `vendor_warning_acknowledged=true`.
+- On re-dispatch after `thesis_written=true`, use `refresh=true` so the K2Bi adapter overwrites instead of appending.
+- Adapter success stdout is JSON with `status: ok`. Adapter failure stdout is JSON with `status: error`, `category`, `retryable`, `exit_code`, `exception_type`, and `message`; stderr contains the same human-readable message. Treat `category=validation`/`exit_code=2`/`retryable=false` as an adapter refusal or permanent gate failure, and `category=transient`/`exit_code=3`/`retryable=true` as eligible for bounded worker retry.
+- On adapter refusal during thesis dispatch, leave `thesis_written=false`, leave `bear_done=false`, keep the parent in `needs_human`, and surface the refusal text to Keith. The next resume action remains `dispatch_thesis` only after the operator amends the T7 payload; do not mark subtask flags from partial files or handwritten K2Bi state.
+- On adapter process death, zombie reclaim, laptop sleep, or any worker result that is not a clean `done` artifact, do not trust parent flags or partial K2Bi files. Re-open the worker artifact/log and use the locked helpers: `verify-thesis-artifact <task-id> [path]` for normal verification, `force-verify-thesis-artifact <task-id> <path> --i-checked-the-log` only after manual log/artifact inspection, or `clear-thesis-artifact <task-id> --reason <why>` to explicitly clear invalid thesis/bear progress before redispatch. `--i-checked-the-log` is MANDATORY for force-verify; without it, the helper fails with `force verification requires --i-checked-the-log`. Do not edit payload JSON or hand-set flags. The resume oracle returns `verify_thesis_artifact` when `thesis_written=true` but `thesis_artifact_verified` is not set, and `thesis_artifact_invalid` when a previously verified artifact no longer validates; never advance to bear-case solely because `thesis_written=true`.
+- Confirmed zombie reclaim clears partial thesis/bear flags and screen approval before re-readying an A1 worker task; resume must re-surface the screen approval gate or re-run/verify the thesis path after reclaim rather than trusting stale subtask flags.
+- `a1_prepare_thesis_dispatch_payload` records `thesis_dispatch_started_at` for each thesis dispatch and hashes the full T7 context. Use `python3 -m scripts.lib.orchestrator_store verify-thesis-artifact <task-id> [path]` for deterministic artifact verification before bear-case dispatch. The helper records `thesis_artifact_verified=true`, `thesis_artifact_verified_at`, and `thesis_artifact_sha256` only after the artifact exists, is non-empty, and is not older than the recorded thesis dispatch when no prior SHA is available. Bear-case preflight re-checks the artifact path and recorded SHA/timestamp immediately before dispatch.
+- Before Stage 4 or adapter dispatch, the K2Bi canonical registry must exist and contain the ticker. If preflight says the registry is missing/unreadable or empty, run `python3 -m scripts.build_canonical_registry` from the K2Bi checkout before redispatching. If it says malformed JSON, inspect disk/sync state before rebuilding. If it says `unknown canonical ticker`, reject or add the ticker upstream first.
+- Adapter payload files, including nested `*_path` fields, are size bounded and require fd-path verification. If the adapter reports fd verification unavailable, stop and inspect the filesystem; do not bypass the path guard.
+- `revision_count=3` means the third revision is in progress or complete. A fourth `revise` request terminalizes the flight as `needs_human` with `terminal_reason=revision_limit_exceeded`; the board blocker will say the entity lock is held, so cancel that old flight before starting a fresh A1 chain. Terminal-reason parks auto-expire through `poll-once` after `K2B_ORCH_TERMINAL_REASON_TTL_DAYS` (default 7). Do not call `a1_register_revision` for casual discussion or non-revision edits.
+
+### Procedure
+
+1. **Promote gate (Stage 3).** Keith must choose the ticker. If there is no watchlist entry yet, dispatch/route the existing K2Bi promotion entrypoint with human-confirmed inputs. Before any thesis dispatch, the K2B preflight requires `wiki/watchlist/<TICKER>.md` frontmatter `status: promoted`; if not, stop with the preflight error instead of hand-constructing downstream state.
+2. **Screen (Stage 4).** Dispatch screen enrichment through the K2Bi allowlisted worker door. Record the verified screen artifact only after the worker task reaches `done` and the result artifact exists, using `python3 -m scripts.lib.orchestrator_store record-screen-done <parent-task-id> <artifact-path>`. Surface the score/band and ask Keith whether to run the chain. Only after Keith explicitly says yes, run `python3 -m scripts.lib.orchestrator_store approve-screen <parent-task-id>`; resume returns `await_screen_approval` until that approval is recorded.
+3. **Thesis source fetch + T7 (Stages 5-7).** Gather sources inline with the Chat-1 honesty rule: fetch/repair every load-bearing citation. Build the full `ThesisInput` JSON and the exact `claim_decisions` list above. Surface each load-bearing claim to Keith and capture `verified`, `refused`, `override`, or `advisory` without changing his mark. Dispatch `k2bi-verify-and-generate-thesis`. Record `thesis_written=true` and `thesis_artifact_verified=true` only after the worker reaches `done` and the expected thesis artifact exists. On adapter refusal, show the refusal and keep the parent parked; do not write K2Bi state yourself.
+4. **Bear case (Stage 7).** Dispatch `k2bi-run-bear-case`. Record `bear_done=true` only after the worker task reaches `done` and the result shows a verdict. If verdict is `VETO`, call the A1 VETO transition and stop terminally. If `PROCEED`, park at the thesis gate.
+5. **Thesis gate (Stage 8).** Surface: thesis path, bear verdict/conviction, claim count and any refused/override/advisory claims. Keith may answer `approve` or `revise`. `approve` is the end of A1; leave the flight parked for the ship manager/future A2. `revise` must run `python3 -m scripts.lib.orchestrator_store register-revision <parent-task-id>`, then re-run Stages 5-7 with a fresh source fetch, previous `claim_decisions` resurfaced for amendment, and `refresh=true`.
 
 ## Canonical add example
 

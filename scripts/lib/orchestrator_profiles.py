@@ -2,12 +2,32 @@
 """Worker-profile registry, allowlist, and K2Bi preflight for K2B orchestrator."""
 
 import json
+import hashlib
 import os
 import re
 import socket
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+A1_ADAPTER_RUNNER = REPO_ROOT / "scripts" / "lib" / "orchestrator_k2bi_adapter.py"
+# Positive lookahead enforces at least one alpha character; callers uppercase first.
+SYMBOL_RE = re.compile(r"^(?=.*[A-Z])[A-Z0-9]+(?:\.[A-Z0-9]+)?$")
+MAX_ADAPTER_PAYLOAD_JSON_BYTES = 1_000_000
+ALLOWED_A1_OPERATOR_MARKS = frozenset({"verified", "refused", "override", "advisory"})
+CANONICAL_REGISTRY_MISSING_ERROR = (
+    "canonical ticker registry missing or unreadable -- run: "
+    "python3 -m scripts.build_canonical_registry"
+)
+CANONICAL_REGISTRY_EMPTY_ERROR = (
+    "canonical ticker registry empty -- run: python3 -m scripts.build_canonical_registry"
+)
+CANONICAL_REGISTRY_MALFORMED_ERROR = (
+    "canonical ticker registry malformed JSON -- inspect disk/sync state, then run: "
+    "python3 -m scripts.build_canonical_registry"
+)
 
 
 def _expand(p):
@@ -46,6 +66,22 @@ def k2bi_allowed_commands():
             "-m",
             "scripts.lib.invest_narrative_pipeline",
         ],
+        "k2bi-screen-enrich": [
+            "python3",
+            "-m",
+            "scripts.lib.invest_screen",
+            "--enrich",
+        ],
+        "k2bi-verify-and-generate-thesis": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "verify-and-generate-thesis",
+        ],
+        "k2bi-run-bear-case": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "run-bear-case",
+        ],
         "test-echo-readonly": ["/bin/echo", "orchestrator-smoke-ok"],
     }
 
@@ -63,10 +99,64 @@ def get_profile(name) -> dict | None:
     return None
 
 
+def _valid_payload_json(payload_json) -> bool:
+    if not isinstance(payload_json, str):
+        return False
+    if len(payload_json.encode("utf-8")) > MAX_ADAPTER_PAYLOAD_JSON_BYTES:
+        return False
+    return all(ord(ch) >= 32 for ch in payload_json)
+
+
+def _adapter_payload_args(payload: dict | None) -> list[str] | None:
+    args = ["--workspace", resolve_workspace("k2bi")]
+    if not payload:
+        return None
+    payload_path = payload.get("payload_path")
+    if payload_path:
+        return args + ["--payload-path", str(payload_path)]
+    payload_json = payload.get("payload_json")
+    if payload_json is not None:
+        if not _valid_payload_json(payload_json):
+            return None
+        return args + ["--payload-json", payload_json]
+    return None
+
+
+def _payload_symbol(payload: dict | None) -> str | None:
+    if not payload:
+        return None
+    symbol = str(payload.get("symbol", "")).strip().upper()
+    if not symbol or not SYMBOL_RE.match(symbol):
+        return None
+    return symbol
+
+
+def _canonical_symbol_known(symbol: str) -> tuple[bool, str]:
+    registry_path = Path(k2bi_vault()) / "wiki" / "tickers" / "canonical-registry.json"
+    try:
+        if not registry_path.exists():
+            return (False, CANONICAL_REGISTRY_MISSING_ERROR)
+        registry_text = registry_path.read_text(encoding="utf-8")
+        if not registry_text:
+            return (False, CANONICAL_REGISTRY_EMPTY_ERROR)
+        registry = json.loads(registry_text)
+    except json.JSONDecodeError:
+        return (False, CANONICAL_REGISTRY_MALFORMED_ERROR)
+    except OSError:
+        return (False, CANONICAL_REGISTRY_MISSING_ERROR)
+    if not isinstance(registry, dict) or not registry:
+        return (False, CANONICAL_REGISTRY_EMPTY_ERROR)
+    entry = registry.get(symbol)
+    if not isinstance(entry, dict) or not entry.get("name"):
+        return (False, f"unknown canonical ticker {symbol}")
+    return (True, "")
+
+
 def resolve_command(profile_name, command_key, payload=None) -> list[str] | None:
     if profile_name == "k2bi":
         cmds = k2bi_allowed_commands()
         if command_key in cmds:
+            payload_view = dict(payload) if isinstance(payload, dict) else payload
             # k2bi-narrative (the Kimi-backed dispatch) is RETIRED -- the agent-native
             # Chat-2 path replaces it. Gate it at the EXECUTION boundary: resolve_command
             # is called by BOTH preflight AND orchestrator_worker, so refusing here means
@@ -79,9 +169,19 @@ def resolve_command(profile_name, command_key, payload=None) -> list[str] | None
                 return None
             argv = list(cmds[command_key])  # copy
             if command_key == "k2bi-narrative":
-                if payload and isinstance(payload, dict):
-                    narrative = payload.get("narrative", "")
+                if payload_view and isinstance(payload_view, dict):
+                    narrative = payload_view.get("narrative", "")
                     argv.append(f"--narrative={narrative}")
+            if command_key == "k2bi-screen-enrich":
+                symbol = _payload_symbol(payload_view if isinstance(payload_view, dict) else None)
+                if symbol is None:
+                    return None
+                argv.append(symbol)
+            if command_key in {"k2bi-verify-and-generate-thesis", "k2bi-run-bear-case"}:
+                payload_args = _adapter_payload_args(payload_view if isinstance(payload_view, dict) else None)
+                if payload_args is None:
+                    return None
+                argv.extend(payload_args)
             return argv
     return None
 
@@ -271,8 +371,239 @@ def _preflight_narrative(task) -> tuple[bool, str]:
     return (True, "")
 
 
+def _task_payload(task) -> dict:
+    raw_payload = task.get("payload")
+    if not raw_payload:
+        return {}
+    try:
+        parsed = json.loads(raw_payload)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _read_frontmatter(path: Path) -> dict:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"watchlist entry unreadable: {path}") from exc
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError(f"watchlist entry has no frontmatter: {path}")
+    close_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        raise ValueError(f"watchlist entry frontmatter not closed: {path}")
+    frontmatter_lines = lines[1:close_idx]
+    if any(re.search(r"(^|[\s\[{,])[&*][A-Za-z0-9_-]+", line) for line in frontmatter_lines):
+        raise ValueError(f"watchlist YAML anchors or aliases are not allowed: {path}")
+    if any("!!" in line for line in frontmatter_lines):
+        raise ValueError(f"watchlist YAML tags are not allowed: {path}")
+    status_keys = [
+        line for line in frontmatter_lines
+        if re.match(r"^status\s*:", line)
+    ]
+    if len(status_keys) > 1:
+        raise ValueError(f"watchlist frontmatter has duplicate status key: {path}")
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ValueError("yaml unavailable -- cannot validate watchlist frontmatter") from exc
+    data = yaml.safe_load("\n".join(frontmatter_lines))
+    if not isinstance(data, dict):
+        raise ValueError(f"watchlist frontmatter is not a mapping: {path}")
+    if not all(isinstance(key, str) for key in data.keys()):
+        raise ValueError(f"watchlist frontmatter keys must be strings: {path}")
+    if "status" in data and not isinstance(data["status"], str):
+        raise ValueError(f"watchlist status must be a string: {path}")
+    return data
+
+
+def assert_a1_promoted_precondition(symbol: str, vault_root: str | None = None) -> None:
+    clean_symbol = str(symbol or "").strip().upper()
+    if not clean_symbol:
+        raise ValueError("A1 thesis dispatch missing symbol for promoted precondition")
+    root = Path(vault_root or k2bi_vault()).expanduser()
+    watchlist_path = root / "wiki" / "watchlist" / f"{clean_symbol}.md"
+    if not watchlist_path.exists():
+        raise ValueError(
+            f"A1 thesis dispatch requires {clean_symbol} watchlist entry at "
+            f"{watchlist_path}; status must be 'promoted'"
+        )
+    frontmatter = _read_frontmatter(watchlist_path)
+    status = (frontmatter.get("status") or "").strip()
+    if status != "promoted":
+        raise ValueError(
+            f"A1 thesis dispatch requires {clean_symbol} watchlist entry "
+            f"must be status 'promoted' before thesis dispatch; got {status!r}"
+        )
+
+
+def _preflight_a1_verify_thesis(payload: dict) -> tuple[bool, str]:
+    try:
+        assert_a1_promoted_precondition(
+            str(payload.get("symbol", "")),
+            vault_root=payload.get("vault_root") or payload.get("k2bi_vault_root"),
+        )
+    except ValueError as exc:
+        return (False, str(exc))
+    return (True, "")
+
+
+def _inline_adapter_payload(payload: dict) -> dict | None:
+    raw = payload.get("payload_json")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _preflight_a1_adapter_payload_shape(command_key: str, payload: dict) -> tuple[bool, str]:
+    adapter_payload = _inline_adapter_payload(payload)
+    if adapter_payload is None:
+        return (True, "")
+    if command_key == "k2bi-verify-and-generate-thesis":
+        thesis_input = adapter_payload.get("thesis_input")
+        claim_decisions = adapter_payload.get("claim_decisions")
+        if not isinstance(thesis_input, dict) or not thesis_input.get("symbol"):
+            return (False, "A1 thesis payload missing thesis_input.symbol")
+        if not thesis_input.get("title"):
+            return (False, "A1 thesis payload missing thesis_input.title")
+        base_sources = thesis_input.get("base_sources")
+        if not isinstance(base_sources, list):
+            return (False, "A1 thesis payload missing thesis_input.base_sources list")
+        if not base_sources:
+            return (False, "A1 thesis payload missing non-empty thesis_input.base_sources")
+        if not isinstance(claim_decisions, list):
+            return (False, "A1 thesis payload missing claim_decisions list")
+        for item in claim_decisions:
+            if not isinstance(item, dict):
+                return (False, "A1 thesis payload claim_decisions items must be objects")
+            if not item.get("claim_id"):
+                return (False, "A1 thesis payload claim_decisions item missing claim_id")
+            if not item.get("operator_mark"):
+                return (False, "A1 thesis payload claim_decisions item missing operator_mark")
+            operator_mark = item.get("operator_mark")
+            if operator_mark not in ALLOWED_A1_OPERATOR_MARKS:
+                allowed = "/".join(sorted(ALLOWED_A1_OPERATOR_MARKS))
+                return (
+                    False,
+                    f"A1 thesis payload claim_decisions item has invalid operator_mark "
+                    f"{operator_mark!r}; must be one of {allowed}",
+                )
+    if command_key == "k2bi-run-bear-case":
+        bear_input = adapter_payload.get("bear_input")
+        if not isinstance(bear_input, dict) or not bear_input:
+            return (False, "A1 bear payload missing bear_input object")
+    return (True, "")
+
+
+def _parse_iso_dt(value: str | None):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _preflight_a1_verified_thesis_artifact(payload: dict) -> tuple[bool, str]:
+    if payload.get("thesis_artifact_drift_detected_at"):
+        return (
+            False,
+            "A1 bear dispatch blocked: thesis artifact drift detected; "
+            "run clear-thesis-artifact or force-verify-thesis-artifact",
+        )
+    if payload.get("thesis_artifact_verified") is not True:
+        return (False, "A1 bear dispatch requires thesis_artifact_verified=true")
+    raw_path = payload.get("thesis_path") or payload.get("thesis_artifact_path")
+    if not raw_path:
+        return (False, "A1 bear dispatch requires thesis artifact path")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        return (False, f"A1 bear dispatch thesis artifact missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"A1 bear dispatch thesis artifact is empty: {path}")
+    expected_sha = payload.get("thesis_artifact_sha256")
+    if expected_sha:
+        actual_sha = _sha256_file(path)
+        if expected_sha != actual_sha:
+            return (False, f"A1 bear dispatch thesis artifact sha256 mismatch: {path}")
+        return (True, "")
+    dispatch_dt = _parse_iso_dt(payload.get("thesis_dispatch_started_at"))
+    if dispatch_dt is None:
+        return (
+            False,
+            "A1 bear dispatch requires thesis_artifact_sha256 or thesis_dispatch_started_at",
+        )
+    artifact_dt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    if artifact_dt < dispatch_dt:
+        return (False, f"A1 bear dispatch thesis artifact older than dispatch: {path}")
+    return (True, "")
+
+
+def _preflight_a1_vault_root_matches_profile(payload: dict) -> tuple[bool, str]:
+    explicit_root = payload.get("vault_root") or payload.get("k2bi_vault_root")
+    if not explicit_root:
+        return (True, "")
+    payload_root = Path(str(explicit_root)).expanduser().resolve(strict=False)
+    profile_root = Path(k2bi_vault()).expanduser().resolve(strict=False)
+    if payload_root != profile_root:
+        return (
+            False,
+            f"A1 payload vault_root {payload_root} does not match profile K2Bi vault "
+            f"{profile_root}",
+        )
+    return (True, "")
+
+
+def _preflight_a1_symbol_matches_entity(task, payload: dict) -> tuple[bool, str]:
+    command_key = task.get("command_key", "")
+    # A1 ticker-scoped commands must prove the symbol is canonical. The legacy
+    # LRCX smoke command is hard-coded compatibility coverage for Ship-1a and
+    # intentionally remains outside this A1 chain gate; the legacy narrative
+    # command is retired above unless an explicit operator override enables it.
+    if command_key == "k2bi-smoke-enrich-lrcx":
+        return (True, "")
+    if command_key not in {
+        "k2bi-screen-enrich",
+        "k2bi-verify-and-generate-thesis",
+        "k2bi-run-bear-case",
+    }:
+        return (True, "")
+    symbol = _payload_symbol(payload)
+    if symbol is None:
+        return (False, f"{command_key} payload missing or invalid symbol")
+    entity = str(task.get("entity_key") or "").strip().upper()
+    if not entity or not SYMBOL_RE.match(entity):
+        return (False, f"{command_key} entity_key missing or invalid")
+    if entity != symbol:
+        return (False, f"payload symbol {symbol} does not match entity_key {entity}")
+    return _canonical_symbol_known(symbol)
+
+
 def preflight_k2bi(task) -> tuple[bool, str]:
     command_key = task.get("command_key", "")
+    payload = _task_payload(task)
 
     # 0. k2bi-narrative dispatch is RETIRED (checked BEFORE the generic allowlist
     # check so the message is clear, not "not allowlisted"). Chat 2 is now
@@ -290,8 +621,12 @@ def preflight_k2bi(task) -> tuple[bool, str]:
         )
 
     # 1. allowlist check
-    if resolve_command("k2bi", command_key) is None:
+    if resolve_command("k2bi", command_key, payload) is None:
         return (False, f"command_key not allowlisted: {command_key}")
+
+    ok, reason = _preflight_a1_symbol_matches_entity(task, payload)
+    if not ok:
+        return (False, reason)
 
     # 2. workspace exists
     workspace = resolve_workspace("k2bi")
@@ -324,6 +659,21 @@ def preflight_k2bi(task) -> tuple[bool, str]:
     # Narrative lane: run P0-P5, skip git status
     if command_key == "k2bi-narrative":
         return _preflight_narrative(task)
+
+    if command_key in {"k2bi-verify-and-generate-thesis", "k2bi-run-bear-case"}:
+        ok, reason = _preflight_a1_vault_root_matches_profile(payload)
+        if not ok:
+            return (False, reason)
+        ok, reason = _preflight_a1_verify_thesis(payload)
+        if not ok:
+            return (False, reason)
+        ok, reason = _preflight_a1_adapter_payload_shape(command_key, payload)
+        if not ok:
+            return (False, reason)
+        if command_key == "k2bi-run-bear-case":
+            ok, reason = _preflight_a1_verified_thesis_artifact(payload)
+            if not ok:
+                return (False, reason)
 
     # 6. git status (existing behavior for non-narrative commands)
     try:
