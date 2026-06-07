@@ -841,29 +841,40 @@ class TestA1FlightState:
 
 
 class TestA1ProfilePreflight:
-    def test_verify_thesis_requires_promoted_watchlist_status(self, store, tmp_path, monkeypatch):
+    def test_verify_thesis_accepts_promoted_or_screened_watchlist_status(self, store, tmp_path):
         from scripts.lib import orchestrator_profiles as profiles
 
         vault = tmp_path / "k2bi-vault"
-        _write_watchlist(vault, "CDNS", "screened")
         _write_registry(vault, "CDNS")
+        # A1.1 fix (live MVP #1, 2026-06-07): thesis (Stage 5-7) runs AFTER
+        # screen (Stage 4), which advances the watchlist promoted -> screened.
+        # Both 'promoted' and 'screened' must satisfy the thesis precondition;
+        # requiring exactly 'promoted' rejected every real (post-screen) ticker.
+        for status in ("promoted", "screened"):
+            _write_watchlist(vault, "CDNS", status)
+            profiles.assert_a1_promoted_precondition("CDNS", str(vault))  # must not raise
+
+        # Integration: the corrected status gate is honored through the FULL
+        # preflight_k2bi path (payload -> symbol -> vault_root -> precondition).
+        # A 'screened' ticker must no longer be rejected on the status gate
+        # (it may still fail later on other preflight checks, but NOT on status).
+        _write_watchlist(vault, "CDNS", "screened")
         tid = store.add_task(
             assignee_profile="k2bi",
             command_key="k2bi-verify-and-generate-thesis",
             success_criteria="verify thesis",
             permissions="analyst-command",
             entity_key="CDNS",
-            payload={
-                "symbol": "CDNS",
-                "vault_root": str(vault),
-                "payload_json": "{}",
-            },
+            payload={"symbol": "CDNS", "vault_root": str(vault), "payload_json": "{}"},
         )
+        _ok, reason = profiles.preflight_k2bi(store.get_task(tid))
+        assert "promoted' or 'screened" not in reason  # status gate no longer the blocker
+        assert "got 'screened'" not in reason
 
-        ok, reason = profiles.preflight_k2bi(store.get_task(tid))
-        assert not ok
-        assert "must be status 'promoted'" in reason
-        assert "got 'screened'" in reason
+        # A pre-promote / terminal status is still rejected.
+        _write_watchlist(vault, "CDNS", "dropped")
+        with pytest.raises(ValueError, match="promoted' or 'screened"):
+            profiles.assert_a1_promoted_precondition("CDNS", str(vault))
 
     def test_promoted_precondition_rejects_non_string_or_duplicate_status(self, tmp_path):
         from scripts.lib import orchestrator_profiles as profiles
@@ -912,12 +923,17 @@ class TestA1ProfilePreflight:
         with pytest.raises(ValueError, match="YAML tags are not allowed"):
             profiles.assert_a1_promoted_precondition("CDNS", str(vault))
 
-    def test_bear_case_requires_promoted_watchlist_status(self, store, tmp_path):
+    def test_bear_case_rejects_unpromoted_watchlist_status(self, store, tmp_path):
         from scripts.lib import orchestrator_profiles as profiles
 
         vault = tmp_path / "k2bi-vault"
-        _write_watchlist(vault, "CDNS", "screened")
         _write_registry(vault, "CDNS")
+        # A1.1 fix (live MVP #1, 2026-06-07): bear-case (like thesis) accepts a
+        # 'promoted' OR 'screened' ticker; only a pre-promote / terminal status
+        # is rejected by the preflight. One task, watchlist flipped between
+        # preflight calls (preflight_k2bi re-reads the watchlist each call), so
+        # the one-flight entity lock is not tripped.
+        _write_watchlist(vault, "CDNS", "screened")
         tid = store.add_task(
             assignee_profile="k2bi",
             command_key="k2bi-run-bear-case",
@@ -931,9 +947,18 @@ class TestA1ProfilePreflight:
             },
         )
 
+        # Positive integration: a 'screened' bear task gets PAST the status gate
+        # (it may fail later on bear_input, but NOT on the watchlist status).
+        _ok, reason_ok = profiles.preflight_k2bi(store.get_task(tid))
+        assert "promoted' or 'screened" not in reason_ok
+        assert "got 'screened'" not in reason_ok
+
+        # Negative: a pre-promote / terminal status IS rejected on the gate.
+        _write_watchlist(vault, "CDNS", "dropped")
         ok, reason = profiles.preflight_k2bi(store.get_task(tid))
         assert not ok
-        assert "must be status 'promoted'" in reason
+        assert "promoted' or 'screened" in reason
+        assert "got 'dropped'" in reason
 
     def test_a1_preflight_rejects_vault_root_split_brain(self, store, tmp_path):
         from scripts.lib import orchestrator_profiles as profiles

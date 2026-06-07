@@ -431,14 +431,20 @@ def assert_a1_promoted_precondition(symbol: str, vault_root: str | None = None) 
     if not watchlist_path.exists():
         raise ValueError(
             f"A1 thesis dispatch requires {clean_symbol} watchlist entry at "
-            f"{watchlist_path}; status must be 'promoted'"
+            f"{watchlist_path}; status must be 'promoted' or 'screened'"
         )
     frontmatter = _read_frontmatter(watchlist_path)
     status = (frontmatter.get("status") or "").strip()
-    if status != "promoted":
+    # Thesis (Stage 5-7) runs AFTER screen (Stage 4), which advances the
+    # watchlist promoted -> screened. So the pre-thesis status is normally
+    # 'screened'; 'promoted' is also valid (thesis before a redundant screen).
+    # Requiring exactly 'promoted' here was the A1.1 bug: a real screen made
+    # status 'screened' and every thesis dispatch was rejected (live MVP #1,
+    # 2026-06-07). Accept both; reject only pre-promote / terminal states.
+    if status not in {"promoted", "screened"}:
         raise ValueError(
             f"A1 thesis dispatch requires {clean_symbol} watchlist entry "
-            f"must be status 'promoted' before thesis dispatch; got {status!r}"
+            f"to be status 'promoted' or 'screened' before thesis dispatch; got {status!r}"
         )
 
 

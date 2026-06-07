@@ -134,3 +134,17 @@ Latest Kimi (real: `primary_used=minimax, fallback_used=false, no_fallback=true`
 - #10 [MEDIUM] bear_input preflight shape → fail-cheap-vs-fail-expensive optimization; already fails safe (task `failed` not silently wrong). Defer.
 
 **HARD STOP.** Apply the bounded patch, hand back to the K2B ship manager. `/ship` runs the final Checkpoint-2 pass and ships **with this disposition attached** regardless of the next verdict. No round 21. 19 adversarial rounds on a no-capital build is the gate more than satisfied; the terminal authority is the architect disposition, not reviewer zero-findings.
+
+---
+
+## A1 live-MVP run #1 (2026-06-07) -- FOUND A REAL BUG (preflight status gate)
+
+First live run on CDNS. The probe did its job: it surfaced a logic bug the fakes-based unit tests (87 green) missed.
+
+**Bug:** `assert_a1_promoted_precondition` (`scripts/lib/orchestrator_profiles.py:425-441`) requires watchlist `status == "promoted"` "before thesis dispatch." But the A1 chain runs **screen (Stage 4) BEFORE thesis (Stage 5-7)**, and K2Bi's `invest_screen --enrich` advances the watchlist `promoted -> screened`. So after a real screen the status is `screened`, and the thesis preflight rejects it (`must be status 'promoted'; got 'screened'`). The chain can NEVER reach thesis through the normal promote->screen->thesis path. The unit tests seeded `status: promoted` directly and never exercised the screen->screened->thesis transition, so they passed over the broken gate.
+
+**Secondary (not a bug):** K2Bi's `--manual-promote` fuses promote + screen (CDNS -> `screened`, quick_score 64, band C in one step). Valid watchlist entry. Means the orchestrator's separate Stage-4 screen dispatch is also redundant for a manually-promoted ticker (the K2Bi enrich would reject an already-`screened` ticker since it requires `promoted`).
+
+**Fix (small, K2B-side):** `assert_a1_promoted_precondition` must accept the post-screen status -- require `status in {promoted, screened}` (thesis legitimately follows screen). Add a test that drives promote -> screen(->screened) -> thesis-preflight-passes. Optionally have the chain skip a redundant Stage-4 dispatch when the ticker is already `screened`.
+
+**State:** CDNS is legitimately `promoted`+`screened` (64, band C) on the watchlist. Live MVP NOT passed -- blocked on this fix. pending-action stays open. A1.1 patch needed before re-running the probe.
