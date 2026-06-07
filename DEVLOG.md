@@ -4013,3 +4013,17 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Follow-ups:** (1) live-MVP probe (promote a real ticker end-to-end, one conversation). (2) A2 strategy half (Stages 9-10). (3) A3 ship-to-engine (Stage 11; token-replay + rollback-recovery). (4) Phase B retro (Stage 15, K2Bi PR). (5) needs /sync (skills + scripts changed).
 
 **Key decisions:** AR7 loop-termination after 19 review rounds on a no-capital build; Checkpoint-2 still ran on the final patch and caught a real bug, validating "ship with disposition but still verify the final delta." A1 merged to main though live-MVP pending (reviewed + 485 green + no-capital; matches the Ship-1a code-then-smoke pattern).
+
+## 2026-06-07 -- Orchestrator A1.1 fix (thesis preflight accepts screened)
+
+**Commit:** `9c0e9c4` fix(orchestrator): A1.1 thesis preflight accepts screened watchlist status
+
+**What shipped:** Live MVP run #1 on CDNS surfaced a real A1 bug: `assert_a1_promoted_precondition` required watchlist `status == 'promoted'`, but screen (Stage 4) advances `promoted -> screened` before thesis (Stage 5-7), so every real post-screen ticker was rejected at thesis dispatch. Fix: accept `{promoted, screened}`; pre-promote/terminal still rejected. Restored integration coverage of the screen->thesis path through full `preflight_k2bi`.
+
+**Codex review:** Kimi (I built the fix). Confirmed the fix correct; flagged that I'd traded an integration test for a unit test -> restored integration assertions for both thesis + bear; minor empty-status wording disposed. 87 A1 + 485 full green.
+
+**Feature status change:** none. A1 still code-shipped / live-MVP pending (the probe found+fixed this; re-run pending). pending-action stays.
+
+**Follow-ups:** re-run the A1 live MVP probe on CDNS (now unblocked). needs /sync (scripts).
+
+**Key decisions:** the live MVP probe did its job -- caught a logic bug the fakes-based 87 tests missed (they never exercised promote->screen->thesis). Canonical "fakes pass, live finds the gap."
