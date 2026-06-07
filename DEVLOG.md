@@ -3999,3 +3999,17 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Follow-ups:** needs /sync so the Mac Mini Telegram agent renders the tracker from v2 too. v2 Phase A still trails K2Bi's manual second-strategy proof.
 
 **Key decisions:** one canonical tracker home (v2, the active feature) per the ownership matrix; v1's copy frozen as history, not a second live source. Design-reference wikilinks deliberately NOT moved -- pointing them at v2 would break them since v2 doesn't carry the chat-design content.
+
+## 2026-06-07 -- Orchestrator Ship 2 / A1 (research half) code-shipped
+
+**Commit:** `2e0c679` feat(orchestrator): A1 research-half chain wiring (Ship 2 Phase A, increment 1)
+
+**What shipped:** A1 = the orchestrator research half (Stages 3-8) as one K2B conversation: promote -> screen -> thesis with inline T7 claim-verify -> bear-case -> park at the thesis-approval gate, dispatching the merged K2Bi safety-gate adapters (kcstudio/K2Bi#10). No capital path. New `scripts/lib/orchestrator_k2bi_adapter.py` (bounded single-JSON stdout contract); A1 preflight + per-subtask resume flags + `terminal_bear_veto` + zombie-reclaim screen-approval reset in `orchestrator_profiles.py` + `orchestrator_store.py`; A1 conductor in the k2b-orchestrator SKILL.md. Built by Codex on `codex/orchestrator-a1` (fast-forwarded to main). 87 A1 tests; full suite 485 green.
+
+**Codex review:** Codex was the builder, so review was Kimi (non-Codex per AR7). Kimi over 19 rounds + a Checkpoint-2 pre-commit pass (Kimi-primary, `--no-fallback`). Checkpoint-2 caught a real regression in the final bounded patch -- an in-process cleanup failure masked a SUCCESSFUL thesis/bear result as a failure (false worker retry); fixed (cleanup -> stderr only, success envelope preserved), final scoped Kimi pass APPROVE. AR7 disposition of the 19-round drift items in `plans/2026-06-06_orchestrator-phase-a1-build-spec.md`.
+
+**Feature status change:** feature_k2b-orchestrator stays in-progress (multi-ship). A1 = code-shipped, live-MVP-probe PENDING (NOT gate-passed).
+
+**Follow-ups:** (1) live-MVP probe (promote a real ticker end-to-end, one conversation). (2) A2 strategy half (Stages 9-10). (3) A3 ship-to-engine (Stage 11; token-replay + rollback-recovery). (4) Phase B retro (Stage 15, K2Bi PR). (5) needs /sync (skills + scripts changed).
+
+**Key decisions:** AR7 loop-termination after 19 review rounds on a no-capital build; Checkpoint-2 still ran on the final patch and caught a real bug, validating "ship with disposition but still verify the final delta." A1 merged to main though live-MVP pending (reviewed + 485 green + no-capital; matches the Ship-1a code-then-smoke pattern).
