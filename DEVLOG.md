@@ -4027,3 +4027,19 @@ The Firefox cookies-from-browser path itself was never actually exercised in cro
 **Follow-ups:** re-run the A1 live MVP probe on CDNS (now unblocked). needs /sync (scripts).
 
 **Key decisions:** the live MVP probe did its job -- caught a logic bug the fakes-based 87 tests missed (they never exercised promote->screen->thesis). Canonical "fakes pass, live finds the gap."
+
+## 2026-06-07 -- Orchestrator A1 LIVE MVP PASSED on CDNS + A1.2 fixes
+
+**Commit:** `0bacfbc` fix(orchestrator): A1.2 chain-scoped flight lock + live-MVP integration fixes
+
+**What shipped:** The A1 research chain ran end-to-end in ONE K2B conversation on CDNS and PASSED the binary MVP gate. Path: promote-confirm -> screen-approve (CDNS already promoted+screened via `--manual-promote`) -> Chat-1 booster deep-research (Keith ran ChatGPT DR, pasted back) -> link validate/repair against primary sources (10-K, Cadence IR, BIS; honesty rule 93% cite-ok) -> inline T7 (6/6 load-bearing claims marked `verified`) -> `k2bi-verify-and-generate-thesis` wrote `K2Bi-Vault/wiki/tickers/CDNS.md` (T7-enforced, `conviction_band: pass`), verified via `verify-thesis-artifact` -> `k2bi-run-bear-case` returned PROCEED (conviction 60) -> parked at the thesis approval gate; Keith approved. Negative path proven separately: a refused load-bearing claim without a framed override returned `OrchestratorGateError` and wrote no thesis. Honest thesis: `recommended_action: neutral` (research refutes the bull thesis on valuation, ~47x forward P/E).
+
+The live probe surfaced 3 integration bugs the fakes-based unit tests missed (same class as A1.1), all fixed K2B-side (dispatch layer; no K2Bi engine touch): (1) parent/child entity-lock collision -> chain-scoped one-flight lock (provable parent_task exemption, parent-only scope so duplicate children still lock, dispatch-time liveness re-check, orphan children cancelled to release the lock, never trusts a bare caller flight_id); (2) inline thesis shape-check matched an obsolete stub `ThesisInput` (`title`/`base_sources`) -> corrected to the real schema + non-empty `claim_decisions` enforced in the adapter runner for both payload carriers; (3) `add` CLI exposes `--parent-task`.
+
+**Codex review:** Codex Checkpoint-2, 4 rounds. 6 findings fixed (each with a regression test): R1 caller-trusted flight_id + payload_path skips shape gate; R2 point-in-time parent-liveness + CLI can't pass parent_task; R3 terminal_reason parents counted live + duplicate same-flight children; R4 orphan-child-holds-lock (fixed: cancel not block). 1 round-4 MEDIUM DEFERRED per AR7 architect disposition: post-claim parent-liveness TOCTOU (impossible in the single-operator synchronous in-session conductor flow; no capital path; fails-safe; worker-side re-check is the follow-up). 269 orchestrator tests green.
+
+**Feature status change:** feature_k2b-orchestrator stays in-progress (multi-ship). A1 (research half, Stages 3-8) CODE-SHIPPED -> **GATE-PASSED** (live MVP passed). pending-action CLEARED.
+
+**Follow-ups:** (1) A2 strategy half (Stages 9-10). (2) A3 ship-to-engine (Stage 11; token-replay + rollback-recovery). (3) Phase B retro (Stage 15, K2Bi PR). (4) worker-side parent-liveness re-check (deferred MEDIUM). (5) thesis+bear share the ticker file so `verify-thesis-artifact`'s sha goes stale after bear appends -- future-resume could read `thesis_artifact_invalid`; re-record post-bear sha or scope the integrity check to the thesis block. needs /sync (scripts).
+
+**Key decisions:** the live MVP probe again did its job -- 3 more integration bugs the 87+ fakes-based tests missed, same "fakes pass, live finds the gap" pattern as A1.1. Applied the AR7 architect-disposition discipline (established in the A1 build spec) to terminate the review loop at round 4 with one MEDIUM deferred-and-documented rather than chasing reviewer zero-findings on a no-capital single-operator build.
