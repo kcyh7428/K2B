@@ -273,17 +273,72 @@ def add_task(
         fid = flight_id if flight_id is not None else task_id
         now = now_iso()
 
-        # One-flight lock: at most one non-terminal task per entity_key
+        # One-flight lock: at most one non-terminal CHAIN per entity_key.
+        # The lock is chain-scoped, not row-scoped: a task may join an existing
+        # chain (and so coexist with its parent/siblings on the same entity) ONLY
+        # when it presents a `parent_task` that resolves -- inside THIS transaction
+        # -- to a still-live (non-terminal) row in the SAME flight with the SAME
+        # normalized entity_key. We never trust a bare caller-supplied flight_id:
+        # a standalone task (no parent_task) or a spoofed/reused flight id without
+        # a matching live parent gets the FULL one-per-entity lock. This is what
+        # lets an A1 parent-ledger flight (entity=TICKER, needs_human) coexist with
+        # its bounded k2bi child dispatches (entity=TICKER, parent_task=<ledger>),
+        # which the child preflight requires to match -- without letting an
+        # independent second operation group itself under the same flight to slip
+        # past the collision check (Codex Checkpoint-2 HIGH, 2026-06-07). Concurrent
+        # same-profile worker dispatch is separately barred by poll_once's
+        # running/zombie check + the worker lock, so chain-scoping the entity lock
+        # does not weaken double-dispatch protection.
         if entity_key is not None and entity_key.strip() != "":
-            row = conn.execute(
-                """
-                SELECT id FROM tasks
-                WHERE lower(trim(entity_key)) = lower(trim(?))
-                  AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
-                LIMIT 1
-                """,
-                (entity_key,),
-            ).fetchone()
+            # The exemption excludes ONLY the validated parent row (id != parent),
+            # NOT the whole flight. This keeps the chain to at-most-one live child
+            # besides the parent: a duplicate second child under the same parent
+            # still collides (Codex Checkpoint-2 MEDIUM round-3) -- A1 children run
+            # strictly sequentially (thesis terminal before bear is created), so a
+            # second live child is never legitimate. A parent counts as a valid
+            # exemption anchor only when it is a live, same-flight, same-entity row
+            # AND is not LOGICALLY terminal: an A1 revision-limit park is
+            # status=needs_human + payload terminal_reason, which the resume oracle
+            # treats as terminal, so we fail closed on it here too (Codex
+            # Checkpoint-2 HIGH round-3, 2026-06-07).
+            exempt_parent = None
+            if parent_task:
+                parent_row = conn.execute(
+                    """
+                    SELECT payload FROM tasks
+                    WHERE id = ?
+                      AND flight_id = ?
+                      AND lower(trim(entity_key)) = lower(trim(?))
+                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                    LIMIT 1
+                    """,
+                    (parent_task, fid, entity_key),
+                ).fetchone()
+                if parent_row is not None and not _payload_is_logically_terminal(
+                    parent_row["payload"]
+                ):
+                    exempt_parent = parent_task
+            if exempt_parent is not None:
+                row = conn.execute(
+                    """
+                    SELECT id FROM tasks
+                    WHERE lower(trim(entity_key)) = lower(trim(?))
+                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                      AND id != ?
+                    LIMIT 1
+                    """,
+                    (entity_key, exempt_parent),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT id FROM tasks
+                    WHERE lower(trim(entity_key)) = lower(trim(?))
+                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                    LIMIT 1
+                    """,
+                    (entity_key,),
+                ).fetchone()
             if row:
                 conn.execute("ROLLBACK;")
                 conn.close()
@@ -819,6 +874,24 @@ def _payload_dict(raw_payload) -> dict:
         if isinstance(parsed, dict):
             return parsed
     return {}
+
+
+def _payload_is_logically_terminal(raw_payload) -> bool:
+    """True when an A1 chain parent is logically terminal even though its row
+    status is still non-terminal. An A1 revision-limit park is status=needs_human
+    + payload terminal_reason (revision_count > A1_MAX_REVISIONS); the resume
+    oracle treats that as terminal, so the entity-lock exemption and the
+    dispatch-time liveness check must too -- a child must never be admitted or
+    dispatched under an exhausted chain (Codex Checkpoint-2 HIGH round-3)."""
+    payload = _payload_dict(raw_payload)
+    if payload.get("terminal_reason"):
+        return True
+    try:
+        if int(payload.get("revision_count") or 0) > A1_MAX_REVISIONS:
+            return True
+    except (TypeError, ValueError):
+        return False
+    return False
 
 
 def _update_payload_locked(
@@ -1649,6 +1722,54 @@ def poll_once() -> dict:
                     "UPDATE tasks SET blocked_by=NULL, updated_at=? WHERE id=?",
                     (now, task["id"]),
                 )
+            # Dispatch-time parent-liveness: a child that joined a chain at INSERT
+            # time must STILL have a live parent at CLAIM time. The insert-time
+            # exemption proof is only point-in-time; if the parent chain was
+            # cancelled / TTL-expired / terminalized between child creation and
+            # dispatch, the queued child must NOT run -- otherwise it would write
+            # K2Bi thesis/bear artifacts under a dead A1 chain (Codex Checkpoint-2
+            # HIGH round-2, 2026-06-07). Re-validate inside this same flock'd
+            # transaction, mirroring the add_task exemption check.
+            parent_task_id = task.get("parent_task")
+            if parent_task_id:
+                parent_row = conn.execute(
+                    """
+                    SELECT payload FROM tasks
+                    WHERE id = ?
+                      AND flight_id = ?
+                      AND lower(trim(entity_key)) = lower(trim(?))
+                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                    LIMIT 1
+                    """,
+                    (parent_task_id, task["flight_id"], task["entity_key"] or ""),
+                ).fetchone()
+                if parent_row is None or _payload_is_logically_terminal(
+                    parent_row["payload"]
+                ):
+                    # Orphaned child: its parent chain is dead (terminal / cancelled
+                    # / TTL-expired / revision-limited). CANCEL it (terminal), not
+                    # block: a dead-chain child can never become valid, and leaving
+                    # it 'blocked' (non-terminal) would keep holding the entity lock
+                    # and reject a fresh A1 chain for the ticker until manual
+                    # cleanup (Codex Checkpoint-2 MEDIUM round-4, 2026-06-07).
+                    # Terminalizing releases the lock so recovery is automatic.
+                    conn.execute(
+                        "UPDATE tasks SET status='cancelled', blocker_reason=?, "
+                        "finished_at=?, updated_at=? WHERE id=? AND status='ready'",
+                        (
+                            "parent chain no longer live (terminal/cancelled/expired); "
+                            "orphan child cancelled to release the entity lock",
+                            now,
+                            now,
+                            task["id"],
+                        ),
+                    )
+                    conn.commit()
+                    conn.close()
+                    notify(
+                        f"[orchestrator] Task {task['id']} CANCELLED: parent chain no longer live"
+                    )
+                    continue
             ok, reason = profiles.preflight(task)
             if not ok:
                 cur = conn.execute(
@@ -1703,6 +1824,11 @@ def _main():
     add_p.add_argument("--payload")
     add_p.add_argument("--workspace")
     add_p.add_argument("--status", default="ready")
+    # --parent-task joins an existing chain: the new task is exempt from the
+    # one-flight entity lock only when this resolves to a live, same-flight,
+    # same-entity parent (a bare --flight reuse is treated as spoofed and locks).
+    # Required to create A1 child dispatches (thesis/bear) from the CLI.
+    add_p.add_argument("--parent-task", dest="parent_task")
 
     list_p = sub.add_parser("list", help="List tasks")
     list_p.add_argument("--status")
@@ -1824,6 +1950,7 @@ def _main():
                 workspace_path=args.workspace,
                 payload=payload,
                 status=args.status,
+                parent_task=args.parent_task,
             )
         except (FlightLockError, ValueError) as e:
             print(str(e), file=sys.stderr)

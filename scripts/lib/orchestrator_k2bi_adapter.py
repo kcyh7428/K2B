@@ -335,6 +335,14 @@ def _verify_and_generate_thesis(payload: dict[str, Any]) -> dict[str, Any]:
     raw_claim_decisions = _load_json_value(payload, "claim_decisions")
     if not isinstance(raw_claim_decisions, list):
         raise ValueError("claim_decisions must be a JSON array")
+    # Carrier-agnostic non-empty gate: the orchestrator's inline shape check only
+    # sees payload_json, so a payload_path-carried thesis would otherwise reach
+    # here with an empty decision set and defeat the fail-fast T7 contract. Enforce
+    # it in the runner so BOTH carriers gate it identically (Codex Checkpoint-2
+    # MEDIUM, 2026-06-07). The K2Bi adapter also rejects empty downstream; this is
+    # the earlier, carrier-uniform stop.
+    if not raw_claim_decisions:
+        raise ValueError("claim_decisions must not be empty")
     if len(raw_claim_decisions) > 500:
         raise ValueError("claim_decisions exceeds maximum of 500")
     if not all(isinstance(item, dict) for item in raw_claim_decisions):

@@ -479,17 +479,19 @@ def _preflight_a1_adapter_payload_shape(command_key: str, payload: dict) -> tupl
     if command_key == "k2bi-verify-and-generate-thesis":
         thesis_input = adapter_payload.get("thesis_input")
         claim_decisions = adapter_payload.get("claim_decisions")
+        # Fail-fast shape check ONLY -- the K2Bi adapter's strict dataclass
+        # coercion (invest_thesis.ThesisInput) is the real validator. Check the
+        # two fields the real merged ThesisInput actually carries: `symbol` and
+        # `ticker_type`. The earlier `title`/`base_sources` checks were written
+        # against an obsolete stub schema (those fields do not exist on the merged
+        # ThesisInput at K2Bi 0ef1631), so a correctly-shaped real payload was
+        # rejected here before the worker ever ran (live MVP run #2, 2026-06-07).
         if not isinstance(thesis_input, dict) or not thesis_input.get("symbol"):
             return (False, "A1 thesis payload missing thesis_input.symbol")
-        if not thesis_input.get("title"):
-            return (False, "A1 thesis payload missing thesis_input.title")
-        base_sources = thesis_input.get("base_sources")
-        if not isinstance(base_sources, list):
-            return (False, "A1 thesis payload missing thesis_input.base_sources list")
-        if not base_sources:
-            return (False, "A1 thesis payload missing non-empty thesis_input.base_sources")
-        if not isinstance(claim_decisions, list):
-            return (False, "A1 thesis payload missing claim_decisions list")
+        if not thesis_input.get("ticker_type"):
+            return (False, "A1 thesis payload missing thesis_input.ticker_type")
+        if not isinstance(claim_decisions, list) or not claim_decisions:
+            return (False, "A1 thesis payload missing non-empty claim_decisions list")
         for item in claim_decisions:
             if not isinstance(item, dict):
                 return (False, "A1 thesis payload claim_decisions items must be objects")

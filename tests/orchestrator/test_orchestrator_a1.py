@@ -175,6 +175,164 @@ def _write_realistic_adapter_workspace(ws: Path) -> None:
 
 
 class TestA1FlightState:
+    def test_a1_chain_child_dispatch_coexists_with_parent_ledger(self, store):
+        # The parent A1 chain flight holds entity_key=TICKER (non-terminal); the
+        # bounded k2bi child dispatches (thesis/bear) REQUIRE entity_key==TICKER
+        # too (the symbol-matches-entity preflight). The one-flight lock is
+        # chain-scoped: a child that explicitly joins the parent's flight is
+        # exempt, but an independent second chain on the same ticker is still
+        # refused. Regression for the live-MVP run #2 collision (2026-06-07):
+        # naive row-scoped locking made every A1 child dispatch impossible.
+        parent = _a1_flight(store, entity="CDNS")
+        flight = store.get_task(parent)["flight_id"]
+
+        child = store.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-verify-and-generate-thesis",
+            success_criteria="thesis dispatch",
+            permissions="analyst-command",
+            entity_key="CDNS",
+            status="ready",
+            payload={"symbol": "CDNS"},
+            parent_task=parent,
+            flight_id=flight,
+        )
+        assert store.get_task(child)["status"] == "ready"
+
+        # An independent second chain on CDNS (its own fresh flight) still locks.
+        with pytest.raises(store.FlightLockError):
+            _a1_flight(store, entity="CDNS")
+
+    def test_a1_chain_exemption_rejects_spoofed_flight_id(self, store):
+        # The chain exemption must be PROVABLE, not caller-trusted: presenting a
+        # live chain's flight_id is NOT enough. A task gets exempted only when its
+        # parent_task resolves to a live, same-flight, same-entity row. Regression
+        # for Codex Checkpoint-2 HIGH (2026-06-07): a bare reused flight_id could
+        # otherwise group an independent operation under an existing chain and slip
+        # past the one-flight lock.
+        parent = _a1_flight(store, entity="CDNS")
+        flight = store.get_task(parent)["flight_id"]
+
+        # (a) spoof: reuse the chain's flight_id but pass NO parent_task -> locked.
+        with pytest.raises(store.FlightLockError):
+            store.add_task(
+                assignee_profile="k2bi", command_key="k2bi-verify-and-generate-thesis",
+                success_criteria="spoof", permissions="analyst-command",
+                entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+                flight_id=flight,
+            )
+
+        # (b) spoof: reuse the flight_id AND point parent_task at a row that is NOT
+        # a live same-flight same-entity parent (a terminal task) -> still locked.
+        bogus = store.add_task(
+            assignee_profile="k2b", command_key="k2b-a1-chain",
+            success_criteria="bogus parent", permissions="agent-native",
+            entity_key="MSFT", status="needs_human", payload={},
+        )
+        store.transition(bogus, "cancelled", blocker_reason="bogus")
+        with pytest.raises(store.FlightLockError):
+            store.add_task(
+                assignee_profile="k2bi", command_key="k2bi-verify-and-generate-thesis",
+                success_criteria="spoof2", permissions="analyst-command",
+                entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+                parent_task=bogus, flight_id=flight,
+            )
+
+    def test_poll_once_blocks_child_when_parent_chain_terminal(self, store):
+        # Dispatch-time parent-liveness (Codex Checkpoint-2 HIGH round-2,
+        # 2026-06-07): a child exempted at insert time must NOT dispatch if its
+        # parent chain went terminal before poll_once claims it -- otherwise it
+        # would write K2Bi artifacts under a dead A1 chain.
+        parent = _a1_flight(store, entity="CDNS")
+        flight = store.get_task(parent)["flight_id"]
+        child = store.add_task(
+            assignee_profile="k2bi", command_key="k2bi-verify-and-generate-thesis",
+            success_criteria="thesis", permissions="analyst-command",
+            entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+            parent_task=parent, flight_id=flight,
+        )
+        # Parent chain dies AFTER the child was queued ready.
+        store.transition(parent, "cancelled", blocker_reason="parent gone")
+
+        result = store.poll_once()
+
+        assert result["spawned"] != child
+        ct = store.get_task(child)
+        # Orphan child is CANCELLED (terminal), not blocked -- it releases the
+        # entity lock so a fresh A1 chain can start without manual cleanup
+        # (Codex Checkpoint-2 MEDIUM round-4, 2026-06-07).
+        assert ct["status"] == "cancelled"
+        assert ct["finished_at"]
+        assert "parent chain no longer live" in (ct["blocker_reason"] or "")
+        # Recovery is automatic: a fresh chain on the same ticker is now accepted.
+        fresh = _a1_flight(store, entity="CDNS")
+        assert store.get_task(fresh)["status"] == "needs_human"
+
+    def test_revision_limit_parent_is_logically_terminal_for_children(self, store):
+        # Codex Checkpoint-2 HIGH round-3 (2026-06-07): a revision-limit park is
+        # status=needs_human + payload terminal_reason. It is logically terminal,
+        # so it must NOT anchor a child exemption (insert) and must NOT admit a
+        # queued child (dispatch).
+        parent = _a1_flight(store, entity="CDNS")
+        flight = store.get_task(parent)["flight_id"]
+        # A child queued while the parent was still live.
+        child = store.add_task(
+            assignee_profile="k2bi", command_key="k2bi-run-bear-case",
+            success_criteria="bear", permissions="analyst-command",
+            entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+            parent_task=parent, flight_id=flight,
+        )
+        # Exhaust the revision budget -> terminal_reason set, status stays needs_human.
+        for _ in range(store.A1_MAX_REVISIONS + 1):
+            store.a1_register_revision(parent)
+        pp = json.loads(store.get_task(parent)["payload"])
+        assert pp.get("terminal_reason") == "revision_limit_exceeded"
+        assert store.get_task(parent)["status"] == "needs_human"
+
+        # insert: a NEW child can no longer claim the exemption -> locked.
+        with pytest.raises(store.FlightLockError):
+            store.add_task(
+                assignee_profile="k2bi", command_key="k2bi-run-bear-case",
+                success_criteria="bear2", permissions="analyst-command",
+                entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+                parent_task=parent, flight_id=flight,
+            )
+
+        # dispatch: the already-queued child is cancelled (terminal), not spawned.
+        result = store.poll_once()
+        assert result["spawned"] != child
+        assert store.get_task(child)["status"] == "cancelled"
+
+    def test_duplicate_chain_child_is_locked_but_sequential_is_allowed(self, store):
+        # Codex Checkpoint-2 MEDIUM round-3 (2026-06-07): the exemption excludes
+        # only the parent, so a SECOND live child under the same chain collides --
+        # A1 children run strictly sequentially (thesis terminal before bear).
+        parent = _a1_flight(store, entity="CDNS")
+        flight = store.get_task(parent)["flight_id"]
+        child1 = store.add_task(
+            assignee_profile="k2bi", command_key="k2bi-verify-and-generate-thesis",
+            success_criteria="thesis", permissions="analyst-command",
+            entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+            parent_task=parent, flight_id=flight,
+        )
+        # A duplicate second child while the first is still live -> locked.
+        with pytest.raises(store.FlightLockError):
+            store.add_task(
+                assignee_profile="k2bi", command_key="k2bi-verify-and-generate-thesis",
+                success_criteria="dup", permissions="analyst-command",
+                entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+                parent_task=parent, flight_id=flight,
+            )
+        # Once the first child is terminal, the next sequential child is allowed.
+        store.transition(child1, "done")
+        child2 = store.add_task(
+            assignee_profile="k2bi", command_key="k2bi-run-bear-case",
+            success_criteria="bear", permissions="analyst-command",
+            entity_key="CDNS", status="ready", payload={"symbol": "CDNS"},
+            parent_task=parent, flight_id=flight,
+        )
+        assert store.get_task(child2)["status"] == "ready"
+
     def test_bear_veto_is_terminal_and_releases_entity_lock(self, store):
         tid = _a1_flight(
             store,
@@ -1115,8 +1273,7 @@ class TestA1ProfilePreflight:
                     {
                         "thesis_input": {
                             "symbol": "CDNS",
-                            "title": "CDNS thesis",
-                            "base_sources": ["https://example.com/source"],
+                            "ticker_type": "equity",
                         },
                         "claim_decisions": [1],
                     }
@@ -1147,8 +1304,7 @@ class TestA1ProfilePreflight:
                     {
                         "thesis_input": {
                             "symbol": "CDNS",
-                            "title": "CDNS thesis",
-                            "base_sources": ["https://example.com/source"],
+                            "ticker_type": "equity",
                         },
                         "claim_decisions": [
                             {
@@ -1166,7 +1322,41 @@ class TestA1ProfilePreflight:
         assert "invalid operator_mark" in reason
         assert "verified" in reason
 
-    def test_a1_preflight_requires_non_empty_base_sources(self, store):
+    def test_a1_preflight_requires_ticker_type(self, store):
+        # The merged invest_thesis.ThesisInput carries `symbol` + `ticker_type`
+        # (NOT the obsolete stub's `title`/`base_sources`). The fail-fast shape
+        # check validates `ticker_type` so a real payload is admitted and an
+        # unshaped one is rejected before the worker spawns.
+        from scripts.lib import orchestrator_profiles as profiles
+
+        vault = Path(os.environ["K2BI_VAULT_PATH"])
+        _write_watchlist(vault, "CDNS", "promoted")
+        _write_registry(vault, "CDNS")
+        tid = store.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-verify-and-generate-thesis",
+            success_criteria="thesis",
+            permissions="analyst-command",
+            entity_key="CDNS",
+            payload={
+                "symbol": "CDNS",
+                "vault_root": str(vault),
+                "payload_json": json.dumps(
+                    {
+                        "thesis_input": {"symbol": "CDNS"},
+                        "claim_decisions": [
+                            {"claim_id": "c1", "operator_mark": "verified"}
+                        ],
+                    }
+                ),
+            },
+        )
+
+        ok, reason = profiles.preflight_k2bi(store.get_task(tid))
+        assert not ok
+        assert "missing thesis_input.ticker_type" in reason
+
+    def test_a1_preflight_requires_non_empty_claim_decisions(self, store):
         from scripts.lib import orchestrator_profiles as profiles
 
         vault = Path(os.environ["K2BI_VAULT_PATH"])
@@ -1185,8 +1375,7 @@ class TestA1ProfilePreflight:
                     {
                         "thesis_input": {
                             "symbol": "CDNS",
-                            "title": "CDNS thesis",
-                            "base_sources": [],
+                            "ticker_type": "equity",
                         },
                         "claim_decisions": [],
                     }
@@ -1196,7 +1385,7 @@ class TestA1ProfilePreflight:
 
         ok, reason = profiles.preflight_k2bi(store.get_task(tid))
         assert not ok
-        assert "non-empty thesis_input.base_sources" in reason
+        assert "non-empty claim_decisions list" in reason
 
     def test_bear_preflight_requires_verified_thesis_artifact(self, store):
         from scripts.lib import orchestrator_profiles as profiles
@@ -1359,7 +1548,105 @@ class TestA1ProfilePreflight:
         )
 
 
+class TestA1ChainCli:
+    def test_add_cli_parent_task_creates_chain_child(self, tmp_path):
+        # Codex Checkpoint-2 MEDIUM round-2 (2026-06-07): the documented `add` CLI
+        # must be able to create a valid same-flight A1 child via --parent-task,
+        # while a bare --flight reuse (no parent) is still rejected as spoofed.
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "K2B_ORCH_DB": str(tmp_path / "orch.sqlite"),
+            "K2B_VAULT_PATH": str(tmp_path / "vault"),
+        }
+
+        def cli(*a):
+            return subprocess.run(
+                [sys.executable, "-m", "scripts.lib.orchestrator_store", *a],
+                cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=20,
+            )
+
+        assert cli("init").returncode == 0
+        p = cli(
+            "add", "--profile", "k2b", "--command-key", "k2b-a1-chain",
+            "--success", "ledger", "--permissions", "agent-native",
+            "--entity", "CDNS", "--status", "needs_human",
+        )
+        assert "Added task" in p.stdout, p.stdout + p.stderr
+        parent_id = p.stdout.strip().split()[-1]
+
+        # valid chain child: --parent-task + --flight=parent -> accepted
+        child = cli(
+            "add", "--profile", "k2bi", "--command-key", "k2bi-verify-and-generate-thesis",
+            "--success", "thesis", "--entity", "CDNS", "--status", "ready",
+            "--payload", '{"symbol": "CDNS"}', "--flight", parent_id,
+            "--parent-task", parent_id,
+        )
+        assert "Added task" in child.stdout, child.stdout + child.stderr
+
+        # spoof: bare --flight reuse with NO --parent-task -> still locked
+        spoof = cli(
+            "add", "--profile", "k2bi", "--command-key", "k2bi-verify-and-generate-thesis",
+            "--success", "spoof", "--entity", "CDNS", "--status", "ready",
+            "--payload", '{"symbol": "CDNS"}', "--flight", parent_id,
+        )
+        assert spoof.returncode == 1
+        assert "flight already active" in spoof.stderr
+
+
 class TestA1AdapterRunner:
+    def test_adapter_rejects_empty_claim_decisions_via_payload_path(self, tmp_path):
+        # Codex Checkpoint-2 MEDIUM (2026-06-07): the orchestrator's inline shape
+        # check only parses payload_json, so a payload_PATH-carried thesis with an
+        # empty claim_decisions list skips the fail-fast non-empty gate at preflight.
+        # The runner enforces non-empty for BOTH carriers, so a path-backed empty
+        # set is rejected here before it reaches the K2Bi adapter.
+        real = lambda p: Path(os.path.realpath(str(p)))
+        workspace = real(tmp_path) / "workspace"
+        _write_realistic_adapter_workspace(workspace)
+        allowed_vault = real(tmp_path) / "k2bi-vault"
+        allowed_vault.mkdir(exist_ok=True)
+        paydir = real(tmp_path) / "payloads"
+        paydir.mkdir()
+        payload_file = paydir / "p.json"
+        payload_file.write_text(
+            json.dumps(
+                {
+                    "symbol": "CDNS",
+                    "vault_root": str(allowed_vault),
+                    "thesis_input": {"symbol": "CDNS"},
+                    "claim_decisions": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "lib" / "orchestrator_k2bi_adapter.py"),
+                "verify-and-generate-thesis",
+                "--workspace",
+                str(workspace),
+                "--payload-path",
+                str(payload_file),
+            ],
+            env={
+                **os.environ,
+                "K2BI_VAULT_PATH": str(allowed_vault),
+                "K2B_ORCH_ADAPTER_PAYLOAD_DIR": str(paydir),
+            },
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        error = json.loads(result.stdout)
+        assert error["status"] == "error"
+        assert error["category"] == "validation"
+        assert "claim_decisions must not be empty" in error["message"]
+
     def test_adapter_rejects_vault_root_outside_allowlist(self, tmp_path):
         workspace = tmp_path / "workspace"
         (workspace / "scripts" / "lib").mkdir(parents=True)
