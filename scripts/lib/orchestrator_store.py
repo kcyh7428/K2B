@@ -2120,6 +2120,31 @@ def a1_authorize_ship(task_id: str) -> tuple[bool, str]:
     return (True, "")
 
 
+def _strategy_normalized_for_bind(data: bytes) -> bytes:
+    """Strategy-file bytes with the volatile forward-guidance write timestamp removed.
+
+    K2Bi's `write_complete_strategy_spec` stamps `forward_guidance_check.completed_at`
+    at write time, so re-authoring the SAME approved decision into the repo produces a
+    file that differs from the A2-approved vault file on EXACTLY that one line. The raw
+    A2 sha-bind would then never match a legitimate re-author (live-MVP finding,
+    2026-06-08). Strip that single non-material line so the bind can prove the strategy
+    (order / rules / thresholds / how-it-works) is byte-identical to what was backtested
+    and approved, ignoring only the auto-generated write timestamp. Any OTHER byte
+    difference survives and still refuses.
+
+    Operates on bytes the caller already read ONCE (no TOCTOU between the sha check and
+    this normalization -- both run on the same in-memory content). Strips only an
+    INDENTED `completed_at:` line (`^\\s+`), i.e. the one nested under
+    `forward_guidance_check:`; a hypothetical top-level `completed_at:` is left intact so
+    a material difference cannot be masked.
+    """
+    text = data.decode("utf-8", errors="replace")
+    return "".join(
+        ln for ln in text.splitlines(keepends=True)
+        if not re.match(r"^\s+completed_at:\s*", ln)
+    ).encode("utf-8")
+
+
 def a1_record_ship_repo_authored(task_id: str, strategy_path: str) -> tuple[bool, str]:
     """Bind the repo-authored proposed strategy to the approved A2 artifact sha."""
     path = Path(str(strategy_path)).expanduser()
@@ -2127,7 +2152,11 @@ def a1_record_ship_repo_authored(task_id: str, strategy_path: str) -> tuple[bool
         return (False, f"repo strategy missing or not a file: {path}")
     if path.stat().st_size == 0:
         return (False, f"repo strategy is empty: {path}")
-    actual_sha = _sha256_file(path)
+    try:
+        repo_bytes = path.read_bytes()  # read ONCE: sha + normalize from the same bytes
+    except OSError as exc:
+        return (False, f"repo strategy unreadable: {exc}")
+    actual_sha = hashlib.sha256(repo_bytes).hexdigest()
     fm, perr = _parse_md_frontmatter(path)
     if fm is None:
         return (False, f"repo strategy frontmatter invalid: {perr}")
@@ -2151,12 +2180,42 @@ def a1_record_ship_repo_authored(task_id: str, strategy_path: str) -> tuple[bool
             conn.close()
             return (False, "strategy_artifact_sha256 missing; cannot bind repo strategy")
         if actual_sha != expected_sha:
-            conn.close()
-            return (
-                False,
-                f"repo strategy sha256 {actual_sha} does not match approved A2 "
-                f"strategy_artifact_sha256 {expected_sha}",
+            # Re-authoring the SAME approved decision differs from the A2-approved vault
+            # file ONLY by the write-time forward_guidance_check.completed_at. Accept ONLY
+            # when (a) the recorded vault strategy file is STILL the approved artifact
+            # (its sha still equals the recorded A2 sha -- so we are comparing against the
+            # real backtested+approved bytes, not a drifted vault) AND (b) the repo file
+            # equals that vault file modulo the single volatile completed_at line. Any
+            # other byte difference, a drifted vault, or an unreadable file still refuses.
+            vault_raw = payload.get("strategy_path")
+            vault_path = Path(str(vault_raw)).expanduser() if vault_raw else None
+            vault_bytes = None
+            if vault_path is not None and vault_path.is_file():
+                try:
+                    vault_bytes = vault_path.read_bytes()  # read ONCE (no TOCTOU)
+                except OSError:
+                    vault_bytes = None
+            # The recorded vault strategy must STILL be the approved artifact (its sha,
+            # on the very bytes we normalize, equals the recorded A2 sha), AND the repo
+            # file equals it modulo the single volatile completed_at line. Same-bytes
+            # sha+normalize closes the read-after-check race.
+            vault_is_approved = bool(
+                vault_bytes is not None
+                and hashlib.sha256(vault_bytes).hexdigest() == expected_sha
             )
+            if not (
+                vault_is_approved
+                and _strategy_normalized_for_bind(repo_bytes)
+                == _strategy_normalized_for_bind(vault_bytes)
+            ):
+                conn.close()
+                return (
+                    False,
+                    f"repo strategy sha256 {actual_sha} does not match approved A2 "
+                    f"strategy_artifact_sha256 {expected_sha}, and its normalized content "
+                    f"(modulo the forward-guidance write timestamp) does not match the "
+                    f"approved vault strategy",
+                )
         entity = str(task.get("entity_key") or "").strip().upper()
         order = fm.get("order")
         order_ticker = (
@@ -3029,7 +3088,15 @@ def poll_once() -> dict:
                     "k2bi-write-strategy-spec": "dispatch_strategy",
                     "k2bi-run-backtest": "dispatch_backtest",
                     "k2bi-author-strategy-to-repo": "author_strategy_to_repo",
-                    "k2bi-run-full-ship": "dispatch_ship",
+                    # The ship child is dispatched AFTER mark-ship-dispatch-started
+                    # records the dispatch intent + mints the sha-bound token (the
+                    # replay-guard anchor), which advances the oracle to verify_ship.
+                    # So the in-flight ship child legitimately runs during verify_ship,
+                    # NOT dispatch_ship (live-MVP finding, 2026-06-08). A double-ship is
+                    # still barred by the sha-bound token (a committed file's sha no
+                    # longer matches the token), the status:proposed ship gate, and the
+                    # one-live-child chain lock.
+                    "k2bi-run-full-ship": "verify_ship",
                 }.get(task.get("command_key", ""))
                 if stage_expected is not None:
                     try:

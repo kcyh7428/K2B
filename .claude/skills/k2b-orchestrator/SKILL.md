@@ -392,8 +392,11 @@ K2Bi ship gate; `run_full_ship` owns reviews, `handle_approve_strategy`, commit,
   `K2B_ORCH_SHIP_CMD_TIMEOUT` (default 1200s); other worker commands keep `K2B_ORCH_CMD_TIMEOUT` (default 540s).
 
 Both children are created with `--parent-task <parent> --flight <parent flight> --entity <TICKER>` and
-`payload_path`. `poll-once` cancels out-of-order A3 children unless the parent resume action is exactly
-`author_strategy_to_repo` or `dispatch_ship`.
+`payload_path`. `poll-once` cancels out-of-order A3 children unless the parent resume action matches the
+child's stage: `k2bi-author-strategy-to-repo` requires `author_strategy_to_repo`, and `k2bi-run-full-ship`
+requires **`verify_ship`** -- the ship child is dispatched AFTER `mark-ship-dispatch-started` records the
+dispatch intent + mints the token, which advances the oracle to `verify_ship` (do NOT expect `dispatch_ship`
+for the ship child).
 
 ### FullShipApproval token
 
@@ -412,6 +415,11 @@ adapter repeats the same guard.
 
 - Kill-switch is read-only: if `<K2Bi VAULT>/System/.killed` exists, refuse. A3 never writes or clears it.
 - Validators are read-only: `<K2Bi REPO>/execution/validators/config.yaml` must exist and be non-empty.
+- Allowed-list (instrument whitelist) is read-only and checked UP FRONT: the entity ticker must be on
+  `instrument_whitelist.symbols`, else the ship is refused with a route to `/invest-propose-limits` (Keith's
+  workflow finding 2026-06-08 -- catch a non-whitelisted ticker here, not as a last-step `run_full_ship`
+  rollback). A3 only READS the list; it NEVER adds a ticker -- that is operator-only via `/invest-propose-limits`
+  + approval. Helper: `scripts.lib.orchestrator_profiles.ticker_whitelisted(<TICKER>)`.
 - Strategy path must be `<K2Bi REPO>/wiki/strategies/strategy_<slug>.md`, status `proposed`, with frontmatter
   ticker/order.ticker matching the parent entity.
 - K2Bi git tree must be clean except for the single target strategy file before `run_full_ship`.
@@ -426,8 +434,12 @@ adapter repeats the same guard.
 
 ### Procedure
 
-1. **Ship gate.** Resume returns `strategy_approved_await_ship`. Surface that this commits the strategy to the
-   K2Bi engine repo and ask Keith for the explicit ship decision. On approval, run
+1. **Ship gate.** Resume returns `strategy_approved_await_ship`. FIRST run the read-only allowed-list pre-check
+   (`scripts.lib.orchestrator_profiles.ticker_whitelisted(<TICKER>)`): if the ticker is NOT on the engine
+   allowed-list, STOP -- tell Keith the ticker must be approved for trading first (route him to
+   `/invest-propose-limits` + his approval) and do NOT author or authorize a ship for it (the capital preflight
+   also hard-refuses it, but surfacing here avoids the wasted author/token work). Otherwise surface that this
+   commits the strategy to the K2Bi engine repo and ask Keith for the explicit ship decision. On approval, run
    `python3 -m scripts.lib.orchestrator_store approve-ship <parent>`.
 2. **Author to repo.** Build or reconstruct the exact `StrategySpecDecision` for the approved A2 strategy. Create
    `k2bi-author-strategy-to-repo` with `repo_root=<K2Bi REPO>`, then `poll-once`. After the child is `done` and

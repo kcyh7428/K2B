@@ -768,6 +768,60 @@ def _approval_payload(payload: dict) -> tuple[dict | None, str]:
     return (approval, "")
 
 
+def k2bi_instrument_whitelist() -> tuple[list[str] | None, str]:
+    """READ-ONLY read of the K2Bi engine instrument whitelist (allowed-stocks list).
+
+    Returns (symbols, "") on success or (None, reason) when it cannot be read --
+    callers MUST fail CLOSED on (None, reason). The whitelist is an operator-owned
+    validator (`execution/validators/config.yaml`, `instrument_whitelist.symbols`):
+    the engine refuses any order for a ticker not on it. A3 only READS it (to surface
+    "this ticker is not approved for trading yet" EARLY, instead of as a last-step ship
+    rollback -- Keith's workflow finding, 2026-06-08). A3 NEVER edits it; adding a ticker
+    goes through `/invest-propose-limits` + operator approval.
+    """
+    cfg = Path(k2bi_repo()).expanduser() / "execution" / "validators" / "config.yaml"
+    try:
+        import yaml
+    except ImportError:
+        return (None, "yaml unavailable -- cannot read the K2Bi instrument whitelist")
+    try:
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return (None, f"K2Bi instrument whitelist unreadable ({cfg}): {exc}")
+    if not isinstance(data, dict):
+        return (None, "K2Bi validators config is not a mapping")
+    block = data.get("instrument_whitelist")
+    if not isinstance(block, dict):
+        return (None, "K2Bi validators config has no instrument_whitelist block")
+    symbols = block.get("symbols")
+    if symbols is None:
+        symbols = []
+    if not isinstance(symbols, list):
+        return (None, "instrument_whitelist.symbols is not a list")
+    return ([str(s).strip().upper() for s in symbols], "")
+
+
+def ticker_whitelisted(symbol: str) -> tuple[bool, str]:
+    """True iff `symbol` is on the K2Bi engine allowed-stocks list. Fail-closed: if the
+    whitelist cannot be read, returns (False, reason). The refusal message routes the
+    operator to the sanctioned add path (`/invest-propose-limits`)."""
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        return (False, "ticker missing for whitelist check")
+    symbols, reason = k2bi_instrument_whitelist()
+    if symbols is None:
+        return (False, reason)
+    if clean not in symbols:
+        allowed = ", ".join(symbols) if symbols else "(none -- engine refuses all)"
+        return (
+            False,
+            f"ticker {clean} is not on the K2Bi engine allowed-list (instrument_whitelist); "
+            f"approve it via /invest-propose-limits + operator approval before shipping. "
+            f"Currently allowed: {allowed}",
+        )
+    return (True, "")
+
+
 def _preflight_a3_capital(task, payload: dict) -> tuple[bool, str]:
     vault = Path(k2bi_vault()).expanduser()
     if (vault / "System" / ".killed").exists():
@@ -819,6 +873,16 @@ def _preflight_a3_capital(task, payload: dict) -> tuple[bool, str]:
     ticker = order_ticker or str(fm.get("ticker", "")).strip().upper()
     if entity and ticker != entity:
         return (False, f"A3 strategy ticker {ticker!r} does not match entity_key {entity!r}")
+
+    # Allowed-list (instrument whitelist) pre-check (Keith's workflow finding, 2026-06-08;
+    # Kimi A3.1 review F2: check the ACTUAL shipped ticker -- the strategy's order.ticker,
+    # verified == entity above -- not just the task entity_key, so a strategy whose order
+    # trades a different/non-whitelisted ticker cannot slip through). The engine rejects any
+    # order for a non-whitelisted ticker, so catch it HERE (before run_full_ship) + route to
+    # the operator approval path instead of a last-step rollback. READ-ONLY; A3 never edits it.
+    ok, reason = ticker_whitelisted(ticker)
+    if not ok:
+        return (False, reason)
 
     return _git_tree_clean_except_target(repo, strategy_path)
 

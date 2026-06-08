@@ -74,7 +74,8 @@ def _init_git_repo(repo: Path) -> None:
     _git(repo, "commit", "-m", "initial")
     (repo / "execution" / "validators").mkdir(parents=True, exist_ok=True)
     (repo / "execution" / "validators" / "config.yaml").write_text(
-        "validators:\n  enabled: true\n",
+        "validators:\n  enabled: true\n"
+        "instrument_whitelist:\n  symbols:\n  - CDNS\n  - SPY\n  - G\n",
         encoding="utf-8",
     )
     _git(repo, "add", "execution/validators/config.yaml")
@@ -315,6 +316,53 @@ class TestA3OracleAndHelpers:
         ok, reason = store.a1_record_ship_repo_authored(tid, str(repo_strategy))
         assert not ok
         assert "sha256" in reason
+
+    def test_record_ship_repo_authored_accepts_completed_at_drift(self, store, tmp_path):
+        # K2Bi's write_complete_strategy_spec stamps forward_guidance_check.completed_at at
+        # write time, so a faithful re-author of the SAME approved decision into the repo
+        # differs from the A2-approved vault file ONLY by that line (live-MVP finding,
+        # 2026-06-08). The bind must accept it (normalized-equal, vault still approved).
+        tmpl = (
+            "---\nname: cdns\nticker: CDNS\nstatus: proposed\n"
+            "forward_guidance_check:\n  status: pass\n  completed_at: {ts}\n"
+            "order:\n  ticker: CDNS\n---\n# Strategy cdns\nbody\n"
+        )
+        vault = tmp_path / "vault_cdns.md"
+        vault.write_text(tmpl.format(ts="'2026-06-07T23:09:01.053512'"), encoding="utf-8")
+        repo = tmp_path / "repo" / "wiki" / "strategies" / "strategy_cdns.md"
+        repo.parent.mkdir(parents=True)
+        repo.write_text(tmpl.format(ts="'2026-06-08T16:21:04.629593'"), encoding="utf-8")
+        assert _sha256(repo) != _sha256(vault)  # raw bytes differ (only the timestamp)
+        tid = _a3_parent(store, tmp_path, payload_updates={
+            "ship_authorized": True,
+            "strategy_path": str(vault),
+            "strategy_artifact_sha256": _sha256(vault),
+        })
+        ok, reason = store.a1_record_ship_repo_authored(tid, str(repo))
+        assert ok, reason
+        assert json.loads(store.get_task(tid)["payload"])["ship_repo_authored"] is True
+
+    def test_record_ship_repo_authored_refuses_material_drift_modulo_timestamp(self, store, tmp_path):
+        # A difference on a MATERIAL line (not the write timestamp) still refuses even
+        # after completed_at is normalized away.
+        tmpl = (
+            "---\nname: cdns\nticker: CDNS\nstatus: proposed\n"
+            "forward_guidance_check:\n  status: pass\n  completed_at: {ts}\n"
+            "order:\n  ticker: CDNS\n---\n# Strategy cdns\n{body}\n"
+        )
+        vault = tmp_path / "vault_cdns.md"
+        vault.write_text(tmpl.format(ts="'2026-06-07T23:09:01.053512'", body="body"), encoding="utf-8")
+        repo = tmp_path / "repo" / "wiki" / "strategies" / "strategy_cdns.md"
+        repo.parent.mkdir(parents=True)
+        repo.write_text(tmpl.format(ts="'2026-06-08T16:21:04.629593'", body="TAMPERED"), encoding="utf-8")
+        tid = _a3_parent(store, tmp_path, payload_updates={
+            "ship_authorized": True,
+            "strategy_path": str(vault),
+            "strategy_artifact_sha256": _sha256(vault),
+        })
+        ok, reason = store.a1_record_ship_repo_authored(tid, str(repo))
+        assert not ok
+        assert "does not match" in reason
 
     def test_record_ship_repo_authored_refuses_wrong_ticker(self, store, tmp_path):
         repo_strategy = _strategy_file(
@@ -671,6 +719,42 @@ class TestA3TerminalLockingAndPoll:
         store.poll_once()
         assert store.get_task(child)["status"] == "cancelled"
 
+    def test_poll_once_admits_in_flight_ship_child_at_verify_ship(self, store, tmp_path, monkeypatch):
+        # After mark-ship-dispatch-started records the dispatch intent + mints the token,
+        # the oracle is at verify_ship, and the in-flight ship child legitimately runs
+        # THEN. The stage guard must NOT cancel it as "out of order" (live-MVP fix
+        # 2026-06-08; before the fix it expected dispatch_ship and killed the real ship).
+        monkeypatch.setattr(store, "notify", lambda *a, **k: None)
+        repo, proposed, parent = _dispatched_ship(store, tmp_path, monkeypatch)
+        assert store.a1_resume_action(parent) == "verify_ship"
+        child = store.add_task(
+            assignee_profile="k2bi",
+            command_key="k2bi-run-full-ship",
+            success_criteria="in-flight ship",
+            permissions="analyst-command",
+            flight_id=parent,
+            parent_task=parent,
+            entity_key="CDNS",
+            status="ready",
+            payload={
+                "symbol": "CDNS",
+                "payload_path": "/tmp/k2b-orchestrator/ship.json",
+                "strategy_path": str(proposed),
+                "approval": {
+                    "final_approval_token": "x",
+                    "approved_by": "keith",
+                    "approved_at": "2026-06-08T00:00:00+00:00",
+                    "ship_lease_id": "cdns-ship-a1-20260608T000000Z",
+                },
+            },
+        )
+        store.poll_once()
+        t = store.get_task(child)
+        # NOT stage-cancelled (it may be blocked by the real capital preflight, which is fine).
+        assert not (
+            t["status"] == "cancelled" and "out of order" in (t.get("blocker_reason") or "")
+        )
+
 
 class TestA3Profiles:
     def test_a3_commands_allowlisted_with_carrier(self, store):
@@ -792,6 +876,43 @@ class TestA3Profiles:
         payload = _ship_payload(strategy, vault)
         ok, reason = profiles.preflight_k2bi(_k2bi_task("k2bi-run-full-ship", payload))
         assert ok, reason
+
+    def test_capital_preflight_refuses_non_whitelisted_ticker(self, store, tmp_path, monkeypatch):
+        # Keith's workflow finding (2026-06-08): the ship gate must catch a
+        # non-whitelisted ticker UPFRONT here, not as a last-step run_full_ship rollback.
+        from scripts.lib import orchestrator_profiles as profiles
+
+        repo = tmp_path / "k2bi"
+        _init_git_repo(repo)
+        # Rewrite the allowed-list WITHOUT CDNS (only SPY/G), then commit so the tree is clean.
+        (repo / "execution" / "validators" / "config.yaml").write_text(
+            "validators:\n  enabled: true\n"
+            "instrument_whitelist:\n  symbols:\n  - SPY\n  - G\n",
+            encoding="utf-8",
+        )
+        _git(repo, "add", "execution/validators/config.yaml")
+        _git(repo, "commit", "-m", "drop CDNS from whitelist")
+        vault = tmp_path / "k2bi-vault"
+        vault.mkdir(exist_ok=True)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        monkeypatch.setenv("K2BI_VAULT_PATH", str(vault))
+        _write_registry(vault, "CDNS")
+        strategy = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        payload = _ship_payload(strategy, vault)
+        ok, reason = profiles.preflight_k2bi(_k2bi_task("k2bi-run-full-ship", payload))
+        assert not ok
+        assert "allowed-list" in reason and "/invest-propose-limits" in reason
+
+    def test_ticker_whitelisted_helper(self, store, tmp_path, monkeypatch):
+        from scripts.lib import orchestrator_profiles as profiles
+
+        repo = tmp_path / "k2bi"
+        _init_git_repo(repo)  # whitelist [CDNS, SPY, G]
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        assert profiles.ticker_whitelisted("CDNS")[0] is True
+        assert profiles.ticker_whitelisted("spy")[0] is True  # case-insensitive
+        ok, reason = profiles.ticker_whitelisted("ZZZZ")
+        assert ok is False and "allowed-list" in reason
 
 
 def _ship_payload(strategy: Path, vault: Path) -> dict:
