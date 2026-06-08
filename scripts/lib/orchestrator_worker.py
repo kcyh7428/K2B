@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SHIP_COMMAND_KEY = "k2bi-run-full-ship"
+# Capital commands BEYOND the ship key that share the longer ship timeout. The
+# ship key is intentionally NOT listed here: it is matched directly against the
+# (runtime-patchable) SHIP_COMMAND_KEY constant in the timeout branch, so a
+# rename/patch of the ship key still routes correctly. Keeping it out of this
+# frozenset avoids the redundant double-listing.
+CAPITAL_COMMAND_KEYS = frozenset({"k2bi-apply-limits"})
 DEFAULT_CMD_TIMEOUT_S = 540
 DEFAULT_SHIP_CMD_TIMEOUT_S = 1200
 
@@ -191,7 +197,11 @@ def main(task_id):
         # is complete. When Ship 1b adds commands that spawn children, the command
         # must move to a tracked command-group that both this timeout path and
         # reclaim kill explicitly (tracked as a Ship 1b hardening item).
-        if command_key == SHIP_COMMAND_KEY:
+        # `== SHIP_COMMAND_KEY` re-reads the module constant at runtime so a
+        # rename/patch of the ship key still routes to the capital timeout
+        # (refactor-safety asserted by test_ship_timeout_branch_uses_module_ship_key_constant);
+        # CAPITAL_COMMAND_KEYS carries the additional A4 apply-limits capital key.
+        if command_key == SHIP_COMMAND_KEY or command_key in CAPITAL_COMMAND_KEYS:
             timeout_s = _parse_timeout_env(
                 "K2B_ORCH_SHIP_CMD_TIMEOUT",
                 DEFAULT_SHIP_CMD_TIMEOUT_S,

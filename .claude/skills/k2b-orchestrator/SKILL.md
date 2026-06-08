@@ -436,10 +436,12 @@ adapter repeats the same guard.
 
 1. **Ship gate.** Resume returns `strategy_approved_await_ship`. FIRST run the read-only allowed-list pre-check
    (`scripts.lib.orchestrator_profiles.ticker_whitelisted(<TICKER>)`): if the ticker is NOT on the engine
-   allowed-list, STOP -- tell Keith the ticker must be approved for trading first (route him to
-   `/invest-propose-limits` + his approval) and do NOT author or authorize a ship for it (the capital preflight
-   also hard-refuses it, but surfacing here avoids the wasted author/token work). Otherwise surface that this
-   commits the strategy to the K2Bi engine repo and ask Keith for the explicit ship decision. On approval, run
+   allowed-list, STOP -- offer the inline A4 path: "approve adding <TICKER> to the engine whitelist now?"
+   If Keith says yes, run the A4 limits conductor below to `terminal_limits_applied`, then resume this A3 ship
+   gate and re-run the read-only whitelist check. If an earlier ship attempt is parked at `ship_rolled_back`,
+   use `retry-ship` only after the A4 apply is terminally verified. If Keith says no, do not author or
+   authorize a ship. Otherwise surface that this commits the strategy to the K2Bi engine repo and ask Keith
+   for the explicit ship decision. On approval, run
    `python3 -m scripts.lib.orchestrator_store approve-ship <parent>`.
 2. **Author to repo.** Build or reconstruct the exact `StrategySpecDecision` for the approved A2 strategy. Create
    `k2bi-author-strategy-to-repo` with `repo_root=<K2Bi REPO>`, then `poll-once`. After the child is `done` and
@@ -454,6 +456,77 @@ adapter repeats the same guard.
    `python3 -m scripts.lib.orchestrator_store verify-ship <parent>`. This calls `inspect-ship-state`; only
    `committed` sets `terminal_shipped` and records `ship_commit_sha`. If the child errors or verification refuses,
    run `record-ship-failed`, surface the state, and stop.
+
+## A4 limits conductor -- approve -> author proposal -> apply -> verify
+
+A4 is the operator-approved limits apply path. It is a standalone limits flight that applies a K2Bi limits
+proposal, such as adding a ticker to `instrument_whitelist.symbols`, after Keith approves the exact YAML patch.
+K2B never edits `execution/validators/config.yaml`, never clears the kill-switch, and never hand-commits. The
+only write/commit path is K2Bi's shipped `invest_orchestrator_adapters.apply_approved_limits(...)`, which owns
+review, `handle_approve_limits`, commit, and rollback.
+
+### A4 durable model
+
+- Parent flight: `profile=k2b`, `entity=<proposal-slug>`, `status=needs_human`, payload
+  `{"chain_kind":"limits"}`.
+- Parent payload flags: `limits_proposal_recorded`, `limits_proposal_path`, `limits_proposal_sha256`,
+  `limits_proposal_slug`, `limits_expected_after_symbols`, `limits_authorized`,
+  `limits_dispatch_started_at`, `limits_attempt_count`, `limits_apply_lease_id`, `limits_approved_at`,
+  `limits_approval_token`, `limits_verified`, `limits_commit_sha`, `limits_rolled_back_at`,
+  `limits_rollback_clean`, `limits_partial_detected_at`.
+- Resume ladder: no proposal -> `author_limits_proposal`; recorded -> `await_limits_approval`; authorized ->
+  `dispatch_limits`; dispatched -> `verify_limits`; verified or row status `terminal_limits_applied` ->
+  `terminal_limits_applied`; partial/rollback markers return `limits_partial` / `limits_rolled_back`.
+- Apply attempts are bounded at 3. Hitting the limit parks `needs_human` with
+  `terminal_reason=limits_apply_attempt_limit_exceeded`.
+
+### A4 allowlisted dispatch
+
+- `k2bi-apply-limits` -> the K2B runner calls
+  `invest_orchestrator_adapters.apply_approved_limits(proposal_path, approval=<LimitsApproval>,
+  required_primary=<review primary>)`.
+- The apply child uses `K2B_ORCH_SHIP_CMD_TIMEOUT` (default 1200s), same as `k2bi-run-full-ship`.
+- The apply child is created with `--parent-task <parent> --flight <parent flight> --entity <proposal-slug>`.
+  `poll-once` admits it only when parent resume action is `verify_limits`, because
+  `mark-limits-dispatch-started` must run first and mint the token.
+
+### LimitsApproval token
+
+Build the approval from the values returned by `mark-limits-dispatch-started`:
+
+```text
+APPROVE_LIMITS:<slug>:<proposal_sha256>:<config_sha256>:<approved_at>:<apply_lease_id>
+```
+
+`approved_at` must be ISO-8601 UTC with an explicit `+00:00` offset. `apply_lease_id` is generated as
+`<slug>-limits-a1-YYYYMMDDTHHMMSSZ` and must match K2Bi's lease regex. The token binds both the proposal Keith
+approved and the current on-disk `config.yaml` bytes. Dispatch promptly; K2Bi enforces a 300s clock-skew window.
+
+### Procedure
+
+1. **Author the proposal.** Run K2Bi's read-only generator from the K2Bi repo:
+   `python3 -m scripts.lib.propose_limits write --text "<Keith's ask>" --rationale "<why>"`.
+   Create the parent flight with payload `{"chain_kind":"limits"}` and entity equal to the derived proposal slug.
+   Then run `python3 -m scripts.lib.orchestrator_store record-limits-proposal <parent> <proposal-path>`.
+   A4 scope is only `instrument_whitelist` / `add`; any other limits proposal stays on the manual
+   `/invest-ship --approve-limits` path.
+2. **Human gate.** Show Keith the proposal's actual `## YAML Patch`. On explicit approval of that exact patch,
+   run `python3 -m scripts.lib.orchestrator_store authorize-limits <parent>`. Veto stops the flight; nothing is
+   committed.
+3. **Dispatch apply.** Run `python3 -m scripts.lib.orchestrator_store mark-limits-dispatch-started <parent>`.
+   Use the returned JSON to build the `k2bi-apply-limits` child payload. The DB row `--payload` MUST carry
+   `proposal_path`, `approval={final_approval_token, approved_by, approved_at, apply_lease_id}`, and
+   `required_primary` inline for preflight, PLUS `payload_path` pointing to a JSON file with the same
+   `{proposal_path, approval, required_primary}` for the adapter fd-path guard. Then run `poll-once`.
+4. **Verify.** After the child reaches `done`, run
+   `python3 -m scripts.lib.orchestrator_store verify-limits <parent>`. Only inspector state `committed` sets
+   `terminal_limits_applied`. The inspector requires proposal `status: approved`, proposal and config tracked at
+   the advanced HEAD, clean target status, no rollback marker, and `instrument_whitelist.symbols` exactly equal
+   the proposal's expected `after` list, with no extra symbols.
+5. **Failure and retry.** If the child errors or verification refuses, run
+   `python3 -m scripts.lib.orchestrator_store record-limits-failed <parent> --reason "<worker/preflight reason>"`
+   and surface `inspect-limits-state`. Do not re-fire. `retry-limits` is allowed only when a fresh live
+   `inspect-limits-state` returns `clean_rollback`; `partial_approved_uncommitted` requires human recovery.
 
 ## Canonical add example
 

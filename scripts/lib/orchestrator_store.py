@@ -51,12 +51,14 @@ TERMINAL_STATUSES = frozenset({
     "cancelled",
     "terminal_bear_veto",
     "terminal_shipped",
+    "terminal_limits_applied",
 })
 ALL_STATUSES = frozenset({
     "ready", "running", "blocked", "zombie",
     "waiting_for_kimi_output", "needs_human", "returned",
     "waiting_for_agent_theme",
     "done", "failed", "cancelled", "terminal_bear_veto", "terminal_shipped",
+    "terminal_limits_applied",
 })
 NON_COMPLETABLE_STATUSES = tuple(sorted(
     TERMINAL_STATUSES
@@ -875,6 +877,7 @@ def transition(task_id, status, **fields) -> None:
 
 A1_MAX_REVISIONS = 3
 A3_MAX_SHIP_ATTEMPTS = 3
+A4_MAX_APPLY_ATTEMPTS = 3
 A1_BACKTEST_LOOK_AHEAD_VALUES = frozenset({"passed", "suspicious"})
 TERMINAL_TTL_CREATED_AT_FLOOR = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
@@ -907,6 +910,32 @@ def _payload_is_logically_terminal(raw_payload) -> bool:
     except (TypeError, ValueError):
         return False
     return False
+
+
+def _a4_limits_resume_from_payload(status: str, payload: dict) -> str:
+    # status is ALWAYS non-terminal here (the parent oracle returns on terminal
+    # status before the chain_kind branch), so a non-terminal row carrying
+    # limits_verified=True is corruption -- do NOT trust the flag to claim terminal
+    # (fail closed: fall through to verify_limits, which re-inspects). CP2 r1 fix C.
+    if status == "terminal_limits_applied":
+        return "terminal_limits_applied"
+    if payload.get("terminal_reason"):
+        return "needs_human_terminal"
+    # Attempt bounding lives ONLY at mark-dispatch/retry (>= A4_MAX_APPLY_ATTEMPTS),
+    # which terminalizes via terminal_reason (handled above). The oracle carries no
+    # raw attempt check (mirrors A3): a `>` would disagree with the dispatch gate and
+    # a `>=` would strand the in-flight final attempt's verify. CP2 r1 fix B.
+    if payload.get("limits_partial_detected_at"):
+        return "limits_partial"
+    if payload.get("limits_rolled_back_at"):
+        return "limits_rolled_back"
+    if not payload.get("limits_proposal_recorded"):
+        return "author_limits_proposal"
+    if not payload.get("limits_authorized"):
+        return "await_limits_approval"
+    if not payload.get("limits_dispatch_started_at"):
+        return "dispatch_limits"
+    return "verify_limits"
 
 
 def _update_payload_locked(
@@ -1029,9 +1058,13 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
         return "terminal_bear_veto"
     if status == "terminal_shipped":
         return "terminal_shipped"
+    if status == "terminal_limits_applied":
+        return "terminal_limits_applied"
     if status in TERMINAL_STATUSES:
         return f"terminal_{status}"
     payload = _payload_dict(task.get("payload"))
+    if payload.get("chain_kind") == "limits":
+        return _a4_limits_resume_from_payload(status, payload)
     if payload.get("bear_verdict") == "VETO":
         return "terminal_bear_veto"
     try:
@@ -2020,6 +2053,47 @@ def _a3_git_head(repo: Path) -> str | None:
     return head or None
 
 
+def _a4_git_head_commit_message(repo: Path) -> str | None:
+    """The HEAD commit body, used to prove a limits commit was authored by THIS
+    dispatch (CP2 r1 fix A). K2Bi's _build_limits_commit_message emits
+    `Approval-Captured-At: <approved_at>` verbatim, so the dispatch's approved_at
+    appears here iff the HEAD commit is the one this apply produced."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%B"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout or ""
+
+
+def _a4_git_head_commit_parent(repo: Path) -> str | None:
+    """The first-parent sha of HEAD. A legitimate limits apply is a SINGLE commit on
+    top of the dispatch baseline, so HEAD's parent must equal limits_repo_head_before
+    (Codex CP2 final F2) -- this rejects an amended/squashed/unrelated HEAD that merely
+    advanced past the baseline."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", "HEAD^"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    parent = (result.stdout or "").strip()
+    return parent or None
+
+
 def _a3_git_status_for_path(repo: Path, path: Path) -> str | None:
     try:
         rel = path.resolve(strict=False).relative_to(repo.resolve(strict=False)).as_posix()
@@ -2085,6 +2159,770 @@ def _a3_terminalize_attempt_limit_locked(
             "operator decision before retrying"
         ),
     )
+
+
+def _a4_limits_slug_from_path(path: Path) -> str | None:
+    match = re.match(r"^\d{4}-\d{2}-\d{2}_limits-proposal_(.+)$", path.stem)
+    slug = match.group(1) if match else path.stem
+    return slug or None
+
+
+def _a4_limits_token(
+    slug: str,
+    proposal_sha: str,
+    config_sha: str,
+    approved_at: str,
+    lease: str,
+) -> str:
+    return f"APPROVE_LIMITS:{slug}:{proposal_sha}:{config_sha}:{approved_at}:{lease}"
+
+
+def _a4_proposal_repo_and_paths(path: Path) -> tuple[Path | None, str | None, str]:
+    repo = _a3_git_repo_root_for_path(path)
+    if repo is None:
+        return (None, None, f"limits proposal path is not inside a git repo: {path}")
+    try:
+        rel = path.resolve(strict=False).relative_to(repo.resolve(strict=False)).as_posix()
+    except ValueError:
+        return (None, None, f"limits proposal path is outside git repo: {path}")
+    if not rel.startswith("review/strategy-approvals/"):
+        return (None, None, f"limits proposal must be under review/strategy-approvals: {path}")
+    if path.suffix != ".md" or "_limits-proposal_" not in path.stem:
+        return (None, None, f"limits proposal filename must be *_limits-proposal_*.md: {path}")
+    return (repo, rel, "")
+
+
+def _a4_markdown_yaml_block_after_heading(text: str, heading: str) -> tuple[dict | None, str]:
+    pattern = re.compile(
+        rf"(?ims)^##\s+{re.escape(heading)}\s*$.*?^```yaml\s*$\n(.*?)^```\s*$"
+    )
+    match = pattern.search(text)
+    if not match:
+        return (None, f"missing ## {heading} yaml block")
+    try:
+        import yaml
+    except ImportError:
+        return (None, "yaml unavailable -- cannot parse limits proposal")
+    try:
+        data = yaml.safe_load(match.group(1))
+    except Exception as exc:
+        return (None, f"limits proposal ## {heading} block is not parseable YAML: {exc}")
+    if not isinstance(data, dict):
+        return (None, f"limits proposal ## {heading} block is not a mapping")
+    return (data, "")
+
+
+def _a4_limits_change_from_path(path: Path) -> tuple[dict | None, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return (None, f"limits proposal unreadable: {exc}")
+    return _a4_markdown_yaml_block_after_heading(text, "Change")
+
+
+def _a4_normalize_symbols(value) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    symbols = sorted({str(item).strip().upper() for item in value if str(item).strip()})
+    return symbols
+
+
+def _a4_config_symbols(config_path: Path) -> tuple[list[str] | None, str]:
+    try:
+        import yaml
+    except ImportError:
+        return (None, "yaml unavailable -- cannot read validator config")
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return (None, f"validator config unreadable: {exc}")
+    if not isinstance(data, dict):
+        return (None, "validator config is not a mapping")
+    block = data.get("instrument_whitelist")
+    if not isinstance(block, dict):
+        return (None, "validator config missing instrument_whitelist block")
+    symbols = _a4_normalize_symbols(block.get("symbols"))
+    if symbols is None:
+        return (None, "instrument_whitelist.symbols is not a list")
+    return (symbols, "")
+
+
+def _a4_scope_change(path: Path) -> tuple[dict | None, list[str] | None, str]:
+    change, reason = _a4_limits_change_from_path(path)
+    if change is None:
+        return (None, None, reason)
+    rule = str(change.get("rule") or "").strip()
+    change_type = str(change.get("change_type") or "").strip()
+    if rule != "instrument_whitelist" or change_type != "add":
+        return (
+            None,
+            None,
+            "A4 supports only instrument_whitelist/add this increment; route others "
+            "to the manual /invest-ship --approve-limits path",
+        )
+    expected_after = _a4_normalize_symbols(change.get("after"))
+    if expected_after is None:
+        return (None, None, "limits proposal ## Change after must be a symbol list")
+    return (change, expected_after, "")
+
+
+def _a4_validate_proposed_limits_file(path: Path) -> tuple[dict | None, list[str] | None, str]:
+    if not path.is_file():
+        return (None, None, f"limits proposal missing or not a file: {path}")
+    try:
+        if path.stat().st_size == 0:
+            return (None, None, f"limits proposal is empty: {path}")
+    except OSError as exc:
+        return (None, None, f"limits proposal unreadable: {exc}")
+    fm, perr = _parse_md_frontmatter(path)
+    if fm is None:
+        return (None, None, f"limits proposal frontmatter invalid: {perr}")
+    if str(fm.get("type", "")).strip() != "limits-proposal":
+        return (None, None, "limits proposal type must be limits-proposal")
+    status = str(fm.get("status") or "").strip().lower()
+    if status != "proposed":
+        return (None, None, f"limits proposal status must be proposed; got {status!r}")
+    applies_to = str(fm.get("applies-to") or "").strip()
+    if applies_to != "execution/validators/config.yaml":
+        return (None, None, "limits proposal applies-to must be execution/validators/config.yaml")
+    change, expected_after, reason = _a4_scope_change(path)
+    if change is None:
+        return (None, None, reason)
+    return (change, expected_after, "")
+
+
+def _a4_terminalize_attempt_limit_locked(
+    conn,
+    task_id: str,
+    payload: dict,
+    *,
+    status: str = "needs_human",
+) -> None:
+    payload["terminal_reason"] = "limits_apply_attempt_limit_exceeded"
+    payload.setdefault("terminal_reason_at", now_iso())
+    _update_payload_locked(
+        conn,
+        task_id,
+        payload,
+        status=status,
+        blocker_reason=(
+            "limits apply attempt limit exceeded; inspect rollback state and make "
+            "a fresh operator decision before retrying"
+        ),
+    )
+
+
+def a4_record_limits_proposal(task_id: str, proposal_path: str) -> tuple[bool, str]:
+    path = Path(str(proposal_path)).expanduser()
+    repo, _rel, reason = _a4_proposal_repo_and_paths(path)
+    if repo is None:
+        return (False, reason)
+    slug = _a4_limits_slug_from_path(path)
+    if slug is None:
+        return (False, f"limits proposal filename has no slug: {path}")
+    change, expected_after, reason = _a4_validate_proposed_limits_file(path)
+    if change is None or expected_after is None:
+        return (False, reason)
+    try:
+        proposal_sha = _sha256_file(path)
+    except OSError as exc:
+        return (False, f"limits proposal unreadable: {exc}")
+
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("chain_kind") != "limits":
+            conn.close()
+            return (False, "record-limits-proposal requires payload.chain_kind=limits")
+        # Refuse to (re-)record over a partial_approved_uncommitted apply (Codex CP2
+        # final F3). That state means the K2Bi adapter mutated the validator but did NOT
+        # commit -- the repo is in a dangerous half-applied state that needs manual
+        # recovery. Re-recording here would pop limits_partial_detected_at + the inspect
+        # evidence below, silently erasing the durable "human recovery required" signal.
+        # The next dispatch's clean-tree preflight would still block, but the recovery
+        # state must not be hidden. Recover the repo first, then start a fresh flight.
+        if payload.get("limits_partial_detected_at"):
+            conn.close()
+            return (
+                False,
+                "limits apply left a partial (approved-but-uncommitted) state; recover the "
+                "K2Bi repo manually and start a fresh flight -- record-limits-proposal will "
+                "not clear the partial recovery evidence",
+            )
+        payload["limits_proposal_recorded"] = True
+        payload["limits_proposal_recorded_at"] = now_iso()
+        payload["limits_proposal_path"] = str(path)
+        payload["limits_proposal_sha256"] = proposal_sha
+        payload["limits_proposal_slug"] = slug
+        payload["limits_change_rule"] = str(change.get("rule") or "").strip()
+        payload["limits_change_type"] = str(change.get("change_type") or "").strip()
+        payload["limits_expected_after_symbols"] = expected_after
+        for key in (
+            "limits_authorized",
+            "limits_authorized_at",
+            "limits_dispatch_started_at",
+            "limits_dispatch_proposal_sha256",
+            "limits_dispatch_config_sha256",
+            "limits_repo_head_before",
+            "limits_apply_lease_id",
+            "limits_approved_at",
+            "limits_approval_token",
+            "limits_verified",
+            "limits_verified_at",
+            "limits_commit_sha",
+            "limits_failed_at",
+            "limits_failure_reason",
+            "limits_rolled_back_at",
+            "limits_rollback_reason",
+            "limits_rollback_clean",
+            "limits_partial_detected_at",
+            "limits_partial_reason",
+            "limits_verify_failed_at",
+            "limits_verify_failed_reason",
+            "limits_inspect_state",
+            "limits_inspect",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def _a4_proposal_sha_matches_record(payload: dict) -> tuple[bool, str]:
+    """Re-read the recorded proposal file and confirm its sha still matches the
+    sha captured at record-limits-proposal (CP2 r1 fix D: defense-in-depth +
+    clearer early error than a late mark-dispatch refusal). The dual-sha token at
+    dispatch is the real fail-closed guard; this just surfaces drift sooner."""
+    raw_path = payload.get("limits_proposal_path")
+    recorded_sha = str(payload.get("limits_proposal_sha256") or "").strip()
+    if not raw_path or not recorded_sha:
+        return (False, "proposal not recorded; re-run record-limits-proposal")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_file():
+        return (False, "proposal changed since record; re-run record-limits-proposal")
+    if _sha256_file(path) != recorded_sha:
+        return (False, "proposal changed since record; re-run record-limits-proposal")
+    return (True, "")
+
+
+def a4_authorize_limits(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("limits_authorized"):
+            conn.close()
+            return (True, "")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "await_limits_approval":
+            conn.close()
+            return (
+                False,
+                f"limits authorization requires resume action await_limits_approval (got {action!r})",
+            )
+        ok, reason = _a4_proposal_sha_matches_record(payload)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        payload["limits_authorized"] = True
+        payload["limits_authorized_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a4_mark_limits_dispatch_started(task_id: str) -> tuple[bool, dict | str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        try:
+            attempts = int(payload.get("limits_attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= A4_MAX_APPLY_ATTEMPTS:
+            _a4_terminalize_attempt_limit_locked(conn, task_id, payload)
+            conn.commit()
+            conn.close()
+            return (False, f"limits apply attempt limit exceeded ({A4_MAX_APPLY_ATTEMPTS})")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "dispatch_limits":
+            conn.close()
+            return (False, f"limits dispatch requires resume action dispatch_limits (got {action!r})")
+        raw_path = payload.get("limits_proposal_path")
+        if not raw_path:
+            conn.close()
+            return (False, "limits_proposal_path missing")
+        path = Path(str(raw_path)).expanduser()
+        if not path.is_file():
+            conn.close()
+            return (False, f"limits proposal missing or not a file: {path}")
+        slug = _a4_limits_slug_from_path(path)
+        if slug is None:
+            conn.close()
+            return (False, f"limits proposal filename has no slug: {path}")
+        current_proposal_sha = _sha256_file(path)
+        recorded_sha = str(payload.get("limits_proposal_sha256") or "").strip()
+        if not recorded_sha:
+            conn.close()
+            return (False, "limits_proposal_sha256 missing; cannot dispatch limits")
+        if current_proposal_sha != recorded_sha:
+            conn.close()
+            return (
+                False,
+                f"limits proposal sha256 {current_proposal_sha} changed since record {recorded_sha}",
+            )
+        repo = _a3_git_repo_root_for_path(path)
+        if repo is None:
+            conn.close()
+            return (False, "cannot establish limits baseline: K2Bi repo git HEAD unavailable")
+        head = _a3_git_head(repo)
+        if not head:
+            conn.close()
+            return (False, "cannot establish limits baseline: K2Bi repo git HEAD unavailable")
+        config_path = repo / "execution" / "validators" / "config.yaml"
+        if not config_path.is_file() or config_path.stat().st_size == 0:
+            conn.close()
+            return (False, "K2Bi validators config missing or empty; cannot dispatch limits")
+        # Run the cheap read-only capital gates BEFORE minting the token / burning an
+        # attempt (Codex CP2 final F1). The child preflight re-checks these, but minting
+        # a capital token + consuming one of the 3 attempts over a kill-switched or dirty
+        # tree -- only to have the child refuse -- wastes the bound and leaves stale token
+        # state. The proposal/config integrity is already covered by the sha match above;
+        # kill-switch + clean-tree are the states that can change between authorize and
+        # dispatch. (The token-bind itself cannot run here -- it is what we mint.)
+        from scripts.lib import orchestrator_profiles as profiles
+
+        if (Path(profiles.k2bi_vault()).expanduser() / "System" / ".killed").exists():
+            conn.close()
+            return (False, "engine kill-switch engaged (System/.killed present); limits dispatch refused")
+        ok, reason = profiles._git_tree_clean_for_limits_apply(repo, path, config_path)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        current_config_sha = _sha256_file(config_path)
+        dt = datetime.now(timezone.utc)
+        approved_at = dt.isoformat()
+        apply_lease_id = f"{slug}-limits-a1-{dt.strftime('%Y%m%dT%H%M%SZ')}"
+        token = _a4_limits_token(
+            slug,
+            current_proposal_sha,
+            current_config_sha,
+            approved_at,
+            apply_lease_id,
+        )
+        payload["limits_attempt_count"] = attempts + 1
+        payload["limits_dispatch_started_at"] = approved_at
+        payload["limits_dispatch_proposal_sha256"] = current_proposal_sha
+        payload["limits_dispatch_config_sha256"] = current_config_sha
+        payload["limits_repo_head_before"] = head
+        payload["limits_apply_lease_id"] = apply_lease_id
+        payload["limits_approved_at"] = approved_at
+        payload["limits_approval_token"] = token
+        for key in (
+            "limits_failed_at",
+            "limits_failure_reason",
+            "limits_rolled_back_at",
+            "limits_rollback_reason",
+            "limits_rollback_clean",
+            "limits_partial_detected_at",
+            "limits_partial_reason",
+            "limits_verify_failed_at",
+            "limits_verify_failed_reason",
+            "limits_inspect_state",
+            "limits_inspect",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (
+        True,
+        {
+            "lease_id": apply_lease_id,
+            "apply_lease_id": apply_lease_id,
+            "proposal_sha": current_proposal_sha,
+            "config_sha": current_config_sha,
+            "approved_at": approved_at,
+            "approval_token": token,
+            "proposal_path": str(path),
+            "config_path": str(config_path),
+        },
+    )
+
+
+def _a4_compact_limits_inspect(inspect: dict) -> dict:
+    return {
+        key: inspect.get(key)
+        for key in (
+            "state",
+            "head",
+            "proposal_sha256",
+            "config_sha256",
+            "proposal_status",
+            "config_symbols",
+        )
+        if key in inspect
+    }
+
+
+def _a4_inspect_limits_state_from_payload(task_id: str, payload: dict) -> dict:
+    raw_path = payload.get("limits_proposal_path")
+    if not raw_path:
+        return {"state": "unknown", "reason": "limits_proposal_path missing"}
+    path = Path(str(raw_path)).expanduser()
+    slug = _a4_limits_slug_from_path(path)
+    if slug is None:
+        return {
+            "state": "unknown",
+            "reason": f"limits proposal filename must be *_limits-proposal_*.md: {path}",
+            "proposal_path": str(path),
+        }
+    repo = _a3_git_repo_root_for_path(path)
+    if repo is None:
+        return {
+            "state": "unknown",
+            "reason": f"limits proposal path is not inside a git repo: {path}",
+            "proposal_path": str(path),
+        }
+    config_path = repo / "execution" / "validators" / "config.yaml"
+    marker = repo / ".k2bi-orchestrator" / "rollback" / f"limits_{slug}.json"
+    head = _a3_git_head(repo)
+    proposal_status_text = _a3_git_status_for_path(repo, path)
+    config_status_text = _a3_git_status_for_path(repo, config_path)
+    proposal_tracked_at_head = _a3_git_path_tracked_at_head(repo, path)
+    config_tracked_at_head = _a3_git_path_tracked_at_head(repo, config_path)
+    result = {
+        "state": "unknown",
+        "proposal_path": str(path),
+        "config_path": str(config_path),
+        "repo_root": str(repo),
+        "slug": slug,
+        "head": head,
+        "proposal_git_status": proposal_status_text,
+        "config_git_status": config_status_text,
+        "proposal_tracked_at_head": proposal_tracked_at_head,
+        "config_tracked_at_head": config_tracked_at_head,
+        "rollback_marker_path": str(marker),
+        "rollback_marker_exists": marker.exists(),
+    }
+    if marker.exists():
+        result["state"] = "incomplete_rollback_marker"
+        return result
+    if not path.is_file():
+        result["reason"] = "limits proposal file missing"
+        return result
+    if not config_path.is_file():
+        result["reason"] = "validator config missing"
+        return result
+    try:
+        result["proposal_sha256"] = _sha256_file(path)
+        result["config_sha256"] = _sha256_file(config_path)
+    except OSError as exc:
+        result["reason"] = f"limits target unreadable: {exc}"
+        return result
+    fm, perr = _parse_md_frontmatter(path)
+    if fm is None:
+        result["reason"] = f"limits proposal frontmatter invalid: {perr}"
+        return result
+    proposal_status = str(fm.get("status") or "").strip().lower()
+    result["proposal_status"] = proposal_status
+    change, expected_after, reason = _a4_scope_change(path)
+    if change is None or expected_after is None:
+        result["reason"] = reason
+        if proposal_status == "approved":
+            result["state"] = "partial_approved_uncommitted"
+        return result
+    result["expected_after_symbols"] = expected_after
+    config_symbols, reason = _a4_config_symbols(config_path)
+    if config_symbols is None:
+        result["reason"] = reason
+        if proposal_status == "approved":
+            result["state"] = "partial_approved_uncommitted"
+        return result
+    result["config_symbols"] = config_symbols
+
+    if proposal_status == "approved":
+        head_before = str(payload.get("limits_repo_head_before") or "").strip()
+        head_advanced = bool(head and head_before and head != head_before)
+        result["head_advanced"] = head_advanced
+        # Compare the committed whitelist to the RECORDED operator-approved snapshot
+        # (Codex CP2 final F2), NOT to the re-parsed HEAD proposal's after-list. The
+        # HEAD proposal is mutable: a hand/amended commit could change BOTH the
+        # proposal's `## Change.after` AND config.yaml together (plus the trailer) and
+        # otherwise pass -- but the committed whitelist must equal exactly what Keith
+        # approved at record time, regardless of any later proposal tampering.
+        recorded_after = _a4_normalize_symbols(payload.get("limits_expected_after_symbols"))
+        exact_symbols = recorded_after is not None and config_symbols == recorded_after
+        result["config_exact_expected_after"] = exact_symbols
+        # Bind the commit to the dispatch baseline: a legitimate apply is ONE commit
+        # whose parent is limits_repo_head_before (Codex CP2 final F2). This rejects an
+        # amended/unrelated HEAD that merely advanced past the baseline.
+        commit_parent = _a4_git_head_commit_parent(repo)
+        parent_ok = bool(head_before and commit_parent and commit_parent == head_before)
+        result["commit_parent_ok"] = parent_ok
+        targets_clean = proposal_status_text == "" and config_status_text == ""
+        # Provenance (CP2 r1 fix A): prove the HEAD commit was authored by THIS
+        # dispatch, not a coincidental/amended/hand-made commit that happens to
+        # leave the right tree. K2Bi's commit message carries this dispatch's
+        # approved_at verbatim ("Approval-Captured-At: <approved_at>").
+        dispatch_approved_at = str(payload.get("limits_approved_at") or "").strip()
+        head_commit_message = _a4_git_head_commit_message(repo)
+        # Anchor to the exact K2Bi trailer line "Approval-Captured-At: <approved_at>"
+        # (CP2 r2 fix A), not a bare timestamp substring -- the raw approved_at also
+        # appears in the proposal's own `approved_at:` frontmatter, so an unanchored
+        # `in` match could be satisfied by a coincidental occurrence.
+        expected_trailer = f"Approval-Captured-At: {dispatch_approved_at}"
+        provenance_ok = bool(
+            dispatch_approved_at
+            and head_commit_message is not None
+            and expected_trailer in head_commit_message
+        )
+        result["commit_provenance_ok"] = provenance_ok
+        if (
+            proposal_tracked_at_head
+            and config_tracked_at_head
+            and head_advanced
+            and parent_ok
+            and exact_symbols
+            and targets_clean
+            and provenance_ok
+        ):
+            result["state"] = "committed"
+        else:
+            result["state"] = "partial_approved_uncommitted"
+            if not exact_symbols:
+                result["reason"] = (
+                    "config instrument_whitelist.symbols is not the recorded operator-approved after list"
+                )
+            elif not parent_ok:
+                result["reason"] = (
+                    "HEAD commit parent is not the recorded dispatch baseline (limits_repo_head_before)"
+                )
+            elif not proposal_tracked_at_head:
+                result["reason"] = "approved limits proposal is not tracked at HEAD"
+            elif not config_tracked_at_head:
+                result["reason"] = "validator config is not tracked at HEAD"
+            elif not head_advanced:
+                result["reason"] = "approved limits did not land in a new HEAD commit"
+            elif not targets_clean:
+                result["reason"] = "limits proposal or validator config has dirty target lines"
+            elif not provenance_ok:
+                result["reason"] = (
+                    "HEAD commit does not carry this dispatch's approval timestamp (provenance)"
+                )
+        return result
+
+    if proposal_status == "proposed":
+        recorded_sha = str(payload.get("limits_proposal_sha256") or "").strip()
+        dispatch_config_sha = str(payload.get("limits_dispatch_config_sha256") or "").strip()
+        config_clean = not dispatch_config_sha or dispatch_config_sha == result["config_sha256"]
+        proposal_clean = not recorded_sha or recorded_sha == result["proposal_sha256"]
+        if proposal_clean and config_clean:
+            result["state"] = "clean_rollback"
+        else:
+            result["reason"] = "proposed limits proposal or config sha differs from recorded baseline"
+        return result
+    result["reason"] = f"unexpected limits proposal status {proposal_status!r}"
+    return result
+
+
+def a4_inspect_limits_state(task_id: str) -> dict:
+    task = get_task(task_id)
+    if task is None:
+        return {"state": "unknown", "reason": f"task {task_id} not found"}
+    payload = _payload_dict(task.get("payload"))
+    return _a4_inspect_limits_state_from_payload(task_id, payload)
+
+
+def a4_verify_limits(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a4_inspect_limits_state_from_payload(task_id, payload)
+        state = inspect.get("state")
+        payload["limits_inspect_state"] = state
+        payload["limits_inspect"] = _a4_compact_limits_inspect(inspect)
+        if state == "committed":
+            payload["limits_verified"] = True
+            payload["limits_verified_at"] = now_iso()
+            payload["limits_commit_sha"] = inspect.get("head")
+            _update_payload_locked(conn, task_id, payload, status="terminal_limits_applied")
+            conn.commit()
+            conn.close()
+            return (True, "")
+        reason = f"limits verification refused: inspect state {state!r}"
+        payload["limits_verify_failed_at"] = now_iso()
+        payload["limits_verify_failed_reason"] = reason
+        # Self-heal a stale/corrupted limits_verified flag on a non-committed row
+        # (CP2 r2 fix C/F5): only a confirmed commit may carry it. The oracle already
+        # ignores it, but clearing it keeps external readers/dashboards honest.
+        payload.pop("limits_verified", None)
+        payload.pop("limits_verified_at", None)
+        if state == "partial_approved_uncommitted":
+            payload["limits_partial_detected_at"] = now_iso()
+            payload["limits_partial_reason"] = reason
+            _update_payload_locked(
+                conn,
+                task_id,
+                payload,
+                status="needs_human",
+                blocker_reason=reason,
+            )
+        else:
+            _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (False, reason)
+
+
+def a4_record_limits_failed(task_id: str, *, reason: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a4_inspect_limits_state_from_payload(task_id, payload)
+        state = inspect.get("state")
+        n = now_iso()
+        if not payload.get("limits_failed_at"):
+            payload["limits_failed_at"] = n
+        if not payload.get("limits_failure_reason"):
+            payload["limits_failure_reason"] = reason
+        payload["limits_inspect_state"] = state
+        payload["limits_inspect"] = inspect
+        payload["limits_rollback_clean"] = state == "clean_rollback"
+        blocker_reason = reason
+        if state == "clean_rollback":
+            payload["limits_rolled_back_at"] = n
+            payload["limits_rollback_reason"] = reason
+        elif state == "partial_approved_uncommitted":
+            payload["limits_partial_detected_at"] = n
+            payload["limits_partial_reason"] = reason
+            blocker_reason = f"{reason}; partial_approved_uncommitted"
+        _update_payload_locked(
+            conn,
+            task_id,
+            payload,
+            status="needs_human",
+            blocker_reason=blocker_reason,
+        )
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a4_retry_limits_after_rollback(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a4_inspect_limits_state_from_payload(task_id, payload)
+        if inspect.get("state") != "clean_rollback":
+            conn.close()
+            return (
+                False,
+                f"retry requires live inspect state clean_rollback (got {inspect.get('state')!r})",
+            )
+        try:
+            attempts = int(payload.get("limits_attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= A4_MAX_APPLY_ATTEMPTS:
+            _a4_terminalize_attempt_limit_locked(conn, task_id, payload)
+            conn.commit()
+            conn.close()
+            return (False, f"limits apply attempt limit exceeded ({A4_MAX_APPLY_ATTEMPTS})")
+        if not payload.get("limits_rolled_back_at"):
+            conn.close()
+            return (False, "retry requires a recorded limits_rolled_back_at")
+        ok, reason = _a4_proposal_sha_matches_record(payload)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        # `limits_authorized` is INTENTIONALLY preserved (mirrors A3 retry-ship):
+        # retry only fires on a confirmed clean_rollback of the EXACT proposal Keith
+        # approved (its sha is re-checked above), and attempts are bounded at 3, so a
+        # bounded retry re-applies the same human-approved, sha-bound change without
+        # re-authorization friction. Only the dispatch/failure/recovery markers below
+        # are cleared so the resume oracle re-enters at dispatch_limits.
+        for key in (
+            "limits_dispatch_started_at",
+            "limits_dispatch_proposal_sha256",
+            "limits_dispatch_config_sha256",
+            "limits_repo_head_before",
+            "limits_apply_lease_id",
+            "limits_approved_at",
+            "limits_approval_token",
+            "limits_failed_at",
+            "limits_failure_reason",
+            "limits_rolled_back_at",
+            "limits_rollback_reason",
+            "limits_rollback_clean",
+            "limits_partial_detected_at",
+            "limits_partial_reason",
+            "limits_verify_failed_at",
+            "limits_verify_failed_reason",
+            "limits_inspect_state",
+            "limits_inspect",
+        ):
+            payload.pop(key, None)
+        payload["limits_retry_ready_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status="needs_human", blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
 
 
 def a1_authorize_ship(task_id: str) -> tuple[bool, str]:
@@ -3097,6 +3935,7 @@ def poll_once() -> dict:
                     # longer matches the token), the status:proposed ship gate, and the
                     # one-live-child chain lock.
                     "k2bi-run-full-ship": "verify_ship",
+                    "k2bi-apply-limits": "verify_limits",
                 }.get(task.get("command_key", ""))
                 if stage_expected is not None:
                     try:
@@ -3341,6 +4180,50 @@ def _main():
         help="Inspect live A3 ship state from git/file/rollback marker evidence",
     )
     inspect_ship_p.add_argument("id")
+
+    record_limits_p = sub.add_parser(
+        "record-limits-proposal",
+        help="Verify and record an A4 limits proposal before operator approval",
+    )
+    record_limits_p.add_argument("id")
+    record_limits_p.add_argument("path")
+
+    authorize_limits_p = sub.add_parser(
+        "authorize-limits",
+        help="Record operator approval at the A4 limits gate",
+    )
+    authorize_limits_p.add_argument("id")
+
+    mark_limits_dispatch_p = sub.add_parser(
+        "mark-limits-dispatch-started",
+        help="Mint and record the A4 limits lease/token before dispatch",
+    )
+    mark_limits_dispatch_p.add_argument("id")
+
+    verify_limits_p = sub.add_parser(
+        "verify-limits",
+        help="Verify the A4 limits commit and terminalize only when committed",
+    )
+    verify_limits_p.add_argument("id")
+
+    record_limits_failed_p = sub.add_parser(
+        "record-limits-failed",
+        help="Record a failed A4 limits apply attempt using live rollback inspection",
+    )
+    record_limits_failed_p.add_argument("id")
+    record_limits_failed_p.add_argument("--reason", required=True)
+
+    retry_limits_p = sub.add_parser(
+        "retry-limits",
+        help="Clear a clean-rollback A4 failure for one bounded retry",
+    )
+    retry_limits_p.add_argument("id")
+
+    inspect_limits_p = sub.add_parser(
+        "inspect-limits-state",
+        help="Inspect live A4 limits state from git/file/config/rollback evidence",
+    )
+    inspect_limits_p.add_argument("id")
 
     register_strategy_revision_p = sub.add_parser(
         "register-strategy-revision",
@@ -3689,6 +4572,64 @@ def _main():
 
     if args.cmd == "inspect-ship-state":
         print(json.dumps(a1_inspect_ship_state(args.id), indent=2, sort_keys=True))
+        return
+
+    if args.cmd == "record-limits-proposal":
+        ok, reason = a4_record_limits_proposal(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} limits proposal recorded")
+            return
+        print(f"record-limits-proposal rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "authorize-limits":
+        ok, reason = a4_authorize_limits(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} limits authorized")
+            return
+        print(f"authorize-limits rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "mark-limits-dispatch-started":
+        ok, result = a4_mark_limits_dispatch_started(args.id)
+        if ok:
+            render_board()
+            print(json.dumps(result, sort_keys=True))
+            return
+        print(f"mark-limits-dispatch-started rejected {args.id}: {result}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "verify-limits":
+        ok, reason = a4_verify_limits(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} limits verified")
+            return
+        print(f"verify-limits rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-limits-failed":
+        ok, reason = a4_record_limits_failed(args.id, reason=args.reason)
+        if ok:
+            render_board()
+            print(f"Task {args.id} limits failure recorded")
+            return
+        print(f"record-limits-failed rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "retry-limits":
+        ok, reason = a4_retry_limits_after_rollback(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} limits retry opened")
+            return
+        print(f"retry-limits rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "inspect-limits-state":
+        print(json.dumps(a4_inspect_limits_state(args.id), indent=2, sort_keys=True))
         return
 
     if args.cmd == "register-strategy-revision":

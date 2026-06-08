@@ -18,6 +18,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -611,6 +612,36 @@ def _resolve_allowed_strategy_repo_path(path_value: Any) -> Path:
     return strategy_path
 
 
+def _limits_slug_from_proposal_path(path: Path) -> str | None:
+    match = re.match(r"^\d{4}-\d{2}-\d{2}_limits-proposal_(.+)$", path.stem)
+    slug = match.group(1) if match else path.stem
+    return slug or None
+
+
+def _resolve_allowed_limits_proposal_path(path_value: Any) -> Path:
+    if not path_value:
+        raise ValueError("payload missing required field 'proposal_path'")
+    raw = os.path.expanduser(str(path_value))
+    proposal_path = Path(os.path.realpath(raw))
+    repo_root = _allowed_k2bi_repo_roots()[0]
+    approvals_dir = repo_root / "review" / "strategy-approvals"
+    try:
+        under = os.path.commonpath([str(proposal_path), str(approvals_dir)]) == str(approvals_dir)
+    except ValueError:
+        under = False
+    if not under:
+        raise ValueError(
+            f"proposal_path {proposal_path} is outside K2Bi repo strategy-approvals dir {approvals_dir}"
+        )
+    if proposal_path.suffix != ".md" or "_limits-proposal_" not in proposal_path.stem:
+        raise ValueError(
+            f"proposal_path must be review/strategy-approvals/*_limits-proposal_*.md: {proposal_path}"
+        )
+    if _limits_slug_from_proposal_path(proposal_path) is None:
+        raise ValueError(f"proposal_path has no derivable limits slug: {proposal_path}")
+    return proposal_path
+
+
 def _approval_from_payload(raw_approval: Any) -> Any:
     if not isinstance(raw_approval, dict):
         raise ValueError("payload approval must be a JSON object")
@@ -626,6 +657,24 @@ def _approval_from_payload(raw_approval: Any) -> Any:
         approved_by=raw_approval["approved_by"],
         approved_at=raw_approval["approved_at"],
         ship_lease_id=raw_approval["ship_lease_id"],
+    )
+
+
+def _limits_approval_from_payload(raw_approval: Any) -> Any:
+    if not isinstance(raw_approval, dict):
+        raise ValueError("payload approval must be a JSON object")
+    required = ("final_approval_token", "approved_by", "approved_at", "apply_lease_id")
+    for key in required:
+        value = raw_approval.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"payload approval.{key} must be a non-empty string")
+    from scripts.lib import invest_orchestrator_adapters as ioa
+
+    return ioa.LimitsApproval(
+        final_approval_token=raw_approval["final_approval_token"],
+        approved_by=raw_approval["approved_by"],
+        approved_at=raw_approval["approved_at"],
+        apply_lease_id=raw_approval["apply_lease_id"],
     )
 
 
@@ -649,6 +698,35 @@ def _run_full_ship(payload: dict[str, Any]) -> dict[str, Any]:
         strategy_path,
         approval=approval,
         vault_root=vault_root,
+        required_primary=required_primary,
+    )
+    return {"status": "ok", "result": _result_to_jsonable(result)}
+
+
+A4_ALLOWED_REVIEW_PRIMARIES = frozenset({"minimax", "kimi"})
+
+
+def _apply_approved_limits(payload: dict[str, Any]) -> dict[str, Any]:
+    """A4: dispatch K2Bi's merged approved-limits adapter."""
+    proposal_path = _resolve_allowed_limits_proposal_path(payload.get("proposal_path"))
+    from scripts.lib import invest_orchestrator_adapters as ioa
+
+    approval = _limits_approval_from_payload(payload.get("approval"))
+    required_primary = str(payload.get("required_primary", "minimax")).strip() or "minimax"
+    # Fail fast on the capital path: an unknown review provider must not reach the
+    # K2Bi review late (CP2 r1 fix G).
+    if required_primary not in A4_ALLOWED_REVIEW_PRIMARIES:
+        raise ValueError(
+            f"required_primary must be one of {sorted(A4_ALLOWED_REVIEW_PRIMARIES)}, "
+            f"got {required_primary!r}"
+        )
+    # Bind config_path explicitly to the SAME validator file whose sha the preflight
+    # dual-sha token bound, instead of relying on the K2Bi default (CP2 r1 fix E).
+    config_path = _allowed_k2bi_repo_roots()[0] / "execution" / "validators" / "config.yaml"
+    result = ioa.apply_approved_limits(
+        proposal_path,
+        approval=approval,
+        config_path=config_path,
         required_primary=required_primary,
     )
     return {"status": "ok", "result": _result_to_jsonable(result)}
@@ -755,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
         "run-backtest",
         "author-strategy-to-repo",
         "run-full-ship",
+        "apply-limits",
     ):
         p = sub.add_parser(name)
         p.add_argument("--workspace", required=True)
@@ -791,6 +870,8 @@ def main(argv: list[str] | None = None) -> int:
             output = _author_strategy_to_repo(payload)
         elif args.cmd == "run-full-ship":
             output = _run_full_ship(payload)
+        elif args.cmd == "apply-limits":
+            output = _apply_approved_limits(payload)
         else:  # pragma: no cover - argparse enforces choices
             raise ValueError(f"unknown command {args.cmd!r}")
         encoded_output = _dump_bounded_output(output)

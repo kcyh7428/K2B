@@ -107,6 +107,11 @@ def k2bi_allowed_commands():
             str(A1_ADAPTER_RUNNER),
             "run-full-ship",
         ],
+        "k2bi-apply-limits": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "apply-limits",
+        ],
         "test-echo-readonly": ["/bin/echo", "orchestrator-smoke-ok"],
     }
 
@@ -209,6 +214,7 @@ def resolve_command(profile_name, command_key, payload=None) -> list[str] | None
                 "k2bi-run-backtest",
                 "k2bi-author-strategy-to-repo",
                 "k2bi-run-full-ship",
+                "k2bi-apply-limits",
             }:
                 payload_args = _adapter_payload_args(payload_view if isinstance(payload_view, dict) else None)
                 if payload_args is None:
@@ -710,6 +716,48 @@ def _strategy_path_under_repo(path_value) -> tuple[Path | None, str]:
     return (path, "")
 
 
+def _limits_slug_from_proposal_path(path: Path) -> str | None:
+    stem = path.stem
+    m = re.match(r"^\d{4}-\d{2}-\d{2}_limits-proposal_(.+)$", stem)
+    slug = m.group(1) if m else stem
+    return slug or None
+
+
+def _limits_token(
+    slug: str,
+    proposal_sha: str,
+    config_sha: str,
+    approved_at: str,
+    lease: str,
+) -> str:
+    return f"APPROVE_LIMITS:{slug}:{proposal_sha}:{config_sha}:{approved_at}:{lease}"
+
+
+def _proposal_path_under_repo(path_value) -> tuple[Path | None, str]:
+    if not path_value:
+        return (None, "A4 limits payload missing proposal_path")
+    repo = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    approvals_dir = (repo / "review" / "strategy-approvals").resolve(strict=False)
+    path = Path(str(path_value)).expanduser().resolve(strict=False)
+    try:
+        under = os.path.commonpath([str(path), str(approvals_dir)]) == str(approvals_dir)
+    except ValueError:
+        under = False
+    if not under:
+        return (
+            None,
+            f"A4 proposal_path {path} is outside K2Bi repo strategy-approvals dir {approvals_dir}",
+        )
+    if path.suffix != ".md" or "_limits-proposal_" not in path.stem:
+        return (
+            None,
+            f"A4 proposal_path must be *_limits-proposal_*.md under review/strategy-approvals: {path}",
+        )
+    if _limits_slug_from_proposal_path(path) is None:
+        return (None, f"A4 proposal_path has no derivable limits slug: {path}")
+    return (path, "")
+
+
 def _status_line_paths(raw_line: str) -> list[str]:
     path_text = raw_line[3:] if len(raw_line) >= 3 else ""
     if " -> " in path_text:
@@ -757,6 +805,78 @@ def _git_tree_clean_except_target(repo: Path, target: Path | None = None) -> tup
     return (True, "")
 
 
+def _git_diff_quiet(repo: Path, *, cached: bool, rel_path: str) -> tuple[bool | None, str]:
+    cmd = ["git", "-C", str(repo), "diff"]
+    if cached:
+        cmd.append("--cached")
+    cmd.extend(["--quiet", "--", rel_path])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return (None, "K2Bi git preflight timed out")
+    except FileNotFoundError:
+        return (None, "git not found")
+    if result.returncode == 0:
+        return (True, "")
+    if result.returncode == 1:
+        return (False, "")
+    return (None, f"K2Bi git diff preflight failed: {(result.stderr or '')[:200]}")
+
+
+def _git_tree_clean_for_limits_apply(repo: Path, proposal: Path, config: Path) -> tuple[bool, str]:
+    try:
+        repo_resolved = repo.resolve(strict=False)
+        proposal_rel = proposal.resolve(strict=False).relative_to(repo_resolved).as_posix()
+        config_rel = config.resolve(strict=False).relative_to(repo_resolved).as_posix()
+    except ValueError:
+        return (False, "A4 proposal/config path is outside K2Bi repo")
+
+    for cached, label in ((True, "staged"), (False, "unstaged")):
+        quiet, reason = _git_diff_quiet(repo, cached=cached, rel_path=config_rel)
+        if quiet is None:
+            return (False, reason)
+        if quiet is False:
+            return (False, f"A4 config dirty: {label} change present for {config_rel}")
+
+    for cached, label in ((True, "staged"), (False, "tracked")):
+        quiet, reason = _git_diff_quiet(repo, cached=cached, rel_path=proposal_rel)
+        if quiet is None:
+            return (False, reason)
+        if quiet is False:
+            return (False, f"A4 proposal dirty: {label} change present for {proposal_rel}")
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "status", "--short", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return (False, "K2Bi git preflight timed out")
+    except FileNotFoundError:
+        return (False, "git not found")
+    if result.returncode != 0:
+        return (False, f"K2Bi git preflight failed: {(result.stderr or '')[:200]}")
+    dirty = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        status = line[:2]
+        paths = _status_line_paths(line)
+        if status == "??" and paths == [proposal_rel]:
+            continue
+        dirty.append(line)
+    if dirty:
+        return (False, f"K2Bi git tree dirty for A4 limits apply: {'; '.join(dirty[:5])[:200]}")
+    return (True, "")
+
+
 def _approval_payload(payload: dict) -> tuple[dict | None, str]:
     approval = payload.get("approval")
     if not isinstance(approval, dict):
@@ -766,6 +886,133 @@ def _approval_payload(payload: dict) -> tuple[dict | None, str]:
         if not isinstance(value, str) or not value.strip():
             return (None, f"A3 ship payload approval.{key} must be a non-empty string")
     return (approval, "")
+
+
+def _limits_approval_payload(payload: dict) -> tuple[dict | None, str]:
+    approval = payload.get("approval")
+    if not isinstance(approval, dict):
+        return (None, "A4 limits payload approval must be an object")
+    for key in ("final_approval_token", "approved_by", "approved_at", "apply_lease_id"):
+        value = approval.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return (None, f"A4 limits payload approval.{key} must be a non-empty string")
+    return (approval, "")
+
+
+def _markdown_yaml_block_after_heading(text: str, heading: str) -> tuple[dict | None, str]:
+    pattern = re.compile(
+        rf"(?ims)^##\s+{re.escape(heading)}\s*$.*?^```yaml\s*$\n(.*?)^```\s*$"
+    )
+    match = pattern.search(text)
+    if not match:
+        return (None, f"missing ## {heading} yaml block")
+    try:
+        import yaml
+    except ImportError:
+        return (None, "yaml unavailable -- cannot parse limits proposal")
+    try:
+        data = yaml.safe_load(match.group(1))
+    except Exception as exc:
+        return (None, f"limits proposal ## {heading} block is not parseable YAML: {exc}")
+    if not isinstance(data, dict):
+        return (None, f"limits proposal ## {heading} block is not a mapping")
+    return (data, "")
+
+
+def _limits_change_from_proposal(path: Path) -> tuple[dict | None, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return (None, f"limits proposal unreadable: {exc}")
+    return _markdown_yaml_block_after_heading(text, "Change")
+
+
+def _normalized_symbols(value) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    normalized = sorted({str(item).strip().upper() for item in value if str(item).strip()})
+    return normalized
+
+
+def _preflight_a4_limits(task, payload: dict) -> tuple[bool, str]:
+    vault = Path(k2bi_vault()).expanduser()
+    if (vault / "System" / ".killed").exists():
+        return (False, "engine kill-switch engaged (System/.killed present); limits apply refused")
+
+    repo = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    validators = repo / "execution" / "validators" / "config.yaml"
+    try:
+        if not validators.is_file() or validators.stat().st_size == 0:
+            return (False, "K2Bi validators config missing or empty; limits apply refused")
+    except OSError:
+        return (False, "K2Bi validators config unreadable; limits apply refused")
+
+    proposal_path, reason = _proposal_path_under_repo(payload.get("proposal_path"))
+    if proposal_path is None:
+        return (False, reason)
+    if not proposal_path.is_file():
+        return (False, f"A4 proposal_path missing or not a file: {proposal_path}")
+    if proposal_path.stat().st_size == 0:
+        return (False, f"A4 proposal_path is empty: {proposal_path}")
+    slug = _limits_slug_from_proposal_path(proposal_path)
+    assert slug is not None
+
+    try:
+        fm = _read_frontmatter(proposal_path)
+    except ValueError as exc:
+        return (False, f"A4 proposal frontmatter invalid: {exc}")
+    if str(fm.get("type", "")).strip() != "limits-proposal":
+        return (False, "A4 proposal type must be limits-proposal")
+    status = str(fm.get("status") or "").strip().lower()
+    if status != "proposed":
+        return (False, f"A4 proposal status must be proposed before apply; got {status!r}")
+    applies_to = str(fm.get("applies-to") or "").strip()
+    if applies_to != "execution/validators/config.yaml":
+        return (False, "A4 proposal applies-to must be execution/validators/config.yaml")
+
+    change, reason = _limits_change_from_proposal(proposal_path)
+    if change is None:
+        return (False, reason)
+    rule = str(change.get("rule") or "").strip()
+    change_type = str(change.get("change_type") or "").strip()
+    if rule != "instrument_whitelist" or change_type != "add":
+        return (
+            False,
+            "A4 supports only instrument_whitelist/add this increment; route others "
+            "to the manual /invest-ship --approve-limits path",
+        )
+    if _normalized_symbols(change.get("after")) is None:
+        return (False, "A4 proposal ## Change after must be a symbol list")
+
+    approval, reason = _limits_approval_payload(payload)
+    if approval is None:
+        return (False, reason)
+    approved_at_text = approval["approved_at"]
+    try:
+        approved_at = datetime.fromisoformat(approved_at_text)
+    except ValueError:
+        return (False, "A4 approved_at must be ISO-8601")
+    if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+        return (False, "A4 approved_at must include an explicit timezone offset")
+    if approved_at.utcoffset().total_seconds() != 0:
+        return (False, "A4 approved_at must be UTC")
+    lease = approval["apply_lease_id"]
+    if not SHIP_LEASE_RE.match(lease):
+        return (False, "A4 apply_lease_id does not match the required format")
+
+    current_proposal_sha = _sha256_file(proposal_path)
+    current_config_sha = _sha256_file(validators)
+    expected_token = _limits_token(
+        slug,
+        current_proposal_sha,
+        current_config_sha,
+        approved_at_text,
+        lease,
+    )
+    if approval["final_approval_token"] != expected_token:
+        return (False, "A4 approval token does not bind current proposal/config sha")
+
+    return _git_tree_clean_for_limits_apply(repo, proposal_path, validators)
 
 
 def k2bi_instrument_whitelist() -> tuple[list[str] | None, str]:
@@ -993,6 +1240,9 @@ def preflight_k2bi(task) -> tuple[bool, str]:
     # for the just-authored target strategy file.
     if command_key == "k2bi-run-full-ship":
         return _preflight_a3_capital(task, payload)
+
+    if command_key == "k2bi-apply-limits":
+        return _preflight_a4_limits(task, payload)
 
     # 6. git status (existing behavior for non-narrative commands)
     ok, reason = _git_tree_clean_except_target(Path(workspace).expanduser().resolve(strict=False))
