@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 A1_ADAPTER_RUNNER = REPO_ROOT / "scripts" / "lib" / "orchestrator_k2bi_adapter.py"
 # Positive lookahead enforces at least one alpha character; callers uppercase first.
 SYMBOL_RE = re.compile(r"^(?=.*[A-Z])[A-Z0-9]+(?:\.[A-Z0-9]+)?$")
+SHIP_LEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,127}$")
 MAX_ADAPTER_PAYLOAD_JSON_BYTES = 1_000_000
 ALLOWED_A1_OPERATOR_MARKS = frozenset({"verified", "refused", "override", "advisory"})
 CANONICAL_REGISTRY_MISSING_ERROR = (
@@ -36,6 +37,10 @@ def _expand(p):
 
 def k2bi_workspace():
     return os.environ.get("K2B_ORCH_K2BI_WORKSPACE") or _expand("~/Projects/K2Bi")
+
+
+def k2bi_repo():
+    return k2bi_workspace()
 
 
 def k2bi_vault():
@@ -91,6 +96,16 @@ def k2bi_allowed_commands():
             "python3",
             str(A1_ADAPTER_RUNNER),
             "run-backtest",
+        ],
+        "k2bi-author-strategy-to-repo": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "author-strategy-to-repo",
+        ],
+        "k2bi-run-full-ship": [
+            "python3",
+            str(A1_ADAPTER_RUNNER),
+            "run-full-ship",
         ],
         "test-echo-readonly": ["/bin/echo", "orchestrator-smoke-ok"],
     }
@@ -192,6 +207,8 @@ def resolve_command(profile_name, command_key, payload=None) -> list[str] | None
                 "k2bi-run-bear-case",
                 "k2bi-write-strategy-spec",
                 "k2bi-run-backtest",
+                "k2bi-author-strategy-to-repo",
+                "k2bi-run-full-ship",
             }:
                 payload_args = _adapter_payload_args(payload_view if isinstance(payload_view, dict) else None)
                 if payload_args is None:
@@ -526,18 +543,21 @@ def _preflight_a1_adapter_payload_shape(command_key: str, payload: dict) -> tupl
         bear_input = adapter_payload.get("bear_input")
         if not isinstance(bear_input, dict) or not bear_input:
             return (False, "A1 bear payload missing bear_input object")
-    if command_key == "k2bi-write-strategy-spec":
+    if command_key in {"k2bi-write-strategy-spec", "k2bi-author-strategy-to-repo"}:
         # Fail-fast shape ONLY -- the K2Bi StrategySpecDecision validators are the
         # real gate; the runner enforces symbol == decision.symbol == order.ticker
         # and nested forward-guidance types (Checkpoint-1 C1/C4) for BOTH carriers.
         decision = adapter_payload.get("decision")
         if not isinstance(decision, dict) or not decision.get("slug"):
-            return (False, "A2 strategy payload missing decision.slug")
+            label = "A3 author" if command_key == "k2bi-author-strategy-to-repo" else "A2 strategy"
+            return (False, f"{label} payload missing decision.slug")
         if not decision.get("symbol"):
-            return (False, "A2 strategy payload missing decision.symbol")
+            label = "A3 author" if command_key == "k2bi-author-strategy-to-repo" else "A2 strategy"
+            return (False, f"{label} payload missing decision.symbol")
         order = decision.get("order")
         if not isinstance(order, dict) or not order.get("ticker"):
-            return (False, "A2 strategy payload missing decision.order.ticker")
+            label = "A3 author" if command_key == "k2bi-author-strategy-to-repo" else "A2 strategy"
+            return (False, f"{label} payload missing decision.order.ticker")
     if command_key == "k2bi-run-backtest":
         slug = adapter_payload.get("slug")
         if not isinstance(slug, str) or not slug.strip():
@@ -622,6 +642,20 @@ def _preflight_a1_vault_root_matches_profile(payload: dict) -> tuple[bool, str]:
     return (True, "")
 
 
+def _preflight_a3_repo_root_matches_profile(payload: dict) -> tuple[bool, str]:
+    profile_root = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    explicit_root = payload.get("repo_root")
+    if not explicit_root:
+        return (False, "A3 author payload missing repo_root")
+    payload_root = Path(str(explicit_root)).expanduser().resolve(strict=False)
+    if payload_root != profile_root:
+        return (
+            False,
+            f"A3 payload repo_root {payload_root} does not match profile K2Bi repo {profile_root}",
+        )
+    return (True, "")
+
+
 def _preflight_a1_symbol_matches_entity(task, payload: dict) -> tuple[bool, str]:
     command_key = task.get("command_key", "")
     # A1 ticker-scoped commands must prove the symbol is canonical. The legacy
@@ -636,6 +670,8 @@ def _preflight_a1_symbol_matches_entity(task, payload: dict) -> tuple[bool, str]
         "k2bi-run-bear-case",
         "k2bi-write-strategy-spec",
         "k2bi-run-backtest",
+        "k2bi-author-strategy-to-repo",
+        "k2bi-run-full-ship",
     }:
         return (True, "")
     symbol = _payload_symbol(payload)
@@ -647,6 +683,148 @@ def _preflight_a1_symbol_matches_entity(task, payload: dict) -> tuple[bool, str]
     if entity != symbol:
         return (False, f"payload symbol {symbol} does not match entity_key {entity}")
     return _canonical_symbol_known(symbol)
+
+
+def _strategy_slug_from_path(path: Path) -> str | None:
+    name = path.name
+    if not (name.startswith("strategy_") and name.endswith(".md")):
+        return None
+    slug = name[len("strategy_"):-len(".md")]
+    return slug or None
+
+
+def _strategy_path_under_repo(path_value) -> tuple[Path | None, str]:
+    if not path_value:
+        return (None, "A3 ship payload missing strategy_path")
+    repo = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    strategies_dir = (repo / "wiki" / "strategies").resolve(strict=False)
+    path = Path(str(path_value)).expanduser().resolve(strict=False)
+    try:
+        under = os.path.commonpath([str(path), str(strategies_dir)]) == str(strategies_dir)
+    except ValueError:
+        under = False
+    if not under:
+        return (None, f"A3 strategy_path {path} is outside K2Bi repo strategies dir {strategies_dir}")
+    if _strategy_slug_from_path(path) is None:
+        return (None, f"A3 strategy_path must be strategy_<slug>.md under wiki/strategies: {path}")
+    return (path, "")
+
+
+def _status_line_paths(raw_line: str) -> list[str]:
+    path_text = raw_line[3:] if len(raw_line) >= 3 else ""
+    if " -> " in path_text:
+        return path_text.split(" -> ", 1)
+    return [path_text]
+
+
+def _status_line_is_allowed_a3_target(raw_line: str, rel_path: str) -> bool:
+    if len(raw_line) < 4:
+        return False
+    status = raw_line[:2]
+    if _status_line_paths(raw_line) != [rel_path]:
+        return False
+    if "U" in status:
+        return False
+    return status in {"??", " M", "M ", "MM", "A ", "AM"}
+
+
+def _git_tree_clean_except_target(repo: Path, target: Path | None = None) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "status", "--short", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return (False, "K2Bi git preflight timed out")
+    except FileNotFoundError:
+        return (False, "git not found")
+    if result.returncode != 0:
+        return (False, f"K2Bi git preflight failed: {(result.stderr or '')[:200]}")
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if target is None:
+        if lines:
+            return (False, f"K2Bi git tree dirty: {'; '.join(lines[:5])[:200]}")
+        return (True, "")
+    try:
+        rel_path = target.resolve(strict=False).relative_to(repo.resolve(strict=False)).as_posix()
+    except ValueError:
+        return (False, f"A3 strategy_path {target} is outside K2Bi repo {repo}")
+    dirty = [line for line in lines if not _status_line_is_allowed_a3_target(line, rel_path)]
+    if dirty:
+        return (False, f"K2Bi git tree dirty outside A3 target: {'; '.join(dirty[:5])[:200]}")
+    return (True, "")
+
+
+def _approval_payload(payload: dict) -> tuple[dict | None, str]:
+    approval = payload.get("approval")
+    if not isinstance(approval, dict):
+        return (None, "A3 ship payload approval must be an object")
+    for key in ("final_approval_token", "approved_by", "approved_at", "ship_lease_id"):
+        value = approval.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return (None, f"A3 ship payload approval.{key} must be a non-empty string")
+    return (approval, "")
+
+
+def _preflight_a3_capital(task, payload: dict) -> tuple[bool, str]:
+    vault = Path(k2bi_vault()).expanduser()
+    if (vault / "System" / ".killed").exists():
+        return (False, "engine kill-switch engaged (System/.killed present); ship refused")
+
+    repo = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    validators = repo / "execution" / "validators" / "config.yaml"
+    try:
+        if not validators.is_file() or validators.stat().st_size == 0:
+            return (False, "K2Bi validators config missing or empty; ship refused")
+    except OSError:
+        return (False, "K2Bi validators config unreadable; ship refused")
+
+    strategy_path, reason = _strategy_path_under_repo(payload.get("strategy_path"))
+    if strategy_path is None:
+        return (False, reason)
+    if not strategy_path.is_file():
+        return (False, f"A3 strategy_path missing or not a file: {strategy_path}")
+    slug = _strategy_slug_from_path(strategy_path)
+    assert slug is not None
+
+    approval, reason = _approval_payload(payload)
+    if approval is None:
+        return (False, reason)
+    approved_at_text = approval["approved_at"]
+    try:
+        approved_at = datetime.fromisoformat(approved_at_text)
+    except ValueError:
+        return (False, "A3 approved_at must be ISO-8601")
+    if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+        return (False, "A3 approved_at must include an explicit timezone offset")
+    if approved_at.utcoffset().total_seconds() != 0:
+        return (False, "A3 approved_at must be UTC")
+    lease = approval["ship_lease_id"]
+    if not SHIP_LEASE_RE.match(lease):
+        return (False, "A3 ship_lease_id does not match the required format")
+    current_sha = _sha256_file(strategy_path)
+    expected_token = _ship_token(slug, current_sha, approved_at_text, lease)
+    if approval["final_approval_token"] != expected_token:
+        return (False, "A3 approval token does not bind current strategy sha")
+
+    fm = _read_frontmatter(strategy_path)
+    status = str(fm.get("status") or "").strip().lower()
+    if status != "proposed":
+        return (False, f"A3 strategy status must be proposed before ship; got {status!r}")
+    entity = str(task.get("entity_key") or "").strip().upper()
+    order = fm.get("order")
+    order_ticker = str(order.get("ticker", "")).strip().upper() if isinstance(order, dict) else ""
+    ticker = order_ticker or str(fm.get("ticker", "")).strip().upper()
+    if entity and ticker != entity:
+        return (False, f"A3 strategy ticker {ticker!r} does not match entity_key {entity!r}")
+
+    return _git_tree_clean_except_target(repo, strategy_path)
+
+
+def _ship_token(slug: str, sha: str, approved_at: str, lease: str) -> str:
+    return f"APPROVE_STRATEGY:{slug}:{sha}:{approved_at}:{lease}"
 
 
 def preflight_k2bi(task) -> tuple[bool, str]:
@@ -737,23 +915,24 @@ def preflight_k2bi(task) -> tuple[bool, str]:
         if not ok:
             return (False, reason)
 
+    # A3 author-to-repo writes the proposed strategy into the git-tracked K2Bi repo,
+    # not the vault. Do not send it through the A2 vault-root check.
+    if command_key == "k2bi-author-strategy-to-repo":
+        ok, reason = _preflight_a3_repo_root_matches_profile(payload)
+        if not ok:
+            return (False, reason)
+        ok, reason = _preflight_a1_adapter_payload_shape(command_key, payload)
+        if not ok:
+            return (False, reason)
+
+    # A3 full ship has its own capital preflight and relaxed tree rule: clean except
+    # for the just-authored target strategy file.
+    if command_key == "k2bi-run-full-ship":
+        return _preflight_a3_capital(task, payload)
+
     # 6. git status (existing behavior for non-narrative commands)
-    try:
-        result = subprocess.run(
-            ["git", "-C", workspace, "status", "--short"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            err = (result.stderr or "")[:200]
-            return (False, f"K2Bi git preflight failed: {err}")
-        if result.stdout.strip():
-            dirty = result.stdout.strip()[:200]
-            return (False, f"K2Bi git tree dirty: {dirty}")
-    except subprocess.TimeoutExpired:
-        return (False, "K2Bi git preflight timed out")
-    except FileNotFoundError:
-        return (False, "git not found")
+    ok, reason = _git_tree_clean_except_target(Path(workspace).expanduser().resolve(strict=False))
+    if not ok:
+        return (False, reason)
 
     return (True, "")

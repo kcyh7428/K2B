@@ -359,6 +359,90 @@ is the A2 negative path (e.g. an empty `how_this_works` writes NO file).
    parks `strategy_approved_await_ship` for the future A3 ship-to-engine increment) or `revise` ->
    `register-strategy-revision <parent>` + re-run Stage 9-10 with an amended decision.
 
+## A3 chain conductor -- approved strategy -> author to repo -> run_full_ship -> engine
+
+Ship-2 Phase-A3 (contract Stage 11) is the capital path. It extends the SAME A1/A2 parent chain after
+`strategy_approved_await_ship`, records Keith's fourth human gate, authors the approved proposed strategy into
+the git-tracked K2Bi repo, dispatches K2Bi's merged `run_full_ship`, and marks `terminal_shipped` ONLY after
+independent git/file inspection confirms the commit landed. A3 never hand-commits and never re-implements the
+K2Bi ship gate; `run_full_ship` owns reviews, `handle_approve_strategy`, commit, and rollback.
+
+### A3 durable model additions
+
+- Parent payload flags: `ship_authorized`, `ship_repo_authored`, `ship_strategy_repo_path`,
+  `ship_strategy_repo_sha256`, `ship_dispatch_started_at`, `ship_attempt_count`, `ship_lease_id`,
+  `ship_approved_at`, `ship_verified`, `ship_commit_sha`, `ship_rolled_back_at`,
+  `ship_rollback_clean`, `ship_partial_detected_at`.
+- Resume ladder after `strategy_approved`: no `ship_authorized` -> `strategy_approved_await_ship`;
+  not repo-authored -> `author_strategy_to_repo`; not dispatched -> `dispatch_ship`; dispatched -> `verify_ship`.
+  `ship_verified` or row status `terminal_shipped` returns `terminal_shipped` as-is; `ship_partial_detected_at`
+  returns `ship_partial`; `ship_rolled_back_at` returns `ship_rolled_back`.
+- Ship attempts are bounded at 3. Hitting the limit parks `needs_human` with
+  `terminal_reason=ship_attempt_limit_exceeded`; cancel or make a fresh operator decision rather than forcing a
+  fourth fire.
+
+### A3 allowlisted dispatches
+
+- `k2bi-author-strategy-to-repo` -> the K2B runner calls
+  `invest_orchestrator_adapters.write_complete_strategy_spec(decision, repo_root=<K2Bi REPO>)`. This is repo-only:
+  `repo_root` must match `K2B_ORCH_K2BI_WORKSPACE` / `~/Projects/K2Bi`, not the vault.
+- `k2bi-run-full-ship` -> the runner calls
+  `invest_orchestrator_adapters.run_full_ship(strategy_path=<repo strategy>, approval=<FullShipApproval>,
+  vault_root=<K2Bi VAULT>, required_primary=<review primary>)`. The ship child uses
+  `K2B_ORCH_SHIP_CMD_TIMEOUT` (default 1200s); other worker commands keep `K2B_ORCH_CMD_TIMEOUT` (default 540s).
+
+Both children are created with `--parent-task <parent> --flight <parent flight> --entity <TICKER>` and
+`payload_path`. `poll-once` cancels out-of-order A3 children unless the parent resume action is exactly
+`author_strategy_to_repo` or `dispatch_ship`.
+
+### FullShipApproval token
+
+Build the approval from the values returned by `mark-ship-dispatch-started`:
+
+```text
+APPROVE_STRATEGY:<slug>:<repo_sha256>:<approved_at>:<ship_lease_id>
+```
+
+`approved_at` must be ISO-8601 UTC with an explicit `+00:00` offset. `ship_lease_id` is generated as
+`<slug>-ship-a1-YYYYMMDDTHHMMSSZ` and must match K2Bi's lease regex. The token binds the current repo strategy
+bytes; if the file changes after the token is minted, capital preflight refuses before dispatch and K2Bi's
+adapter repeats the same guard.
+
+### Capital preflight and recovery constraints
+
+- Kill-switch is read-only: if `<K2Bi VAULT>/System/.killed` exists, refuse. A3 never writes or clears it.
+- Validators are read-only: `<K2Bi REPO>/execution/validators/config.yaml` must exist and be non-empty.
+- Strategy path must be `<K2Bi REPO>/wiki/strategies/strategy_<slug>.md`, status `proposed`, with frontmatter
+  ticker/order.ticker matching the parent entity.
+- K2Bi git tree must be clean except for the single target strategy file before `run_full_ship`.
+- `inspect-ship-state` is the independent source of truth. It classifies `committed`, `clean_rollback`,
+  `partial_approved_uncommitted`, `incomplete_rollback_marker`, or `unknown` from git HEAD, strategy
+  frontmatter/status, and `<repo>/.k2bi-orchestrator/rollback/<slug>.json`; do not rely on the worker's
+  `rollback_result` to decide retry or terminal state.
+- On ship error, run `record-ship-failed <parent> --reason "<worker/preflight reason>"`, surface the inspector
+  result, and do NOT re-fire. `retry-ship` is allowed only when a fresh live `inspect-ship-state` returns
+  `clean_rollback`. `partial_approved_uncommitted` is never terminal; re-author/reset the repo strategy before
+  any retry.
+
+### Procedure
+
+1. **Ship gate.** Resume returns `strategy_approved_await_ship`. Surface that this commits the strategy to the
+   K2Bi engine repo and ask Keith for the explicit ship decision. On approval, run
+   `python3 -m scripts.lib.orchestrator_store approve-ship <parent>`.
+2. **Author to repo.** Build or reconstruct the exact `StrategySpecDecision` for the approved A2 strategy. Create
+   `k2bi-author-strategy-to-repo` with `repo_root=<K2Bi REPO>`, then `poll-once`. After the child is `done` and
+   the repo strategy exists, run
+   `python3 -m scripts.lib.orchestrator_store record-ship-repo-authored <parent> <K2Bi REPO>/wiki/strategies/strategy_<slug>.md`.
+   This asserts repo file sha256 equals the approved A2 `strategy_artifact_sha256` and ticker equals entity.
+3. **Dispatch ship.** Run
+   `python3 -m scripts.lib.orchestrator_store mark-ship-dispatch-started <parent>` and use its JSON
+   `lease_id`, `repo_sha`, `approved_at`, and `approval_token` to create the `k2bi-run-full-ship` payload with
+   `strategy_path`, `approval`, `vault_root=<K2Bi VAULT>`, and `required_primary`. Then `poll-once`.
+4. **Verify.** After the ship child reaches `done`, run
+   `python3 -m scripts.lib.orchestrator_store verify-ship <parent>`. This calls `inspect-ship-state`; only
+   `committed` sets `terminal_shipped` and records `ship_commit_sha`. If the child errors or verification refuses,
+   run `record-ship-failed`, surface the state, and stop.
+
 ## Canonical add example
 
 ```bash

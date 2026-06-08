@@ -186,6 +186,19 @@ def _allowed_k2bi_vault_roots() -> list[Path]:
     return [only.resolve(strict=False)]
 
 
+def _allowed_k2bi_repo_roots() -> list[Path]:
+    """K2Bi-repo-only allowlist for A3 author/ship roots.
+
+    Resolves to exactly one root: K2B_ORCH_K2BI_WORKSPACE when set, otherwise
+    ~/Projects/K2Bi. Deliberately excludes K2Bi-Vault, K2B_VAULT_PATH, and the
+    generic adapter vault override; A3's capital path writes only through the
+    git-tracked K2Bi repo that the engine consumes after sync.
+    """
+    workspace = os.environ.get("K2B_ORCH_K2BI_WORKSPACE")
+    only = Path(workspace).expanduser() if workspace else Path("~/Projects/K2Bi").expanduser()
+    return [only.resolve(strict=False)]
+
+
 def _resolve_allowed_k2bi_root(path_value: Any, field_name: str) -> Path:
     """Resolve a strategy `repo_root` / backtest `vault_root` to the K2Bi vault ONLY."""
     if not path_value:
@@ -195,6 +208,17 @@ def _resolve_allowed_k2bi_root(path_value: Any, field_name: str) -> Path:
         if root == Path(os.path.realpath(str(allowed_root))):
             return root
     raise ValueError(f"{field_name} {root} is outside allowed K2Bi vault root")
+
+
+def _resolve_allowed_k2bi_repo(path_value: Any, field_name: str) -> Path:
+    """Resolve an A3 repo root/path to the K2Bi code repo ONLY."""
+    if not path_value:
+        raise ValueError(f"payload missing required field {field_name!r}")
+    root = Path(os.path.realpath(os.path.expanduser(str(path_value))))
+    for allowed_root in _allowed_k2bi_repo_roots():
+        if root == Path(os.path.realpath(str(allowed_root))):
+            return root
+    raise ValueError(f"{field_name} {root} is outside allowed K2Bi repo root")
 
 
 def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -547,6 +571,89 @@ def _run_backtest(payload: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "result": _result_to_jsonable(result)}
 
 
+def _author_strategy_to_repo(payload: dict[str, Any]) -> dict[str, Any]:
+    """A3 Stage 11a: author the approved proposed strategy into the K2Bi repo.
+
+    This is identical to A2's strategy writer except for the root resolver:
+    repo_root is the git-tracked K2Bi repo, not the K2Bi vault.
+    """
+    repo_root = _resolve_allowed_k2bi_repo(payload.get("repo_root"), "repo_root")
+    from scripts.lib import invest_orchestrator_adapters as ioa
+
+    payload_symbol = str(payload.get("symbol", "")).strip().upper()
+    if not payload_symbol:
+        raise ValueError("payload missing required field 'symbol'")
+    decision = _load_json_value(payload, "decision")
+    _validate_strategy_decision_payload(decision, payload_symbol)
+    decision_obj = _dataclass_from_dict(ioa.StrategySpecDecision, decision)
+    result = ioa.write_complete_strategy_spec(decision_obj, repo_root=repo_root)
+    return {"status": "ok", "result": _result_to_jsonable(result)}
+
+
+def _resolve_allowed_strategy_repo_path(path_value: Any) -> Path:
+    if not path_value:
+        raise ValueError("payload missing required field 'strategy_path'")
+    raw = os.path.expanduser(str(path_value))
+    strategy_path = Path(os.path.realpath(raw))
+    repo_root = _allowed_k2bi_repo_roots()[0]
+    strategies_dir = repo_root / "wiki" / "strategies"
+    try:
+        under = os.path.commonpath([str(strategy_path), str(strategies_dir)]) == str(strategies_dir)
+    except ValueError:
+        under = False
+    if not under:
+        raise ValueError(
+            f"strategy_path {strategy_path} is outside K2Bi repo strategies dir {strategies_dir}"
+        )
+    name = strategy_path.name
+    if not (name.startswith("strategy_") and name.endswith(".md")):
+        raise ValueError(f"strategy_path must be wiki/strategies/strategy_<slug>.md: {strategy_path}")
+    return strategy_path
+
+
+def _approval_from_payload(raw_approval: Any) -> Any:
+    if not isinstance(raw_approval, dict):
+        raise ValueError("payload approval must be a JSON object")
+    required = ("final_approval_token", "approved_by", "approved_at", "ship_lease_id")
+    for key in required:
+        value = raw_approval.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"payload approval.{key} must be a non-empty string")
+    from scripts.lib import invest_orchestrator_adapters as ioa
+
+    return ioa.FullShipApproval(
+        final_approval_token=raw_approval["final_approval_token"],
+        approved_by=raw_approval["approved_by"],
+        approved_at=raw_approval["approved_at"],
+        ship_lease_id=raw_approval["ship_lease_id"],
+    )
+
+
+def _run_full_ship(payload: dict[str, Any]) -> dict[str, Any]:
+    """A3 Stage 11b: dispatch K2Bi's merged full-ship adapter.
+
+    K2B only builds the typed approval and validates root containment. K2Bi's
+    run_full_ship owns reviews, the real strategy approval gate, commit, and
+    rollback.
+    """
+    strategy_path = _resolve_allowed_strategy_repo_path(payload.get("strategy_path"))
+    vault_root = _resolve_allowed_k2bi_root(payload.get("vault_root"), "vault_root")
+    from scripts.lib import invest_orchestrator_adapters as ioa
+
+    payload_symbol = str(payload.get("symbol", "")).strip().upper()
+    if not payload_symbol:
+        raise ValueError("payload missing required field 'symbol'")
+    approval = _approval_from_payload(payload.get("approval"))
+    required_primary = str(payload.get("required_primary", "minimax")).strip() or "minimax"
+    result = ioa.run_full_ship(
+        strategy_path,
+        approval=approval,
+        vault_root=vault_root,
+        required_primary=required_primary,
+    )
+    return {"status": "ok", "result": _result_to_jsonable(result)}
+
+
 TRANSIENT_ERRNOS = {
     errno.EAGAIN,
     getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
@@ -586,7 +693,7 @@ def _adapter_error_envelope(exc: Exception) -> dict[str, Any]:
         category = "unexpected"
         retryable = False
         exit_code = 5
-    return {
+    envelope = {
         "status": "error",
         "category": category,
         "retryable": retryable,
@@ -594,6 +701,10 @@ def _adapter_error_envelope(exc: Exception) -> dict[str, Any]:
         "exception_type": type(exc).__name__,
         "message": str(exc),
     }
+    rollback_result = getattr(exc, "rollback_result", None)
+    if rollback_result is not None:
+        envelope["rollback_result"] = _result_to_jsonable(rollback_result)
+    return envelope
 
 
 def _safe_adapter_error_json(exc: Exception) -> tuple[dict[str, Any], str]:
@@ -642,6 +753,8 @@ def main(argv: list[str] | None = None) -> int:
         "run-bear-case",
         "write-strategy-spec",
         "run-backtest",
+        "author-strategy-to-repo",
+        "run-full-ship",
     ):
         p = sub.add_parser(name)
         p.add_argument("--workspace", required=True)
@@ -674,6 +787,10 @@ def main(argv: list[str] | None = None) -> int:
             output = _write_strategy_spec(payload)
         elif args.cmd == "run-backtest":
             output = _run_backtest(payload)
+        elif args.cmd == "author-strategy-to-repo":
+            output = _author_strategy_to_repo(payload)
+        elif args.cmd == "run-full-ship":
+            output = _run_full_ship(payload)
         else:  # pragma: no cover - argparse enforces choices
             raise ValueError(f"unknown command {args.cmd!r}")
         encoded_output = _dump_bounded_output(output)

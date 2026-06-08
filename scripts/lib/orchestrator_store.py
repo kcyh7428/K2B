@@ -45,12 +45,18 @@ class FlightLockError(Exception):
 # of VALID_INITIAL_STATUSES -- every other live state is reached via an explicit
 # transition, never a bare add_task, so a typo'd or terminal-looking initial
 # status cannot create a stuck or metadata-less row.
-TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled", "terminal_bear_veto"})
+TERMINAL_STATUSES = frozenset({
+    "done",
+    "failed",
+    "cancelled",
+    "terminal_bear_veto",
+    "terminal_shipped",
+})
 ALL_STATUSES = frozenset({
     "ready", "running", "blocked", "zombie",
     "waiting_for_kimi_output", "needs_human", "returned",
     "waiting_for_agent_theme",
-    "done", "failed", "cancelled", "terminal_bear_veto",
+    "done", "failed", "cancelled", "terminal_bear_veto", "terminal_shipped",
 })
 NON_COMPLETABLE_STATUSES = tuple(sorted(
     TERMINAL_STATUSES
@@ -70,6 +76,12 @@ NON_COMPLETABLE_STATUSES = tuple(sorted(
 VALID_INITIAL_STATUSES = frozenset(
     {"ready", "waiting_for_kimi_output", "needs_human", "waiting_for_agent_theme"}
 )
+
+
+def _terminal_status_not_in_clause(column: str = "status") -> tuple[str, tuple[str, ...]]:
+    statuses = tuple(sorted(TERMINAL_STATUSES))
+    placeholders = ",".join("?" for _ in statuses)
+    return (f"{column} NOT IN ({placeholders})", statuses)
 
 
 def _completion_sentinel(task_id: str) -> str:
@@ -302,17 +314,18 @@ def add_task(
             # treats as terminal, so we fail closed on it here too (Codex
             # Checkpoint-2 HIGH round-3, 2026-06-07).
             exempt_parent = None
+            terminal_clause, terminal_params = _terminal_status_not_in_clause("status")
             if parent_task:
                 parent_row = conn.execute(
-                    """
+                    f"""
                     SELECT payload FROM tasks
                     WHERE id = ?
                       AND flight_id = ?
                       AND lower(trim(entity_key)) = lower(trim(?))
-                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                      AND {terminal_clause}
                     LIMIT 1
                     """,
-                    (parent_task, fid, entity_key),
+                    (parent_task, fid, entity_key, *terminal_params),
                 ).fetchone()
                 if parent_row is not None and not _payload_is_logically_terminal(
                     parent_row["payload"]
@@ -320,24 +333,24 @@ def add_task(
                     exempt_parent = parent_task
             if exempt_parent is not None:
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT id FROM tasks
                     WHERE lower(trim(entity_key)) = lower(trim(?))
-                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                      AND {terminal_clause}
                       AND id != ?
                     LIMIT 1
                     """,
-                    (entity_key, exempt_parent),
+                    (entity_key, *terminal_params, exempt_parent),
                 ).fetchone()
             else:
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT id FROM tasks
                     WHERE lower(trim(entity_key)) = lower(trim(?))
-                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                      AND {terminal_clause}
                     LIMIT 1
                     """,
-                    (entity_key,),
+                    (entity_key, *terminal_params),
                 ).fetchone()
             if row:
                 conn.execute("ROLLBACK;")
@@ -861,6 +874,7 @@ def transition(task_id, status, **fields) -> None:
 
 
 A1_MAX_REVISIONS = 3
+A3_MAX_SHIP_ATTEMPTS = 3
 A1_BACKTEST_LOOK_AHEAD_VALUES = frozenset({"passed", "suspicious"})
 TERMINAL_TTL_CREATED_AT_FLOOR = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
@@ -1013,6 +1027,8 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
     status = task.get("status")
     if status == "terminal_bear_veto":
         return "terminal_bear_veto"
+    if status == "terminal_shipped":
+        return "terminal_shipped"
     if status in TERMINAL_STATUSES:
         return f"terminal_{status}"
     payload = _payload_dict(task.get("payload"))
@@ -1088,9 +1104,22 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
         return "dispatch_backtest"
     if not payload.get("strategy_approved"):
         return "strategy_approval_gate"
-    # A2 is complete; A3 (Stage 11, ship-to-engine -- the capital path) is the next
-    # increment and is not built yet, so the chain parks here.
-    return "strategy_approved_await_ship"
+    # A3 (Stage 11, ship-to-engine -- the capital path) extends the same parent
+    # chain. It never goes terminal until the independent git/file inspector sees
+    # the K2Bi-owned ship commit.
+    if not payload.get("ship_authorized"):
+        return "strategy_approved_await_ship"
+    if payload.get("ship_verified"):
+        return "terminal_shipped"
+    if payload.get("ship_partial_detected_at"):
+        return "ship_partial"
+    if payload.get("ship_rolled_back_at"):
+        return "ship_rolled_back"
+    if not payload.get("ship_repo_authored"):
+        return "author_strategy_to_repo"
+    if not payload.get("ship_dispatch_started_at"):
+        return "dispatch_ship"
+    return "verify_ship"
 
 
 def _parse_iso_dt(value: str | None):
@@ -1948,6 +1977,571 @@ def a1_approve_strategy(task_id: str) -> tuple[bool, str]:
     return (True, "")
 
 
+def _a3_strategy_slug_from_path(path: Path) -> str | None:
+    name = path.name
+    if not (name.startswith("strategy_") and name.endswith(".md")):
+        return None
+    slug = name[len("strategy_"):-len(".md")]
+    return slug or None
+
+
+def _a3_git_repo_root_for_path(path: Path) -> Path | None:
+    start = path if path.is_dir() else path.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    root = (result.stdout or "").strip()
+    return Path(root) if root else None
+
+
+def _a3_git_head(repo: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    head = (result.stdout or "").strip()
+    return head or None
+
+
+def _a3_git_status_for_path(repo: Path, path: Path) -> str | None:
+    try:
+        rel = path.resolve(strict=False).relative_to(repo.resolve(strict=False)).as_posix()
+    except ValueError:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain=v1", "--", rel],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _a3_git_path_tracked_at_head(repo: Path, path: Path) -> bool:
+    try:
+        rel = path.resolve(strict=False).relative_to(repo.resolve(strict=False)).as_posix()
+    except ValueError:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{rel}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _a3_compact_ship_inspect(inspect: dict) -> dict:
+    return {
+        key: inspect.get(key)
+        for key in ("state", "head", "file_sha256", "strategy_status")
+        if key in inspect
+    }
+
+
+def _a3_terminalize_attempt_limit_locked(
+    conn,
+    task_id: str,
+    payload: dict,
+    *,
+    status: str = "needs_human",
+) -> None:
+    payload["terminal_reason"] = "ship_attempt_limit_exceeded"
+    payload.setdefault("terminal_reason_at", now_iso())
+    _update_payload_locked(
+        conn,
+        task_id,
+        payload,
+        status=status,
+        blocker_reason=(
+            "ship attempt limit exceeded; inspect rollback state and make a fresh "
+            "operator decision before retrying"
+        ),
+    )
+
+
+def a1_authorize_ship(task_id: str) -> tuple[bool, str]:
+    """Record the fourth human gate that authorizes A3 ship-to-engine."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("ship_authorized"):
+            conn.close()
+            return (True, "")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "strategy_approved_await_ship":
+            conn.close()
+            return (
+                False,
+                f"ship authorization requires resume action strategy_approved_await_ship "
+                f"(got {action!r})",
+            )
+        payload["ship_authorized"] = True
+        payload["ship_authorized_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_record_ship_repo_authored(task_id: str, strategy_path: str) -> tuple[bool, str]:
+    """Bind the repo-authored proposed strategy to the approved A2 artifact sha."""
+    path = Path(str(strategy_path)).expanduser()
+    if not path.is_file():
+        return (False, f"repo strategy missing or not a file: {path}")
+    if path.stat().st_size == 0:
+        return (False, f"repo strategy is empty: {path}")
+    actual_sha = _sha256_file(path)
+    fm, perr = _parse_md_frontmatter(path)
+    if fm is None:
+        return (False, f"repo strategy frontmatter invalid: {perr}")
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("ship_authorized") is not True:
+            conn.close()
+            return (False, "ship must be authorized before recording repo authorship")
+        expected_sha = str(payload.get("strategy_artifact_sha256") or "").strip()
+        if not expected_sha:
+            conn.close()
+            return (False, "strategy_artifact_sha256 missing; cannot bind repo strategy")
+        if actual_sha != expected_sha:
+            conn.close()
+            return (
+                False,
+                f"repo strategy sha256 {actual_sha} does not match approved A2 "
+                f"strategy_artifact_sha256 {expected_sha}",
+            )
+        entity = str(task.get("entity_key") or "").strip().upper()
+        order = fm.get("order")
+        order_ticker = (
+            str(order.get("ticker", "")).strip().upper()
+            if isinstance(order, dict)
+            else ""
+        )
+        ticker = order_ticker or str(fm.get("ticker", "")).strip().upper()
+        if entity and ticker != entity:
+            conn.close()
+            return (
+                False,
+                f"repo strategy ticker {ticker!r} does not match parent flight entity {entity!r}",
+            )
+        slug = _a3_strategy_slug_from_path(path)
+        if slug is None:
+            conn.close()
+            return (False, f"repo strategy filename must be strategy_<slug>.md: {path}")
+        payload["ship_repo_authored"] = True
+        payload["ship_repo_authored_at"] = now_iso()
+        payload["ship_strategy_repo_path"] = str(path)
+        payload["ship_strategy_repo_sha256"] = actual_sha
+        payload["ship_strategy_slug"] = slug
+        # A fresh repo authoring pass resets any downstream ship dispatch/recovery
+        # markers, but it keeps ship_attempt_count so retry bounding survives.
+        for key in (
+            "ship_dispatch_started_at",
+            "ship_repo_head_before",
+            "ship_dispatch_repo_sha256",
+            "ship_lease_id",
+            "ship_approved_at",
+            "ship_approval_token",
+            "ship_verified",
+            "ship_verified_at",
+            "ship_commit_sha",
+            "ship_failed_at",
+            "ship_failure_reason",
+            "ship_rolled_back_at",
+            "ship_rollback_reason",
+            "ship_rollback_clean",
+            "ship_partial_detected_at",
+            "ship_partial_reason",
+            "ship_verify_failed_at",
+            "ship_inspect_state",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_mark_ship_dispatch_started(task_id: str) -> tuple[bool, dict | str]:
+    """Mint the A3 ship lease/token evidence and record it before dispatch."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        try:
+            attempts = int(payload.get("ship_attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= A3_MAX_SHIP_ATTEMPTS:
+            _a3_terminalize_attempt_limit_locked(conn, task_id, payload)
+            conn.commit()
+            conn.close()
+            return (False, f"ship attempt limit exceeded ({A3_MAX_SHIP_ATTEMPTS})")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "dispatch_ship":
+            conn.close()
+            return (False, f"ship dispatch requires resume action dispatch_ship (got {action!r})")
+        raw_path = payload.get("ship_strategy_repo_path")
+        if not raw_path:
+            conn.close()
+            return (False, "ship_strategy_repo_path missing")
+        path = Path(str(raw_path)).expanduser()
+        if not path.is_file():
+            conn.close()
+            return (False, f"repo strategy missing or not a file: {path}")
+        slug = _a3_strategy_slug_from_path(path)
+        if slug is None:
+            conn.close()
+            return (False, f"repo strategy filename must be strategy_<slug>.md: {path}")
+        current_sha = _sha256_file(path)
+        recorded_sha = str(payload.get("ship_strategy_repo_sha256") or "").strip()
+        if not recorded_sha:
+            conn.close()
+            return (False, "ship_strategy_repo_sha256 missing; cannot dispatch ship")
+        if current_sha != recorded_sha:
+            conn.close()
+            return (
+                False,
+                f"repo strategy sha256 {current_sha} changed since repo authorship "
+                f"record {recorded_sha}",
+            )
+        repo = _a3_git_repo_root_for_path(path)
+        if repo is None:
+            conn.close()
+            return (False, "cannot establish ship baseline: K2Bi repo git HEAD unavailable")
+        head = _a3_git_head(repo)
+        if not head:
+            conn.close()
+            return (False, "cannot establish ship baseline: K2Bi repo git HEAD unavailable")
+        dt = datetime.now(timezone.utc)
+        approved_at = dt.isoformat()
+        lease_id = f"{slug}-ship-a1-{dt.strftime('%Y%m%dT%H%M%SZ')}"
+        token = f"APPROVE_STRATEGY:{slug}:{current_sha}:{approved_at}:{lease_id}"
+        payload["ship_attempt_count"] = attempts + 1
+        payload["ship_dispatch_started_at"] = approved_at
+        payload["ship_dispatch_repo_sha256"] = current_sha
+        payload["ship_repo_head_before"] = head
+        payload["ship_lease_id"] = lease_id
+        payload["ship_approved_at"] = approved_at
+        payload["ship_approval_token"] = token
+        for key in (
+            "ship_failed_at",
+            "ship_failure_reason",
+            "ship_rolled_back_at",
+            "ship_rollback_reason",
+            "ship_rollback_clean",
+            "ship_partial_detected_at",
+            "ship_partial_reason",
+            "ship_verify_failed_at",
+            "ship_inspect_state",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (
+        True,
+        {
+            "lease_id": lease_id,
+            "ship_lease_id": lease_id,
+            "repo_sha": current_sha,
+            "approved_at": approved_at,
+            "approval_token": token,
+            "strategy_path": str(path),
+        },
+    )
+
+
+def _a1_inspect_ship_state_from_payload(task_id: str, payload: dict) -> dict:
+    raw_path = payload.get("ship_strategy_repo_path")
+    if not raw_path:
+        return {"state": "unknown", "reason": "ship_strategy_repo_path missing"}
+    path = Path(str(raw_path)).expanduser()
+    slug = _a3_strategy_slug_from_path(path)
+    if slug is None:
+        return {
+            "state": "unknown",
+            "reason": f"strategy filename must be strategy_<slug>.md: {path}",
+            "strategy_path": str(path),
+        }
+    repo = _a3_git_repo_root_for_path(path)
+    if repo is None:
+        return {
+            "state": "unknown",
+            "reason": f"strategy path is not inside a git repo: {path}",
+            "strategy_path": str(path),
+        }
+    marker = repo / ".k2bi-orchestrator" / "rollback" / f"{slug}.json"
+    head = _a3_git_head(repo)
+    status_text = _a3_git_status_for_path(repo, path)
+    tracked_at_head = _a3_git_path_tracked_at_head(repo, path)
+    result = {
+        "state": "unknown",
+        "strategy_path": str(path),
+        "repo_root": str(repo),
+        "slug": slug,
+        "head": head,
+        "git_status": status_text,
+        "tracked_at_head": tracked_at_head,
+        "rollback_marker_path": str(marker),
+        "rollback_marker_exists": marker.exists(),
+    }
+    if marker.exists():
+        result["state"] = "incomplete_rollback_marker"
+        return result
+    if not path.is_file():
+        result["reason"] = "strategy file missing"
+        return result
+    try:
+        result["file_sha256"] = _sha256_file(path)
+    except OSError as exc:
+        result["reason"] = f"strategy file unreadable: {exc}"
+        return result
+    fm, perr = _parse_md_frontmatter(path)
+    if fm is None:
+        result["reason"] = f"strategy frontmatter invalid: {perr}"
+        return result
+    strategy_status = str(fm.get("status") or "").strip().lower()
+    result["strategy_status"] = strategy_status
+    if strategy_status == "approved":
+        head_before = str(payload.get("ship_repo_head_before") or "").strip()
+        head_advanced = bool(head and head_before and head != head_before)
+        result["head_advanced"] = head_advanced
+        if status_text == "" and tracked_at_head and head_advanced:
+            result["state"] = "committed"
+        else:
+            result["state"] = "partial_approved_uncommitted"
+            if status_text == "" and not tracked_at_head:
+                result["reason"] = "approved strategy is not tracked at HEAD"
+            elif status_text == "" and not head_advanced:
+                result["reason"] = "approved strategy did not land in a new HEAD commit"
+        return result
+    if strategy_status == "proposed":
+        recorded_sha = str(payload.get("ship_strategy_repo_sha256") or "").strip()
+        if not recorded_sha or recorded_sha == result["file_sha256"]:
+            result["state"] = "clean_rollback"
+        else:
+            result["reason"] = "proposed strategy sha256 differs from recorded repo-authored sha"
+        return result
+    result["reason"] = f"unexpected strategy status {strategy_status!r}"
+    return result
+
+
+def a1_inspect_ship_state(task_id: str) -> dict:
+    """Classify live A3 ship state from git + strategy file + rollback marker."""
+    task = get_task(task_id)
+    if task is None:
+        return {"state": "unknown", "reason": f"task {task_id} not found"}
+    payload = _payload_dict(task.get("payload"))
+    return _a1_inspect_ship_state_from_payload(task_id, payload)
+
+
+def a1_verify_ship(task_id: str) -> tuple[bool, str]:
+    """Terminalize A3 only after the independent inspector sees a committed ship."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a1_inspect_ship_state_from_payload(task_id, payload)
+        state = inspect.get("state")
+        payload["ship_inspect_state"] = state
+        payload["ship_inspect"] = _a3_compact_ship_inspect(inspect)
+        if state == "committed":
+            payload["ship_verified"] = True
+            payload["ship_verified_at"] = now_iso()
+            payload["ship_commit_sha"] = inspect.get("head")
+            _update_payload_locked(conn, task_id, payload, status="terminal_shipped")
+            conn.commit()
+            conn.close()
+            return (True, "")
+        reason = f"ship verification refused: inspect state {state!r}"
+        payload["ship_verify_failed_at"] = now_iso()
+        payload["ship_verify_failed_reason"] = reason
+        if state == "partial_approved_uncommitted":
+            payload["ship_partial_detected_at"] = now_iso()
+            payload["ship_partial_reason"] = reason
+            _update_payload_locked(
+                conn,
+                task_id,
+                payload,
+                status="needs_human",
+                blocker_reason=reason,
+            )
+        else:
+            _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (False, reason)
+
+
+def a1_record_ship_failed(task_id: str, *, reason: str) -> tuple[bool, str]:
+    """Record a failed A3 ship attempt using the live independent inspector."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a1_inspect_ship_state_from_payload(task_id, payload)
+        state = inspect.get("state")
+        n = now_iso()
+        if not payload.get("ship_failed_at"):
+            payload["ship_failed_at"] = n
+        if not payload.get("ship_failure_reason"):
+            payload["ship_failure_reason"] = reason
+        payload["ship_inspect_state"] = state
+        payload["ship_inspect"] = inspect
+        payload["ship_rollback_clean"] = state == "clean_rollback"
+        blocker_reason = reason
+        if state == "clean_rollback":
+            payload["ship_rolled_back_at"] = n
+            payload["ship_rollback_reason"] = reason
+        elif state == "partial_approved_uncommitted":
+            payload["ship_partial_detected_at"] = n
+            payload["ship_partial_reason"] = reason
+            blocker_reason = f"{reason}; partial_approved_uncommitted"
+        _update_payload_locked(
+            conn,
+            task_id,
+            payload,
+            status="needs_human",
+            blocker_reason=blocker_reason,
+        )
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_retry_ship_after_rollback(task_id: str) -> tuple[bool, str]:
+    """Allow a bounded retry only when live inspection shows a clean rollback."""
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a1_inspect_ship_state_from_payload(task_id, payload)
+        if inspect.get("state") != "clean_rollback":
+            conn.close()
+            return (
+                False,
+                f"retry requires live inspect state clean_rollback "
+                f"(got {inspect.get('state')!r})",
+            )
+        try:
+            attempts = int(payload.get("ship_attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= A3_MAX_SHIP_ATTEMPTS:
+            _a3_terminalize_attempt_limit_locked(conn, task_id, payload)
+            conn.commit()
+            conn.close()
+            return (False, f"ship attempt limit exceeded ({A3_MAX_SHIP_ATTEMPTS})")
+        if not payload.get("ship_rolled_back_at"):
+            conn.close()
+            return (False, "retry requires a recorded ship_rolled_back_at")
+        for key in (
+            "ship_dispatch_started_at",
+            "ship_repo_head_before",
+            "ship_dispatch_repo_sha256",
+            "ship_lease_id",
+            "ship_approved_at",
+            "ship_approval_token",
+            "ship_failed_at",
+            "ship_failure_reason",
+            "ship_rolled_back_at",
+            "ship_rollback_reason",
+            "ship_rollback_clean",
+            "ship_partial_detected_at",
+            "ship_partial_reason",
+            "ship_verify_failed_at",
+            "ship_verify_failed_reason",
+            "ship_inspect_state",
+            "ship_inspect",
+        ):
+            payload.pop(key, None)
+        payload["ship_retry_ready_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status="needs_human", blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
 def a1_register_strategy_revision(task_id: str) -> bool:
     """Bounded A2 strategy-revision loop (max 3), paralleling a1_register_revision.
 
@@ -2384,16 +2978,17 @@ def poll_once() -> dict:
             # transaction, mirroring the add_task exemption check.
             parent_task_id = task.get("parent_task")
             if parent_task_id:
+                terminal_clause, terminal_params = _terminal_status_not_in_clause("status")
                 parent_row = conn.execute(
-                    """
+                    f"""
                     SELECT payload FROM tasks
                     WHERE id = ?
                       AND flight_id = ?
                       AND lower(trim(entity_key)) = lower(trim(?))
-                      AND status NOT IN ('done', 'failed', 'cancelled', 'terminal_bear_veto')
+                      AND {terminal_clause}
                     LIMIT 1
                     """,
-                    (parent_task_id, task["flight_id"], task["entity_key"] or ""),
+                    (parent_task_id, task["flight_id"], task["entity_key"] or "", *terminal_params),
                 ).fetchone()
                 if parent_row is None or _payload_is_logically_terminal(
                     parent_row["payload"]
@@ -2422,30 +3017,32 @@ def poll_once() -> dict:
                         f"[orchestrator] Task {task['id']} CANCELLED: parent chain no longer live"
                     )
                     continue
-                # A2 child dispatch must match the parent's resume action
+                # A2/A3 child dispatch must match the parent's resume action
                 # (Checkpoint-2 #6): the chain lock only proves the parent is live,
                 # not that it is at the right STAGE. A hand-queued strategy/backtest
-                # child must not run before thesis approval / strategy verification.
+                # or ship child must not run before the exact parent gate opens.
                 # The resume oracle is authoritative and ALSO re-validates the
-                # strategy artifact, so a backtest child is refused if the strategy
-                # drifted. Cancel (terminal) an out-of-order child to release the
-                # entity lock, mirroring the orphan path.
-                a2_expected = {
+                # strategy artifact, so downstream children are refused if prior
+                # evidence drifted. Cancel (terminal) an out-of-order child to
+                # release the entity lock, mirroring the orphan path.
+                stage_expected = {
                     "k2bi-write-strategy-spec": "dispatch_strategy",
                     "k2bi-run-backtest": "dispatch_backtest",
+                    "k2bi-author-strategy-to-repo": "author_strategy_to_repo",
+                    "k2bi-run-full-ship": "dispatch_ship",
                 }.get(task.get("command_key", ""))
-                if a2_expected is not None:
+                if stage_expected is not None:
                     try:
                         parent_action = a1_resume_action_locked(conn, parent_task_id)
                     except KeyError:
                         parent_action = None
-                    if parent_action != a2_expected:
+                    if parent_action != stage_expected:
                         conn.execute(
                             "UPDATE tasks SET status='cancelled', blocker_reason=?, "
                             "finished_at=?, updated_at=? WHERE id=? AND status='ready'",
                             (
                                 f"parent chain stage is {parent_action!r}, not "
-                                f"{a2_expected!r}; A2 child out of order, cancelled",
+                                f"{stage_expected!r}; chain child out of order, cancelled",
                                 now,
                                 now,
                                 task["id"],
@@ -2455,7 +3052,7 @@ def poll_once() -> dict:
                         conn.close()
                         notify(
                             f"[orchestrator] Task {task['id']} CANCELLED: parent stage "
-                            f"{parent_action!r} != {a2_expected!r}"
+                            f"{parent_action!r} != {stage_expected!r}"
                         )
                         continue
             ok, reason = profiles.preflight(task)
@@ -2633,6 +3230,50 @@ def _main():
         help="Record operator approval at the A2 strategy gate (end of A2)",
     )
     approve_strategy_p.add_argument("id")
+
+    approve_ship_p = sub.add_parser(
+        "approve-ship",
+        help="Record operator approval at the A3 ship-to-engine gate",
+    )
+    approve_ship_p.add_argument("id")
+
+    record_ship_repo_p = sub.add_parser(
+        "record-ship-repo-authored",
+        help="Verify and record the A3 repo-authored proposed strategy",
+    )
+    record_ship_repo_p.add_argument("id")
+    record_ship_repo_p.add_argument("path")
+
+    mark_ship_dispatch_p = sub.add_parser(
+        "mark-ship-dispatch-started",
+        help="Mint and record the A3 ship lease/token before dispatch",
+    )
+    mark_ship_dispatch_p.add_argument("id")
+
+    verify_ship_p = sub.add_parser(
+        "verify-ship",
+        help="Verify the A3 ship commit and terminalize only when committed",
+    )
+    verify_ship_p.add_argument("id")
+
+    record_ship_failed_p = sub.add_parser(
+        "record-ship-failed",
+        help="Record a failed A3 ship attempt using live rollback inspection",
+    )
+    record_ship_failed_p.add_argument("id")
+    record_ship_failed_p.add_argument("--reason", required=True)
+
+    retry_ship_p = sub.add_parser(
+        "retry-ship",
+        help="Clear a clean-rollback A3 failure for one bounded retry",
+    )
+    retry_ship_p.add_argument("id")
+
+    inspect_ship_p = sub.add_parser(
+        "inspect-ship-state",
+        help="Inspect live A3 ship state from git/file/rollback marker evidence",
+    )
+    inspect_ship_p.add_argument("id")
 
     register_strategy_revision_p = sub.add_parser(
         "register-strategy-revision",
@@ -2924,6 +3565,64 @@ def _main():
             return
         print(f"approve-strategy rejected {args.id}: {reason}", file=sys.stderr)
         sys.exit(1)
+
+    if args.cmd == "approve-ship":
+        ok, reason = a1_authorize_ship(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} ship approved")
+            return
+        print(f"approve-ship rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-ship-repo-authored":
+        ok, reason = a1_record_ship_repo_authored(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} ship repo strategy recorded")
+            return
+        print(f"record-ship-repo-authored rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "mark-ship-dispatch-started":
+        ok, result = a1_mark_ship_dispatch_started(args.id)
+        if ok:
+            render_board()
+            print(json.dumps(result, sort_keys=True))
+            return
+        print(f"mark-ship-dispatch-started rejected {args.id}: {result}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "verify-ship":
+        ok, reason = a1_verify_ship(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} ship verified")
+            return
+        print(f"verify-ship rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-ship-failed":
+        ok, reason = a1_record_ship_failed(args.id, reason=args.reason)
+        if ok:
+            render_board()
+            print(f"Task {args.id} ship failure recorded")
+            return
+        print(f"record-ship-failed rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "retry-ship":
+        ok, reason = a1_retry_ship_after_rollback(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} ship retry opened")
+            return
+        print(f"retry-ship rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "inspect-ship-state":
+        print(json.dumps(a1_inspect_ship_state(args.id), indent=2, sort_keys=True))
+        return
 
     if args.cmd == "register-strategy-revision":
         ok = a1_register_strategy_revision(args.id)

@@ -10,6 +10,9 @@ import time
 from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SHIP_COMMAND_KEY = "k2bi-run-full-ship"
+DEFAULT_CMD_TIMEOUT_S = 540
+DEFAULT_SHIP_CMD_TIMEOUT_S = 1200
 
 # Import after PYTHONPATH is set by dispatcher
 from scripts.lib import orchestrator_profiles as profiles
@@ -75,6 +78,28 @@ def _parse_candidate_count(path: str) -> int | None:
     if isinstance(count, bool) or not isinstance(count, int):
         return None
     return count
+
+
+def _parse_timeout_env(env_name: str, default_s: int) -> int:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default_s
+    try:
+        timeout_s = int(raw)
+    except (TypeError, ValueError):
+        print(
+            f"Worker: invalid {env_name}={raw!r}; using default {default_s}s",
+            file=sys.stderr,
+        )
+        return default_s
+    if timeout_s <= 0:
+        print(
+            f"Worker: invalid {env_name}={raw!r}; timeout must be > 0; "
+            f"using default {default_s}s",
+            file=sys.stderr,
+        )
+        return default_s
+    return timeout_s
 
 
 def main(task_id):
@@ -166,7 +191,13 @@ def main(task_id):
         # is complete. When Ship 1b adds commands that spawn children, the command
         # must move to a tracked command-group that both this timeout path and
         # reclaim kill explicitly (tracked as a Ship 1b hardening item).
-        timeout_s = int(os.environ.get("K2B_ORCH_CMD_TIMEOUT", "540"))
+        if command_key == SHIP_COMMAND_KEY:
+            timeout_s = _parse_timeout_env(
+                "K2B_ORCH_SHIP_CMD_TIMEOUT",
+                DEFAULT_SHIP_CMD_TIMEOUT_S,
+            )
+        else:
+            timeout_s = _parse_timeout_env("K2B_ORCH_CMD_TIMEOUT", DEFAULT_CMD_TIMEOUT_S)
 
         # A1 -- force K2BI_VAULT_ROOT alignment for narrative lane
         child_env = {**os.environ}
