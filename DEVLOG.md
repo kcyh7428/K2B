@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-08 -- Orchestrator A3 LIVE MVP run #1 + A3.1 (whitelist-aware gate + 2 live-MVP fixes)
+
+**Commit:** `f202fc8` fix(orchestrator): A3.1 live-MVP fixes + whitelist-aware ship gate
+
+**What shipped:** Ran the A3 capital path LIVE on CDNS (flight `2026-06-07-001`). The orchestrator drove the whole path as one conversation (approve-ship -> author the approved strategy into the K2Bi REPO, sha-bound -> mint the sha-bound token -> dispatch the real `run_full_ship`). **The negative path / rollback safety is PROVEN organically**: `run_full_ship`'s own Kimi plan review returned NEEDS-ATTENTION on the CDNS strategy, so it refused + rolled back cleanly -- K2Bi HEAD unchanged, file restored to `proposed`, marker cleared, the independent `inspect-ship-state` confirmed `clean_rollback`, NO partial ship, flight parked at `ship_rolled_back`. The positive `terminal_shipped` is blocked (K2Bi-side): CDNS is not on the engine `instrument_whitelist` (only SPY, G) + 4 strategy-quality findings. The live run surfaced 3 issues the unit tests missed (the A1 live-run pattern), all fixed K2B-side + regression-tested: (1) normalized-bind -- `write_complete_strategy_spec` stamps a non-deterministic `forward_guidance_check.completed_at`, so re-authoring could never byte-match the A2 vault sha; `a1_record_ship_repo_authored` now accepts a re-author that differs ONLY by that timestamp (read-once, vault-still-approved); (2) stage-guard -- `poll_once` now expects `verify_ship` (not `dispatch_ship`) for the ship child, which `mark-ship-dispatch-started` advances to; (3) NEW whitelist-aware ship gate (Keith's workflow finding) -- a READ-ONLY `instrument_whitelist` pre-check refuses a non-whitelisted ticker UPFRONT (on the strategy's actual `order.ticker`) + routes to `/invest-propose-limits`, instead of a last-step rollback; A3 never edits the list.
+
+**Codex review:** N/A (the session authored the live-iteration fixes). Kimi cross-model review (`--no-fallback`): 5 findings, 3 fixed with regression tests (TOCTOU read-once, whitelist on `order.ticker`, regex scoped to indented `completed_at`), 2 deferred as already fail-closed -- `.code-reviews/a3-1-liveiter-disposition.md`. 350 orchestrator tests green.
+
+**Feature status change:** `feature_k2b-orchestrator` stays in-progress. A3 = code-shipped + live-MVP-machinery + negative-path proven; NOT gate-passed (positive `terminal_shipped` pending the K2Bi CDNS whitelist + strategy polish + re-ship -- `pending-action`).
+
+**Follow-ups:** (1) Whitelist CDNS (`/invest-propose-limits` + operator approval in a K2Bi session) + address the 4 strategy findings + `retry-ship` -> terminal_shipped -> mark A3 gate-passed. (2) Phase B retro (Stage 15, K2Bi PR). (3) /sync the orchestrator scripts + SKILL to the Mini.
+
+**Key decisions (if divergent from claude.ai project specs):** Kept the engine `instrument_whitelist` strict + operator-only (A3 only READS it) rather than weakening it -- the strictness is the capital safety. The right way to trade more tickers is to APPROVE each (via `/invest-propose-limits`), surfaced UPFRONT by the new whitelist-aware gate, not to remove the brake.
+
+---
 ## 2026-06-08 -- Orchestrator A3 (ship-to-engine, Stage 11 -- the capital path) code-shipped
 
 **Commit:** `0f5a661` feat(orchestrator): A3 ship-to-engine (Stage 11, the capital path) -- code-shipped
