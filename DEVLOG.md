@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-08 -- Orchestrator A3 (ship-to-engine, Stage 11 -- the capital path) code-shipped
+
+**Commit:** `0f5a661` feat(orchestrator): A3 ship-to-engine (Stage 11, the capital path) -- code-shipped
+
+**What shipped:** A3 = the capital path -- from an approved strategy, as one K2B conversation, re-author the proposed strategy into the git-tracked K2Bi repo (`write_complete_strategy_spec(repo_root=~/Projects/K2Bi)`, sha-bound to the A2-backtested vault file) and dispatch the merged K2Bi `run_full_ship` adapter, which OWNS its plan+diff reviews, the real ship gate (`handle_approve_strategy`: bear-fresh + backtest-sane + forward-guidance), the commit, and the rollback. The orchestrator dispatches; it never hand-commits. New K2Bi-REPO-only root resolver; capital preflight (kill-switch `.killed` READ-ONLY, validators config present, the `APPROVE_STRATEGY:slug:sha:approved_at:lease` token binds the CURRENT repo sha, tree-clean-except-target); the new `terminal_shipped` terminal state (every terminal-status SQL now derived from `TERMINAL_STATUSES`); the 4th human gate `approve-ship`; the sha-bound replay guard; an independent partial-ship inspector (`a1_inspect_ship_state` -- classifies committed / clean_rollback / partial_approved_uncommitted / incomplete_marker from git+file+marker, NOT the worker `rollback_result`); verify-ship (`terminal_shipped` only on a confirmed commit); bounded retry only on a live clean rollback; per-command 1200s ship timeout. 35 A3 tests; 345 orchestrator green. Pure K2B dispatch wiring -- no K2Bi change. (Blocker resolved Keith-confirmed: A2's strategy lived only in the non-git vault; re-author into the repo + sha-bind, evidence stays in the vault; run_full_ship's commit is the sanctioned ship path, distinct from K2Bi code changes which still go via PR.)
+
+**Codex review:** Tier 3 (capital path). Checkpoint-1 = Codex plan review (NEEDS-ATTENTION, 3 findings -- worker SIGKILL-mid-ship partial, rollback_result absent for ValidationError refusals, terminal_shipped SQL -- ALL folded into the spec pre-code). Codex BUILT A3 (on `codex/orchestrator-a3`), so Checkpoint-2 was **Kimi** (cross-model, `--no-fallback` so never Codex self-review; chunked per-file because the 1966-line diff overflows the Kimi endpoint): 8 real findings fixed with regression tests, the other 21 dispositioned with written proof in `.code-reviews/a3-cp2-round1-response.md` (false premises across the K2Bi boundary, out-of-threat-model path hardening, one intentional cumulative retry bound). review-result: tier-3-kimi-chunked-out-of-band. AR7 loop-termination on this single-operator increment.
+
+**Feature status change:** `feature_k2b-orchestrator` stays in-progress -- A3 code-shipped (NOT gate-passed). The binary MVP (the live CDNS ship) is PENDING (`pending-action` set).
+
+**Follow-ups:** (1) A3 live MVP -- the real CDNS ship through the orchestrator to `terminal_shipped` + the negative-path proof; then mark A3 gate-passed. Live-run caveat: `run_full_ship`'s two internal reviews need the Kimi endpoint (currently dropping long inferences); the small strategy-file review may complete, but a drop fails SAFE (rollback). (2) Phase B retro (Stage 15, K2Bi PR). (3) /sync the orchestrator scripts + SKILL to the Mini.
+
+**Key decisions (if divergent from claude.ai project specs):** The capital-path blocker (strategy in the vault vs the git repo run_full_ship needs) was resolved by re-authoring into the repo + asserting the repo file sha == the A2-backtested vault sha, so the engine ships exactly what was approved; the bear/backtest evidence stays in the vault where `handle_approve_strategy` reads it. The cross-model rule was honored strictly: Codex built, Kimi reviewed (Keith confirmed builder!=reviewer over the prompt's literal "Codex Checkpoint-2").
+
+---
 ## 2026-06-03 -- Orchestrator v1+v2 merged into one in-progress note
 
 **Commit:** `e0130f2` docs(orchestrator): repoint tracker read-path to merged feature_k2b-orchestrator note
