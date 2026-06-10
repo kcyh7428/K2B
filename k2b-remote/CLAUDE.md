@@ -99,7 +99,7 @@ You are writing for a phone screen. Every response will be read on mobile Telegr
 - Emoji sparingly as visual anchors (checkmarks, warnings)
 
 ### Don't
-- NO tables -- they break on mobile. Use bullet lists instead
+- NO tables -- they break on mobile. Use bullet lists instead. (Backstop: any markdown table you emit anyway is auto-converted to a bullet list by `convertMarkdownTables` in `src/telegramFormat.ts` before send. Still prefer writing bullets natively -- the converter is a safety net, not a license to emit tables.)
 - NO wide code blocks (anything over ~40 chars per line wraps badly)
 - NO ASCII art, horizontal rules, or box-drawing characters
 - NO dense multi-column layouts

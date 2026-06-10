@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-10 -- Orchestrator A4 LIVE MVP PASSED (CDNS whitelisted via the orchestrator) -> gate-passed
+
+**Commit:** none K2B-side -- the A4 wiring was already correct (`6d3d073`); this milestone is the live MVP pass + the K2Bi-side review-calibration that unblocked it. K2Bi commits: apply `ddd3881`, proposed-commit `43e7655`, calibration PRs #11-#14.
+
+**What happened:** The orchestrator applied the operator-approved CDNS whitelist add end-to-end as one K2B conversation -- propose (K2Bi `propose_limits`) -> `record-limits-proposal` -> Keith approved the exact `## YAML Patch` -> `authorize-limits` (4th human gate) -> `mark-limits-dispatch-started` minted the dual-sha `APPROVE_LIMITS` token (binds proposal sha + on-disk config sha) -> dispatched `k2bi-apply-limits` -> K2Bi `apply_approved_limits` byte-verified + committed (`ddd3881`) -> `verify-limits` independent inspector confirmed committed -> `terminal_limits_applied` (flight `2026-06-10-002`). **Engine `instrument_whitelist.symbols` is now `[SPY, G, CDNS]`**, with NO manual `/invest-ship --approve-limits` session-switch. Negative path proven 6x -- every non-landing rolled back clean, zero partial applies.
+
+**The real story (a lesson):** the orchestrator MACHINERY was flawless from attempt #1. The entire blocker was K2Bi's internal LLM reviews behaving as NON-DETERMINISTIC hard gates on a deterministic, human-approved, byte-verified apply -- one run literally concluded "No findings, verdict should be APPROVE" yet emitted a NEEDS-ATTENTION header and blocked. Fixed K2Bi-side over 4 merged PRs: #11 plan-review focus calibration, #12 diff-review focus calibration, #13 diff review -> advisory, #14 plan review -> advisory. Principle: the 8 deterministic/human gates (operator approval, dual-sha token, kill-switch, clean-tree, scope guard, byte-checks, atomic write+rollback, independent inspector) are the real safety; an LLM "second opinion" that non-deterministically blocks clean changes is noise, not a gate. All advisory/calibration changes KEEP every real defect check + the NEEDS-ATTENTION brake on genuine defects. Final landing also needed the proposal committed as `proposed` first (`43e7655`) for the K2Bi Check-C atomicity hook (config edit + proposed->approved must be one commit). Also surfaced + handled: macOS `/tmp`->`/private/tmp` symlink fails the adapter fd-path guard -> use a realpath payload dir.
+
+**Feature status change:** `feature_k2b-orchestrator` -- A4 in-progress -> GATE-PASSED. Feature stays in-progress (A3 positive send + Phase B remain).
+
+**Follow-ups:** (1) A3 positive send (the strategy ship -> terminal_shipped): CDNS now whitelisted so the ship-gate precheck passes; needs the 4 CDNS strategy-quality findings addressed (or accept-and-revise -- Keith's domain) + re-author + `retry-ship`. (2) Chip: K2Bi `propose_limits` should auto-commit the proposal as proposed (closes the Check-C workflow gap). (3) The A4 conductor doc should note the proposed-commit prerequisite. (4) The deferred deterministic `## Change`-vs-`## YAML Patch` validator (Codex HIGH from #14).
+
+**Key decisions:** Made K2Bi's limits-apply LLM reviews advisory (not blocking) rather than chasing prompt calibration forever -- the deterministic byte-checks + human approval are the real gate; kept the strategy/run_full_ship reviews blocking (strategy-quality judgment is more load-bearing). The calibration is a K2Bi capital-gate change, so it went through K2Bi's own `/ship` adversarial review each round (K2B is architect-only on K2Bi).
+
+---
 ## 2026-06-09 -- Orchestrator A4 (operator-approved limits-apply) code-shipped
 
 **Commit:** `6d3d073` feat(orchestrator): A4 operator-approved limits-apply (whitelist capital path) -- code-shipped

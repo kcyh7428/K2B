@@ -7,7 +7,6 @@ import {
   TELEGRAM_BOT_TOKEN,
   ALLOWED_CHAT_ID,
   SILENT_CHAT_IDS,
-  MAX_MESSAGE_LENGTH,
   TYPING_REFRESH_MS,
   HTTP_PROXY,
   K2B_PROJECT_ROOT,
@@ -28,117 +27,7 @@ import { scanOutbox, sendMedia, consumeManifest } from './telegram-outbox.js'
 import { buildAgentInputWithYouTubeContext } from './url-prefetch.js'
 import { handleMediaCommand } from './mediaCommand.js'
 
-// --- Telegram formatting ---
-
-export function formatForTelegram(text: string): string {
-  // Extract and protect code blocks
-  const codeBlocks: string[] = []
-  let result = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
-    const idx = codeBlocks.length
-    const escaped = escapeHtml(code.trimEnd())
-    codeBlocks.push(lang ? `<pre><code class="language-${lang}">${escaped}</code></pre>` : `<pre>${escaped}</pre>`)
-    return `\x00CB${idx}\x00`
-  })
-
-  // Protect inline code
-  const inlineCodes: string[] = []
-  result = result.replace(/`([^`]+)`/g, (_match, code) => {
-    const idx = inlineCodes.length
-    inlineCodes.push(`<code>${escapeHtml(code)}</code>`)
-    return `\x00IC${idx}\x00`
-  })
-
-  // Escape HTML in remaining text
-  result = escapeHtml(result)
-
-  // Headings
-  result = result.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
-
-  // Bold
-  result = result.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-  result = result.replace(/__(.+?)__/g, '<b>$1</b>')
-
-  // Italic
-  result = result.replace(/\*(.+?)\*/g, '<i>$1</i>')
-  result = result.replace(/_(.+?)_/g, '<i>$1</i>')
-
-  // Strikethrough
-  result = result.replace(/~~(.+?)~~/g, '<s>$1</s>')
-
-  // Links
-  result = result.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>')
-
-  // Checkboxes
-  result = result.replace(/- \[ \]/g, '\u2610')
-  result = result.replace(/- \[x\]/g, '\u2611')
-
-  // Strip horizontal rules
-  result = result.replace(/^---+$/gm, '')
-  result = result.replace(/^\*\*\*+$/gm, '')
-
-  // Restore code blocks and inline code
-  for (let i = 0; i < codeBlocks.length; i++) {
-    result = result.replace(`\x00CB${i}\x00`, codeBlocks[i])
-  }
-  for (let i = 0; i < inlineCodes.length; i++) {
-    result = result.replace(`\x00IC${i}\x00`, inlineCodes[i])
-  }
-
-  return result.trim()
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
-// Sentinel the agent can emit to force a Telegram message break. Splits the
-// outgoing reply into multiple Telegram messages at that point, regardless of
-// length. Use when a chunk (e.g. a tap-to-copy send command) should arrive as
-// its own Telegram message for easier mobile interaction.
-export const TELEGRAM_MESSAGE_BREAK = '__TELEGRAM_MESSAGE_BREAK__'
-
-export function splitMessage(text: string, limit = MAX_MESSAGE_LENGTH): string[] {
-  // First, honor explicit agent-requested breaks. Each segment is then further
-  // split by length if it exceeds the Telegram limit.
-  const segments = text
-    .split(TELEGRAM_MESSAGE_BREAK)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-
-  const chunks: string[] = []
-  for (const segment of segments) {
-    if (segment.length <= limit) {
-      chunks.push(segment)
-      continue
-    }
-
-    let remaining = segment
-    while (remaining.length > 0) {
-      if (remaining.length <= limit) {
-        chunks.push(remaining)
-        break
-      }
-
-      // Find last newline before limit
-      let splitAt = remaining.lastIndexOf('\n', limit)
-      if (splitAt <= 0) {
-        // Find last space
-        splitAt = remaining.lastIndexOf(' ', limit)
-      }
-      if (splitAt <= 0) {
-        splitAt = limit
-      }
-
-      chunks.push(remaining.slice(0, splitAt))
-      remaining = remaining.slice(splitAt).trimStart()
-    }
-  }
-
-  return chunks.length > 0 ? chunks : [text]
-}
+import { formatForTelegram, splitMessage } from './telegramFormat.js'
 
 function isAuthorised(chatId: number): boolean {
   if (!ALLOWED_CHAT_ID) return true // first-run mode
