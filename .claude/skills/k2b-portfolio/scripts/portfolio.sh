@@ -294,7 +294,12 @@ section_active() {
   # delimiter or newline cannot shift the remaining fields when bash `read` splits
   # the row. blocked_by is selected so a `ready` task waiting on another assignee's
   # lock is not mislabeled as freely queued.
-  local query="SELECT id, coalesce(entity_key,''), coalesce(command_key,''), status, coalesce(stage_name,''), replace(replace(replace(coalesce(blocker_reason,''), char(31), ' '), char(13), ' '), char(10), ' '), coalesce(blocked_by,''), coalesce(created_at,''), coalesce(heartbeat_at,'') FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY created_at;"
+  # Exclusion list MUST mirror orchestrator_store.TERMINAL_STATUSES (keep in sync):
+  # the original {done,failed,cancelled} predate A1/A3/A4, which added
+  # terminal_bear_veto, terminal_shipped, terminal_limits_applied -- without these a
+  # completed ship/limits-apply flight leaks into "Active flights" (live 2026-06-10:
+  # the terminal_limits_applied CDNS whitelist flight showed as active).
+  local query="SELECT id, coalesce(entity_key,''), coalesce(command_key,''), status, coalesce(stage_name,''), replace(replace(replace(coalesce(blocker_reason,''), char(31), ' '), char(13), ' '), char(10), ' '), coalesce(blocked_by,''), coalesce(created_at,''), coalesce(heartbeat_at,'') FROM tasks WHERE status NOT IN ('done','failed','cancelled','terminal_bear_veto','terminal_shipped','terminal_limits_applied') ORDER BY created_at;"
   local rows rc i
   # WAL-mode read strategy (strictly read-only -- never mutates orchestrator state):
   #
