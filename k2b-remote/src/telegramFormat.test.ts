@@ -51,4 +51,39 @@ describe('convertMarkdownTables', () => {
     expect(out).toContain('<b>Hot cache</b>: Done')
     expect(out).not.toContain('|')
   })
+
+  it('preserves a header+separator that has no data rows as readable text, not raw pipes', () => {
+    const input = ['| Feature | Status |', '|---|---|', '', 'After the table'].join('\n')
+    const out = convertMarkdownTables(input)
+    // No silent data loss, and no raw markdown pipes leaking to the user.
+    expect(out).toContain('Feature')
+    expect(out).toContain('Status')
+    expect(out).toContain('After the table')
+    expect(out).not.toContain('|')
+  })
+
+  it('preserves intentional bold inside a value cell', () => {
+    const input = ['| Item | Note |', '|---|---|', '| Cache | this is **hot** |'].join('\n')
+    const out = formatForTelegram(input)
+    expect(out).toContain('<b>hot</b>')
+  })
+
+  it('does not corrupt a bare double-asterisk that is not a complete wrapper', () => {
+    const input = ['| Item | Note |', '|---|---|', '| Math | 2 ** 3 |'].join('\n')
+    const out = convertMarkdownTables(input)
+    expect(out).toContain('2 ** 3')
+  })
+
+  it('does not treat a pipe line as a table when separator column count differs from header', () => {
+    const input = ['| a | b | c |', '|---|---|', '| 1 | 2 | 3 |'].join('\n')
+    // separator has 2 columns, header has 3 -> malformed, leave untouched
+    expect(convertMarkdownTables(input)).toBe(input)
+  })
+
+  it('strips bold markers inside cells so they do not leave stray asterisks', () => {
+    const input = ['| Item | Note |', '|---|---|', '| **A** | plain |'].join('\n')
+    const out = formatForTelegram(input)
+    expect(out).toContain('<b>A</b>: plain')
+    expect(out).not.toContain('*')
+  })
 })

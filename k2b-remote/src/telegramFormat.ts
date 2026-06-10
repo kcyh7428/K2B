@@ -105,23 +105,49 @@ export function convertMarkdownTables(text: string): string {
   const out: string[] = []
   let i = 0
 
+  // Unwrap complete bold markers in the LABEL only, so a label cell like
+  // `**A**` cannot collide with the converter's own `**label**` wrapper and
+  // leave stray asterisks. Only complete `**...**` / `__...__` wrappers are
+  // unwrapped (inner text kept) -- a bare `**` (e.g. `2 ** 3`) is left intact.
+  // Value/header cells are NOT cleaned: they are not wrapped by the converter,
+  // so the downstream bold regex renders any intentional inline bold correctly.
+  const cleanLabel = (s: string): string =>
+    s.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1')
+
   while (i < lines.length) {
     const line = lines[i]
     const next = i + 1 < lines.length ? lines[i + 1] : undefined
 
-    // A table is a row with a pipe immediately followed by a separator row.
+    // A table is a row with a pipe immediately followed by a separator row
+    // whose column count matches the header (a well-formed GFM table). A
+    // column-count mismatch means it is not a real table -> leave it untouched.
     if (line.includes('|') && next !== undefined && isTableSeparator(next)) {
       const header = splitTableCells(line)
-      i += 2 // skip header + separator
+      const separator = splitTableCells(next)
+      if (separator.length !== header.length) {
+        out.push(line)
+        i++
+        continue
+      }
 
       const rows: string[][] = []
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
-        rows.push(splitTableCells(lines[i]))
-        i++
+      let j = i + 2 // skip header + separator
+      while (j < lines.length && lines[j].includes('|') && lines[j].trim() !== '') {
+        rows.push(splitTableCells(lines[j]))
+        j++
+      }
+
+      // No data rows: not a usable table. Emit the header cells as readable
+      // text (joined, no pipes) rather than silently dropping them OR leaking
+      // raw markdown pipes to the user.
+      if (rows.length === 0) {
+        out.push(header.join(' · '))
+        i += 2
+        continue
       }
 
       for (const row of rows) {
-        const label = row[0] ?? ''
+        const label = cleanLabel(row[0] ?? '')
         const values = row.slice(1)
         if (values.length === 0) {
           out.push(`• ${label}`)
@@ -137,6 +163,7 @@ export function convertMarkdownTables(text: string): string {
         }
       }
       out.push('') // blank line so the next block separates cleanly
+      i = j
       continue
     }
 
