@@ -4121,3 +4121,18 @@ The live probe surfaced 3 integration bugs the fakes-based unit tests missed (sa
 **Follow-ups:** (1) A3 ship-to-engine (Stage 11 -- the capital path; token-replay + rollback-recovery designed there, heaviest review). (2) Phase B retro (Stage 15, K2Bi PR). (3) Keith's approve/revise at the parked CDNS strategy gate. (4) worker-side parent-liveness re-check (deferred MEDIUM, A1.2). needs /sync (skills + scripts).
 
 **Key decisions:** matched the REAL `StrategySpecDecision` (20 fields) + validators before dispatching (a committed subprocess test against the real K2Bi checkout de-risked the live write -- no repeat of A1's 4 stub-shape dispatch burns). Chose re-anchor (option a) over block-scoping the integrity check (option b) -- block-scoping couples K2B to K2Bi's file layout. Backtest dispatched as a SECOND bounded command (write_complete_strategy_spec does not chain it). Drove all 6 Checkpoint-2 rounds to a real APPROVE rather than an early AR7 override -- every finding was a genuine evidence-binding gap, and the chain converged on a clean entity->strategy->backtest sha-bound model.
+
+## 2026-06-10 -- Telegram markdown-table to bullet-list converter
+
+**Commit:** `19818a1` fix(k2b-remote): convert markdown tables to bullet lists for Telegram
+Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the round-1 staged files (bot.ts refactor, CLAUDE.md, base telegramFormat.ts + test) into itself because they were staged in the shared index when that session ran git commit. `19818a1` carries the round-2 review refinements. The HEAD tree is complete and consistent (clean tree, bot.ts imports the module, 166 tests green); history is split but functionally correct, not rewritten.
+
+**What shipped:** Telegram renders no markdown tables, so any pipe-delimited table the bot emitted arrived as unreadable pipe noise on a phone. Added a deterministic `convertMarkdownTables()` in the send path. New `src/telegramFormat.ts` holds it plus the formatting helpers (`formatForTelegram`, `splitMessage`, `escapeHtml`, the break sentinel) moved out of `bot.ts` so they are unit-testable without booting the bot; `bot.ts` re-imports them (no behavior change). 2-col tables become "label: value"; 3+ col become a bold row label with "header: value" sub-bullets.
+
+**Codex review:** Tier 3 (k2b-remote/src/** allowlist). Codex timed out (inference wedge, 360s hard deadline). Kimi fallback ran across 3 human-driven passes: round 1 found a real silent-drop bug (header+separator with no data rows dropped both lines) -- fixed; round 2 caught 2 regressions from those fixes (clean() too aggressive on bare `**`, zero-row fallback emitting raw pipes) -- fixed; round 3 returned only false positives, verified by tracing the non-greedy global regex and live formatter output. Stopped at round 3 per AR7. 11 new unit tests, 166 k2b-remote suite green, tsc clean.
+
+**Feature status change:** none (--no-feature infrastructure bugfix; not attached to either In Progress feature).
+
+**Follow-ups:** Pre-existing `formatForTelegram` edge cases the reviewer flagged but out of scope (fenced-code internal fences, double-backtick inline code, the `splitMessage` strip-all-tags HTML fallback, the message-break sentinel collision). Track if they ever bite. Process follow-up: two sessions sharing one checkout caused the staging collision -- the L-2026-05-07-002 worktree-per-task guidance would have prevented it.
+
+**Key decisions:** shipped the no-tables guarantee as code, not another prose rule -- the existing "NO tables" line in k2b-remote/CLAUDE.md failed (the agent emitted a table anyway), which is exactly the "advisory rule fails under load" pattern that says ship it as code.
