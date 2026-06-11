@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-06-11 -- Orchestrator A3 LIVE MVP PASSED on CDNS -> terminal_shipped (Ship 2 Phase A complete)
+
+**Commit:** none K2B-side -- the code shipped earlier today as `a991f8a`; this milestone is the live MVP pass + the K2Bi strategy commit `a058597` (pushed to kcstudio/K2Bi origin/main with Keith's go).
+
+**What happened:** The orchestrator shipped the CDNS approved strategy to the engine repo end-to-end as ONE K2B conversation (flight `2026-06-07-001`), no manual `/invest-coach`, no hand-commit. Sequence: operator-attested `reset-ship-attempts` (3 prior attempts died on now-fixed flow bugs) -> `retry-ship` -> `commit-ship-repo-proposed` (the `(new file)->proposed` commit `0f7ff66`, which the real K2Bi commit-msg hook ACCEPTED) -> `mark-ship-dispatch-started` (sha-bound `APPROVE_STRATEGY` token) -> `run_full_ship` (advisory reviews + `handle_approve_strategy` made the `proposed->approved` commit `a058597`, hook allowed it because proposed was tracked at HEAD first) -> `verify-ship` independent inspector saw `committed` -> `terminal_shipped` (`ship_commit_sha=a058597`). The exact named bug (`(new file)->approved` forbidden) is dead. K2Bi tree clean; 2 strategy commits pushed to origin so the VPS engine loads CDNS on next pull.
+
+**The fix proved live:** commit-proposed-first works against the REAL hook (not just the temp-repo tests). Two config-only dispatch snags surfaced and were fixed mid-run, neither touching capital (both failed BEFORE run_full_ship reached git): the run_full_ship child payload must be wrapped via `payload_path` (not inline), and poll-once must run with `K2B_VAULT_PATH` set so the worker's adapter payload-dir allowlist admits the vault payload file.
+
+**Review:** No new code (a991f8a carried the Codex plan review + Opus cross-model review). Kimi's endpoint had recovered by ship time (probed reachable, 1.3s), so run_full_ship's advisory internal reviews completed.
+
+**Feature status change:** `feature_k2b-orchestrator` -- A3 code-shipped -> **A3 GATE-PASSED**. Ship 2 Phase A (Stages 3-11 as one conversation) COMPLETE. Feature stays in-progress: Phase B (Stage-15 retro, K2Bi PR) remains. Also closes the K2Bi Phase-4 second-strategy exit gate (CDNS IS that second strategy).
+
+**Follow-ups:** (1) Phase B retro (Stage 15) -- the last Ship-2 item, a new K2Bi skill via PR. (2) The K2Bi VPS engine picks up CDNS autonomously (Stages 12-14: paper order + journal).
+
+**Key decisions:** Pushed the 2 K2Bi strategy commits to origin from here with Keith's explicit go -- a strategy commit via the sanctioned run_full_ship path is the ship path, distinct from K2Bi CODE changes (which still go via PR). The actual paper trade on the VPS engine remains the engine's autonomous job.
+
+---
 ## 2026-06-11 -- Orchestrator A3 commit-proposed-first + attempt-budget recovery (capital path) -> code-shipped
 
 **Commit:** `a991f8a` feat(orchestrator): A3 commit-proposed-first + reset-ship-attempts (capital path) -- code-shipped
