@@ -40,7 +40,8 @@ EXTRACTION_SCHEMA_VERSION = "1.0"
 ALL_ITEMS_REJECTED_SKIP_REASON = "all_items_rejected_after_validation"
 MAX_EXTRACTOR_STDOUT_BYTES = 1_000_000
 MAX_EXTRACTOR_STDERR_BYTES = 200_000
-EXTRACTOR_TIMEOUT_SECONDS = 360
+DEFAULT_EXTRACTOR_TIMEOUT_SECONDS = 1200
+MAX_EXTRACTOR_TIMEOUT_SECONDS = 2400
 MAX_TELEGRAM_DIGEST_BYTES = 3900
 DEFAULT_SHELF_WRITER_TIMEOUT_SECONDS = 30
 MIN_EVIDENCE_QUOTE_CHARS = 10
@@ -67,6 +68,36 @@ NAIVE_TIMESTAMP_DIGIT_RE = re.compile(r"\d")
 _NAIVE_TIMESTAMP_WARNED_FORMATS: set[str] = set()
 
 ExtractFunc = Callable[[str, Path], dict | None]
+
+
+def _extractor_timeout_seconds() -> int:
+    raw = os.environ.get("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_EXTRACTOR_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        print(
+            "eod-capture: warning: invalid K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS="
+            f"{raw!r}; using {DEFAULT_EXTRACTOR_TIMEOUT_SECONDS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_EXTRACTOR_TIMEOUT_SECONDS
+    if value <= 0:
+        print(
+            "eod-capture: warning: K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS must be positive; "
+            f"using {DEFAULT_EXTRACTOR_TIMEOUT_SECONDS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_EXTRACTOR_TIMEOUT_SECONDS
+    if value > MAX_EXTRACTOR_TIMEOUT_SECONDS:
+        print(
+            "eod-capture: warning: K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS above "
+            f"{MAX_EXTRACTOR_TIMEOUT_SECONDS}; using {MAX_EXTRACTOR_TIMEOUT_SECONDS}",
+            file=sys.stderr,
+        )
+        return MAX_EXTRACTOR_TIMEOUT_SECONDS
+    return value
 
 
 class AllItemsRejectedError(ValueError):
@@ -610,7 +641,7 @@ def call_kimi_extractor(
                         "--max-tokens",
                         "4000",
                     ],
-                    timeout=EXTRACTOR_TIMEOUT_SECONDS,
+                    timeout=_extractor_timeout_seconds(),
                 )
         except subprocess.TimeoutExpired as exc:
             if vault_path is None or run_date is None:
@@ -629,7 +660,7 @@ def call_kimi_extractor(
                 message = _build_slow_extraction_alert_message(
                     session_path,
                     run_date=run_date,
-                    timeout_seconds=EXTRACTOR_TIMEOUT_SECONDS,
+                    timeout_seconds=_extractor_timeout_seconds(),
                 )
                 _post_telegram_alert(message, session_path=session_path)
             except Exception as alert_exc:
@@ -1124,16 +1155,47 @@ def run_job_a(
                         continue
                     data.setdefault("schema_version", EXTRACTION_SCHEMA_VERSION)
                     if data.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
-                        raise ValueError(
-                            f"unsupported extraction schema_version: {data.get('schema_version')}"
+                        error = ValueError(
+                            "unsupported extraction schema_version: "
+                            f"{data.get('schema_version')}"
                         )
+                        _write_extraction_quarantine(
+                            vault_path,
+                            session_path,
+                            run_date=run_date,
+                            reason="schema_invalid_extraction",
+                            error=error,
+                            transcript_sha256=transcript_sha256,
+                            extractor_output=data,
+                        )
+                        print(
+                            f"eod-capture: extraction quarantined for {session_path}: {error}",
+                            file=sys.stderr,
+                        )
+                        continue
                     data.setdefault("session_path", str(session_path))
                     data.setdefault("source_app", detect_source_app(session_path))
                     data.setdefault("items", [])
                     data["transcript_sha256"] = transcript_sha256
-                    data, rejections = _filter_extraction_items(
-                        data, payload, session_path
-                    )
+                    try:
+                        data, rejections = _filter_extraction_items(
+                            data, payload, session_path
+                        )
+                    except ValueError as exc:
+                        _write_extraction_quarantine(
+                            vault_path,
+                            session_path,
+                            run_date=run_date,
+                            reason="schema_invalid_extraction",
+                            error=exc,
+                            transcript_sha256=transcript_sha256,
+                            extractor_output=data,
+                        )
+                        print(
+                            f"eod-capture: extraction quarantined for {session_path}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
                     for rejection in rejections:
                         _write_extraction_rejection(
                             vault_path,
@@ -1144,6 +1206,26 @@ def run_job_a(
                         )
                     if rejections and not data.get("items"):
                         message = f"all extractor items rejected for {session_path}"
+                        if any(
+                            rejection.get("rejection_class") == "schema"
+                            for rejection in rejections
+                        ):
+                            error = ValueError(message)
+                            _write_extraction_quarantine(
+                                vault_path,
+                                session_path,
+                                run_date=run_date,
+                                reason="schema_invalid_extraction",
+                                error=error,
+                                transcript_sha256=transcript_sha256,
+                                extractor_output=data,
+                                rejections=rejections,
+                            )
+                            print(
+                                f"eod-capture: extraction quarantined for {session_path}: {error}",
+                                file=sys.stderr,
+                            )
+                            continue
                         if _all_rejections_are_content_class(rejections):
                             # Extractor produced well-formed items but couldn't
                             # ground them in the transcript (hallucination /
@@ -1151,23 +1233,42 @@ def run_job_a(
                             # pipeline continues so the rest of the day's
                             # successful extractions still reach job-b.
                             raise AllItemsRejectedError(message)
-                        # Schema/contract drift -- extractor itself is broken
-                        # (missing fields, invalid kinds, malformed items).
-                        # Raise ValueError so the failure path writes an
-                        # extraction-failures file and main() returns rc=1,
-                        # halting job-b until the extractor is fixed.
-                        raise ValueError(message)
+                        error = ValueError(message)
+                        _write_extraction_quarantine(
+                            vault_path,
+                            session_path,
+                            run_date=run_date,
+                            reason="schema_invalid_extraction",
+                            error=error,
+                            transcript_sha256=transcript_sha256,
+                            extractor_output=data,
+                            rejections=rejections,
+                        )
+                        print(
+                            f"eod-capture: extraction quarantined for {session_path}: {error}",
+                            file=sys.stderr,
+                        )
+                        continue
                     if any(
                         rejection.get("rejection_class") == "schema"
                         for rejection in rejections
                     ):
-                        # Partial schema drift: some items survived but the
-                        # extractor produced at least one malformed item.
-                        # Must surface a failure so cron rc=1 fires; otherwise
-                        # extractor regression would silently drop items while
-                        # job-b reconciles the survivors.
-                        raise ValueError(
+                        error = ValueError(
                             f"extractor produced schema-invalid item(s) for {session_path}"
+                        )
+                        _write_extraction_quarantine(
+                            vault_path,
+                            session_path,
+                            run_date=run_date,
+                            reason="schema_invalid_extraction",
+                            error=error,
+                            transcript_sha256=transcript_sha256,
+                            extractor_output=data,
+                            rejections=rejections,
+                        )
+                        print(
+                            f"eod-capture: extraction quarantined for {session_path}: {error}",
+                            file=sys.stderr,
                         )
                     _atomic_write_json(out_path, data)
                     written.append(out_path)
@@ -1378,6 +1479,48 @@ def _write_extraction_skip(
         skip["transcript_sha256"] = transcript_sha256
     path = skip_dir / f"{run_date}_{_safe_session_id(session_path)}.json"
     _atomic_write_json(path, skip)
+    return path
+
+
+def _write_extraction_quarantine(
+    vault_path: Path,
+    session_path: Path,
+    *,
+    run_date: str,
+    reason: str,
+    error: Exception | str,
+    transcript_sha256: str | None = None,
+    extractor_output: object | None = None,
+    rejections: list[dict] | None = None,
+) -> Path:
+    quarantine_dir = vault_path / ".staging" / "eod-quarantine"
+    quarantine = {
+        "quarantined_at": datetime.now().isoformat(timespec="microseconds"),
+        "run_date": run_date,
+        "session_path": str(session_path),
+        "source_app": detect_source_app(session_path),
+        "reason": reason,
+        "error": (
+            f"{type(error).__name__}: {error}"
+            if isinstance(error, Exception)
+            else str(error)
+        ),
+    }
+    if transcript_sha256:
+        quarantine["transcript_sha256"] = transcript_sha256
+    if extractor_output is not None:
+        quarantine["extractor_output"] = extractor_output
+    if rejections is not None:
+        quarantine["rejections"] = rejections
+        quarantine["rejection_count"] = len(rejections)
+        quarantine["schema_rejection_count"] = sum(
+            1 for rejection in rejections if rejection.get("rejection_class") == "schema"
+        )
+        quarantine["content_rejection_count"] = sum(
+            1 for rejection in rejections if rejection.get("rejection_class") == "content"
+        )
+    path = quarantine_dir / f"{run_date}_{_safe_session_id(session_path)}.json"
+    _atomic_write_json(path, quarantine)
     return path
 
 
@@ -1767,6 +1910,62 @@ def _iter_extraction_files(vault_path: Path, run_date: str) -> list[Path]:
     return sorted((vault_path / ".staging" / "extractions").glob(f"{run_date}_*.json"))
 
 
+def _run_date_quarantine_files(vault_path: Path, run_date: str) -> list[Path]:
+    quarantine_dir = vault_path / ".staging" / "eod-quarantine"
+    if not quarantine_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in quarantine_dir.glob(f"{run_date}_*.json")
+        if path.is_file() and not path.name.startswith(".tmp")
+    )
+
+
+def _artifact_session_key(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return str(path)
+    if isinstance(data, dict):
+        session_path = str(data.get("session_path", "")).strip()
+        if session_path:
+            return session_path
+    return str(path)
+
+
+def _artifact_candidate_count(vault_path: Path, run_date: str) -> int:
+    failure_dir = vault_path / ".staging" / "extraction-failures"
+    failures = (
+        sorted(failure_dir.glob(f"{run_date}_*.json")) if failure_dir.is_dir() else []
+    )
+    paths = (
+        _iter_extraction_files(vault_path, run_date)
+        + _run_date_quarantine_files(vault_path, run_date)
+        + _run_date_extraction_skips(vault_path, run_date)
+        + failures
+    )
+    return len({_artifact_session_key(path) for path in paths})
+
+
+def _known_candidate_count(
+    vault_path: Path,
+    run_date: str,
+    *,
+    processed_files: int,
+    quarantined: int,
+    slow_skipped: int,
+    failures: int,
+) -> int:
+    artifact_count = _artifact_candidate_count(vault_path, run_date)
+    if artifact_count == 0:
+        artifact_count = processed_files + quarantined + slow_skipped + failures
+    try:
+        discovered_count = len(discover_session_paths(run_date=run_date))
+    except (OSError, ValueError):
+        discovered_count = 0
+    return max(artifact_count, discovered_count)
+
+
 def reconcile_extractions(vault_path: Path, *, run_date: str) -> dict:
     """Reconcile staged extraction files into vault memory."""
     lock_path = vault_path / ".staging" / "eod-reconcile.lock"
@@ -1883,12 +2082,31 @@ def _reconcile_extractions_locked(vault_path: Path, *, run_date: str) -> dict:
                 )
                 continue
 
+    slow_skips = _run_date_extraction_skips(
+        vault_path, run_date, reason="slow_extraction"
+    )
+    failures = _failure_file_fingerprints(
+        vault_path / ".staging" / "extraction-failures", run_date
+    )
+    summary["quarantined"] = len(_run_date_quarantine_files(vault_path, run_date))
+    summary["slow_skipped"] = len(slow_skips)
+    summary["candidate_files"] = _known_candidate_count(
+        vault_path,
+        run_date,
+        processed_files=int(summary.get("processed_files", 0)),
+        quarantined=int(summary.get("quarantined", 0)),
+        slow_skipped=int(summary.get("slow_skipped", 0)),
+        failures=len(failures),
+    )
     summary_path = vault_path / ".staging" / f"eod-capture-summary-{run_date}.json"
     _atomic_write_json(summary_path, summary)
     _append_log(
         vault_path,
         run_date,
         f"processed={summary['processed_files']} "
+        f"candidates={summary['candidate_files']} "
+        f"quarantined={summary['quarantined']} "
+        f"slow_skipped={summary['slow_skipped']} "
         f"auto_written={summary['auto_written']} "
         f"conflicts={summary['conflicts']} "
         f"low_confidence={summary['low_confidence']} "
@@ -1940,10 +2158,38 @@ def _build_digest_message_unlocked(
         if conflict_dir.is_dir()
         else []
     )
-    summary = {**summary, "conflicts": len(conflicts)}
+    quarantine_files = _run_date_quarantine_files(vault_path, run_date)
+    failure_dir = vault_path / ".staging" / "extraction-failures"
+    failures = (
+        sorted(failure_dir.glob(f"{run_date}_*.json")) if failure_dir.is_dir() else []
+    )
+    slow_skips = _run_date_extraction_skips(
+        vault_path, run_date, reason="slow_extraction"
+    )
+    processed_files = int(summary.get("processed_files", 0) or 0)
+    summary = {
+        **summary,
+        "conflicts": len(conflicts),
+        "quarantined": len(quarantine_files),
+        "slow_skipped": len(slow_skips),
+        "candidate_files": _known_candidate_count(
+            vault_path,
+            run_date,
+            processed_files=processed_files,
+            quarantined=len(quarantine_files),
+            slow_skipped=len(slow_skips),
+            failures=len(failures),
+        ),
+    }
     lines = [f"End-of-Day Capture {run_date}"]
     if summary_warning:
         lines.append(summary_warning)
+    lines.append(
+        "capture accounting: "
+        f"{summary.get('processed_files', 0)} of {summary.get('candidate_files', 0)} "
+        f"processed, {summary.get('quarantined', 0)} quarantined, "
+        f"{summary.get('slow_skipped', 0)} slow-skipped"
+    )
     lines.append(f"sessions processed: {summary.get('processed_files', 0)}")
     lines.append(f"auto-written: {summary.get('auto_written', 0)}")
     lines.append(f"low-confidence review: {summary.get('low_confidence', 0)}")
@@ -1952,10 +2198,6 @@ def _build_digest_message_unlocked(
     lines.append(f"preferences seen: {summary.get('preferences_seen', 0)}")
     lines.append(f"preferences skipped: {summary.get('skipped_preferences', 0)}")
     lines.append(f"errors: {summary.get('errors', 0)}")
-    failure_dir = vault_path / ".staging" / "extraction-failures"
-    failures = (
-        sorted(failure_dir.glob(f"{run_date}_*.json")) if failure_dir.is_dir() else []
-    )
     if failures:
         lines.append(f"extraction failures: {len(failures)}")
         for path in failures[:3]:
@@ -1968,9 +2210,20 @@ def _build_digest_message_unlocked(
                 f"- {Path(str(failure.get('session_path', path.name))).name}: "
                 f"{failure.get('error', 'unknown error')}"
             )
-    slow_skips = _run_date_extraction_skips(
-        vault_path, run_date, reason="slow_extraction"
-    )
+    if quarantine_files:
+        lines.append(f"quarantined extractions: {len(quarantine_files)}")
+        for path in quarantine_files[:3]:
+            try:
+                quarantine = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                lines.append(f"- {path.name}: quarantined")
+                continue
+            lines.append(
+                f"- {Path(str(quarantine.get('session_path', path.name))).name}: "
+                f"{quarantine.get('reason', 'quarantined')} "
+                f"{quarantine.get('error', 'unknown error')} "
+                f"({path})"
+            )
     if slow_skips:
         lines.append(f"slow extraction skips: {len(slow_skips)}")
         for path in slow_skips[:3]:
@@ -2135,6 +2388,13 @@ def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
     )
     if failures:
         issues.append(f"extraction failures: {len(failures)}")
+    quarantines = _run_date_quarantine_files(vault_path, run_date)
+    if quarantines:
+        issues.append(
+            "quarantined extractions: "
+            f"{len(quarantines)} "
+            "(manual recovery required; see .staging/eod-quarantine/)"
+        )
     slow_skips = _run_date_extraction_skips(
         vault_path, run_date, reason="slow_extraction"
     )
@@ -2158,6 +2418,79 @@ def _digest_health_issues(vault_path: Path, run_date: str) -> list[str]:
 
 def _digest_failure_path(vault_path: Path, run_date: str) -> Path:
     return vault_path / ".staging" / "eod-digest-failures" / f"{run_date}_digest.txt"
+
+
+def _digest_undelivered_path(vault_path: Path, run_date: str) -> Path:
+    return vault_path / ".staging" / "eod-undelivered-digests" / f"{run_date}.md"
+
+
+def _env_int(name: str, *, default: int, minimum: int, maximum: int | None = None) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(
+            f"eod-capture: warning: invalid {name}={raw!r}; using {default}",
+            file=sys.stderr,
+        )
+        return default
+    if value < minimum:
+        print(
+            f"eod-capture: warning: {name} below {minimum}; using {minimum}",
+            file=sys.stderr,
+        )
+        return minimum
+    if maximum is not None and value > maximum:
+        print(
+            f"eod-capture: warning: {name} above {maximum}; using {maximum}",
+            file=sys.stderr,
+        )
+        return maximum
+    return value
+
+
+def _env_float(
+    name: str, *, default: float, minimum: float, maximum: float | None = None
+) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(
+            f"eod-capture: warning: invalid {name}={raw!r}; using {default:g}",
+            file=sys.stderr,
+        )
+        return default
+    if value < minimum:
+        print(
+            f"eod-capture: warning: {name} below {minimum:g}; using {minimum:g}",
+            file=sys.stderr,
+        )
+        return minimum
+    if maximum is not None and value > maximum:
+        print(
+            f"eod-capture: warning: {name} above {maximum:g}; using {maximum:g}",
+            file=sys.stderr,
+        )
+        return maximum
+    return value
+
+
+def _digest_send_attempts() -> int:
+    return _env_int("K2B_EOD_DIGEST_SEND_ATTEMPTS", default=3, minimum=1, maximum=3)
+
+
+def _digest_send_retry_base_seconds() -> float:
+    return _env_float(
+        "K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS",
+        default=1.0,
+        minimum=0.0,
+        maximum=30.0,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2195,12 +2528,29 @@ def main(argv: list[str] | None = None) -> int:
             for p, fingerprint in after_failures.items()
             if before_failures.get(p) != fingerprint
         )
+        quarantines = _run_date_quarantine_files(args.vault, args.date)
         if new_failures:
             print(
                 f"eod-capture: {len(new_failures)} extraction failure(s) written under {failure_dir}",
                 file=sys.stderr,
             )
+        if (
+            sessions
+            and (new_failures or quarantines)
+            and not _iter_extraction_files(args.vault, args.date)
+        ):
+            print(
+                "eod-capture: extraction breakage left zero staged output for "
+                f"{len(sessions)} candidate session(s); returning rc=1",
+                file=sys.stderr,
+            )
             return 1
+        if new_failures:
+            print(
+                "eod-capture: continuing despite per-session extraction failure(s); "
+                "at least one extraction is staged for this run",
+                file=sys.stderr,
+            )
         return 0
     if args.cmd == "job-b":
         print(
@@ -2249,7 +2599,9 @@ def main(argv: list[str] | None = None) -> int:
                     f.flush()
                     os.fsync(f.fileno())
                 last_send_error: Exception | None = None
-                for attempt in range(3):
+                send_attempts = _digest_send_attempts()
+                retry_base_seconds = _digest_send_retry_base_seconds()
+                for attempt in range(send_attempts):
                     try:
                         subprocess.run(
                             _build_send_telegram_cmd(file_path=tmp),
@@ -2264,11 +2616,15 @@ def main(argv: list[str] | None = None) -> int:
                         last_send_error = exc
                     except OSError as exc:
                         last_send_error = exc
-                    if attempt < 2:
-                        time.sleep(2 ** attempt)
+                    if attempt < send_attempts - 1:
+                        time.sleep(retry_base_seconds * (2 ** attempt))
                 if last_send_error is not None:
+                    undelivered_path = _digest_undelivered_path(args.vault, args.date)
+                    _atomic_write_text(undelivered_path, message + "\n")
                     print(
-                        f"eod-capture: digest send failed after 3 attempts: {last_send_error}",
+                        "eod-capture: digest send failed after "
+                        f"{send_attempts} attempt(s): {last_send_error}; "
+                        f"undelivered digest persisted to {undelivered_path}",
                         file=sys.stderr,
                     )
                     if isinstance(last_send_error, subprocess.CalledProcessError):

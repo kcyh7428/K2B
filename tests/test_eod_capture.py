@@ -44,6 +44,12 @@ def _write_minimal_vault(vault: Path, semantic_rows: list[str] | None = None) ->
     )
 
 
+def _read_single_quarantine(vault: Path) -> dict:
+    quarantines = sorted((vault / ".staging" / "eod-quarantine").glob("*.json"))
+    assert len(quarantines) == 1
+    return json.loads(quarantines[0].read_text(encoding="utf-8"))
+
+
 def test_safe_session_id_keeps_rollout_id_but_adds_path_hash(tmp_path):
     a = tmp_path / "a" / "rollout-abc123.jsonl"
     b = tmp_path / "b" / "rollout-abc123.jsonl"
@@ -325,6 +331,101 @@ def test_job_a_main_returns_zero_when_only_empty_stripped_sessions_skip(tmp_path
     assert rc == 0
     assert sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+
+
+def test_job_a_quarantines_schema_invalid_item_and_reports_honest_digest(
+    tmp_path, monkeypatch, capsys
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    bad = tmp_path / "bad-schema.jsonl"
+    slow_valid = tmp_path / "large-slow-valid.jsonl"
+    bad.write_text(
+        json.dumps({"type": "user", "content": "bad schema fact is true"}) + "\n",
+        encoding="utf-8",
+    )
+    slow_valid.write_text(
+        json.dumps({"type": "user", "content": "large slow transcript fact is true"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def flaky_extract(payload: str, _session_path: Path, **_kwargs) -> dict:
+        if "bad schema fact is true" in payload:
+            return {
+                "items": [
+                    {
+                        "kind": "fact",
+                        "subject": "Bad schema",
+                        "predicate": "status",
+                        "object": "true",
+                        "confidence": "high",
+                        "evidence_quote": "bad schema fact is true",
+                        # dedupe_key intentionally missing: schema-invalid item
+                    }
+                ]
+            }
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Large transcript",
+                    "predicate": "status",
+                    "object": "captured",
+                    "confidence": "high",
+                    "evidence_quote": "large slow transcript fact is true",
+                    "dedupe_key": "fact:large-transcript:status",
+                    "canonical_home": "wiki/context/shelves/semantic.md",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", flaky_extract)
+    monkeypatch.setattr(
+        eod_capture,
+        "discover_session_paths",
+        lambda **_kwargs: [bad, slow_valid],
+    )
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(bad),
+            "--session",
+            str(slow_valid),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    staged = sorted((vault / ".staging" / "extractions").glob("2026-05-14_*.json"))
+    quarantined = sorted((vault / ".staging" / "eod-quarantine").glob("2026-05-14_*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    slow_skips = eod_capture._run_date_extraction_skips(
+        vault, "2026-05-14", reason="slow_extraction"
+    )
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+    digest = eod_capture.build_digest_message(
+        vault, run_date="2026-05-14", summary=summary
+    )
+
+    assert rc == 0
+    assert "extraction failure(s) written" not in captured.err
+    assert len(staged) == 1
+    assert slow_valid.name in staged[0].read_text(encoding="utf-8")
+    assert len(quarantined) == 1
+    quarantine = json.loads(quarantined[0].read_text(encoding="utf-8"))
+    assert quarantine["session_path"] == str(bad)
+    assert quarantine["reason"] == "schema_invalid_extraction"
+    assert "missing dedupe_key" in json.dumps(quarantine)
+    assert failures == []
+    assert slow_skips == []
+    assert summary["processed_files"] == 1
+    assert "1 of 2 processed, 1 quarantined, 0 slow-skipped" in digest
 
 
 def test_partial_items_rejected_still_succeeds(tmp_path, monkeypatch):
@@ -955,10 +1056,12 @@ def test_call_kimi_extractor_timeout_writes_slow_skip_no_failure(tmp_path, monke
 
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantines = sorted((vault / ".staging" / "eod-quarantine").glob("*.json"))
     assert result is None
     assert len(calls) == 1
     assert len(skips) == 1
     assert failures == []
+    assert quarantines == []
     skip = json.loads(skips[0].read_text(encoding="utf-8"))
     assert skip["reason"] == "slow_extraction"
     assert skip["session_path"] == str(session)
@@ -1028,11 +1131,14 @@ def test_call_kimi_extractor_telegram_alert_failure_does_not_crash(
     assert failures == []
 
 
-def test_call_kimi_extractor_360s_default_timeout(tmp_path, monkeypatch):
+def test_call_kimi_extractor_uses_configurable_higher_default_timeout(
+    tmp_path, monkeypatch
+):
     wrapper = tmp_path / "minimax-json-job.sh"
     wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     wrapper.chmod(0o755)
     monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+    monkeypatch.delenv("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", raising=False)
     timeouts: list[int] = []
 
     def fake_run(_cmd, *, timeout):
@@ -1050,7 +1156,27 @@ def test_call_kimi_extractor_360s_default_timeout(tmp_path, monkeypatch):
     data = eod_capture.call_kimi_extractor("payload", tmp_path / "session.jsonl")
 
     assert data["items"] == []
-    assert timeouts == [360]
+    assert timeouts == [1200]
+
+    monkeypatch.setenv("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", "42")
+    eod_capture.call_kimi_extractor("payload", tmp_path / "session-2.jsonl")
+    assert timeouts == [1200, 42]
+
+    monkeypatch.setenv("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", "86400")
+    eod_capture.call_kimi_extractor("payload", tmp_path / "session-3.jsonl")
+    assert timeouts == [1200, 42, 2400]
+
+
+def test_extractor_timeout_env_boundaries(monkeypatch):
+    monkeypatch.setenv("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", "2400")
+    assert eod_capture._extractor_timeout_seconds() == 2400
+
+    monkeypatch.setenv("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", "2401")
+    assert eod_capture._extractor_timeout_seconds() == 2400
+
+    for value in ("0", "-1", "not-a-number"):
+        monkeypatch.setenv("K2B_EOD_EXTRACTOR_TIMEOUT_SECONDS", value)
+        assert eod_capture._extractor_timeout_seconds() == 1200
 
 
 def test_call_kimi_extractor_transient_api_error_still_retries_3x(
@@ -1104,7 +1230,7 @@ def test_call_kimi_extractor_transient_api_error_still_retries_3x(
     assert data["items"][0]["dedupe_key"] == "person:dr-lo:phone"
 
 
-def test_main_returns_0_when_only_outcome_is_slow_skip(tmp_path, monkeypatch):
+def test_main_returns_zero_when_only_outcome_is_slow_skip(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -1135,6 +1261,7 @@ def test_main_returns_0_when_only_outcome_is_slow_skip(tmp_path, monkeypatch):
     assert rc == 0
     assert sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert not sorted((vault / ".staging" / "eod-quarantine").glob("*.json"))
 
 
 def test_write_extraction_skip_accepts_reason_parameter(tmp_path):
@@ -1408,7 +1535,7 @@ def test_all_items_rejected_for_bad_evidence_quote_now_skips(
     # not the FAILURE path. A 2026-05-27 incident showed that halting job-b on
     # 2 hallucinated-evidence_quote sessions dropped 37 successful extractions
     # for the day. Infrastructure failures (missing wrapper, auth/API, parse
-    # errors) still go to the failure path -- see test_other_value_errors_*.
+    # errors) now go to quarantine -- see test_malformed_extractor_shape_is_quarantined.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -1477,14 +1604,14 @@ def test_all_items_rejected_for_bad_evidence_quote_now_skips(
     assert not any("extraction failures" in issue for issue in issues)
 
 
-def test_schema_drift_masked_by_unsupported_canonical_home_still_fails(
+def test_schema_drift_masked_by_unsupported_canonical_home_is_quarantined(
     tmp_path, monkeypatch, capsys
 ):
     # Validation ordering: if an item has BOTH a schema drift (missing
     # dedupe_key) AND an unsupported canonical_home, the schema check must
     # raise first so the rejection is classified as schema, not content.
     # Otherwise an extractor regression could be masked behind a content
-    # rejection and the cron pipeline would silently skip job-b's halt.
+    # rejection and avoid the quarantine path.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -1523,12 +1650,13 @@ def test_schema_drift_masked_by_unsupported_canonical_home_still_fails(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
     assert "dedupe_key" in rejection["error"]
@@ -1540,7 +1668,7 @@ def test_non_string_evidence_quote_fails_as_schema_not_content(
     # Type-drift attack: extractor returns evidence_quote as a dict/list. The
     # old code would str()-coerce that into a stringified repr, fail the
     # grounding check, and raise content-class -> skip path. The type guard
-    # must catch this as schema drift -> failure path -> rc=1.
+    # must catch this as schema drift -> quarantine path.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -1579,12 +1707,13 @@ def test_non_string_evidence_quote_fails_as_schema_not_content(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
     assert "non-string evidence_quote" in rejection["error"]
@@ -1634,25 +1763,25 @@ def test_non_string_canonical_home_fails_as_schema_not_content(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
     assert "non-string canonical_home" in rejection["error"]
 
 
-def test_partial_schema_drift_with_valid_survivor_still_fails(
+def test_partial_schema_drift_with_valid_survivor_is_quarantined(
     tmp_path, monkeypatch, capsys
 ):
     # Partial-rejection gap: extractor returns one valid item PLUS one
     # schema-drifted item. The valid item would otherwise be staged and
-    # main() would return rc=0, silently dropping the malformed item.
-    # Must surface a failure file so cron rc=1 fires and extractor
-    # regression doesn't hide behind a survivor.
+    # main() returns rc=0 for the batch, but the malformed item must still be
+    # quarantined so the extractor regression doesn't hide behind a survivor.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -1702,18 +1831,26 @@ def test_partial_schema_drift_with_valid_survivor_still_fails(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     captured = capsys.readouterr()
-    assert rc == 1
+    staged = sorted((vault / ".staging" / "extractions").glob("*.json"))
+    assert rc == 0
     assert skips == []
-    assert len(failures) == 1
+    assert len(staged) == 1
+    staged_data = json.loads(staged[0].read_text(encoding="utf-8"))
+    assert [item["dedupe_key"] for item in staged_data["items"]] == [
+        "fact:alpha:status"
+    ]
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     assert len(rejections) == 1
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
+    assert quarantine["schema_rejection_count"] == 1
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
-    assert "schema-invalid" in failures[0].read_text(encoding="utf-8")
-    assert "extraction failure(s) written" in captured.err
+    assert "schema-invalid" in captured.err
+    assert "extraction failure(s) written" not in captured.err
 
 
 def test_partial_content_drift_with_valid_survivor_succeeds(
@@ -1907,12 +2044,13 @@ def test_missing_evidence_quote_plus_bad_canonical_home_fails_as_schema(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
     assert "missing evidence_quote" in rejection["error"]
@@ -1960,12 +2098,13 @@ def test_empty_evidence_quote_plus_bad_canonical_home_fails_as_schema(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
     assert "empty evidence_quote" in rejection["error"]
@@ -2017,12 +2156,13 @@ def test_unsupported_canonical_home_does_not_mask_too_short_evidence_quote(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     rejections = sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     rejection = json.loads(rejections[0].read_text(encoding="utf-8"))
     assert rejection["rejection_class"] == "schema"
     assert "too short" in rejection["error"]
@@ -2105,7 +2245,7 @@ def test_phrase_collision_unsupported_canonical_home_in_dedupe_key(
     # Phrase-collision attack: extractor returns an item whose dedupe_key
     # literally contains 'unsupported canonical_home'. The rejection error
     # string echoes the value, but the rejection class is SCHEMA (invalid
-    # dedupe_key), not content. The typed-exception classifier must NOT skip.
+    # dedupe_key), not content. The typed-exception classifier must quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -2144,11 +2284,12 @@ def test_phrase_collision_unsupported_canonical_home_in_dedupe_key(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
 
 
 def test_phrase_collision_is_not_present_in_unsupported_field_name(
@@ -2156,7 +2297,7 @@ def test_phrase_collision_is_not_present_in_unsupported_field_name(
 ):
     # Phrase-collision attack via extra field name. Extractor returns an
     # item with an unsupported field literally named with the content-class
-    # phrase. The error is schema-class (unsupported field), so MUST fail.
+    # phrase. The error is schema-class (unsupported field), so MUST quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -2196,20 +2337,21 @@ def test_phrase_collision_is_not_present_in_unsupported_field_name(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
 
 
-def test_main_job_a_returns_nonzero_on_evidence_quote_control_char(
+def test_main_job_a_quarantines_evidence_quote_control_char(
     tmp_path, monkeypatch, capsys
 ):
     # Schema-class evidence_quote failure: extractor injected a non-whitespace
     # control character. Error string contains 'evidence_quote' but is NOT
     # content-class (the extractor's output is malformed). Must route to
-    # failure path so cron rc=1 fires.
+    # quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -2248,22 +2390,23 @@ def test_main_job_a_returns_nonzero_on_evidence_quote_control_char(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     assert "control character" in (
         sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))[0]
     ).read_text(encoding="utf-8")
 
 
-def test_main_job_a_returns_nonzero_on_evidence_quote_too_short(
+def test_main_job_a_quarantines_evidence_quote_too_short(
     tmp_path, monkeypatch, capsys
 ):
     # Schema-class evidence_quote failure: extractor returned a too-short
     # quote. Error string contains 'evidence_quote' but is NOT content-class.
-    # Must route to failure path so cron rc=1 fires.
+    # Must route to quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -2302,24 +2445,24 @@ def test_main_job_a_returns_nonzero_on_evidence_quote_too_short(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
     assert "too short" in (
         sorted((vault / ".staging" / "extraction-rejections").glob("*.json"))[0]
     ).read_text(encoding="utf-8")
 
 
-def test_main_job_a_returns_nonzero_on_all_items_schema_drift(
+def test_main_job_a_quarantines_all_items_schema_drift(
     tmp_path, monkeypatch, capsys
 ):
     # If the extractor drifts from the items spec (here: every item is missing
     # dedupe_key), all items get rejected by _filter_extraction_items but the
     # rejection class is schema/contract, NOT content/groundability. Those
-    # MUST take the failure path so cron rc=1 halts job-b and the extractor
-    # regression surfaces immediately. The skip path is reserved for content
+    # MUST take the quarantine path. The skip path is reserved for content
     # rejections (evidence_quote hallucination, unsupported canonical_home).
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
@@ -2358,17 +2501,109 @@ def test_main_job_a_returns_nonzero_on_all_items_schema_drift(
         ]
     )
 
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
     captured = capsys.readouterr()
     assert rc == 1
     assert skips == []
-    assert len(failures) == 1
-    assert failures[0].name.startswith("2026-05-14_")
-    assert "all extractor items rejected" in failures[0].read_text(encoding="utf-8")
-    assert "extraction failure(s) written" in captured.err
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
+    assert "all extractor items rejected" in json.dumps(quarantine)
+    assert "extraction failure(s) written" not in captured.err
     issues = eod_capture._digest_health_issues(vault, "2026-05-14")
-    assert any("extraction failures: 1" in issue for issue in issues)
+    assert any(
+        "quarantined extractions: 1" in issue
+        and "manual recovery required" in issue
+        and ".staging/eod-quarantine/" in issue
+        for issue in issues
+    )
+
+
+def test_main_job_a_returns_nonzero_when_all_sessions_quarantined(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    sessions = [tmp_path / "session-a.jsonl", tmp_path / "session-b.jsonl"]
+    for idx, session in enumerate(sessions):
+        session.write_text(
+            json.dumps({"type": "user", "content": f"alpha fact {idx} is true"})
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact",
+                    # dedupe_key intentionally missing -> schema drift
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(sessions[0]),
+            "--session",
+            str(sessions[1]),
+        ]
+    )
+
+    assert rc == 1
+    assert not sorted((vault / ".staging" / "extractions").glob("*.json"))
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantines = sorted((vault / ".staging" / "eod-quarantine").glob("*.json"))
+    assert len(quarantines) == 2
+
+
+def test_schema_rejections_never_enter_all_items_content_skip_path(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session = tmp_path / "session.jsonl"
+    session.write_text(
+        json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def drifted_extract(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "Alpha",
+                    "predicate": "status",
+                    "object": "true",
+                    "confidence": "high",
+                    "evidence_quote": "alpha fact one is true",
+                    # dedupe_key intentionally missing -> schema rejection
+                }
+            ]
+        }
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", drifted_extract)
+
+    eod_capture.run_job_a([session], vault_path=vault, run_date="2026-05-14")
+
+    assert not sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
+    assert quarantine["schema_rejection_count"] == 1
 
 
 def test_main_job_a_returns_nonzero_on_infrastructure_failure(
@@ -2415,7 +2650,7 @@ def test_main_job_a_returns_nonzero_on_infrastructure_failure(
     assert any("extraction failures: 1" in issue for issue in issues)
 
 
-def test_main_returns_0_when_all_items_rejected(tmp_path, monkeypatch):
+def test_main_returns_zero_when_all_items_rejected(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -2511,7 +2746,7 @@ def test_all_items_rejected_skip_preserves_transcript_sha(tmp_path):
     ).hexdigest()
 
 
-def test_other_value_errors_still_fail(tmp_path):
+def test_malformed_extractor_shape_is_quarantined(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
     session = tmp_path / "session.jsonl"
@@ -2528,12 +2763,12 @@ def test_other_value_errors_still_fail(tmp_path):
     )
 
     skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
     assert written == []
     assert skips == []
-    assert len(failures) == 1
-    failure = json.loads(failures[0].read_text(encoding="utf-8"))
-    assert "non-list items" in failure["error"]
+    assert not sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    quarantine = _read_single_quarantine(vault)
+    assert quarantine["reason"] == "schema_invalid_extraction"
+    assert "non-list items" in quarantine["error"]
 
 
 def test_call_kimi_extractor_accepts_evidence_quote_with_normalized_whitespace(
@@ -4042,6 +4277,54 @@ def test_digest_send_persists_failure_copy_when_telegram_send_fails(tmp_path, mo
     assert rc == 42
     assert failure_path.exists()
     assert "End-of-Day Capture 2026-05-14" in failure_path.read_text(encoding="utf-8")
+
+
+def test_digest_send_retries_and_writes_undelivered_markdown_on_persistent_failure(
+    tmp_path, monkeypatch, capsys
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
+        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}),
+        encoding="utf-8",
+    )
+    calls = 0
+    sleeps: list[float] = []
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise eod_capture.subprocess.CalledProcessError(returncode=42, cmd=["send"])
+
+    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
+    monkeypatch.setattr(eod_capture.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setenv("K2B_EOD_DIGEST_SEND_ATTEMPTS", "2")
+    monkeypatch.setenv("K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS", "0.25")
+
+    rc = eod_capture.main(
+        ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
+    )
+
+    captured = capsys.readouterr()
+    undelivered_path = (
+        vault / ".staging" / "eod-undelivered-digests" / "2026-05-14.md"
+    )
+    assert rc == 42
+    assert calls == 2
+    assert sleeps == [0.25]
+    assert undelivered_path.exists()
+    assert "End-of-Day Capture 2026-05-14" in undelivered_path.read_text(
+        encoding="utf-8"
+    )
+    assert "undelivered digest persisted" in captured.err
+
+
+def test_digest_send_retry_base_seconds_is_capped(monkeypatch, capsys):
+    monkeypatch.setenv("K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS", "3600")
+
+    assert eod_capture._digest_send_retry_base_seconds() == 30.0
+    assert "K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS above 30" in capsys.readouterr().err
 
 
 def test_digest_send_removes_failure_copy_after_success(tmp_path, monkeypatch):
