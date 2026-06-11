@@ -1150,6 +1150,8 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
         return "ship_rolled_back"
     if not payload.get("ship_repo_authored"):
         return "author_strategy_to_repo"
+    if not payload.get("ship_dispatch_started_at") and not payload.get("ship_proposed_commit_sha"):
+        return "commit_strategy_proposed"
     if not payload.get("ship_dispatch_started_at"):
         return "dispatch_ship"
     return "verify_ship"
@@ -2132,6 +2134,53 @@ def _a3_git_path_tracked_at_head(repo: Path, path: Path) -> bool:
     return result.returncode == 0
 
 
+def _parse_md_frontmatter_bytes(data: bytes) -> tuple[dict | None, str]:
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return (None, "no opening frontmatter fence")
+    close_idx = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        return (None, "frontmatter not closed")
+    try:
+        import yaml
+    except ImportError:
+        return (None, "yaml unavailable -- cannot validate frontmatter")
+    try:
+        parsed = yaml.safe_load("\n".join(lines[1:close_idx]))
+    except Exception:
+        return (None, "frontmatter not parseable")
+    if not isinstance(parsed, dict):
+        return (None, "frontmatter is not a mapping")
+    return (parsed, "")
+
+
+def _a3_git_staged_blob_sha(repo: Path, rel_path: str) -> tuple[str | None, bytes | None]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f":{rel_path}"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return (None, None)
+    blob = result.stdout
+    return (hashlib.sha256(blob).hexdigest(), blob)
+
+
+def _a3_git_commit_only(repo: Path, rel_path: str, message: str) -> tuple[bool, str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "commit", "--only", "-m", message, "--", rel_path],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return (False, (result.stderr or result.stdout).strip())
+    return (True, (result.stdout or "").strip())
+
+
 def _a3_compact_ship_inspect(inspect: dict) -> dict:
     return {
         key: inspect.get(key)
@@ -3080,6 +3129,8 @@ def a1_record_ship_repo_authored(task_id: str, strategy_path: str) -> tuple[bool
         # A fresh repo authoring pass resets any downstream ship dispatch/recovery
         # markers, but it keeps ship_attempt_count so retry bounding survives.
         for key in (
+            "ship_proposed_commit_sha",
+            "ship_proposed_committed_at",
             "ship_dispatch_started_at",
             "ship_repo_head_before",
             "ship_dispatch_repo_sha256",
@@ -3100,6 +3151,182 @@ def a1_record_ship_repo_authored(task_id: str, strategy_path: str) -> tuple[bool
             "ship_inspect_state",
         ):
             payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_commit_ship_repo_proposed(task_id: str) -> tuple[bool, str]:
+    """Commit the repo-authored strategy as status=proposed.
+
+    This creates the inert draft commit K2Bi hooks allow. The later approved
+    transition remains owned by run_full_ship.
+    """
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        raw_path = payload.get("ship_strategy_repo_path")
+        if not raw_path:
+            conn.close()
+            return (False, "ship_strategy_repo_path missing")
+        path = Path(str(raw_path)).expanduser()
+        if not path.is_file():
+            conn.close()
+            return (False, f"repo strategy missing or not a file: {path}")
+        recorded_sha = str(payload.get("ship_strategy_repo_sha256") or "").strip()
+        if not recorded_sha:
+            conn.close()
+            return (False, "ship_strategy_repo_sha256 missing; record repo authorship first")
+        fm, perr = _parse_md_frontmatter(path)
+        if fm is None:
+            conn.close()
+            return (False, f"repo strategy frontmatter invalid: {perr}")
+        status_value = str(fm.get("status") or "").strip().lower()
+        if status_value != "proposed":
+            conn.close()
+            return (
+                False,
+                f"repo strategy status must be 'proposed' to commit a draft, "
+                f"got {status_value!r}",
+            )
+        current_sha = _sha256_file(path)
+        if current_sha != recorded_sha:
+            conn.close()
+            return (
+                False,
+                f"repo strategy sha256 {current_sha} changed since repo authorship "
+                f"record {recorded_sha}",
+            )
+        repo = _a3_git_repo_root_for_path(path)
+        if repo is None:
+            conn.close()
+            return (False, "cannot resolve K2Bi git repo for strategy path")
+        try:
+            rel_path = path.resolve(strict=False).relative_to(repo.resolve(strict=False)).as_posix()
+        except ValueError:
+            conn.close()
+            return (False, f"strategy path is outside git repo: {path}")
+        if _a3_git_path_tracked_at_head(repo, path) and _a3_git_status_for_path(repo, path) == "":
+            head = _a3_git_head(repo)
+            payload["ship_proposed_commit_sha"] = head
+            payload.setdefault("ship_proposed_committed_at", now_iso())
+            _update_payload_locked(conn, task_id, payload, status=task["status"])
+            conn.commit()
+            conn.close()
+            return (True, "")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "commit_strategy_proposed":
+            conn.close()
+            return (
+                False,
+                f"proposed commit requires resume action commit_strategy_proposed "
+                f"(got {action!r})",
+            )
+        status_all = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if status_all.returncode != 0:
+            conn.close()
+            return (False, f"git status failed: {(status_all.stderr or status_all.stdout).strip()}")
+        dirty_other = [
+            line for line in status_all.stdout.splitlines()
+            if line and line[3:].strip() != rel_path
+        ]
+        if dirty_other:
+            conn.close()
+            return (
+                False,
+                "K2Bi tree has unrelated changes; refuse proposed commit: "
+                + "; ".join(dirty_other[:5]),
+            )
+        add = subprocess.run(
+            ["git", "-C", str(repo), "add", "--", rel_path],
+            capture_output=True,
+            text=True,
+        )
+        if add.returncode != 0:
+            conn.close()
+            return (False, f"git add failed: {(add.stderr or add.stdout).strip()}")
+        staged_sha, staged_bytes = _a3_git_staged_blob_sha(repo, rel_path)
+        if staged_sha != recorded_sha:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "-q", "HEAD", "--", rel_path],
+                capture_output=True,
+                text=True,
+            )
+            conn.close()
+            return (
+                False,
+                f"staged blob sha {staged_sha} != bound proposed sha {recorded_sha}; "
+                "refusing commit (mid-flight mutation)",
+            )
+        if staged_bytes is None:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "-q", "HEAD", "--", rel_path],
+                capture_output=True,
+                text=True,
+            )
+            conn.close()
+            return (False, "staged blob missing after git add")
+        staged_fm, staged_perr = _parse_md_frontmatter_bytes(staged_bytes)
+        if staged_fm is None:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "-q", "HEAD", "--", rel_path],
+                capture_output=True,
+                text=True,
+            )
+            conn.close()
+            return (False, f"staged strategy frontmatter invalid: {staged_perr}")
+        staged_status = str(staged_fm.get("status") or "").strip().lower()
+        if staged_status != "proposed":
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "-q", "HEAD", "--", rel_path],
+                capture_output=True,
+                text=True,
+            )
+            conn.close()
+            return (
+                False,
+                f"staged strategy status must be 'proposed', got {staged_status!r}",
+            )
+        slug = _a3_strategy_slug_from_path(path)
+        message = (
+            f"feat(strategy): propose strategy_{slug} (status: proposed)\n\n"
+            f"Orchestrator A3 proposed-first commit for flight {task_id}.\n"
+            "Strategy-Transition: (new file) -> proposed"
+        )
+        ok, out = _a3_git_commit_only(repo, rel_path, message)
+        if not ok:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "-q", "HEAD", "--", rel_path],
+                capture_output=True,
+                text=True,
+            )
+            conn.close()
+            return (False, f"proposed commit refused: {out}")
+        head = _a3_git_head(repo)
+        payload["ship_proposed_commit_sha"] = head
+        payload["ship_proposed_committed_at"] = now_iso()
         _update_payload_locked(conn, task_id, payload, status=task["status"])
         conn.commit()
         conn.close()
@@ -3434,6 +3661,53 @@ def a1_retry_ship_after_rollback(task_id: str) -> tuple[bool, str]:
             payload.pop(key, None)
         payload["ship_retry_ready_at"] = now_iso()
         _update_payload_locked(conn, task_id, payload, status="needs_human", blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a1_reset_ship_attempts(
+    task_id: str,
+    *,
+    checked_log: bool,
+    reason: str | None,
+) -> tuple[bool, str]:
+    """Operator-attested reset of the A3 ship attempt budget."""
+    if not checked_log:
+        return (
+            False,
+            "reset requires --i-checked-the-log (operator must confirm the spent "
+            "attempts died on fixed flow bugs)",
+        )
+    if not (reason and reason.strip()):
+        return (False, "reset requires a --reason")
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a1_inspect_ship_state_from_payload(task_id, payload)
+        if inspect.get("state") != "clean_rollback":
+            conn.close()
+            return (
+                False,
+                f"reset requires live inspect state clean_rollback "
+                f"(got {inspect.get('state')!r})",
+            )
+        payload["ship_attempt_count"] = 0
+        payload["ship_attempts_reset_at"] = now_iso()
+        payload["ship_attempts_reset_reason"] = reason.strip()
+        if payload.get("terminal_reason") == "ship_attempt_limit_exceeded":
+            payload.pop("terminal_reason", None)
+            payload.pop("terminal_reason_at", None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
         conn.commit()
         conn.close()
     return (True, "")
@@ -4150,6 +4424,12 @@ def _main():
     record_ship_repo_p.add_argument("id")
     record_ship_repo_p.add_argument("path")
 
+    commit_ship_proposed_p = sub.add_parser(
+        "commit-ship-repo-proposed",
+        help="Commit the A3 repo-authored strategy as proposed",
+    )
+    commit_ship_proposed_p.add_argument("id")
+
     mark_ship_dispatch_p = sub.add_parser(
         "mark-ship-dispatch-started",
         help="Mint and record the A3 ship lease/token before dispatch",
@@ -4174,6 +4454,18 @@ def _main():
         help="Clear a clean-rollback A3 failure for one bounded retry",
     )
     retry_ship_p.add_argument("id")
+
+    reset_ship_attempts_p = sub.add_parser(
+        "reset-ship-attempts",
+        help="Operator-attested reset of the A3 ship attempt budget",
+    )
+    reset_ship_attempts_p.add_argument("id")
+    reset_ship_attempts_p.add_argument(
+        "--i-checked-the-log",
+        action="store_true",
+        help="Required ack that the spent attempts died on fixed flow bugs",
+    )
+    reset_ship_attempts_p.add_argument("--reason", required=True)
 
     inspect_ship_p = sub.add_parser(
         "inspect-ship-state",
@@ -4534,6 +4826,15 @@ def _main():
         print(f"record-ship-repo-authored rejected {args.id}: {reason}", file=sys.stderr)
         sys.exit(1)
 
+    if args.cmd == "commit-ship-repo-proposed":
+        ok, reason = a1_commit_ship_repo_proposed(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} proposed strategy committed")
+            return
+        print(f"commit-ship-repo-proposed rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
     if args.cmd == "mark-ship-dispatch-started":
         ok, result = a1_mark_ship_dispatch_started(args.id)
         if ok:
@@ -4568,6 +4869,19 @@ def _main():
             print(f"Task {args.id} ship retry opened")
             return
         print(f"retry-ship rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "reset-ship-attempts":
+        ok, reason = a1_reset_ship_attempts(
+            args.id,
+            checked_log=args.i_checked_the_log,
+            reason=args.reason,
+        )
+        if ok:
+            render_board()
+            print(f"Task {args.id} ship attempt budget reset")
+            return
+        print(f"reset-ship-attempts rejected {args.id}: {reason}", file=sys.stderr)
         sys.exit(1)
 
     if args.cmd == "inspect-ship-state":

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -120,6 +121,50 @@ def _strategy_file(
     return path
 
 
+def _strategy_file_hook_valid(
+    path: Path,
+    *,
+    slug: str = "cdns",
+    ticker: str = "CDNS",
+    status: str = "proposed",
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\n"
+        f"name: {slug}\n"
+        f"ticker: {ticker}\n"
+        f"status: {status}\n"
+        "order:\n"
+        f"  ticker: {ticker}\n"
+        "---\n"
+        f"# Strategy {slug}\n\n"
+        "## How This Works\n\n"
+        "Buy only while the operator-approved thesis holds; exit on a thesis break.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _init_git_repo_with_k2bi_hooks(repo: Path) -> bool:
+    if not (K2BI_REPO / ".githooks").is_dir():
+        return False
+    if not (K2BI_REPO / "scripts" / "lib" / "strategy_frontmatter.py").is_file():
+        return False
+    _init_git_repo(repo)
+    shutil.copytree(K2BI_REPO / ".githooks", repo / ".githooks")
+    (repo / "scripts" / "lib").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "scripts" / "lib" / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copy2(
+        K2BI_REPO / "scripts" / "lib" / "strategy_frontmatter.py",
+        repo / "scripts" / "lib" / "strategy_frontmatter.py",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "hooks and frontmatter")
+    _git(repo, "config", "core.hooksPath", ".githooks")
+    return True
+
+
 def _backtest_capture(path: Path, *, slug: str = "cdns", look_ahead_check: str = "passed") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -195,8 +240,46 @@ def _dispatched_ship(store, tmp_path, monkeypatch):
             "strategy_artifact_sha256": _sha256(proposed),
         },
     )
+    ok, reason = store.a1_commit_ship_repo_proposed(tid)
+    assert ok, reason
     ok, dispatch = store.a1_mark_ship_dispatch_started(tid)
     assert ok, dispatch
+    return repo, proposed, tid
+
+
+def _force_payload(store, tid, updates):
+    with store._acquire_lock():
+        conn = store.connect()
+        store.init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        payload = json.loads(dict(row)["payload"])
+        payload.update(updates)
+        store._update_payload_locked(conn, tid, payload, status=dict(row)["status"])
+        conn.commit()
+        conn.close()
+
+
+def _spent_rolled_back_flight(store, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+    proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+    tid = _a3_parent(
+        store,
+        tmp_path,
+        payload_updates={
+            "ship_authorized": True,
+            "ship_repo_authored": True,
+            "ship_strategy_repo_path": str(proposed),
+            "ship_strategy_repo_sha256": _sha256(proposed),
+            "strategy_artifact_sha256": _sha256(proposed),
+            "ship_attempt_count": 3,
+            "ship_rolled_back_at": "2026-06-10T00:00:00+00:00",
+            "ship_rollback_clean": True,
+            "terminal_reason": "ship_attempt_limit_exceeded",
+            "terminal_reason_at": "2026-06-10T00:00:00+00:00",
+        },
+    )
     return repo, proposed, tid
 
 
@@ -280,6 +363,10 @@ class TestA3OracleAndHelpers:
         assert store.a1_resume_action(tid) == "author_strategy_to_repo"
 
         ok, reason = store.a1_record_ship_repo_authored(tid, str(proposed))
+        assert ok, reason
+        assert store.a1_resume_action(tid) == "commit_strategy_proposed"
+
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
         assert ok, reason
         assert store.a1_resume_action(tid) == "dispatch_ship"
 
@@ -382,6 +469,206 @@ class TestA3OracleAndHelpers:
         assert not ok
         assert "entity" in reason
 
+    def test_commit_ship_repo_proposed_makes_proposed_commit(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        ok, reason = store.a1_authorize_ship(tid)
+        assert ok, reason
+        ok, reason = store.a1_record_ship_repo_authored(tid, str(proposed))
+        assert ok, reason
+        assert store.a1_resume_action(tid) == "commit_strategy_proposed"
+
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert ok, reason
+        assert _git(repo, "ls-files", "wiki/strategies/strategy_cdns.md").stdout.strip()
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        payload = json.loads(store.get_task(tid)["payload"])
+        assert payload["ship_proposed_commit_sha"] == head
+        assert payload["ship_strategy_repo_sha256"] == _sha256(proposed)
+        assert store.a1_resume_action(tid) == "dispatch_ship"
+
+    def test_commit_ship_repo_proposed_is_idempotent(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        store.a1_record_ship_repo_authored(tid, str(proposed))
+        ok, _ = store.a1_commit_ship_repo_proposed(tid)
+        assert ok
+        head1 = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert ok, reason
+        assert _git(repo, "rev-parse", "HEAD").stdout.strip() == head1
+
+    def test_commit_ship_repo_proposed_refuses_non_proposed_status(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        strat = repo / "wiki" / "strategies" / "strategy_cdns.md"
+        proposed = _strategy_file(strat)
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        store.a1_record_ship_repo_authored(tid, str(proposed))
+        _strategy_file(strat, status="approved")
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert not ok
+        assert "proposed" in reason.lower()
+
+    def test_commit_ship_repo_proposed_refuses_sha_drift_after_bind(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        strat = repo / "wiki" / "strategies" / "strategy_cdns.md"
+        proposed = _strategy_file(strat)
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        store.a1_record_ship_repo_authored(tid, str(proposed))
+        _strategy_file(strat, status="proposed", body="tampered-but-still-proposed")
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert not ok
+        assert "sha256" in reason.lower()
+        assert _git(repo, "status", "--porcelain").stdout
+
+    def test_commit_ship_repo_proposed_refuses_unrelated_dirty_tree(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        store.a1_record_ship_repo_authored(tid, str(proposed))
+        (repo / "execution" / "validators" / "config.yaml").write_text("tampered\n", encoding="utf-8")
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert not ok
+        assert "clean" in reason.lower() or "unrelated" in reason.lower()
+
+    def test_commit_ship_repo_proposed_passes_real_k2bi_hook(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        if not _init_git_repo_with_k2bi_hooks(repo):
+            pytest.skip("K2Bi repo/hooks not available")
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file_hook_valid(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(
+            store,
+            tmp_path,
+            payload_updates={
+                "strategy_path": str(proposed),
+                "strategy_artifact_sha256": _sha256(proposed),
+            },
+        )
+        store.a1_authorize_ship(tid)
+        ok, reason = store.a1_record_ship_repo_authored(tid, str(proposed))
+        assert ok, reason
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert ok, reason
+        assert _git(repo, "ls-files", "wiki/strategies/strategy_cdns.md").stdout.strip()
+
+    def test_commit_ship_repo_proposed_surfaces_hook_rejection(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        if not _init_git_repo_with_k2bi_hooks(repo):
+            pytest.skip("K2Bi repo/hooks not available")
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        ok, reason = store.a1_record_ship_repo_authored(tid, str(proposed))
+        assert ok, reason
+        ok, reason = store.a1_commit_ship_repo_proposed(tid)
+        assert not ok
+        assert (
+            "how this works" in reason.lower()
+            or "check b" in reason.lower()
+            or "refused" in reason.lower()
+        )
+        payload = json.loads(store.get_task(tid)["payload"])
+        assert "ship_proposed_commit_sha" not in payload
+        assert store.a1_resume_action(tid) == "commit_strategy_proposed"
+
+    def test_reauthor_resets_proposed_commit_marker(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        store.a1_record_ship_repo_authored(tid, str(proposed))
+        store.a1_commit_ship_repo_proposed(tid)
+        assert store.a1_resume_action(tid) == "dispatch_ship"
+        ok, reason = store.a1_record_ship_repo_authored(tid, str(proposed))
+        assert ok, reason
+        payload = json.loads(store.get_task(tid)["payload"])
+        assert "ship_proposed_commit_sha" not in payload
+        assert store.a1_resume_action(tid) == "commit_strategy_proposed"
+
+    def test_dispatched_legacy_flight_without_proposed_marker_routes_to_verify(self, store, tmp_path):
+        tid = _a3_parent(
+            store,
+            tmp_path,
+            payload_updates={
+                "ship_authorized": True,
+                "ship_repo_authored": True,
+                "ship_strategy_repo_path": str(tmp_path / "strategy_cdns.md"),
+                "ship_strategy_repo_sha256": "abc",
+                "ship_dispatch_started_at": "2026-06-08T00:00:00+00:00",
+            },
+        )
+        assert store.a1_resume_action(tid) == "verify_ship"
+
+    def test_cli_commit_ship_repo_proposed(self, store, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        monkeypatch.setenv("K2B_ORCH_K2BI_WORKSPACE", str(repo))
+        proposed = _strategy_file(repo / "wiki" / "strategies" / "strategy_cdns.md")
+        tid = _a3_parent(store, tmp_path, payload_updates={"strategy_artifact_sha256": _sha256(proposed)})
+        store.a1_authorize_ship(tid)
+        store.a1_record_ship_repo_authored(tid, str(proposed))
+        env = dict(os.environ)
+        env["K2B_ORCH_DB"] = str(tmp_path / "orch.sqlite")
+        proc = subprocess.run(
+            [sys.executable, "-m", "scripts.lib.orchestrator_store", "commit-ship-repo-proposed", tid],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert store.a1_resume_action(tid) == "dispatch_ship"
+
+    def test_reset_ship_attempts_requires_checked_log(self, store, tmp_path, monkeypatch):
+        repo, proposed, tid = _spent_rolled_back_flight(store, tmp_path, monkeypatch)
+        ok, reason = store.a1_reset_ship_attempts(tid, checked_log=False, reason="flow bugs")
+        assert not ok
+        assert "i-checked-the-log" in reason.lower() or "checked" in reason.lower()
+
+    def test_reset_ship_attempts_requires_clean_rollback(self, store, tmp_path, monkeypatch):
+        repo, proposed, tid = _dispatched_ship(store, tmp_path, monkeypatch)
+        _strategy_file(proposed, status="approved")
+        store.a1_verify_ship(tid)
+        _force_payload(store, tid, {"ship_attempt_count": 3})
+        ok, reason = store.a1_reset_ship_attempts(tid, checked_log=True, reason="x")
+        assert not ok
+        assert "clean_rollback" in reason
+
+    def test_reset_ship_attempts_clears_limit_and_routes_to_recovery(self, store, tmp_path, monkeypatch):
+        repo, proposed, tid = _spent_rolled_back_flight(store, tmp_path, monkeypatch)
+        assert store.a1_resume_action(tid) == "needs_human_terminal"
+        ok, reason = store.a1_reset_ship_attempts(
+            tid,
+            checked_log=True,
+            reason="3 attempts died on now-fixed flow bugs",
+        )
+        assert ok, reason
+        payload = json.loads(store.get_task(tid)["payload"])
+        assert payload["ship_attempt_count"] == 0
+        assert "terminal_reason" not in payload
+        assert payload["ship_attempts_reset_reason"].startswith("3 attempts")
+        assert store.a1_resume_action(tid) == "ship_rolled_back"
+
     def test_mark_ship_dispatch_started_bounds_attempts(self, store, tmp_path):
         repo_strategy = _strategy_file(tmp_path / "repo" / "wiki" / "strategies" / "strategy_cdns.md")
         tid = _a3_parent(
@@ -392,6 +679,7 @@ class TestA3OracleAndHelpers:
                 "ship_repo_authored": True,
                 "ship_strategy_repo_path": str(repo_strategy),
                 "ship_strategy_repo_sha256": _sha256(repo_strategy),
+                "ship_proposed_commit_sha": "deadbeef",
                 "ship_attempt_count": 3,
             },
         )
@@ -412,6 +700,7 @@ class TestA3OracleAndHelpers:
                 "ship_repo_authored": True,
                 "ship_strategy_repo_path": str(repo_strategy),
                 "ship_strategy_repo_sha256": "",
+                "ship_proposed_commit_sha": "deadbeef",
                 "strategy_artifact_sha256": _sha256(repo_strategy),
             },
         )
@@ -431,6 +720,7 @@ class TestA3OracleAndHelpers:
                 "ship_repo_authored": True,
                 "ship_strategy_repo_path": str(repo_strategy),
                 "ship_strategy_repo_sha256": _sha256(repo_strategy),
+                "ship_proposed_commit_sha": "deadbeef",
                 "strategy_artifact_sha256": _sha256(repo_strategy),
             },
         )
@@ -459,6 +749,7 @@ class TestA3OracleAndHelpers:
                 "ship_repo_authored": True,
                 "ship_strategy_repo_path": str(repo_strategy),
                 "ship_strategy_repo_sha256": _sha256(repo_strategy),
+                "ship_proposed_commit_sha": "deadbeef",
                 "strategy_artifact_sha256": _sha256(repo_strategy),
             },
         )
@@ -560,6 +851,7 @@ class TestA3ShipInspector:
                 "ship_repo_authored": True,
                 "ship_strategy_repo_path": str(proposed),
                 "ship_strategy_repo_sha256": _sha256(proposed),
+                "ship_proposed_commit_sha": "deadbeef",
                 "ship_dispatch_started_at": "2026-06-08T00:00:00+00:00",
                 "ship_rolled_back_at": "2026-06-08T00:01:00+00:00",
                 "ship_rollback_reason": "gate refused",
@@ -593,6 +885,7 @@ class TestA3ShipInspector:
                 "ship_repo_authored": True,
                 "ship_strategy_repo_path": str(strategy),
                 "ship_strategy_repo_sha256": _sha256(strategy),
+                "ship_proposed_commit_sha": "deadbeef",
                 "strategy_path": str(strategy),
                 "strategy_artifact_sha256": _sha256(strategy),
             },

@@ -45,10 +45,10 @@ Runs `~/Projects/K2B/scripts/k2b-orchestrator.sh <subcommand>` and shows the out
 
 | Subcommand | Arguments | Purpose |
 |---|---|---|
-| `init` | — | Initialize DB and directories |
+| `init` | - | Initialize DB and directories |
 | `add` | `--profile`, `--command-key`, `--success`, `--permissions`, `--flight`, `--entity`, `--payload`, `--workspace`, `--status` | Create a task (returns task id). `--status` may be `ready` (default), `waiting_for_kimi_output`, or `needs_human` -- creating a flight directly parked. One-flight lock: refuses a 2nd non-terminal task with the same `--entity`. |
 | `list` | `[--status S] [--json]` | List tasks |
-| `flights` | — | List distinct flight ids |
+| `flights` | - | List distinct flight ids |
 | `show` | `<id> [--json]` | Show one task |
 | `claim` | `<id>` | Mark a task running (manual override) |
 | `complete` | `<id> [--result URL]` | Mark a task done. Refuses running/zombie and the parked *input* states (`waiting_for_kimi_output`/`needs_human` -- resolve those via `return` first) and already-terminal rows; ACCEPTS `returned` (the post-Kimi state), `ready`, `blocked`. |
@@ -56,8 +56,8 @@ Runs `~/Projects/K2B/scripts/k2b-orchestrator.sh <subcommand>` and shows the out
 | `unblock` | `<id>` | Return a blocked task to ready |
 | `cancel` | `<id>` | Cancel a task |
 | `return` | `<id> (--text T \| --path P)` | For a `waiting_for_kimi_output` flight: run the acceptance gate on the pasted/file DR output (size 500B-2MB, >=3 URLs, >=5 substantive lines, and a task-bound completion sentinel `=== END OF <ENGINE> RESEARCH: <id> ===` -- ENGINE-AGNOSTIC, any engine token KIMI/CHATGPT/PERPLEXITY/..., and POSITION-TOLERANT so a trailing `## References`/footnote block may follow it), store raw + sha256 -> `returned`. For `blocked`/`needs_human`: re-ready it (no gate). Prefer `--path` for multi-line content (see the conductor). |
-| `poll-once` | — | Run one dispatcher tick (reclaim zombies, spawn one ready task) |
-| `render-board` | — | Write `board.md` from current DB state |
+| `poll-once` | - | Run one dispatcher tick (reclaim zombies, spawn one ready task) |
+| `render-board` | - | Write `board.md` from current DB state |
 
 ## Ship 1a scope
 
@@ -370,11 +370,13 @@ K2Bi ship gate; `run_full_ship` owns reviews, `handle_approve_strategy`, commit,
 ### A3 durable model additions
 
 - Parent payload flags: `ship_authorized`, `ship_repo_authored`, `ship_strategy_repo_path`,
-  `ship_strategy_repo_sha256`, `ship_dispatch_started_at`, `ship_attempt_count`, `ship_lease_id`,
-  `ship_approved_at`, `ship_verified`, `ship_commit_sha`, `ship_rolled_back_at`,
-  `ship_rollback_clean`, `ship_partial_detected_at`.
+  `ship_strategy_repo_sha256`, `ship_proposed_commit_sha`, `ship_proposed_committed_at`,
+  `ship_dispatch_started_at`, `ship_attempt_count`, `ship_lease_id`, `ship_approved_at`,
+  `ship_verified`, `ship_commit_sha`, `ship_rolled_back_at`, `ship_rollback_clean`,
+  `ship_partial_detected_at`.
 - Resume ladder after `strategy_approved`: no `ship_authorized` -> `strategy_approved_await_ship`;
-  not repo-authored -> `author_strategy_to_repo`; not dispatched -> `dispatch_ship`; dispatched -> `verify_ship`.
+  not repo-authored -> `author_strategy_to_repo`; repo-authored but not proposed-committed ->
+  `commit_strategy_proposed`; not dispatched -> `dispatch_ship`; dispatched -> `verify_ship`.
   `ship_verified` or row status `terminal_shipped` returns `terminal_shipped` as-is; `ship_partial_detected_at`
   returns `ship_partial`; `ship_rolled_back_at` returns `ship_rolled_back`.
 - Ship attempts are bounded at 3. Hitting the limit parks `needs_human` with
@@ -431,6 +433,10 @@ adapter repeats the same guard.
   result, and do NOT re-fire. `retry-ship` is allowed only when a fresh live `inspect-ship-state` returns
   `clean_rollback`. `partial_approved_uncommitted` is never terminal; re-author/reset the repo strategy before
   any retry.
+- If a flight is parked `needs_human_terminal` with `terminal_reason=ship_attempt_limit_exceeded` AND a live
+  `inspect-ship-state` returns `clean_rollback` AND the spent attempts died on now-fixed flow bugs, recover with
+  `python3 -m scripts.lib.orchestrator_store reset-ship-attempts <parent> --i-checked-the-log --reason "<why>"`
+  then `retry-ship`. Never reset on `partial_approved_uncommitted`.
 
 ### Procedure
 
@@ -448,6 +454,11 @@ adapter repeats the same guard.
    the repo strategy exists, run
    `python3 -m scripts.lib.orchestrator_store record-ship-repo-authored <parent> <K2Bi REPO>/wiki/strategies/strategy_<slug>.md`.
    This asserts repo file sha256 equals the approved A2 `strategy_artifact_sha256` and ticker equals entity.
+2b. **Commit proposed first.** K2Bi's commit-msg hook forbids `(new file) -> approved`; the strategy must land
+   tracked as `proposed` before `run_full_ship` does `proposed -> approved`. After `record-ship-repo-authored`,
+   run `python3 -m scripts.lib.orchestrator_store commit-ship-repo-proposed <parent>`. This commits only the
+   strategy file as `(new file) -> proposed`, re-checks the bound sha, refuses a non-proposed file or an
+   unrelated-dirty tree, and is idempotent. The resume action advances to `dispatch_ship`.
 3. **Dispatch ship.** Run
    `python3 -m scripts.lib.orchestrator_store mark-ship-dispatch-started <parent>` and use its JSON
    `lease_id`, `repo_sha`, `approved_at`, and `approval_token` to create the `k2bi-run-full-ship` payload with
