@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-11 -- Orchestrator A3 commit-proposed-first + attempt-budget recovery (capital path) -> code-shipped
+
+**Commit:** `a991f8a` feat(orchestrator): A3 commit-proposed-first + reset-ship-attempts (capital path) -- code-shipped
+
+**What shipped:** The fix for the last A3 blocker. K2Bi's commit-msg hook forbids `(new file) -> approved`, so the orchestrator-authored strategy (an untracked new file) could never be committed by `run_full_ship` directly as `approved` (flight `2026-06-10-005` failed there). The strategy analog of the A4 `43e7655` proposed-first fix. K2B-side ONLY, no K2Bi change -- `run_full_ship` was already built to approve a pre-committed `proposed` file; the only gap was the orchestrator never making the proposed commit. New `a1_commit_ship_repo_proposed` commits the strategy as `proposed` (the `(new file)->proposed` transition the hook allows), ONLY the single target path, refusing non-proposed / sha-drift / unrelated-dirty-tree, re-verifying the staged blob (TOCTOU close), fail-closed unstage on hook reject. New gated `commit_strategy_proposed` resume rung (gated `not dispatched AND no proposed sha` so a legacy dispatched flight never routes backward). New `a1_reset_ship_attempts` (`--i-checked-the-log` + live `clean_rollback` only; clears only `ship_attempt_limit_exceeded`; never rescues a partial ship). 13 new A3 tests incl. 2 that run the REAL K2Bi hooks; 391 orchestrator tests green.
+
+**Codex review:** Builder = Codex (agent-handoff, background, driven). Checkpoint 1 = Codex plan review (NEEDS-ATTENTION, 3 findings ALL folded pre-build: F1 gate the rung on not-yet-dispatched, F2 staged-blob TOCTOU close + `-m`-after-`--` argv fix, F3 run the real K2Bi hooks in tests). Checkpoint 2 = Opus Ship-Manager cross-model code review (Opus != the Codex builder, satisfies builder!=reviewer): no findings, the build is stronger than the plan (it re-parses the staged blob's status too). Recorded at `.code-reviews/a3-commit-proposed-first-round-1-response.md`. The Kimi scripted reviewer endpoint was DOWN (3 attempts, sustained RemoteDisconnected); Keith approved committing on the Opus cross-model review.
+
+**Feature status change:** `feature_k2b-orchestrator` -- A3 in-progress (code-shipped). NOT gate-passed: the binary MVP is the LIVE CDNS ship reaching `terminal_shipped`, which is operator-gated and has not run yet.
+
+**Follow-ups:** (1) The live CDNS ship on flight `2026-06-07-001`: `reset-ship-attempts --i-checked-the-log` -> `retry-ship` -> `commit-ship-repo-proposed` -> `mark-ship-dispatch-started` -> dispatch `k2bi-run-full-ship` -> `verify-ship` -> `terminal_shipped`, with Keith's 4th human gate -> then mark A3 gate-passed + mirror the K2Bi Resume Card. (2) Phase B retro (Stage 15, K2Bi PR).
+
+**Key decisions:** Orchestrator commits the `proposed` draft itself (K2B-side) rather than building a new K2Bi adapter -- a `proposed` strategy is inert (the engine only trades `approved`), so it does not cross the capital line, and run_full_ship still owns the `proposed->approved` capital commit. Committed on the Opus cross-model review because Codex built it (can't self-review) and the Kimi scripted reviewer endpoint was down; this is K2B-side code (the actual capital action, the live CDNS ship, stays separately gated by Keith).
+
+---
 ## 2026-06-10 -- Orchestrator A4 LIVE MVP PASSED (CDNS whitelisted via the orchestrator) -> gate-passed
 
 **Commit:** none K2B-side -- the A4 wiring was already correct (`6d3d073`); this milestone is the live MVP pass + the K2Bi-side review-calibration that unblocked it. K2Bi commits: apply `ddd3881`, proposed-commit `43e7655`, calibration PRs #11-#14.
