@@ -88,7 +88,7 @@ This enables weave to gradually earn autonomy. First 10+ proposals are always ma
 
 4. **Extract existing wikilinks** -- scan each page body for `[[slug]]` patterns. Add every existing link pair to the exclusion set so Kimi doesn't re-propose what `k2b-compile` already linked inline.
 
-5. **Pre-flight token estimate** -- rough token count of bundled prompt. If >120K tokens, abort with notification and exit 1 (vault has outgrown single-prompt approach, time to add embedding prefilter).
+5. **Pre-flight token estimate** -- rough token count of bundled prompt (bytes/4). If over `MAX_TOKENS_BUDGET` (set in `scripts/k2b-weave.sh`, currently 170K est-tokens -- a reservation under Kimi's 256K window that leaves ~86K for output + reasoning, which the bytes/4 input estimate does not measure), abort with notification and exit 1. This is the graceful "full-body single-prompt has reached its ceiling" gate -- the durable scaling fix is [[feature_weave-embedding-prefilter]]. The budget's single home is the code constant; do not hardcode the number elsewhere.
 
 6. **Call Kimi** via `scripts/minimax-weave.sh`. Script builds the prompt, calls Kimi K2.6 at `/v1/text/chatcompletion_v2`, validates response against strict JSON schema, returns JSON or exits non-zero.
 
@@ -175,7 +175,7 @@ Cron expression: `0 20 * * 0,2,4` = 20:00 UTC Sun/Tue/Thu = **04:00 HKT Mon/Wed/
 | Empty Kimi response | Log "clean run, no proposals", exit 0 |
 | Kimi timeout/network error | Log, release lock, exit 1, send notification |
 | JSON schema violation | Append raw to `weave-errors.log`, release lock, exit 1, send notification |
-| Token budget exceeded (>120K) | Log "vault too large for single-prompt approach", release lock, exit 1, send notification |
+| Token budget exceeded (over `MAX_TOKENS_BUDGET`) | Log "full-body single-prompt reached its ceiling", release lock, exit 1, send notification pointing to [[feature_weave-embedding-prefilter]] |
 | Digest write fails | Roll back ledger additions, release lock, exit 1, send notification |
 | Evidence span doesn't match source | Skip that proposal only, log skip reason, continue |
 | Any error after lock acquired | Trap ensures lock is always released |
@@ -203,7 +203,7 @@ This means: no reader ever sees a partial file. Worst case during a concurrent c
 
 1. **HIGH-tier auto-apply** -- when Kimi is very confident AND there's exact string evidence AND the target page's type matches a canonical alias registry. Need staging branch + auto-revert on low acceptance rate.
 2. **Stable page UUIDs** -- add `weave-id: <uuid>` to every page's frontmatter, key ledger by UUID pairs instead of paths. Add when vault hits ~300 pages or first rename collision bites.
-3. **Embedding prefilter** -- local sentence-transformers index, propose top-K candidate pairs, LLM judges only candidates. Add when Kimi recall visibly degrades (~300 pages).
+3. **Embedding prefilter** -- local sentence-transformers index, propose top-K candidate pairs, LLM judges only candidates. NOW PROMOTED to a real feature spec: [[feature_weave-embedding-prefilter]]. Correction (2026-06-14): the "~300 pages" recall estimate was optimistic. Full-body bundling at ~1.6K est-tokens/page hits Kimi's real 256K context wall around ~140 pages, well before recall would degrade. So the scaling fix is needed earlier than thought; try the cheaper summary-view bundling (titles + frontmatter + lead paragraph + existing links instead of full bodies) before building an embedding index -- it may push the wall out far enough on its own.
 4. **Syncthing API pause/resume** during apply window. Add if `.weave.lock` proves insufficient.
 5. **Shared vault-mutation lock** across compile and vault-writer. Add if optimistic concurrency causes real lost-update incidents.
 6. **Semantic-delta revival** -- replace 30-day TTL with cosine distance on page bodies. Add when TTL proves too crude.

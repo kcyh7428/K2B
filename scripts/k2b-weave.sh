@@ -25,7 +25,23 @@ readonly ERRORS_FILE="$K2B_VAULT/wiki/context/weave-errors.log"
 readonly LOG_FILE="$K2B_VAULT/wiki/log.md"
 readonly REVIEW_DIR="$K2B_VAULT/review"
 readonly WIKI_DIR="$K2B_VAULT/wiki"
-readonly MAX_TOKENS_BUDGET=120000
+# Pre-flight INPUT budget, in rough estimated tokens (bytes/4; see cmd_run). Caps the
+# input bundle ONLY. Kimi K2.6's 256K context window is shared by input + system prompt
+# + JSON schema + the up-to-10-proposal output + Kimi's own reasoning tokens, and bytes/4
+# measures none of those except the input. So this is set as a RESERVATION: 256K window
+# minus ~86K held back for everything that is not the input bundle. ~86K is far above the
+# realistic ~25K overhead, which (a) keeps us under the wall even on a heavy output run,
+# and (b) buys margin for the bytes/4 estimate being rough -- it undercounts CJK and
+# overcounts repetitive English. At ~1.6K est-tokens/page (full-body bundling) 170K
+# covers ~104 in-scope pages.
+# Recalibrated 2026-06-14: 120K -> 170K. The old 120K aborted at 76 pages (~3% over) --
+# far below any real recall-degradation or context wall -- and the alert's suggested fix
+# (drop wiki/reference/ from scope) was wrong on the ledger data (reference is the 2nd
+# most productive crosslink source, 18 applied links). The durable scaling fix
+# (summary-view bundling, then embedding prefilter) is tracked in
+# wiki/concepts/feature_weave-embedding-prefilter.md. Do NOT raise past ~200K without
+# that fix: at 200K input even a heavy output run approaches the 256K wall.
+readonly MAX_TOKENS_BUDGET=170000
 readonly TOP_N=10
 readonly REJECTION_TTL_DAYS=30
 readonly MAX_RETRY_COUNT=3
@@ -755,7 +771,7 @@ cmd_run() {
   log_info "Input size: ${input_bytes} bytes, ~${estimated_tokens} tokens"
 
   if (( estimated_tokens > MAX_TOKENS_BUDGET )); then
-    notify_failure "weave: vault too large for single-prompt approach (${estimated_tokens} > ${MAX_TOKENS_BUDGET}). Time to add embedding prefilter."
+    notify_failure "weave: input ${estimated_tokens} est-tokens > budget ${MAX_TOKENS_BUDGET}. Full-body single-prompt has reached its ceiling. Ship the scaling fix tracked in wiki/concepts/feature_weave-embedding-prefilter.md (try summary-view bundling before embeddings). Do not just raise the cap again -- ~140 pages is Kimi's real context wall."
     append_metrics "$page_count" 0 0 0 "$input_bytes" "token_budget_exceeded" "$run_id"
     exit 1
   fi
