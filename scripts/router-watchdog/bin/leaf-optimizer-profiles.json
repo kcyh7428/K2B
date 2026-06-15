@@ -5,7 +5,7 @@
       "group_env_var": "MIHOMO_OPENAI_GROUP",
       "selector_regex": "^♻️ 手动切换[1-9][0-9]*\\Z",
       "exclude_hk": true,
-      "exclude_leaf_regex": "^(🌏自动最优线路|🇲🇾 K2B-VPS-KL\\Z)",
+      "exclude_leaf_regex": "^(🌏自动最优线路|🇲🇾 K2B-VPS-KL\\Z|🇹🇼 K2B-VPS-TW\\Z)",
       "targets": [
         "https://chatgpt.com/",
         "https://claude.ai/",

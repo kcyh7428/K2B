@@ -453,9 +453,10 @@ port_file, request_log = sys.argv[1], sys.argv[2]
 group = "🤖 OpenAI"
 selector = "♻️ 手动切换1"
 k2b = "🇲🇾 K2B-VPS-KL"
+k2b_tw = "🇹🇼 K2B-VPS-TW"
 current = "5台湾-联通/移动(AnyTLS) [AP1]"
 better = "🇸🇬15新加坡-专线(AnyTLS) [AP1]"
-delays = {k2b: 10, current: 220, better: 100}
+delays = {k2b: 10, k2b_tw: 12, current: 220, better: 100}
 now = {"leaf": current}
 
 class Handler(BaseHTTPRequestHandler):
@@ -482,12 +483,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == f"/proxies/{group}":
             self.write_json(200, {"name": group, "type": "Selector", "now": selector, "all": [selector]})
         elif path == f"/proxies/{selector}":
-            self.write_json(200, {"name": selector, "type": "Selector", "now": now["leaf"], "all": [k2b, current, better]})
+            self.write_json(200, {"name": selector, "type": "Selector", "now": now["leaf"], "all": [k2b, k2b_tw, current, better]})
         elif path == "/proxies":
             self.write_json(200, {"proxies": {
                 group: {"name": group, "type": "Selector", "now": selector, "all": [selector]},
-                selector: {"name": selector, "type": "Selector", "now": now["leaf"], "all": [k2b, current, better]},
+                selector: {"name": selector, "type": "Selector", "now": now["leaf"], "all": [k2b, k2b_tw, current, better]},
                 k2b: {"name": k2b, "type": "Hysteria2"},
+                k2b_tw: {"name": k2b_tw, "type": "Hysteria2"},
                 current: {"name": current, "type": "AnyTLS"},
                 better: {"name": better, "type": "AnyTLS"},
             }})
@@ -1561,7 +1563,9 @@ pat = re.compile(exclude_regex)
 
 assert pat.search("🌏自动最优线路(AnyTLS)-网址: www.dg6.me [AP1]"), exclude_regex
 assert pat.search("🇲🇾 K2B-VPS-KL"), exclude_regex
+assert pat.search("🇹🇼 K2B-VPS-TW"), exclude_regex
 assert pat.search("🇲🇾 K2B-VPS-KL Backup [AP1]") is None, exclude_regex
+assert pat.search("🇹🇼 K2B-VPS-TW Backup [AP1]") is None, exclude_regex
 assert pat.search("🇮🇩34印尼-电信优化(AnyTLS) [AP1]") is None, exclude_regex
 assert pat.search("🇸🇬15新加坡-专线(AnyTLS) [AP1]") is None, exclude_regex
 PY
@@ -1582,13 +1586,14 @@ import sys
 
 summary = json.load(open(sys.argv[1], encoding="utf-8"))
 requests = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
-k2b = "🇲🇾 K2B-VPS-KL"
+k2b_nodes = ["🇲🇾 K2B-VPS-KL", "🇹🇼 K2B-VPS-TW"]
 assert summary["reason"] == "completed", summary
-assert k2b not in summary["eligible_leaf_names"], summary
-assert summary["excluded_leafs"].get(k2b) == "excluded_leaf_regex", summary
-assert not any(item.get("target_leaf") == k2b for item in summary["assignments"]), summary
-assert not any(req["method"] == "GET" and req["path"] == f"/proxies/{k2b}/delay" for req in requests), requests
+for k2b in k2b_nodes:
+    assert k2b not in summary["eligible_leaf_names"], summary
+    assert summary["excluded_leafs"].get(k2b) == "excluded_leaf_regex", summary
+    assert not any(item.get("target_leaf") == k2b for item in summary["assignments"]), summary
+    assert not any(req["method"] == "GET" and req["path"] == f"/proxies/{k2b}/delay" for req in requests), requests
 PY
   stop_servers
-  echo "  PASS: AI profile excludes the Google AI VPS leaf before optimizer scoring"
+  echo "  PASS: AI profile excludes the Google AI VPS leaves before optimizer scoring"
 }
