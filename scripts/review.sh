@@ -18,7 +18,11 @@
 #   scripts/review.sh files --files a.py,b.py --focus "regex safety"
 #
 # Common flags:
-#   --primary codex|minimax   default: codex
+#   --primary codex|minimax   default: codex for ad-hoc reviews; required with --builder-family
+#   --builder-family openai|anthropic|kimi|other
+#                              enforce the builder/reviewer family matrix
+#   --skip-codex REASON       audit + enforce that Codex is not used
+#   --other-reviewer-reason R required with --builder-family other
 #   --deadline N              default: 360
 #   --no-fallback             do not switch reviewers if primary fails
 #   --wait                    block with final JSON instead of background

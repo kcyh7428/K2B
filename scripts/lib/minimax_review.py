@@ -587,6 +587,25 @@ def main() -> int:
         help="Optional focus text passed into the adversarial template",
     )
     parser.add_argument(
+        "--builder-family",
+        choices=["openai", "anthropic", "kimi", "other"],
+        default=None,
+        help=(
+            "Optional /ship audit metadata. Rejects Kimi-built diffs because "
+            "the direct Kimi reviewer is not independent for that family."
+        ),
+    )
+    parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="Audit flag for official /ship calls; direct Kimi has no fallback.",
+    )
+    parser.add_argument(
+        "--other-reviewer-reason",
+        default=None,
+        help="Audit reason when --builder-family other chooses direct Kimi.",
+    )
+    parser.add_argument(
         "--max-tokens",
         type=int,
         default=16384,
@@ -608,6 +627,24 @@ def main() -> int:
         help="Emit parsed JSON to stdout instead of rendered markdown",
     )
     args = parser.parse_args()
+    if args.builder_family == "kimi":
+        print(
+            "[minimax-review] builder-family kimi cannot be reviewed by Kimi",
+            file=sys.stderr,
+        )
+        return 1
+    if args.builder_family == "openai" and not args.no_fallback:
+        print(
+            "[minimax-review] builder-family openai requires --no-fallback",
+            file=sys.stderr,
+        )
+        return 1
+    if args.builder_family == "other" and not args.other_reviewer_reason:
+        print(
+            "[minimax-review] builder-family other requires --other-reviewer-reason",
+            file=sys.stderr,
+        )
+        return 1
 
     schema_text = SCHEMA_PATH.read_text()
 

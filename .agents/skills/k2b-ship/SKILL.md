@@ -1,6 +1,6 @@
 ---
 name: k2b-ship
-description: End-of-session shipping workflow -- runs adversarial pre-commit review (Codex primary, Kimi K2.6 fallback), commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and reminds Keith to /sync. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
+description: End-of-session shipping workflow -- runs adversarial pre-commit review through the builder-family matrix, commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and resolves /sync now-or-defer. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
 ---
 
 # K2B Ship
@@ -11,7 +11,7 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 **Explicit:** Keith says `/ship`, "ship it", "ship this", "wrap up", "end of session", "done shipping", "close out", "commit and push this".
 
-**Proactive prompt:** At the natural end of any session where K2B modified project files in `.agents/skills/`, `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
+**Proactive prompt:** At the natural end of any session where K2B modified project files in `AGENTS.md`, `CLAUDE.md`, Claude/Codex skill surfaces, Codex hook surfaces, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
 
 **Do NOT auto-ship.** Always confirm the commit message and the reviewer findings before committing.
 
@@ -23,8 +23,8 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 ## Commands
 
-- `/ship` -- full workflow with adversarial review (Codex primary, Kimi fallback) + feature note updates + roadmap updates
-- `/ship --skip-codex <reason>` -- skip the Codex reviewer specifically (NOT skip review entirely). Kimi fallback still runs unless also unavailable. Reason is required (e.g. `codex-quota-depleted`, `codex-cli-wedged`, `codex-plugin-missing`).
+- `/ship` -- full workflow with adversarial review chosen by builder-family matrix + feature note updates + roadmap updates
+- `/ship --skip-codex <reason>` -- skip the Codex reviewer specifically (NOT skip review entirely). Kimi still runs when the builder-family matrix allows it. Reason is required (e.g. `codex-quota-depleted`, `codex-cli-wedged`, `codex-plugin-missing`).
 - `/ship --no-feature` -- ship code without touching feature notes or the roadmap (e.g. typo fix, config tweak)
 - `/ship status` -- show what would ship without actually shipping
 
@@ -128,7 +128,7 @@ Categorize touched files into:
 
 | Category | Matching paths | Needs /sync? |
 |----------|---------------|--------------|
-| skills    | `.agents/skills/`, `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md` | yes |
+| skills    | Claude/Codex skill surfaces, `AGENTS.md`, `CLAUDE.md`, Codex hook surfaces, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md` | yes |
 | code      | `k2b-remote/` | yes (build + pm2 restart k2b-remote) |
 | dashboard | `k2b-dashboard/` | yes (build + pm2 restart k2b-dashboard) |
 | scripts   | `scripts/` including `scripts/hooks/` | yes |
@@ -152,6 +152,90 @@ For multi-ship features (e.g. `feature_mission-control-v3`), read the feature no
 ### 3. Adversarial pre-commit review gate
 
 **Mandatory unless `--skip-codex <reason>` is passed AND no fallback reviewer is run.** This is **Checkpoint 2** of the two K2B adversarial review checkpoints. (Checkpoint 1 is **plan review** -- see below -- and runs earlier, before implementation. `/ship` only owns Checkpoint 2.)
+
+#### 3.0 Builder-family review matrix
+
+Before tier detection, identify who built the diff. This is mandatory for official `/ship` review.
+
+| Builder family | Examples | Required official review path |
+|---|---|---|
+| `openai` | Codex, OpenAI Agents, OpenAI Responses | Kimi only: `--builder-family openai --primary minimax --no-fallback` |
+| `kimi` | Kimi K2.6 worker edits | Codex only: `--builder-family kimi --primary codex --no-fallback` |
+| `anthropic` | Claude Code, Claude Agent SDK | Codex or Kimi are both independent |
+| `other` | Human, shell-only, unknown or mixed tool | Choose one independent reviewer, pass `--builder-family other --no-fallback`, and record why |
+
+The reviewer key `minimax` is historical. In current K2B, that path routes to Kimi K2.6 by default through `K2B_LLM_PROVIDER=kimi`.
+
+Set:
+
+```bash
+BUILDER_FAMILY="${BUILDER_FAMILY:-}"
+if [ -z "$BUILDER_FAMILY" ]; then
+  echo "[FATAL] BUILDER_FAMILY is required for official /ship review. Use openai, anthropic, kimi, or other." >&2
+  exit 3
+fi
+RUNNER_PRIMARY=codex
+RUNNER_EXTRA_ARGS=()
+RUNNER_AUDIT_ARGS=()
+
+case "$BUILDER_FAMILY" in
+  openai)
+    RUNNER_PRIMARY=minimax
+    RUNNER_EXTRA_ARGS=(--no-fallback)
+    ;;
+  kimi)
+    if [ -n "${SKIP_CODEX:-}" ]; then
+      echo "[FATAL] --skip-codex blocks the only eligible reviewer (Codex) for builder-family=kimi." >&2
+      exit 3
+    fi
+    RUNNER_PRIMARY=codex
+    RUNNER_EXTRA_ARGS=(--no-fallback)
+    ;;
+  other)
+    if [ -z "${OTHER_REVIEWER_PRIMARY:-}" ]; then
+      echo "[FATAL] builder-family=other requires OTHER_REVIEWER_PRIMARY=codex|minimax and a recorded independence reason." >&2
+      exit 3
+    fi
+    if [ -z "${OTHER_REVIEWER_REASON:-}" ]; then
+      echo "[FATAL] builder-family=other requires OTHER_REVIEWER_REASON explaining why the chosen reviewer is independent." >&2
+      exit 3
+    fi
+    case "$OTHER_REVIEWER_PRIMARY" in
+      codex|minimax) RUNNER_PRIMARY="$OTHER_REVIEWER_PRIMARY" ;;
+      *)
+        echo "[FATAL] invalid OTHER_REVIEWER_PRIMARY=$OTHER_REVIEWER_PRIMARY (expected codex|minimax)" >&2
+        exit 3
+        ;;
+    esac
+    if [ -n "${SKIP_CODEX:-}" ] && [ "$RUNNER_PRIMARY" = "codex" ]; then
+      echo "[FATAL] --skip-codex conflicts with OTHER_REVIEWER_PRIMARY=codex." >&2
+      exit 3
+    fi
+    RUNNER_EXTRA_ARGS=(--no-fallback)
+    ;;
+  anthropic)
+    RUNNER_PRIMARY=codex
+    if [ -n "${SKIP_CODEX:-}" ]; then
+      RUNNER_PRIMARY=minimax
+      RUNNER_EXTRA_ARGS=(--no-fallback)
+    fi
+    ;;
+  *)
+    echo "[fatal] unknown BUILDER_FAMILY=$BUILDER_FAMILY" >&2
+    exit 3
+    ;;
+esac
+
+if [ -z "${RUNNER_PRIMARY:-}" ]; then
+  echo "[FATAL] RUNNER_PRIMARY is empty after builder-family matrix." >&2
+  exit 3
+fi
+
+[ -n "${SKIP_CODEX:-}" ] && RUNNER_AUDIT_ARGS+=(--skip-codex "$SKIP_CODEX")
+[ "$BUILDER_FAMILY" = "other" ] && RUNNER_AUDIT_ARGS+=(--other-reviewer-reason "$OTHER_REVIEWER_REASON")
+```
+
+The runner enforces the risky cases. `--builder-family openai --primary codex` is rejected before a reviewer starts. Same-family fallback never counts as official review.
 
 #### 3a. Tier detection
 
@@ -268,9 +352,9 @@ echo "tier: $TIER -- $TIER_REASON"
 | Tier | Routing |
 |---|---|
 | 0 | Skip review (log only). |
-| 1 | Kimi `--scope diff` single-pass, cap at 2 iterations, escalate to Tier 2 on Kimi failure. See Step 3b.1. |
-| 2 | Codex single-pass via today's background + poll pattern. `--skip-codex` routes to Kimi `--scope diff` single-pass. Both-fail -> REFUSE (same as Tier 3). |
-| 3 | Today's iterate-until-clean flow, verbatim. See Step 3c. |
+| 1 | Kimi `--scope diff` single-pass, cap at 2 iterations, only for `builder-family=openai`. Non-OpenAI families promote to Tier 2. On Kimi failure or non-approve after 2 passes, refuse `/ship`; do not fall back to Codex. |
+| 2 | Runner single-pass using the builder-family matrix. OpenAI-built diffs route to Kimi with no Codex fallback. |
+| 3 | Runner single-pass per `/ship` using the builder-family matrix. Human-driven iteration happens by re-running `/ship`. |
 
 **Get the safe changed-file list once from the staged set** (used by Tier 1, Tier 2, and Tier 3 diff-scoped reviewer invocations; handles renames + spaces via `-z`). Do not use the full working tree here; unrelated dirty files are deliberately out of scope. Capture the reviewed file list and verify it again in Step 5 before committing.
 
@@ -281,6 +365,21 @@ if [ -z "$CHANGED_FILES" ]; then
   exit 3
 fi
 REVIEWED_FILES="$CHANGED_FILES"
+
+# Codex's current review transport cannot honor the --files subset; it
+# reviews the dirty working tree. When Codex is the matrix-selected reviewer,
+# require a clean worktree outside the already-verified staged set so review
+# scope cannot leak unrelated unstaged or untracked files.
+if [ "$RUNNER_PRIMARY" = "codex" ]; then
+  CODEX_UNSTAGED_FILES="$(git diff --name-only)"
+  CODEX_UNTRACKED_FILES="$(git ls-files --others --exclude-standard)"
+  if [ -n "$CODEX_UNSTAGED_FILES" ] || [ -n "$CODEX_UNTRACKED_FILES" ]; then
+    echo "[FATAL] Codex review cannot be file-scoped; clean or stage/unstage unrelated working-tree files before review." >&2
+    [ -n "$CODEX_UNSTAGED_FILES" ] && echo "$CODEX_UNSTAGED_FILES" >&2
+    [ -n "$CODEX_UNTRACKED_FILES" ] && echo "$CODEX_UNTRACKED_FILES" >&2
+    exit 3
+  fi
+fi
 ```
 
 ##### 3b.0 Tier 0 flow
@@ -295,21 +394,41 @@ fi
 
 ##### 3b.1 Tier 1 flow
 
-Kimi `--scope diff` with a 2-pass cap. On Kimi failure, escalate to Tier 2 Codex. If `--skip-codex` blocks Codex too, REFUSE (both reviewers unavailable).
+Tier 1 may use the direct Kimi JSON path only for OpenAI-built diffs, because the builder-family matrix requires Kimi there. For every other builder family, promote to Tier 2 immediately so the unified runner can enforce `--builder-family`.
 
 ```bash
+PROMOTED_FROM_TIER1=no
 if [ "$TIER" = "1" ]; then
+  if [ "$BUILDER_FAMILY" != "openai" ]; then
+    echo "[tier-1] promoting to tier-2: builder-family=$BUILDER_FAMILY does not allow direct Kimi JSON path."
+    TIER=2
+    PROMOTED_FROM_TIER1=yes
+  fi
+fi
+
+if [ "$TIER" = "1" ] && [ "$BUILDER_FAMILY" = "openai" ]; then
+  if [ "$RUNNER_PRIMARY" != "minimax" ]; then
+    echo "[FATAL] internal error: Tier 1 direct Kimi path requires RUNNER_PRIMARY=minimax, got $RUNNER_PRIMARY" >&2
+    exit 3
+  fi
+
   TIER_1_PASS=1
   TIER_1_MAX=2
   TIER_1_APPROVED=no
   TIER_1_MINIMAX_FAILED=no
+  mkdir -p .code-reviews
+  TIER_1_REVIEW_LOG="$(mktemp ".code-reviews/k2b-ship-tier1-review.XXXXXX.json")"
 
   while [ "$TIER_1_PASS" -le "$TIER_1_MAX" ]; do
     echo "[tier-1] pass $TIER_1_PASS of $TIER_1_MAX -- running Kimi --scope diff..."
     set +e
+    # Tier 1 only runs for builder-family=openai, so skip-codex and
+    # other-reviewer audit args are intentionally irrelevant here.
     VERDICT_JSON=$(scripts/minimax-review.sh \
       --scope diff \
       --files "$CHANGED_FILES" \
+      --builder-family "$BUILDER_FAMILY" \
+      --no-fallback \
       --focus "tier-1 docs review (pass $TIER_1_PASS): enumerate ALL material findings severity>=medium with file:line, ranked by severity+confidence. Do not stop at top blocker -- Keith fixes top-down. Cap at ~15 findings max; if budget requires trimming, drop lowest severity first so the JSON stays parseable." \
       --json 2>/tmp/tier1_pass_${TIER_1_PASS}.err)
     MINIMAX_EXIT=$?
@@ -347,6 +466,8 @@ print(v.strip().lower())
 
     if [ "$VERDICT" = "approve" ]; then
       echo "[tier-1] APPROVED on pass $TIER_1_PASS"
+      printf '%s\n' "$VERDICT_JSON" > "$TIER_1_REVIEW_LOG"
+      REVIEW_LOG="$TIER_1_REVIEW_LOG"
       TIER_1_APPROVED=yes
       break
     fi
@@ -355,28 +476,23 @@ print(v.strip().lower())
     # and decides whether to fix-and-repass, accept, or escalate.
     echo "[tier-1] pass $TIER_1_PASS verdict=$VERDICT -- surfacing findings:"
     echo "$VERDICT_JSON" | python3 -m json.tool
-    # Claude waits for Keith's reply here before advancing the loop.
+    printf '%s\n' "$VERDICT_JSON" > "$TIER_1_REVIEW_LOG"
+    # The ship-agent waits for Keith's reply here before advancing the loop.
     TIER_1_PASS=$((TIER_1_PASS + 1))
   done
 
   if [ "$TIER_1_MINIMAX_FAILED" = "yes" ]; then
-    if [ -n "${SKIP_CODEX:-}" ]; then
-      echo "[FATAL] tier-1 Kimi failed AND --skip-codex blocks Codex." >&2
-      echo "Both reviewers unavailable. REFUSE /ship." >&2
-      exit 3
-    fi
-    echo "[tier-1] escalating to tier-2 Codex single-pass (Kimi failed)."
-    TIER=2
-    # Defensive: seed REVIEW_RESULT in case Tier 2 block fails to run for
-    # any reason -- the Tier 2 success path will overwrite this with the
-    # final value ("tier-2-runner-<primary>").
-    REVIEW_RESULT="tier-1-escalated-tier-2-minimax-failed"
-    # Fall through to Tier 2 block below
+    echo "[FATAL] tier-1 matrix-selected reviewer Kimi failed." >&2
+    echo "Independent reviewer unavailable for builder-family=$BUILDER_FAMILY. REFUSE /ship unless Keith explicitly overrides." >&2
+    exit 3
   elif [ "$TIER_1_APPROVED" = "no" ]; then
-    echo "[tier-1] 2 passes non-approve; auto-promoting to tier-2."
-    TIER=2
-    REVIEW_RESULT="tier-1-escalated-tier-2-2-pass-non-approve"
-    # Fall through to Tier 2 block
+    echo "[tier-1] 2 passes non-approve; stop for Keith triage before any further review."
+    REVIEW_RESULT="tier-1-non-approve-pass-cap"
+    REVIEW_LOG="$TIER_1_REVIEW_LOG"
+    echo "review-result: $REVIEW_RESULT"
+    echo "review-log: $REVIEW_LOG"
+    python3 -m json.tool "$REVIEW_LOG" || cat "$REVIEW_LOG"
+    exit 3
   else
     REVIEW_RESULT="tier-1-approve-pass-$TIER_1_PASS"
   fi
@@ -385,29 +501,29 @@ fi
 
 ##### 3b.2 Tier 2 flow
 
-Single-pass adversarial review via the unified runner `scripts/review.sh`. The runner handles Codex primary, Kimi automatic fallback (on deadline / quality-gate-fail / EISDIR hazard), and `--skip-codex` routing. Plan scope (`scripts/review.sh plan --plan <file>`) is also Codex-primary: Codex reviews the plan file via the read-only `task` subcommand, with Kimi as the fallback only if Codex fails (fixed 2026-05-31; it previously hard-skipped every plan review to Kimi). Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior).
+Single-pass adversarial review via the unified runner `scripts/review.sh`. The runner handles the builder-family matrix, Codex/Kimi fallback when allowed, and `--skip-codex` routing when that does not violate the matrix. Plan scope (`scripts/review.sh plan --plan <file>`) remains Codex-primary unless the builder-family matrix requires otherwise. Keith treats first-pass findings as final -- fix inline OR defer, then commit. Do NOT iterate-until-clean (that is Tier 3 behavior).
 
 ```bash
 if [ "$TIER" = "2" ]; then
-  RUNNER_PRIMARY=codex
-  [ -n "${SKIP_CODEX:-}" ] && RUNNER_PRIMARY=minimax
   FOCUS="tier-2 review: enumerate ALL material findings severity>=medium with file:line, ranked by severity+confidence. Do not stop at top blocker -- Keith fixes top-down in one sitting, so trailing issues cost another review pass. Cap at ~15 findings max; if budget requires trimming, drop lowest severity first so the JSON stays parseable."
   [ -n "${SKIP_CODEX:-}" ] && FOCUS="$FOCUS (--skip-codex: $SKIP_CODEX)"
 
   set +e
   RUNNER_OUT=$(scripts/review.sh diff \
     --files "$CHANGED_FILES" \
+    --builder-family "$BUILDER_FAMILY" \
     --primary "$RUNNER_PRIMARY" \
+    "${RUNNER_EXTRA_ARGS[@]}" \
+    "${RUNNER_AUDIT_ARGS[@]}" \
     --focus "$FOCUS" \
     --wait)
   RUNNER_EXIT=$?
   set -e
 
   if [ "$RUNNER_EXIT" = "2" ]; then
-    echo "[FATAL] tier-2: both Codex and Kimi failed." >&2
+    echo "[FATAL] tier-2: builder-family-clean independent review failed or had no eligible fallback." >&2
     echo "$RUNNER_OUT" >&2
-    echo "Surface to Keith: options are (a) fix underlying reviewer problem," >&2
-    echo "(b) /ship --skip-codex <reason> with Checkpoint 1 in-session." >&2
+    echo "Surface to Keith: fix the eligible reviewer path, or request an explicit override only if an independent checkpoint already ran." >&2
     exit 3
   elif [ "$RUNNER_EXIT" -ne 0 ]; then
     echo "[FATAL] tier-2: runner returned exit $RUNNER_EXIT (unexpected)." >&2
@@ -426,37 +542,39 @@ if [ "$TIER" = "2" ]; then
   fi
 
   REVIEW_RESULT="tier-2-runner-${RUNNER_PRIMARY}"
+  [ "${PROMOTED_FROM_TIER1:-no}" = "yes" ] && REVIEW_RESULT="${REVIEW_RESULT}-promoted-from-tier-1-builder-family-${BUILDER_FAMILY}"
   [ -n "${SKIP_CODEX:-}" ] && REVIEW_RESULT="${REVIEW_RESULT}-skip-${SKIP_CODEX}"
+  [ "$BUILDER_FAMILY" = "other" ] && REVIEW_RESULT="${REVIEW_RESULT}-other-reviewer-reason:${OTHER_REVIEWER_REASON}"
 fi
 ```
 
-After the runner returns, Claude (the ship-agent) reads `$REVIEW_LOG` and surfaces the findings to Keith verbatim. Find the last `# Codex Review` or `# kimi-for-coding review --` section in the log and present it -- do not paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) and Kimi's own ordering (CRITICAL/HIGH/MEDIUM/LOW) stay intact.
+After the runner returns, the ship-agent reads `$REVIEW_LOG` and surfaces the findings to Keith verbatim. Find the last `# Codex Review` or `# kimi-for-coding review --` section in the log and present it -- do not paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) and Kimi's own ordering (CRITICAL/HIGH/MEDIUM/LOW) stay intact.
 
 #### 3c. Tier 3 flow -- iterate-until-clean via runner
 
-Single-pass reviewer invocation per `/ship` call via `scripts/review.sh`. The runner handles Codex primary, Kimi automatic fallback (on failure / deadline / quality-gate / EISDIR / plan-scope), and `--skip-codex` routing. Iteration in the Tier 3 sense is **human-driven**: after a NEEDS-ATTENTION verdict, Keith fixes inline and re-runs `/ship`. Each `/ship` is one reviewer pass. This matches the pre-runner Step 3c behavior; the runner replaces the transport only.
+Single-pass reviewer invocation per `/ship` call via `scripts/review.sh`. The runner handles the builder-family matrix, Codex/Kimi fallback when allowed, and `--skip-codex` routing when that does not violate the matrix. Iteration in the Tier 3 sense is **human-driven**: after a NEEDS-ATTENTION verdict, Keith fixes inline and re-runs `/ship`. Each `/ship` is one reviewer pass. This matches the pre-runner Step 3c behavior; the runner replaces the transport only.
 
 ```bash
 if [ "$TIER" = "3" ]; then
-  RUNNER_PRIMARY=codex
-  [ -n "${SKIP_CODEX:-}" ] && RUNNER_PRIMARY=minimax
   FOCUS="tier-3 review (single pass per /ship, human-driven iteration): enumerate ALL material findings severity>=medium with file:line, ranked by severity+confidence. Do not stop at top blocker -- Keith fixes top-down, so trailing issues would cost another full /ship round. Cap at ~15 findings max; if budget requires trimming, drop lowest severity first so the JSON stays parseable."
   [ -n "${SKIP_CODEX:-}" ] && FOCUS="$FOCUS (--skip-codex: $SKIP_CODEX)"
 
   set +e
   RUNNER_OUT=$(scripts/review.sh diff \
     --files "$CHANGED_FILES" \
+    --builder-family "$BUILDER_FAMILY" \
     --primary "$RUNNER_PRIMARY" \
+    "${RUNNER_EXTRA_ARGS[@]}" \
+    "${RUNNER_AUDIT_ARGS[@]}" \
     --focus "$FOCUS" \
     --wait)
   RUNNER_EXIT=$?
   set -e
 
   if [ "$RUNNER_EXIT" = "2" ]; then
-    echo "[FATAL] tier-3: both Codex and Kimi failed." >&2
+    echo "[FATAL] tier-3: builder-family-clean independent review failed or had no eligible fallback." >&2
     echo "$RUNNER_OUT" >&2
-    echo "Surface to Keith: only proceed with /ship --skip-codex <reason>" >&2
-    echo "if Checkpoint 1 (plan review) ran earlier in the session." >&2
+    echo "Surface to Keith: only proceed with explicit override if Checkpoint 1 (plan review) ran earlier in the session." >&2
     exit 3
   elif [ "$RUNNER_EXIT" -ne 0 ]; then
     echo "[FATAL] tier-3: runner returned exit $RUNNER_EXIT (unexpected)." >&2
@@ -473,11 +591,13 @@ if [ "$TIER" = "3" ]; then
   fi
 
   REVIEW_RESULT="tier-3-runner-${RUNNER_PRIMARY}"
+  [ "${PROMOTED_FROM_TIER1:-no}" = "yes" ] && REVIEW_RESULT="${REVIEW_RESULT}-promoted-from-tier-1-builder-family-${BUILDER_FAMILY}"
   [ -n "${SKIP_CODEX:-}" ] && REVIEW_RESULT="${REVIEW_RESULT}-skip-${SKIP_CODEX}"
+  [ "$BUILDER_FAMILY" = "other" ] && REVIEW_RESULT="${REVIEW_RESULT}-other-reviewer-reason:${OTHER_REVIEWER_REASON}"
 fi
 ```
 
-**How Claude reads the verdict:** open `$REVIEW_LOG`, find the last `# Codex Review` or `# kimi-for-coding review --` section, and present it to Keith verbatim. Do NOT paraphrase, rank, or pre-filter. Use the **last** section in the log because quality-gate-triggered fallbacks write both a failed Codex attempt AND a successful Kimi run into the same log; only the final section is the actual verdict.
+**How the ship-agent reads the verdict:** open `$REVIEW_LOG`, find the last `# Codex Review` or `# kimi-for-coding review --` section, and present it to Keith verbatim. Do NOT paraphrase, rank, or pre-filter. Use the **last** section in the log because quality-gate-triggered fallbacks write both a failed Codex attempt AND a successful Kimi run into the same log; only the final section is the actual verdict.
 
 **Keith's iteration loop** (human-driven across `/ship` invocations, not inside bash):
 
@@ -503,12 +623,12 @@ When invoked with `--wait`, `scripts/review.sh` prints a JSON envelope on comple
 
 Exit codes:
 - `0` = at least one reviewer (primary or fallback) approved.
-- `2` = both reviewers failed (primary failed AND fallback failed). Either surface to Keith for `--skip-codex` escalation, or abort if `--skip-codex` was already in play.
+- `2` = requested builder-family-clean review path failed. If fallback was allowed, both reviewers failed; if `--no-fallback` was set, the single eligible reviewer failed.
 - `1` / `127` / other = runner-level argv error or spawn failure. Always escalate to Keith.
 
 The log at `log_path` is a plain-text unified log with two kinds of lines:
 - **Runner-tagged** (`[ISO] TAG payload`) -- `JOB_START`, `REVIEWER_START`, `SPAWN`, `REVIEWER_SKIP`, `HEARTBEAT`, `HEARTBEAT_STALE`, `WEDGE_SUSPECTED`, `SOFT_DEADLINE`, `HARD_DEADLINE`, `SIGKILL`, `REVIEWER_END`, `QUALITY_GATE_FAIL`, `FALLBACK`, `MINIMAX_KEY_LOAD_FAILED`.
-- **Verbatim reviewer stdout** -- including the actual `# Codex Review` sections and `# kimi-for-coding review -- APPROVE|NEEDS-ATTENTION` headers. These are what Claude reads to surface findings.
+- **Verbatim reviewer stdout** -- including the actual `# Codex Review` sections and `# kimi-for-coding review -- APPROVE|NEEDS-ATTENTION` headers. These are what the ship-agent reads to surface findings.
 
 Runner state lives in `.code-reviews/<job_id>.json` (updated by the watchdog while running; finalized at completion with `status`, `primary_used`, `fallback_used`, `exit_code`, `reviewer_attempts[]`). For background mode (no `--wait`), `scripts/review-poll.sh <job_id>` returns a snapshot with `phase`, `elapsed_s`, `last_activity_s_ago`, `tail`, `should_poll_again`, and `recommended_poll_interval_s`. The skill doesn't use background mode in the Tier 2/3 flows (they use `--wait`) but the poll path exists for ad-hoc use.
 
@@ -529,31 +649,33 @@ Runner state lives in `.code-reviews/<job_id>.json` (updated by the watchdog whi
 After the tier-specific flow finishes (any of 3b.0 Tier 0 skip, 3b.1 Tier 1, 3b.2 Tier 2, or 3c Tier 3), record the classification in the ship audit trail + DEVLOG entry + (for multi-ship features) the Shipping Status table row:
 
 ```
+builder-family: <openai | anthropic | kimi | other>
 tier: <N> (<classifier | classifier-error-fallback | Ship-2-override>)
 tier-reason: <TIER_REASON>
-review-result: <skipped-tier-0 | tier-1-approve-pass-N | tier-1-auto-promoted-to-tier-2 | tier-2-codex-single-pass | tier-2-minimax-<reason> | tier-3-codex-multiround | tier-3-minimax-fallback>
+review-result: <skipped-tier-0 | tier-1-approve-pass-N | tier-1-non-approve-pass-cap | tier-2-runner-<primary>[-promoted-from-tier-1-builder-family-<family>][-skip-<reason>][-other-reviewer-reason:<reason>] | tier-3-runner-<primary>[-promoted-from-tier-1-builder-family-<family>][-skip-<reason>][-other-reviewer-reason:<reason>]>
 ```
 
 For multi-ship features (Shipping Status table), append the tier + reason to the current ship row so future ships in the same feature can see the historical tier pattern.
 
 ### Adversarial Review -- the two checkpoints
 
-K2B uses a second-model reviewer (Codex primary, Kimi K2.6 fallback) to catch blind spots Claude cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
+K2B uses an independent second-model reviewer to catch blind spots the builder cannot see in its own work. Two mandatory checkpoints bracket any non-trivial build:
 
 **Checkpoint 1: Plan Review.** Before implementing any new feature, skill, or significant refactor, after the plan is written but before code is touched:
 
-- **Codex (primary)**: `/codex:adversarial-review challenge the plan` with the plan file path. Codex has Read tool access, so it can fetch any plan file from any path -- the typical locations (`~/.claude/plans/`, `<repo>/plans/`) are both reachable.
-  - **One-command alternative (for plans inside a repo):** `scripts/review.sh plan --plan <repo-relative-path> --wait` now runs Codex-primary plan review through the read-only `task` subcommand and auto-falls-back to Kimi if Codex fails -- no manual workaround needed. This is the same runner `/ship` Checkpoint 2 uses, so the Kimi-context caveats below only apply to a bare `minimax-review.sh` invocation, not to `scripts/review.sh plan` (whose `--scope plan --plan` form passes the plan file to Kimi too).
-- **Kimi fallback** when Codex unavailable: Kimi CANNOT see files outside the git working tree, and plan files live at `~/.claude/plans/` (Claude Code plans, outside any repo) or `<repo>/plans/` (gitignored or untracked) -- `minimax-review.sh` gathers context from `git status` / `git diff` only, so a bare invocation would produce a generic review with no plan content. Workarounds:
+- **OpenAI-built plans**: use Kimi only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family openai --primary minimax --no-fallback --wait`.
+- **Kimi-built plans**: use Codex only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family kimi --primary codex --no-fallback --wait`.
+- **Claude/other-built plans**: Codex can review while available: `scripts/review.sh plan --plan <repo-relative-path> --builder-family anthropic --primary codex --wait`.
+- **Bare Kimi fallback caveat**: Kimi CANNOT see files outside the git working tree, and plan files may live outside a repo. A bare `minimax-review.sh` invocation gathers context from `git status` / `git diff` only, so pass `--scope plan --plan <path>` through `scripts/review.sh` when possible. If not possible, use one of these workarounds:
   - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/minimax-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` Kimi K2.6 has a generous prompt window so even multi-thousand-line plans fit.
   - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .minimax-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
   - **(c) Skip Plan Review entirely and rely on Checkpoint 2 being mandatory** when Checkpoint 1 was skipped. Acceptable for small plans where adversarial review at pre-commit time catches the same issues; not acceptable for large architectural plans where catching the issue early matters.
 - Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
 - Adjust the plan based on findings BEFORE writing code
 
-This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If neither Codex nor Kimi was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped via `--skip-codex`.
+This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If no independent reviewer was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped.
 
-**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` (Codex primary, Kimi automatic fallback on failure / deadline / quality-gate / EISDIR; plan scope is also Codex-primary via the read-only `task` subcommand, Kimi only on Codex failure). Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` with `--builder-family`. Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
 
 **When pre-commit review can be skipped (gate-not-applicable cases):**
 
@@ -561,9 +683,9 @@ This checkpoint lives outside `/ship` -- it is the author's responsibility at pl
 - Config tweaks, typo fixes, one-line changes
 - Emergency hotfixes where the bug-fix speed matters more than review (review after the fact)
 
-**`--skip-codex` does NOT mean "skip review."** It means "skip the Codex reviewer specifically -- usually because Codex is unavailable." The runner auto-switches `--primary` to Kimi when `SKIP_CODEX` is set, so Kimi still runs unless the change is in the gate-not-applicable list above. Use `--skip-codex codex-quota-depleted` (or similar reason) and record the reason in `REVIEW_RESULT`.
+**`--skip-codex` does NOT mean "skip review."** It means "skip the Codex reviewer specifically -- usually because Codex is unavailable." It is valid only when the builder-family matrix still leaves Kimi as an independent reviewer. For OpenAI-built diffs, Codex is not eligible anyway. For Kimi-built diffs, `--skip-codex` blocks the only eligible reviewer and `/ship` must refuse.
 
-**Never skip both reviewers.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if Codex AND Kimi are both unavailable, the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
+**Never skip independent review.** If Checkpoint 1 was skipped because the feature was small enough that no plan was written, Checkpoint 2 becomes mandatory. Conversely, if the builder-family-clean reviewer is unavailable and no other independent checkpoint ran, the build has had no adversarial review at all, and `/ship` should refuse to proceed without Keith's explicit override.
 
 **Rules for presenting reviewer findings to Keith:**
 
@@ -581,7 +703,7 @@ Build a commit message from the categorized diff. Format:
 
 <optional body with bullet points of major changes>
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+<optional Co-Authored-By trailer naming the actual builder>
 Co-Shipped-By: k2b-ship
 ```
 
@@ -658,13 +780,13 @@ Rationale: three of K2B's shipped memory features (`canonical-memory`, `session-
 
 **Single-ship feature (no Shipping Status table):**
 - Update frontmatter: `status: shipped`, add `shipped-date: YYYY-MM-DD`
-- Append an `## Updates` section entry with: date, commit SHA, one-line what shipped, Codex findings summary, any follow-ups
+- Append an `## Updates` section entry with: date, commit SHA, one-line what shipped, review findings summary, any follow-ups
 - Move the file to `K2B-Vault/wiki/concepts/Shipped/feature_<slug>.md`
 
 **Multi-ship feature (has Shipping Status table, e.g. mission-control-v3):**
 - Do NOT set the top-level `status: shipped` -- only the current ship is done
 - Update the Shipping Status table row for the current ship: mark `shipped: YYYY-MM-DD`, set `state: in-measurement` (or `state: gate-passed` if no measurement window), set gate date if applicable
-- Append an `## Updates` entry with ship details, commit SHA, Codex findings
+- Append an `## Updates` entry with ship details, commit SHA, review findings
 - If this was the final ship in the plan AND it has passed its gate, THEN set feature-level `status: shipped` and move to `Shipped/`. Otherwise leave in place.
 
 ### 7. Update `wiki/concepts/index.md`
@@ -690,7 +812,7 @@ Read the last DEVLOG entry for style. Append a new entry:
 
 **What shipped:** <one paragraph>
 
-**Codex review:** <findings summary or "skipped: <reason>">
+**Review:** <findings summary or "skipped: <reason>">
 
 **Feature status change:** <feature slug> <status-from> -> <status-to>
 
@@ -706,7 +828,7 @@ git add DEVLOG.md
 git commit -m "$(cat <<'EOF'
 docs: devlog for <short-sha>
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+<optional Co-Authored-By trailer naming the actual builder>
 Co-Shipped-By: k2b-ship
 EOF
 )"
@@ -722,6 +844,25 @@ fi
 Never `--amend` the step-5 commit to include DEVLOG.md -- amends rewrite history and can drop signed state. Always create a new commit.
 
 If shipping multiple logical changes in one session (two or more code commits back-to-back), batch all their DEVLOG entries into a single follow-up `docs: devlog` commit after the last code commit, referencing each code SHA in its own entry.
+
+### 8.5 Prepare Keith-facing ship brief
+
+Before the final response, prepare a short ship brief for Keith. This is separate from DEVLOG. DEVLOG is for project history; the ship brief is for Keith's operating experience.
+
+Default to this order and these exact headings when the ship meaning could be unclear:
+
+1. **What you will notice** -- day-to-day behavior change.
+2. **What stays the same** -- especially Claude Code, Telegram, Mini sync, and other compatibility lanes.
+3. **What is not included yet** -- later ships and unsolved gaps, so K2B does not overclaim.
+4. **What to do now** -- switch tools, restart, test a workflow, run `/sync`, or do nothing.
+5. **Under the hood** -- commits, files, hooks, tests, provider names, and review logs.
+6. **Risk / rollback** -- one short sentence when relevant.
+
+Use plain words. Prefer before/after examples and "this means / this does not mean" framing. Do not lead with file counts, commit stats, or implementation internals unless Keith explicitly asks for codebase detail.
+
+For the Codex primary migration, good default wording is:
+
+> You can still use Claude Code. Codex is now treated as the normal desktop driver, and if Codex writes code K2B requires Kimi review instead of trusting Codex to review itself. Telegram is unchanged until the provider ships.
 
 ### 9. Append wiki/log.md
 
@@ -882,7 +1023,7 @@ up: "[[index]]"
 - [interest] Keith spent 40 min on source-hash dedup design, skipped decay model
 - [anti-pref] Keith rejected MVP-only approach, wanted full 4-phase implementation
 - [decision] Write-through model chosen over rebuild-only after Codex flagged gap
-- [priority] All 6 Codex findings fixed before commit, no deferral
+- [priority] All 6 review findings fixed before commit, no deferral
 - [connection] Canonical memory completes the observer->profile->k2b-remote chain
 ```
 
@@ -897,7 +1038,7 @@ After the session summary has been written, bump the citation count for every ac
 A rule counts as cited ONLY if the session conversation matches one of these three patterns:
 1. Explicit L-ID token appears (e.g. the exact string `L-2026-04-01-001`).
 2. The rule's distilled-rule text appears verbatim as a quoted substring.
-3. Claude explicitly writes "applying rule N" or "per rule N" referencing the rule by its number or title.
+3. The ship-agent explicitly writes "applying rule N" or "per rule N" referencing the rule by its number or title.
 
 Ambiguous paraphrases, vibes, or "might have applied" cases are SKIPPED. If you're not sure, don't count it.
 
@@ -950,9 +1091,9 @@ Fail-open: a category-5 script error prints a warning but does NOT fail the ship
 
 - **Pre-commit hook fails** -> fix the underlying issue (per Active Rule 8, never `--no-verify`), re-stage, create a NEW commit (never `--amend`).
 - **Push fails (not a force-push scenario)** -> investigate. Fetch, check if the branch diverged, ask Keith how to reconcile.
-- **Codex plugin missing OR Codex quota depleted** -> step 3 decision tree routes to Kimi fallback (`scripts/minimax-review.sh`). Do NOT silently skip review.
-- **Kimi fallback fails** (script missing, `MINIMAX_API_KEY` unset, network error, non-zero exit, empty stdout despite 0 exit) -> escalate to "both reviewers unavailable" surface message in step 3. Require explicit Keith override via `/ship --skip-codex <reason>` AND confirmation that Checkpoint 1 plan review ran earlier in the session, before /ship may proceed.
-- **Both Codex AND Kimi unavailable, no Checkpoint 1 ran either** -> /ship REFUSES to proceed. The build has had zero adversarial review. Fix the underlying reviewer problem first.
+- **Codex plugin missing OR Codex quota depleted** -> step 3 routes to Kimi only when the builder-family matrix allows Kimi as an independent reviewer. Do NOT silently skip review.
+- **Matrix-clean reviewer fails** (script missing, API key missing, network error, non-zero exit, empty stdout despite 0 exit) -> escalate to "independent reviewer unavailable" surface message in step 3. Require explicit Keith override AND confirmation that Checkpoint 1 plan review ran earlier in the session, before /ship may proceed.
+- **Matrix-clean reviewer unavailable, no Checkpoint 1 ran either** -> /ship REFUSES to proceed. The build has had zero adversarial review. Fix the eligible reviewer path first.
 - **Feature note not found** -> ask Keith which feature this belongs to, or offer to ship as `--no-feature`.
 - **`wiki/concepts/index.md` parse failure** -> fail loudly, point Keith at the file, do not guess the lane structure.
 - **DEVLOG.md / wiki/log.md append failure** -> commit has already landed, so degrade gracefully: print the entry Keith should add manually, continue with the rest of the workflow.
@@ -969,7 +1110,7 @@ Fail-open: a category-5 script error prints a warning but does NOT fail the ship
 ## Notes
 
 - `/ship` is intentional, not a hook. Shipping is a human-in-the-loop action.
-- The Codex pre-commit review gate is mandatory per CLAUDE.md. Skipping requires a recorded reason.
+- The pre-commit review gate is mandatory per the builder-family matrix. Skipping requires a recorded reason and an independent checkpoint.
 - `wiki/concepts/index.md` is the source of truth. `/ship` is how state transitions get written safely -- never edit lane membership by hand mid-session.
 - For multi-ship features, the Shipping Status table and phase gate pattern (modeled on `project_minimax-offload`) stay authoritative. `/ship` updates rows within it; it does not replace the table.
 - `/ship --no-feature` is the escape hatch for infrastructure commits that don't map to a feature (e.g. fixing CI, rotating a credential). Use sparingly.

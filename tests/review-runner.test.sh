@@ -818,7 +818,620 @@ print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
   pass "$t"
 }
 
-# ---------- Test 9: poll unknown job returns 1 ----------
+# ---------- Test 12: OpenAI-built diffs cannot use Codex reviewer ----------
+test_openai_builder_rejects_codex_primary() {
+  local t="test_openai_builder_rejects_codex_primary"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex \
+      --builder-family openai --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family openai requires --primary minimax --no-fallback"; then
+    fail "$t" "expected openai matrix error, got: $out"
+    return
+  fi
+
+  local archive_count
+  archive_count=$(find "$d/.code-reviews" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$archive_count" != "0" ]; then
+    fail "$t" "expected 0 archive files (no reviewer spawn), got $archive_count"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 13: OpenAI-built diffs route to Kimi with no Codex fallback ----------
+test_openai_builder_accepts_minimax_no_fallback() {
+  local t="test_openai_builder_accepts_minimax_no_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --builder-family openai --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  if [ -z "$log_path" ] || [ ! -f "$log_path" ]; then
+    fail "$t" "expected runner JSON with log_path, got: $out"
+    return
+  fi
+  state_path="${log_path%.log}.json"
+
+  local reviewers builder_family
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  builder_family=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('builder_family'))
+")
+  if [ "$reviewers" != "minimax" ]; then
+    fail "$t" "expected only minimax attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$builder_family" != "openai" ]; then
+    fail "$t" "expected builder_family=openai, got $builder_family"
+    return
+  fi
+  if grep -qE 'SPAWN argv=.*codex|REVIEWER_START reviewer=codex|# Codex Review' "$log_path"; then
+    fail "$t" "Codex appeared despite OpenAI builder no-fallback matrix. log=$(cat "$log_path")"
+    return
+  fi
+  if ! grep -q "builder_family=openai" "$log_path"; then
+    fail "$t" "expected JOB_START builder_family=openai, got: $(cat "$log_path")"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 14: Kimi-built diffs cannot use Kimi reviewer ----------
+test_kimi_builder_rejects_minimax_primary() {
+  local t="test_kimi_builder_rejects_minimax_primary"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --builder-family kimi --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family kimi requires --primary codex --no-fallback"; then
+    fail "$t" "expected kimi matrix error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 15: Kimi-built diffs route to Codex with no Kimi fallback ----------
+test_kimi_builder_accepts_codex_no_fallback() {
+  local t="test_kimi_builder_accepts_codex_no_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex --no-fallback \
+      --builder-family kimi --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  if [ -z "$log_path" ] || [ ! -f "$log_path" ]; then
+    fail "$t" "expected runner JSON with log_path, got: $out"
+    return
+  fi
+  state_path="${log_path%.log}.json"
+
+  local reviewers builder_family
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  builder_family=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('builder_family'))
+")
+  if [ "$reviewers" != "codex" ]; then
+    fail "$t" "expected only codex attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$builder_family" != "kimi" ]; then
+    fail "$t" "expected builder_family=kimi, got $builder_family"
+    return
+  fi
+  if grep -q "REVIEWER_START reviewer=minimax" "$log_path"; then
+    fail "$t" "Kimi reviewer appeared despite Kimi builder no-fallback matrix. log=$(cat "$log_path")"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 16: other builder family requires an explicit no-fallback reviewer ----------
+test_other_builder_requires_no_fallback() {
+  local t="test_other_builder_requires_no_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex \
+      --builder-family other --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family other requires --no-fallback"; then
+    fail "$t" "expected other matrix error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 17: other builder family requires an explicit reviewer ----------
+test_other_builder_requires_explicit_primary() {
+  local t="test_other_builder_requires_explicit_primary"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" \
+      --builder-family other --no-fallback --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family other requires explicit --primary"; then
+    fail "$t" "expected explicit primary matrix error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 18: other builder family requires an independence reason ----------
+test_other_builder_requires_reason() {
+  local t="test_other_builder_requires_reason"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex \
+      --builder-family other --no-fallback --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family other requires --other-reviewer-reason"; then
+    fail "$t" "expected other reviewer reason error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 19: other builder family records independence reason ----------
+test_other_builder_accepts_reason() {
+  local t="test_other_builder_accepts_reason"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex \
+      --builder-family other --no-fallback \
+      --other-reviewer-reason "human-built diff, Codex independent" \
+      --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  state_path="${log_path%.log}.json"
+
+  local reason
+  reason=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('other_reviewer_reason'))
+")
+  if [ "$reason" != "human-built diff, Codex independent" ]; then
+    fail "$t" "expected recorded reason, got $reason. state=$(cat "$state_path")"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 20: --skip-codex cannot run Codex as primary ----------
+test_skip_codex_rejects_codex_primary() {
+  local t="test_skip_codex_rejects_codex_primary"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex --no-fallback \
+      --builder-family kimi --skip-codex "codex unavailable" \
+      --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q -- "--skip-codex conflicts with --primary codex"; then
+    fail "$t" "expected skip-codex/codex conflict, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 21: --skip-codex cannot leave Codex as fallback ----------
+test_skip_codex_requires_no_fallback() {
+  local t="test_skip_codex_requires_no_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary minimax \
+      --builder-family anthropic --skip-codex "codex unavailable" \
+      --focus "test" 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 2 ]; then
+    fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q -- "--skip-codex requires --no-fallback"; then
+    fail "$t" "expected skip-codex no-fallback error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 22: --skip-codex is recorded when builder-family-clean ----------
+test_skip_codex_records_reason() {
+  local t="test_skip_codex_records_reason"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --builder-family anthropic --skip-codex "codex unavailable" \
+      --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  state_path="${log_path%.log}.json"
+
+  local skip_reason
+  skip_reason=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('skip_codex'))
+")
+  if [ "$skip_reason" != "codex unavailable" ]; then
+    fail "$t" "expected skip_codex reason, got $skip_reason. state=$(cat "$state_path")"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 23: direct Kimi reviewer rejects Kimi-built diffs ----------
+test_direct_minimax_rejects_kimi_builder() {
+  local t="test_direct_minimax_rejects_kimi_builder"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$REPO_ROOT/scripts/lib/minimax_review.py" \
+      --scope diff --files target.py --builder-family kimi --json 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 1 ]; then
+    fail "$t" "expected rc=1, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family kimi cannot be reviewed by Kimi"; then
+    fail "$t" "expected direct Kimi builder-family error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 24: direct Kimi reviewer requires no-fallback for OpenAI-built diffs ----------
+test_direct_minimax_openai_requires_no_fallback() {
+  local t="test_direct_minimax_openai_requires_no_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$REPO_ROOT/scripts/lib/minimax_review.py" \
+      --scope diff --files target.py --builder-family openai --json 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 1 ]; then
+    fail "$t" "expected rc=1, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family openai requires --no-fallback"; then
+    fail "$t" "expected direct Kimi no-fallback error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 25: direct Kimi reviewer requires reason for other builder ----------
+test_direct_minimax_other_requires_reason() {
+  local t="test_direct_minimax_other_requires_reason"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$REPO_ROOT/scripts/lib/minimax_review.py" \
+      --scope diff --files target.py --builder-family other --no-fallback --json 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 1 ]; then
+    fail "$t" "expected rc=1, got rc=$rc. out=$out"
+    return
+  fi
+  if ! echo "$out" | grep -q "builder-family other requires --other-reviewer-reason"; then
+    fail "$t" "expected direct Kimi other-reviewer reason error, got: $out"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 26: Anthropic-built diffs may use Codex ----------
+test_anthropic_builder_accepts_codex() {
+  local t="test_anthropic_builder_accepts_codex"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex \
+      --builder-family anthropic --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  state_path="${log_path%.log}.json"
+
+  local reviewers builder_family
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  builder_family=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('builder_family'))
+")
+  if [ "$reviewers" != "codex" ]; then
+    fail "$t" "expected only codex attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$builder_family" != "anthropic" ]; then
+    fail "$t" "expected builder_family=anthropic, got $builder_family"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 27: Anthropic-built diffs may use Kimi ----------
+test_anthropic_builder_accepts_minimax() {
+  local t="test_anthropic_builder_accepts_minimax"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" approve approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary minimax \
+      --builder-family anthropic --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  state_path="${log_path%.log}.json"
+
+  local reviewers builder_family
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  builder_family=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('builder_family'))
+")
+  if [ "$reviewers" != "minimax" ]; then
+    fail "$t" "expected only minimax attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$builder_family" != "anthropic" ]; then
+    fail "$t" "expected builder_family=anthropic, got $builder_family"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 28: Anthropic-built diffs may fall back across independent reviewers ----------
+test_anthropic_builder_allows_fallback() {
+  local t="test_anthropic_builder_allows_fallback"
+  local d; d="$(mktmp)"
+  local plugin; plugin="$(seed_repo "$d" error approve)"
+
+  cd "$d"
+  local out
+  out=$(python3 "$RUNNER" diff --files target.py --wait \
+      --codex-plugin "$plugin" --primary codex \
+      --builder-family anthropic --focus "test" \
+      --deadline 10 --heartbeat-interval 1 2>&1)
+  local rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$t" "expected rc=0 after minimax fallback, got rc=$rc. out=$out"
+    return
+  fi
+
+  local log_path state_path
+  log_path=$(python3 -c '
+import json, sys
+text = """'"$out"'"""
+start = text.find("{")
+end = text.rfind("}")
+data = json.loads(text[start:end+1])
+print(data.get("log_path", ""))
+')
+  state_path="${log_path%.log}.json"
+
+  local reviewers fallback_used
+  reviewers=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
+")
+  fallback_used=$(python3 -c "
+import json
+d=json.loads(open('$state_path').read())
+print(d.get('fallback_used'))
+")
+  if [ "$reviewers" != "codex,minimax" ]; then
+    fail "$t" "expected attempts codex,minimax, got reviewers=$reviewers state=$(cat "$state_path")"
+    return
+  fi
+  if [ "$fallback_used" != "True" ]; then
+    fail "$t" "expected fallback_used=True, got $fallback_used"
+    return
+  fi
+  pass "$t"
+}
+
+# ---------- Test 29: poll unknown job returns 1 ----------
 test_poll_unknown_job_returns_1() {
   local t="test_poll_unknown_job_returns_1"
   local d; d="$(mktmp)"
@@ -904,6 +1517,23 @@ test_watchdog_injects_heartbeat
 test_minimax_key_inherited_from_parent_env
 test_primary_minimax_diff_requires_files_before_fallback
 test_no_fallback_stops_after_primary_failure
+test_openai_builder_rejects_codex_primary
+test_openai_builder_accepts_minimax_no_fallback
+test_kimi_builder_rejects_minimax_primary
+test_kimi_builder_accepts_codex_no_fallback
+test_other_builder_requires_no_fallback
+test_other_builder_requires_explicit_primary
+test_other_builder_requires_reason
+test_other_builder_accepts_reason
+test_skip_codex_rejects_codex_primary
+test_skip_codex_requires_no_fallback
+test_skip_codex_records_reason
+test_direct_minimax_rejects_kimi_builder
+test_direct_minimax_openai_requires_no_fallback
+test_direct_minimax_other_requires_reason
+test_anthropic_builder_accepts_codex
+test_anthropic_builder_accepts_minimax
+test_anthropic_builder_allows_fallback
 test_poll_unknown_job_returns_1
 
 echo

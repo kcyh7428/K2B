@@ -1,6 +1,6 @@
 # K2B -- Codex Agent Onboarding Guide
 
-This file is for Codex and other AI coding agents working in this repo. Read it before modifying files. If it conflicts with a direct user instruction, follow the user. If it conflicts with `CLAUDE.md`, treat this file as the Codex-facing entrypoint and `CLAUDE.md` as the legacy Claude compatibility surface until the Codex primary migration finishes.
+This file is for Codex and other AI coding agents working in this repo. Read it before modifying files. If it conflicts with a direct user instruction, follow the user. If it conflicts with `CLAUDE.md`, treat this file as the Codex-facing entrypoint. `CLAUDE.md` is the Claude Code compatibility surface.
 
 ## Project Overview
 
@@ -15,8 +15,8 @@ The Mac Mini runs the always-on services. The vault syncs through Syncthing. Cod
 
 ## Current Provider Model
 
-- **Codex**: local coding agent and migration target for primary K2B desktop work.
-- **Claude Code**: legacy compatibility surface. `CLAUDE.md` and `.claude/skills` remain live until the migration completes.
+- **Codex**: primary local coding agent and default desktop commander for K2B work.
+- **Claude Code**: supported compatibility surface. `CLAUDE.md` and `.claude/skills` remain live, but they no longer define the main mental model.
 - **Kimi K2.6**: primary text worker for background analysis, compile, lint deep, research extraction, weave, observer, and non-Codex review. Historical `scripts/minimax-*.sh` names are preserved only for backward compatibility and route to Kimi by default through `K2B_LLM_PROVIDER=kimi`.
 - **MiniMax**: subscription dead since 2026-05-27. Never set `K2B_LLM_PROVIDER=minimax`, and do not create new scripts or callers with `minimax-*` names. Treat existing `minimax-*` filenames as compatibility wrappers, not live MiniMax guidance.
 - **GPTsAPI/Groq**: media, VLM/OCR, TTS, STT, and Telegram voice transcription paths.
@@ -134,7 +134,7 @@ Unsupported Office binaries should be exported to PDF or copied as text first. F
 
 ### Commander and Worker
 
-Codex or Claude owns orchestration in the active desktop session. Kimi owns cheap worker analysis through historical `minimax-*` wrapper scripts. The agent reads structured output and applies changes after validating against repo/vault state.
+Codex owns orchestration by default in active desktop sessions. Claude Code can still own orchestration when Keith deliberately uses that lane. Kimi owns cheap worker analysis and non-OpenAI review through historical `minimax-*` wrapper scripts. The agent reads structured output and applies changes after validating against repo/vault state.
 
 Do not inline new provider calls into random TypeScript unless the feature is explicitly provider infrastructure. Use existing script wrappers and routing modules.
 
@@ -188,11 +188,48 @@ The Mac Mini has no project `.git` history. Anything runtime-visible on the Mini
 
 Every commit needs adversarial review.
 
-- If Codex built the diff, use Kimi-backed review: `scripts/review.sh ... --primary minimax --no-fallback --wait`.
-- If Claude or another non-OpenAI worker built the diff, Codex review can be used when quota is available.
+- If Codex, OpenAI Agents, or OpenAI Responses built the diff, use Kimi-backed review only: `scripts/review.sh ... --builder-family openai --primary minimax --no-fallback --wait`.
+- If Kimi built the diff, use Codex only and do not fall back to Kimi: `scripts/review.sh ... --builder-family kimi --primary codex --no-fallback --wait`.
+- If Claude Code built the diff, use `scripts/review.sh ... --builder-family anthropic --primary codex --wait`; fallback to Kimi is allowed because both reviewers are independent of Claude.
+- If the builder is unknown, mixed, or not represented by the named families, choose one independent reviewer and use `--builder-family other --primary <codex|minimax> --no-fallback`; record why that reviewer is independent.
 - Same-family fallback does not count as official independent review.
 
+The reviewer key `minimax` is historical; current K2B routes that path to Kimi K2.6 by default through `K2B_LLM_PROVIDER=kimi`.
+Omitting `--builder-family` is for ad-hoc reviews only, not official `/ship` gates.
+`/ship` must not guess the builder. Codex desktop sessions must set `BUILDER_FAMILY=openai`; Claude, Kimi, and mixed-builder sessions must set their actual family before `/ship`.
+
 `/ship` owns commit, push, feature-note lane changes, DEVLOG, `wiki/log.md`, and pending-sync mailbox behavior. If `/ship` is not available in this harness, follow the `k2b-ship` skill body manually and state any missing step clearly.
+
+## Goal Mode
+
+Use Codex `/goal` only for bounded missions with a real stop condition. For serious K2B or K2Bi runs, start from `plans/templates/goal-card.md` or include the same fields inline:
+
+- objective
+- repo
+- owner
+- allowed workers
+- scope boundaries
+- binary done checks
+- verification commands
+- review gate
+- stop-if conditions
+
+Do not treat `/goal` as vague "keep working" mode. If the done checks or stop-if conditions cannot be written clearly, do not start the goal yet.
+
+## Ship Briefs
+
+When Keith asks what changed, what shipped, whether he is affected, or whether Claude Code still works, answer from his operating experience first. Do not lead with file counts, commit stats, or implementation internals unless he explicitly asks for codebase detail.
+
+Use this order:
+
+1. **What you will notice** -- day-to-day behavior change.
+2. **What stays the same** -- especially Claude Code and Telegram compatibility.
+3. **What is not included yet** -- avoid overclaiming later ships.
+4. **What to do now** -- switch tools, restart, test, sync, or do nothing.
+5. **Under the hood** -- commits, files, hooks, tests, provider names.
+6. **Risk / rollback** -- one short sentence when relevant.
+
+Prefer before/after examples and "this means / this does not mean" wording. Keith has explicitly asked for the meaning behind shipped changes, not only artifact lists.
 
 ## Safety
 

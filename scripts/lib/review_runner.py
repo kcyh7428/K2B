@@ -821,9 +821,11 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                 log_line(logf, f"[{utc_now_iso()}] FALLBACK triggering "
                          f"{secondary} ({reviewer} failed: {why})")
             elif idx == 0 and args.no_fallback:
+                builder_family = state.get("builder_family") or "unspecified"
                 log_line(logf, f"[{utc_now_iso()}] NO_FALLBACK "
                          f"primary_failed reviewer={reviewer} reason={why}; "
-                         f"stopping (matrix-clean: --no-fallback set)")
+                         f"stopping (builder-family={builder_family}: "
+                         f"--no-fallback set)")
 
     state.update({
         "status": "primary_failed" if args.no_fallback else "both_failed",
@@ -832,6 +834,71 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
     })
     write_state(state_path, state)
     return 2
+
+
+def review_matrix_error(builder_family: str | None, primary: str | None,
+                        no_fallback: bool, skip_codex: str | None = None,
+                        other_reviewer_reason: str | None = None) -> str | None:
+    """Return an error when the requested reviewer path violates AR7.
+
+    Ship 2 makes the builder/reviewer family explicit. The historical default
+    remains available when --builder-family is omitted so ad-hoc reviews do not
+    break, but official /ship flows must pass the flag.
+    """
+    if not builder_family:
+        return None
+    # Guard priority is intentional for official flows: identify the reviewer
+    # first, then enforce family-specific fallback/reason requirements.
+    if primary is None:
+        return (
+            f"builder-family {builder_family} requires explicit --primary "
+            "(ad-hoc default reviewer selection is not allowed for official flows)"
+        )
+    if primary not in {"codex", "minimax"}:
+        return f"invalid primary={primary} (expected codex|minimax)"
+    if skip_codex:
+        if primary == "codex":
+            return "--skip-codex conflicts with --primary codex"
+        if builder_family == "kimi":
+            return (
+                "--skip-codex blocks the only eligible reviewer (Codex) "
+                "for builder-family kimi"
+            )
+        if not no_fallback:
+            return (
+                "--skip-codex requires --no-fallback so Codex cannot run as "
+                "the fallback reviewer"
+            )
+    if builder_family == "openai":
+        if primary != "minimax" or not no_fallback:
+            return (
+                "builder-family openai requires "
+                "--primary minimax --no-fallback "
+                "(Codex/OpenAI-built diffs need Kimi-backed review only)"
+            )
+    elif builder_family == "kimi":
+        if primary != "codex" or not no_fallback:
+            return (
+                "builder-family kimi requires "
+                "--primary codex --no-fallback "
+                "(Kimi-built diffs must not fall back to Kimi)"
+            )
+    elif builder_family == "anthropic":
+        # Codex and the Kimi-backed reviewer are both independent of
+        # Anthropic-built diffs, so the normal fallback chain is allowed.
+        return None
+    elif builder_family == "other":
+        if not no_fallback:
+            return (
+                "builder-family other requires --no-fallback "
+                "(record the chosen independent reviewer explicitly)"
+            )
+        if not other_reviewer_reason:
+            return (
+                "builder-family other requires --other-reviewer-reason "
+                "(record why the chosen reviewer is independent)"
+            )
+    return None
 
 
 def cmd_poll(args: argparse.Namespace) -> int:
@@ -861,6 +928,9 @@ def cmd_poll(args: argparse.Namespace) -> int:
         "reviewer_current": state.get("reviewer_current"),
         "reviewer_attempts": state.get("reviewer_attempts", []),
         "primary_used": state.get("primary_used"),
+        "builder_family": state.get("builder_family"),
+        "skip_codex": state.get("skip_codex"),
+        "other_reviewer_reason": state.get("other_reviewer_reason"),
         "fallback_used": state.get("fallback_used"),
         "no_fallback": state.get("no_fallback", False),
         "exit_code": state.get("exit_code"),
@@ -884,6 +954,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         # status enum may be "running" | "completed" | "primary_failed" | "both_failed".
         "schema_version": 2,
         "job_id": job, "scope": args.scope, "primary_requested": args.primary,
+        "builder_family": args.builder_family,
+        "skip_codex": args.skip_codex,
+        "other_reviewer_reason": args.other_reviewer_reason,
         "focus": args.focus, "files": args.files, "plan": args.plan,
         "no_fallback": args.no_fallback,
         "deadline_s": args.deadline, "heartbeat_interval_s": args.heartbeat_interval,
@@ -895,7 +968,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     write_state(state_path, state)
     log_path.write_text(
         f"[{utc_now_iso()}] JOB_START job={job} scope={args.scope} "
-        f"primary={args.primary} deadline={args.deadline}s "
+        f"primary={args.primary} builder_family={args.builder_family or 'unspecified'} "
+        f"skip_codex={args.skip_codex or 'no'} "
+        f"other_reviewer_reason={args.other_reviewer_reason or 'none'} "
+        f"deadline={args.deadline}s "
         f"reconnect_stall={args.reconnect_stall_threshold_s}s "
         f"no_fallback={args.no_fallback}\n"
     )
@@ -928,6 +1004,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(json.dumps({
             "job_id": job, "exit_code": rc,
             "status": state.get("status"),
+            "builder_family": args.builder_family,
+            "skip_codex": args.skip_codex,
+            "other_reviewer_reason": args.other_reviewer_reason,
             "log_path": str(log_path.relative_to(REPO_ROOT)),
         }, indent=2))
     sys.exit(rc)
@@ -940,7 +1019,21 @@ def main() -> int:
     p.add_argument("scope", nargs="?",
                    choices=["diff", "working-tree", "files", "plan"],
                    default="diff")
-    p.add_argument("--primary", choices=["codex", "minimax"], default="codex")
+    p.add_argument("--primary", choices=["codex", "minimax"], default=None,
+                   help=("Reviewer to run first. Defaults to codex only when "
+                         "--builder-family is omitted for ad-hoc reviews."))
+    p.add_argument("--builder-family",
+                   choices=["openai", "anthropic", "kimi", "other"],
+                   default=None,
+                   help=("Family that produced the diff under review. Official "
+                         "/ship flows should pass this so same-family fallback "
+                         "cannot count as independent review."))
+    p.add_argument("--skip-codex", default=None, metavar="REASON",
+                   help=("Audit reason for skipping the Codex reviewer. "
+                         "Requires a non-Codex primary and --no-fallback."))
+    p.add_argument("--other-reviewer-reason", default=None,
+                   help=("Required with --builder-family other; records why "
+                         "the chosen reviewer is independent."))
     p.add_argument("--files", default=None,
                    help="Comma-separated file list (diff/files scope)")
     p.add_argument("--plan", default=None,
@@ -976,6 +1069,14 @@ def main() -> int:
         )
     if args.scope == "plan" and not args.plan:
         p.error("plan scope requires --plan")
+    matrix_error = review_matrix_error(
+        args.builder_family, args.primary, args.no_fallback,
+        args.skip_codex, args.other_reviewer_reason
+    )
+    if matrix_error:
+        p.error(matrix_error)
+    if args.primary is None:
+        args.primary = "codex"
     return cmd_run(args)
 
 

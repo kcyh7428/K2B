@@ -71,6 +71,15 @@ MINIMAX_NEGATION_TOKENS = (
     "never",
     "not ",
 )
+SHIP_BRIEF_MARKERS = (
+    "Prepare Keith-facing ship brief",
+    "What you will notice",
+    "What stays the same",
+    "What is not included yet",
+    "What to do now",
+    "Under the hood",
+    "Risk / rollback",
+)
 
 
 def read(path: Path) -> str:
@@ -93,6 +102,25 @@ def check_agent_only_text(path: Path, text: str) -> None:
         errors.append(f"stale Claude project memory path in {path}: {stale_claude_memory_match.group(0)}")
     if "CLAUDE_PROJECT_DIR" in text:
         errors.append(f"Claude-only CLAUDE_PROJECT_DIR reference in {path}")
+
+
+def check_ship_brief_markers(path: Path, text: str) -> None:
+    for marker in SHIP_BRIEF_MARKERS:
+        marker_re = re.escape(marker)
+        pattern = re.compile(
+            rf"(?im)^\s*(?:"
+            rf"#{{1,6}}\s+(?:\d+(?:\.\d+)*\s+)?{marker_re}\s*$|"
+            rf"\d+\.\s+\*\*{marker_re}\*\*"
+            rf")"
+        )
+        if not pattern.search(text):
+            errors.append(f"missing ship-brief marker in {path}: {marker}")
+
+
+def check_ship_brief_contract(path: Path, text: str) -> None:
+    if path.parent.name != "k2b-ship":
+        return
+    check_ship_brief_markers(path, text)
 
 
 def frontmatter(path: Path, text: str) -> dict[str, object]:
@@ -125,6 +153,11 @@ if not (root / "AGENTS.md").is_file():
     errors.append(f"missing Codex instruction surface: {root / 'AGENTS.md'}")
 if not (root / ".codex" / "hooks.json").is_file():
     errors.append(f"missing Codex hook surface: {root / '.codex' / 'hooks.json'}")
+ship_brief_template = root / "plans" / "templates" / "ship-brief.md"
+if not ship_brief_template.is_file():
+    errors.append(f"missing ship-brief template: {ship_brief_template}")
+else:
+    check_ship_brief_markers(ship_brief_template, read(ship_brief_template))
 
 for source_skill in sorted(claude_dir.glob("k2b-*/SKILL.md")):
     rel = source_skill.relative_to(claude_dir)
@@ -165,6 +198,8 @@ for source_skill in sorted(claude_dir.glob("k2b-*/SKILL.md")):
             )
 
     check_agent_only_text(target_skill, target_text)
+    check_ship_brief_contract(source_skill, source_text)
+    check_ship_brief_contract(target_skill, target_text)
 
     for lineno, line in enumerate(target_text.splitlines(), start=1):
         if not MINIMAX_M2_RE.search(line):

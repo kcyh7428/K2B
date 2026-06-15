@@ -157,6 +157,7 @@ Scope:
   - If builder family is `openai` (Codex, OpenAI Agents, OpenAI Responses), official review must be Kimi-backed through `scripts/review.sh --primary minimax --no-fallback` or `scripts/minimax-review.sh`.
   - If builder family is `kimi`, Codex can review only if it is not reviewing OpenAI-generated edits.
   - If builder family is `anthropic`, Codex can review while Claude compatibility exists.
+  - If builder family is `other`, pick one independent reviewer, require `--no-fallback`, and record why the chosen reviewer is independent.
   - Never allow same-family fallback to count as official review.
 - Add a Codex `/goal` Goal Card template to the instruction surface:
   - objective
@@ -169,6 +170,19 @@ Scope:
   - review gate
   - stop-if conditions
 - Update docs and skill wording that says every session ends with "Claude Code" rather than K2B session or Codex primary session.
+- Add a user-impact ship brief rule to `/ship` and the top-level instruction surface. The default answer to Keith after a ship, sync, or "what changed?" question must start with the operational effect on him, not the git/file diff. The brief should use plain words and this order:
+  - `What you will notice`: what changes in the day-to-day K2B experience.
+  - `What stays the same`: what he can keep doing, especially compatibility lanes such as Claude Code.
+  - `What is not included yet`: avoid accidental overclaiming across later ships.
+  - `What to do now`: whether Keith needs to switch tools, restart anything, test a workflow, or do nothing.
+  - `Under the hood`: only then mention commits, files, hooks, tests, or provider names.
+  - `Risk / rollback`: one short sentence when relevant.
+- Make the ship brief lens history-aware. Recent K2B history shows that Keith often needs the meaning behind the words, not a list of artifacts: "I can read all words but don't understand the meaning behind," "what exactly changed ... in terms of my user experience perspective," "actual use case," and "more context / plain English." Therefore K2B should default to before/after examples, real use cases, and "this does / this does not mean" framing unless Keith explicitly asks for codebase details.
+- Add concrete wording examples for the Codex migration:
+  - Bad default: "`94 files changed`; added `.agents/skills`, `.codex/hooks.json`, parity verifier."
+  - Good default: "You can still use Claude Code. Codex now has the K2B skills and startup context, so a fresh Codex session should understand `/ship`, `/sync`, safety rules, and Mini deploy without you re-explaining K2B. Telegram is unchanged until Ship 3/4."
+  - Bad default: "Ship 2 updates review matrix and builder-family metadata."
+  - Good default: "After Ship 2, Codex is treated as the normal desktop driver. If Codex writes code, K2B will automatically require a non-OpenAI reviewer instead of trusting Codex to review itself."
 
 Files likely touched:
 
@@ -182,14 +196,25 @@ Files likely touched:
 - `scripts/lib/review_runner.py`
 - `tests/review-runner.test.sh`
 - `plans/templates/goal-card.md` or equivalent, if we choose a template file instead of embedding in `AGENTS.md`
+- `plans/templates/ship-brief.md` or equivalent, if we choose a template file instead of embedding in `k2b-ship`
 
 Verification:
 
 - Review runner test proving `--builder-family openai --primary codex` is rejected.
 - Review runner test proving `--builder-family openai --primary minimax --no-fallback` is accepted.
 - Review runner test proving Codex-built diffs route to Kimi/no-Codex fallback.
+- Review runner test proving `--builder-family kimi --primary minimax` is rejected.
+- Review runner tests proving `--builder-family other` requires both an explicit `--primary` and `--no-fallback`.
+- Review runner tests proving `--builder-family anthropic` accepts Codex, accepts Kimi, and allows fallback across those independent reviewers.
+- Review runner tests proving `--skip-codex` rejects Codex primary, rejects Codex fallback, and records the skip reason when builder-family-clean.
+- Review runner tests proving `--builder-family other` records `--other-reviewer-reason`.
+- Direct Kimi reviewer validation proving `--builder-family kimi` is rejected when the Kimi JSON path is used.
+- Ship instruction guard requiring explicit `BUILDER_FAMILY` for official `/ship`; no silent default from Claude or Codex sessions.
+- Ship-brief fixture test proving both `.agents/skills/k2b-ship/SKILL.md`, `.claude/skills/k2b-ship/SKILL.md`, and `plans/templates/ship-brief.md` contain the user-impact brief requirement as structured headings or numbered bold items, not stray prose.
+- Manual response dry-run for Ship 1 using the new format. Expected: the first paragraph answers "how Keith is affected using K2B from Claude Code vs Codex," and code/file details appear only after the user-impact summary.
 - `bash tests/review-runner.test.sh`
 - `bash tests/ship-detect-tier.test.sh`
+- `bash tests/verify-skills-parity.test.sh`
 - Manual dry-run of the `/ship` instructions against a doc-only diff.
 - Kimi review of this ship's diff before commit.
 
@@ -197,6 +222,7 @@ Done:
 
 - Codex can be the local K2B commander without self-reviewing its own commits.
 - Goal mode has a bounded stop condition instead of vague autonomy.
+- `/ship` and post-sync summaries explain shipments in Keith-facing operational language before internal implementation detail.
 - Claude remains usable as a fallback lane but no longer owns the mental model.
 
 Rollback:

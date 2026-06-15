@@ -30,9 +30,24 @@ fail() {
 
 build_fixture() {
   local root="$1"
-  mkdir -p "$root/.claude/skills/k2b-ship" "$root/.agents/skills/k2b-ship" "$root/.codex"
+  mkdir -p "$root/.claude/skills/k2b-ship" "$root/.agents/skills/k2b-ship" "$root/.codex" "$root/plans/templates"
   printf '# Agents\n' > "$root/AGENTS.md"
   printf '{"hooks":{}}\n' > "$root/.codex/hooks.json"
+  cat > "$root/plans/templates/ship-brief.md" <<'BRIEF'
+# Prepare Keith-facing ship brief
+
+## What you will notice
+
+## What stays the same
+
+## What is not included yet
+
+## What to do now
+
+## Under the hood
+
+## Risk / rollback
+BRIEF
   cat > "$root/.claude/skills/k2b-ship/SKILL.md" <<'SKILL'
 ---
 name: k2b-ship
@@ -42,6 +57,15 @@ description: Ship K2B changes safely
 # k2b-ship
 
 Text worker calls use Kimi through historical minimax scripts.
+
+### 8.5 Prepare Keith-facing ship brief
+
+1. **What you will notice** -- day-to-day behavior change.
+2. **What stays the same** -- compatibility lanes.
+3. **What is not included yet** -- later ships.
+4. **What to do now** -- next user action.
+5. **Under the hood** -- implementation detail.
+6. **Risk / rollback** -- one short sentence when relevant.
 SKILL
   cp "$root/.claude/skills/k2b-ship/SKILL.md" "$root/.agents/skills/k2b-ship/SKILL.md"
 }
@@ -208,6 +232,25 @@ build_fixture "$root"
 sed -i.bak 's/description: Ship K2B changes safely/description: [unterminated/' "$root/.agents/skills/k2b-ship/SKILL.md"
 rm -f "$root/.agents/skills/k2b-ship/SKILL.md.bak"
 expect_fail "frontmatter malformed YAML" "$root" "frontmatter parse error"
+
+root="$(mktmp)"
+build_fixture "$root"
+sed -i.bak '/What you will notice/d' "$root/.agents/skills/k2b-ship/SKILL.md"
+rm -f "$root/.agents/skills/k2b-ship/SKILL.md.bak"
+expect_fail "missing ship brief marker" "$root" "ship-brief marker"
+
+root="$(mktmp)"
+build_fixture "$root"
+sed -i.bak '/What to do now/d' "$root/plans/templates/ship-brief.md"
+rm -f "$root/plans/templates/ship-brief.md.bak"
+expect_fail "missing template ship brief marker" "$root" "ship-brief marker"
+
+root="$(mktmp)"
+build_fixture "$root"
+sed -i.bak '/What you will notice/d' "$root/.agents/skills/k2b-ship/SKILL.md"
+rm -f "$root/.agents/skills/k2b-ship/SKILL.md.bak"
+printf '\nThis prose merely says What you will notice, but it is not a structured brief item.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_fail "ship brief marker must be structured" "$root" "ship-brief marker"
 
 root="$(mktmp)"
 build_fixture "$root"
