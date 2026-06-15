@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-06-15 -- deploy-to-mini: exclude k2b-remote runtime scratch from sync + drift detection
+
+**Commit:** `5c49133` fix(deploy-to-mini): exclude k2b-remote runtime scratch from sync + drift detection
+
+**What shipped:** `deploy-to-mini.sh` did not exclude the bot's runtime scratch tree (`k2b-remote/workspace/` -- `uploads/` for incoming Telegram attachments, `telegram-outbox/` for pending replies) from the k2b-remote rsync. Leftover `.ogg`/`.jpg` upload artifacts on the MacBook made `deploy-to-mini.sh auto` report false "code" drift, which would needlessly `npm run build && pm2 restart k2b-remote` the live Telegram bot on every `/sync`. Added `--exclude /workspace/` (anchored to the transfer root, directory-only) to BOTH the `detect_changes` dry-run and the `sync_code` real rsync, keeping the two lists identical per the line-143 mirror invariant. The bot recreates both workspace dirs itself at startup (`mkdirSync` recursive in media.ts + telegram-outbox.ts), so nothing source is dropped even on a fresh Mini. Documented the rationale at both exclude sites.
+
+**Codex review:** tier: 3 (allowlist match `scripts/deploy-to-mini.sh`). Codex hit its hard deadline (wedged ~6min, SIGTERM); runner auto-fell-back to Kimi. 2 Kimi passes. Pass-1 HIGH ("test uses a mock that bypasses exclude parsing") triaged FALSE POSITIVE -- scenario 17 uses real rsync (no mock PATH in scope), and the red->green proved real rsync honors the exclude. Pass-1 MEDIUMs (over-broad, undocumented, no mirror guard, thin coverage) addressed. Pass-2 MEDIUM recommended the anchored `/workspace/` pattern -- applied + verified by a real-rsync dir-vs-file test. review-result: tier-3-runner-codex (deadline) -> minimax-fallback, 2 passes.
+
+**Tests:** 28/28 green. New: scenario 17 (scratch dir one-side ignored), 18 (static guard: detect_changes + sync_code exclude lists byte-identical), 19 (scratch differing on both machines still not code drift), 20 (a file named `workspace` still flags code -- proves dir-only exclude).
+
+**Feature status change:** none (`--no-feature` infrastructure fix).
+
+**Follow-ups:** none. Pre-existing Mini-side workspace scratch from prior syncs is harmless runtime the bot manages itself; `--delete` would not clean excluded paths anyway.
+
+**Key decisions (if divergent from claude.ai project specs):** Kept a single broad-but-anchored `/workspace/` exclude rather than narrow per-subdir excludes -- it covers `telegram-outbox/` and any future runtime subdir (the actual recurring bug class) while the anchor + trailing slash keep it precise (root dir only, not files or nested dirs named workspace).
+
+---
 ## 2026-06-11 -- Orchestrator A3 LIVE MVP PASSED on CDNS -> terminal_shipped (Ship 2 Phase A complete)
 
 **Commit:** none K2B-side -- the code shipped earlier today as `a991f8a`; this milestone is the live MVP pass + the K2Bi strategy commit `a058597` (pushed to kcstudio/K2Bi origin/main with Keith's go).
