@@ -4184,3 +4184,19 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** (1) `--retry-quarantine` recovery CLI; (2) retention sweep for `.staging/eod-quarantine/` + `.staging/eod-undelivered-digests/`; (3) all-slow-skip night returns rc=0 by design (digest zero-floor still flags it) -- revisit if Keith wants an all-timeout night to halt job-b. Needs `/sync` (scripts) to reach the Mini cron.
 
 **Key decisions:** preserved the original author's "fail loud, never silently ship partial data" intent rather than just deleting the rc=1 guard -- the fix quarantines loudly + keeps honest counts, so partial never looks clean. Drove the Kimi review to a real disposition each round (verified every finding against the actual rc=1 boundary, not the review framing) and stopped at round 3 once findings were verified non-issues, per AR7.
+
+## 2026-06-15 -- Codex primary Ship 1 local parity + router VPS exclusion cleanup
+
+**Commits:** `c981a1b` feat(codex): ship local parity surfaces; `f4f91eb` fix(router-watchdog): exclude TW VPS leaf from AI scoring
+
+**What shipped:** Ship 1 of the Codex-primary migration only. Added Codex-native local instruction surfaces (`AGENTS.md`, `.codex/hooks.json`, `.agents/skills/`) while keeping Claude Code compatibility intact through `CLAUDE.md` and `.claude/skills/`. Hooks, deploy detection, tiering, and skill-parity checks are now provider-neutral and cover Codex surfaces. The parity verifier now catches stale `.claude`/`.codex` skill paths, Claude project-memory paths, malformed frontmatter, orphan mirrored skills, and nested mirror-file drift. Source skills also received small safety repairs discovered while mirroring: canonical vault memory paths, meeting MOC re-check before write, observer staleness warning, plate debug behavior, media-generator retired command blocks, and K2Bi path-contract guidance in the orchestrator skill. Separate cleanup commit excluded `K2B-VPS-TW` from the AI router leaf optimizer, matching the existing `K2B-VPS-KL` exclusion.
+
+**Review:** Plan review and multiple implementation reviews ran before commit. Full staged Codex review hit the runner hard deadline and Kimi fallback exceeded context on the 89-file Ship 1 mirror diff, so review was completed in scoped Kimi chunks plus targeted Codex on the router cleanup. Concrete findings fixed before commit: explicit meeting MOC verification, plate debug stderr handling, nested parity-file checks, and K2Bi path-contract hardening. Dispositioned follow-up: enforce K2Bi repo/vault root types in runtime orchestrator code, not only skill prose. Router cleanup review (`.code-reviews/2026-06-15T06-49-23Z_1ebe89.log`) APPROVED with no material findings.
+
+**Verification:** `git diff --cached --check`; `scripts/ship-detect-tier.py --mode staged`; `scripts/verify-skills-parity.sh`; `tests/verify-skills-parity.test.sh`; `tests/codex-hooks.test.sh`; `tests/post-tool-skill-track.test.sh`; `tests/session-start-hook.test.sh`; `tests/stop-observe-hook.test.sh`; `tests/deploy-to-mini.test.sh`; `tests/ship-detect-tier.test.sh`; `tests/router-watchdog-leaf-optimizer.test.sh`; session-start smoke; plate debug smoke; weave mirror diff check.
+
+**Feature status change:** `feature_codex-primary-migration` plan created and Ship 1 code-shipped locally. Claude Code remains supported; no forced cutover to Codex.
+
+**Follow-ups:** Ship 2 commander/review matrix, Ship 3 Telegram provider bridge, Ship 4 cutover/hardening. Runtime K2Bi path-type enforcement should be handled in a later orchestrator hardening ship. Needs `/sync` (skills + scripts) so the Mac Mini receives Codex surfaces, the committed weave fix, and the router VPS exclusion.
+
+**Key decisions:** kept Ship 1 scoped to local parity rather than moving the Telegram bot off Anthropic Agent SDK. Did not touch the committed weave source files; the weave fix remains as `96311e0` underneath this branch and will deploy with the same sync.
