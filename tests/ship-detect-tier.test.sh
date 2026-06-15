@@ -276,6 +276,134 @@ test_tier_3_allowlist_glob_does_not_overmatch
 test_error_missing_config_at_explicit_path
 test_no_config_argument_means_no_allowlist
 
+test_tier_3_real_config_codex_agents_md() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (cd "$repo" && printf '# agents\n' > AGENTS.md)
+
+  local out
+  out=$(call_classifier "$repo" "$REPO_ROOT/scripts/tier3-paths.yml")
+  echo "$out" | grep -q "tier:3" || fail "AGENTS.md should be tier 3 via real allowlist; got: $out"
+  echo "PASS: test_tier_3_real_config_codex_agents_md"
+}
+
+test_tier_3_real_config_agents_skills() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.agents/skills/k2b-ship"
+  (cd "$repo" && printf '# ship\n' > .agents/skills/k2b-ship/SKILL.md)
+
+  local out
+  out=$(call_classifier "$repo" "$REPO_ROOT/scripts/tier3-paths.yml")
+  echo "$out" | grep -q "tier:3" || fail ".agents/skills should be tier 3 via real allowlist; got: $out"
+  echo "PASS: test_tier_3_real_config_agents_skills"
+}
+
+test_tier_3_real_config_agents_skills_deep_path() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.agents/skills/k2b-ship/nested"
+  (cd "$repo" && printf 'helper\n' > .agents/skills/k2b-ship/nested/file.txt)
+
+  local out
+  out=$(call_classifier "$repo" "$REPO_ROOT/scripts/tier3-paths.yml")
+  echo "$out" | grep -q "tier:3" || fail ".agents/skills/** should match deep paths; got: $out"
+  echo "PASS: test_tier_3_real_config_agents_skills_deep_path"
+}
+
+test_real_config_agents_skills_glob_does_not_overmatch() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.agents/skills-backup"
+  (cd "$repo" && printf 'backup\n' > .agents/skills-backup/file.txt)
+
+  local out
+  out=$(call_classifier "$repo" "$REPO_ROOT/scripts/tier3-paths.yml")
+  if echo "$out" | grep -q "tier:3"; then
+    fail ".agents/skills/** should not match .agents/skills-backup; got: $out"
+  fi
+  echo "PASS: test_real_config_agents_skills_glob_does_not_overmatch"
+}
+
+test_real_config_agents_runtime_ignored_files_do_not_classify() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  (
+    cd "$repo" || exit 1
+    cp "$REPO_ROOT/.gitignore" .gitignore
+    git add .gitignore
+    git commit -q -m "ignore runtime files"
+    mkdir -p \
+      .agents/skills/k2b-ship/eval/cache \
+      .agents/skills/k2b-ship/eval/tmp \
+      .agents/skills/k2b-ship/eval/.cache \
+      .agents/skills/k2b-ship/cache \
+      .agents/skills/k2b-ship/tmp \
+      .agents/skills/k2b-ship/.cache
+    printf '{"tmp":true}\n' > .agents/skills/k2b-ship/eval/cache/run.json
+    printf '{"tmp":true}\n' > .agents/skills/k2b-ship/eval/tmp/run.json
+    printf '{"tmp":true}\n' > .agents/skills/k2b-ship/eval/.cache/run.json
+    printf '{"tmp":true}\n' > .agents/skills/k2b-ship/cache/run.json
+    printf 'local\n' > .agents/skills/k2b-ship/tmp/local.tsv
+    printf '{"tmp":true}\n' > .agents/skills/k2b-ship/.cache/run.json
+  )
+
+  local out
+  out=$(call_classifier "$repo" "$REPO_ROOT/scripts/tier3-paths.yml")
+  if echo "$out" | grep -q "tier:3"; then
+    fail "ignored .agents runtime files should not force tier 3; got: $out"
+  fi
+  echo "PASS: test_real_config_agents_runtime_ignored_files_do_not_classify"
+}
+
+test_tier_3_real_config_codex_hooks() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/.codex"
+  (cd "$repo" && printf '{"hooks":{}}\n' > .codex/hooks.json)
+
+  local out
+  out=$(call_classifier "$repo" "$REPO_ROOT/scripts/tier3-paths.yml")
+  echo "$out" | grep -q "tier:3" || fail ".codex/hooks.json should be tier 3 via real allowlist; got: $out"
+  echo "PASS: test_tier_3_real_config_codex_hooks"
+}
+
+test_cli_default_config_codex_surfaces_tier_3() {
+  local repo
+  repo="$(mktmp)"
+  build_fixture_repo "$repo"
+  mkdir -p "$repo/scripts/lib"
+  cp "$SCRIPT" "$repo/scripts/ship-detect-tier.py"
+  cp "$LIB_DIR/tier_detection.py" "$repo/scripts/lib/tier_detection.py"
+  cp "$REPO_ROOT/scripts/tier3-paths.yml" "$repo/scripts/tier3-paths.yml"
+  chmod +x "$repo/scripts/ship-detect-tier.py"
+  (cd "$repo" && git add scripts && git commit -q -m "install classifier")
+
+  mkdir -p "$repo/.agents/skills/k2b-ship" "$repo/.codex"
+  (cd "$repo" && printf '# agents\n' > AGENTS.md)
+  (cd "$repo" && printf '# ship\n' > .agents/skills/k2b-ship/SKILL.md)
+  (cd "$repo" && printf '{"hooks":{}}\n' > .codex/hooks.json)
+
+  local out
+  out=$(cd "$repo" && ./scripts/ship-detect-tier.py)
+  echo "$out" | grep -q "^tier: 3$" || fail "CLI default config should classify Codex surfaces as tier 3; got: $out"
+  echo "PASS: test_cli_default_config_codex_surfaces_tier_3"
+}
+
+test_tier_3_real_config_codex_agents_md
+test_tier_3_real_config_agents_skills
+test_tier_3_real_config_agents_skills_deep_path
+test_real_config_agents_skills_glob_does_not_overmatch
+test_real_config_agents_runtime_ignored_files_do_not_classify
+test_tier_3_real_config_codex_hooks
+test_cli_default_config_codex_surfaces_tier_3
+
 test_tier_1_skill_docs_only() {
   local repo
   repo="$(mktmp)"

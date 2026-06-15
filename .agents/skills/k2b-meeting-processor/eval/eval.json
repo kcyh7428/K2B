@@ -1,0 +1,37 @@
+{
+  "tests": [
+    {
+      "prompt": "Process this meeting transcript: 'Attendees: Keith Brown, Gerard Walker, Anna Chen. Date: 2026-03-20. Topic: Graduate Program 2026 Planning. Discussion: Keith proposed a 3-cohort structure for the graduate program. Gerard agreed but wants to add a mentorship component. Anna will handle the job posting draft by Friday. Decision: Go with 3 cohorts starting September. Keith to finalize the budget proposal by next Wednesday. Anna raised concern about visa processing timelines for international candidates.'",
+      "expected_output": "A properly structured meeting note in Obsidian format",
+      "assertions": [
+        "Does the output contain YAML frontmatter with tags, date, type, and participants fields?",
+        "Does it include an Action Items section with at least two checkbox items that name specific owners?",
+        "Does it include a Decisions Made section that captures the 3-cohort decision?",
+        "Does it include wikilinks to participants in [[person_Firstname-Lastname]] format?",
+        "Does it include a Content Potential section?"
+      ]
+    },
+    {
+      "prompt": "Process this meeting transcript: 'Quick 1:1 with David Lee. March 22. Discussed his pipeline for the Senior Data Engineer role. He has 3 strong candidates shortlisted. Interview panel needs to be confirmed. David mentioned the JD might need updating since the team now wants Spark experience. I told him to loop in the hiring manager for sign-off.'",
+      "expected_output": "A concise meeting note for a 1:1 discussion",
+      "assertions": [
+        "Does the output follow the file naming convention YYYY-MM-DD_Meeting-Topic.md?",
+        "Does it include an Action Items section with specific, actionable items (not vague)?",
+        "Does the YAML frontmatter include a project field linking to the relevant project?",
+        "Does the note avoid em dashes?",
+        "Does it include a Key Discussion Points section with 2+ bullet points?"
+      ]
+    },
+    {
+      "prompt": "Process this meeting transcript: 'Team standup March 21. Present: Keith, Sarah Fong, David Lee, Maria Santos. Updates: Sarah closed 2 offers for the VP Marketing search. David has interviews scheduled for 3 Data Engineer candidates next week. Maria is struggling with sourcing for the Compliance Director role - market is thin. Keith shared that the hiring freeze memo goes out Monday. Decision: Pause all new reqs until freeze guidance is published. Sarah to send offer letters today. Maria to try LinkedIn Recruiter premium search for compliance profiles.'",
+      "expected_output": "A team standup meeting note with multiple action items",
+      "assertions": [
+        "Does the output contain wikilinks to all four participants?",
+        "Does it include at least three checkbox action items?",
+        "Does it capture the hiring freeze pause decision in a Decisions section?",
+        "Does the YAML frontmatter include the date 2026-03-21?",
+        "Does the note include an Insights section or Content Potential section?"
+      ]
+    }
+  ]
+}

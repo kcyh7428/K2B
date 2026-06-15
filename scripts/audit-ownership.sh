@@ -24,8 +24,11 @@ VAULT="$HOME/Projects/K2B-Vault"
 
 # Search scope: K2B repo + vault memory + vault wiki/.
 SEARCH_PATHS=(
+  "$REPO_ROOT/AGENTS.md"
   "$REPO_ROOT/CLAUDE.md"
+  "$REPO_ROOT/.agents/skills"
   "$REPO_ROOT/.claude/skills"
+  "$REPO_ROOT/.codex/hooks.json"
   "$REPO_ROOT/scripts"
   "$VAULT/System/memory"
   "$VAULT/wiki"

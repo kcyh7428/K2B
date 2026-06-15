@@ -14,7 +14,7 @@ Harvest implicit preference signals from Keith's vault behavior. Synthesize patt
 - Preference profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
 - Video preferences (NotebookLM filter tail): `~/Projects/K2B-Vault/wiki/context/video-preferences.md`
 - Skills: `~/Projects/K2B/.claude/skills/`
-- Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
+- Learnings: `~/Projects/K2B-Vault/System/memory/self_improve_learnings.md`
 
 ## Vault Query Tools
 
@@ -43,6 +43,8 @@ Read `preference-signals.jsonl`. This file has two signal sources:
 2. **Review queue outcomes (secondary)**: When k2b-review processes review/ items, it appends signals with schema: `{date, file, source_skill, type, action, days_in_inbox, has_feedback, feedback}`. This source activates as Keith uses /review more frequently.
 
 If the file doesn't exist or is empty, tell Keith: "No preference signals yet. The observer-loop will start generating signals automatically, or process some review/ items with /review."
+
+Before trusting observer-loop signals as current, check loop health: read the newest `source: "observer-loop"` timestamp in `preference-signals.jsonl`, and check `pm2 status k2b-observer` on the Mac Mini when available. If the newest observer-loop signal is older than 7 days, or pm2 is stopped/unreachable, warn Keith that the background loop may be stale and treat its findings as historical context until the loop is healthy again.
 
 Then check if this is the first run (no preference-profile.md exists). If so, run the Bootstrapping procedure below.
 

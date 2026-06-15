@@ -33,6 +33,9 @@ paths:
   - "scripts/review.sh"
   - "scripts/review-poll.sh"
   - "scripts/lib/review_runner.py"
+  - "AGENTS.md"
+  - ".agents/skills/**"
+  - ".codex/hooks.json"
   - ".claude/skills/k2b-ship/SKILL.md"
 
   # Single-writer mutation helpers (bug here corrupts shared logs/indexes)
@@ -43,6 +46,7 @@ paths:
   - "scripts/lib/tier_detection.py"
   - "scripts/ship-detect-tier.py"
   - "scripts/tier3-paths.yml"
+  - "scripts/verify-skills-parity.sh"
 
   # Deployment + git hooks (bug here wedges every machine)
   - "scripts/deploy-to-mini.sh"

@@ -35,7 +35,7 @@ Runs `~/Projects/K2B/.claude/skills/k2b-plate/scripts/plate.sh` and shows the ou
 | K2Bi PM current checkpoint | `K2Bi-Vault/wiki/planning/index.md` Resume Card | first `> **K2B PM checkpoint` or `> **K2Bi PM checkpoint` blockquote (parser tolerates the optional "i"; top = most recent) |
 | In Progress lanes | `wiki/concepts/index.md` In Progress table | all rows |
 | Recently shipped | `wiki/concepts/index.md` Shipped table | rows with date within last 7 days |
-| Memory flags | `~/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/self_improve_requests.md` + `self_improve_errors.md` | top open R-IDs, recent E-IDs |
+| Memory flags | `~/Projects/K2B-Vault/System/memory/self_improve_requests.md` + `self_improve_errors.md` | top open R-IDs, recent E-IDs |
 | Backlog top 3 + Next Up | `wiki/concepts/index.md` Backlog + Next Up tables | first N rows |
 
 ## How to invoke

@@ -21,9 +21,9 @@ Single command for the full picture of how K2B is doing -- learnings, errors, re
 
 ## Memory & Data Paths
 
-- Learnings: `~/.claude/projects/*/memory/self_improve_learnings.md`
-- Errors: `~/.claude/projects/*/memory/self_improve_errors.md`
-- Requests: `~/.claude/projects/*/memory/self_improve_requests.md`
+- Learnings: `~/Projects/K2B-Vault/System/memory/self_improve_learnings.md`
+- Errors: `~/Projects/K2B-Vault/System/memory/self_improve_errors.md`
+- Requests: `~/Projects/K2B-Vault/System/memory/self_improve_requests.md`
 - Active Rules: `~/Projects/K2B-Vault/System/memory/active_rules.md`
 - Preference Profile: `~/Projects/K2B-Vault/wiki/context/preference-profile.md`
 - Preference Signals: `~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl`

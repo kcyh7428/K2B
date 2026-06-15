@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+            {
+              "type": "command",
+              "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/post-tool-skill-track.sh\"",
+              "timeout": 3
+            }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+            {
+              "type": "command",
+              "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh\"",
+              "timeout": 10
+            }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+            {
+              "type": "command",
+              "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/stop-observe.sh\"",
+              "timeout": 5
+            }
+        ]
+      }
+    ]
+  }
+}

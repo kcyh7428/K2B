@@ -5,9 +5,23 @@
 
 set -euo pipefail
 
-VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
+VAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
 OBS_FILE="$VAULT/wiki/context/observations.jsonl"
+hook_provider="${K2B_HOOK_PROVIDER:-${K2B_PROVIDER:-default}}"
+case "$hook_provider" in
+  *[!A-Za-z0-9_-]*|"") hook_provider="default" ;;
+esac
+CURRENT_SKILL_FILE="${K2B_CURRENT_SKILL_FILE:-/tmp/k2b-current-skill-$hook_provider}"
+LAST_OBSERVE_FILE="${K2B_LAST_OBSERVE_FILE:-/tmp/k2b-last-observe-$hook_provider}"
+RUN_MARKER=""
+cleanup_run_marker() {
+  [ -n "${RUN_MARKER:-}" ] && rm -f "$RUN_MARKER"
+}
+trap cleanup_run_marker EXIT ERR HUP INT TERM
+RUN_MARKER="$(mktemp "${TMPDIR:-/tmp}/k2b-observe-start.XXXXXX")"
+touch "$RUN_MARKER"
 mkdir -p "$(dirname "$OBS_FILE")" 2>/dev/null || true
+[ -f "$LAST_OBSERVE_FILE" ] || touch "$LAST_OBSERVE_FILE" 2>/dev/null || true
 
 # Prevent infinite loops
 input=$(cat)
@@ -40,15 +54,15 @@ tool_input=$(echo "$input" | jq -r '.tool_input // empty' 2>/dev/null)
 # Check for recent vault file changes (last 2 minutes)
 recent_vault_changes=""
 if [ -d "$VAULT" ]; then
-  recent_vault_changes=$(find "$VAULT" -name "*.md" -newer /tmp/k2b-last-observe -type f 2>/dev/null | head -10 || true)
+  recent_vault_changes=$(find "$VAULT" -name "*.md" -newer "$LAST_OBSERVE_FILE" -type f 2>/dev/null | head -10 || true)
 fi
 
 # Only log if there's something meaningful to capture
 if [ -n "$recent_vault_changes" ]; then
   # Read active skill from PostToolUse tracker (set by post-tool-skill-track.sh)
   tracked_skill=""
-  if [ -f /tmp/k2b-current-skill ]; then
-    tracked_skill=$(cat /tmp/k2b-current-skill 2>/dev/null || true)
+  if [ -f "$CURRENT_SKILL_FILE" ]; then
+    tracked_skill=$(cat "$CURRENT_SKILL_FILE" 2>/dev/null || true)
   fi
 
   # Build observation entries for each changed file
@@ -60,6 +74,7 @@ if [ -n "$recent_vault_changes" ]; then
     # Paths updated 2026-04-11 after the 2026-04-08 Karpathy vault migration
     # (Notes/ -> wiki/ + raw/ + review/). Daily/ stays because it's a human journal.
     skill="${tracked_skill:-unknown}"
+    [ -z "$skill" ] && skill="unknown"
     if [ "$skill" = "unknown" ]; then
       case "$relpath" in
         review/content_*) skill="k2b-insight-extractor" ;;
@@ -102,7 +117,11 @@ if [ -n "$recent_vault_changes" ]; then
   done <<< "$recent_vault_changes"
 fi
 
-# Update the timestamp marker for next comparison
-touch /tmp/k2b-last-observe
+# Advance the marker to the start of this hook run, not the end. Files changed
+# while the hook is scanning remain newer than the marker and are picked up by
+# the next run instead of falling between find -newer and a final touch.
+touch -r "$RUN_MARKER" "$LAST_OBSERVE_FILE"
+cleanup_run_marker
+trap - EXIT ERR HUP INT TERM
 
 exit 0

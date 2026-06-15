@@ -97,7 +97,34 @@ plans/Shipped/
 # Kimi handoff job specs (local only)
 .kimi/
 
-# Codex CLI hooks + agent skills config (local-only, not version-controlled)
-.codex/
-.agents/
-AGENTS.md
+# Codex runtime artifacts are local-only, but the stable instruction surfaces
+# are versioned so clean clones and Mini sync get the same Codex context.
+.codex/**
+!.codex/
+!.codex/.gitkeep
+!.codex/hooks.json
+.agents/*
+!.agents/
+!.agents/skills/
+!.agents/skills/*/
+.agents/skills/*/**
+!.agents/skills/*/SKILL.md
+!.agents/skills/*/resource.md
+!.agents/skills/*/eval/
+.agents/skills/*/eval/**
+!.agents/skills/*/eval/eval.json
+!.agents/skills/*/eval/learnings.md
+!.agents/skills/*/eval/cases/
+!.agents/skills/*/eval/cases/**
+!.agents/skills/*/references/
+!.agents/skills/*/references/**
+!.agents/skills/*/scripts/
+!.agents/skills/*/scripts/**
+!.agents/skills/*/tests/
+!.agents/skills/*/tests/**
+.agents/skills/*/eval/cache/**
+.agents/skills/*/eval/tmp/**
+.agents/skills/*/eval/.cache/**
+.agents/skills/*/cache/**
+.agents/skills/*/tmp/**
+.agents/skills/*/.cache/**

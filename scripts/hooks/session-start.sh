@@ -5,11 +5,26 @@
 
 set -euo pipefail
 
-VAULT="$HOME/Projects/K2B-Vault"
-K2B="$HOME/Projects/K2B"
+K2B="${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}"
+VAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
 CONTEXT_DIR="$VAULT/wiki/context"
+MEMORY_DIR="$VAULT/System/memory"
+vault_missing=false
 
 output=""
+
+if [ ! -e "$VAULT" ]; then
+  vault_missing=true
+  vault_warning="K2B SESSION HOOK WARNING: K2B_VAULT_PATH does not exist: $VAULT. Dotfile memory fallback is active for bootstrap only."
+  echo "$vault_warning" >&2
+  output+="$vault_warning"$'\n\n'
+elif [ ! -d "$VAULT" ]; then
+  output+="K2B SESSION HOOK WARNING: K2B_VAULT_PATH is not a directory: $VAULT"$'\n\n'
+elif [ ! -d "$MEMORY_DIR" ]; then
+  memory_warning="K2B SESSION HOOK WARNING: vault memory directory is missing: $MEMORY_DIR. Dotfile memory fallback is suppressed because the vault root exists."
+  echo "$memory_warning" >&2
+  output+="$memory_warning"$'\n\n'
+fi
 
 # --- 1. Check usage triggers ---
 trigger_result=$("$K2B/scripts/check-usage-triggers.sh" 2>/dev/null || true)
@@ -86,7 +101,16 @@ fi
 rm -f "$dashboard_stderr"
 
 # --- 4. Load active rules ---
-active_rules=$(find -L ~/.claude/projects/ -name "active_rules.md" -type f 2>/dev/null | head -1)
+# Vault memory is canonical once the vault root exists. Dotfile memory is only
+# a bootstrap fallback when the vault path itself is absent; this prevents old
+# ~/.claude or ~/.codex memory from overriding an intentionally empty vault
+# memory directory during migration.
+active_rules=""
+if [ -f "$MEMORY_DIR/active_rules.md" ]; then
+  active_rules="$MEMORY_DIR/active_rules.md"
+elif $vault_missing; then
+  active_rules=$(find -L ~/.claude/projects/ ~/.codex/memories/ -name "active_rules.md" -type f 2>/dev/null | head -1 || true)
+fi
 if [ -f "$active_rules" 2>/dev/null ]; then
   output+="ACTIVE RULES (follow these every session):"$'\n'
   output+="$(cat "$active_rules")"$'\n\n'
@@ -96,7 +120,12 @@ fi
 # Learnings with Reinforced >= 2 are surfaced as guidance (not full rules).
 # This bridges the gap between "captured once" and "promoted to active rule".
 # Dedupe: exclude learnings whose IDs already appear in active_rules.md.
-learnings_file=$(find -L ~/.claude/projects/ -name "self_improve_learnings.md" -type f 2>/dev/null | head -1)
+learnings_file=""
+if [ -f "$MEMORY_DIR/self_improve_learnings.md" ]; then
+  learnings_file="$MEMORY_DIR/self_improve_learnings.md"
+elif $vault_missing; then
+  learnings_file=$(find -L ~/.claude/projects/ ~/.codex/memories/ -name "self_improve_learnings.md" -type f 2>/dev/null | head -1 || true)
+fi
 if [ -f "$learnings_file" 2>/dev/null ]; then
   # Build exclusion list from active rules (they reference learning IDs like L-2026-03-26-001)
   active_ids=""

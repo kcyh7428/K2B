@@ -1,0 +1,24 @@
+{
+  "tests": [
+    {
+      "prompt": "What patterns do you see about hiring challenges across my recent notes? (Assume vault contains: 3 meeting notes about talent acquisition difficulties, 2 daily notes mentioning sourcing problems, and 1 insight about market conditions.)",
+      "expected_output": "A synthesis drawing from multiple vault sources identifying hiring challenge patterns",
+      "assertions": [
+        "Does the synthesis reference notes from 2+ different vault folders (not just meetings or just daily)?",
+        "Does it identify a pattern or theme rather than just listing search results?",
+        "Does it flag potential content ideas when the pattern has teaching value?",
+        "Is the output concise (under 500 words for the synthesis section)?"
+      ]
+    },
+    {
+      "prompt": "Run /content to review the past week for content ideas. (Assume vault contains: 5 daily notes, 2 meeting notes, and 1 new insight from the past 7 days.)",
+      "expected_output": "3-5 content ideas with titles, hooks, source notes, and platform suggestions",
+      "assertions": [
+        "Does the output include at least 3 content ideas?",
+        "Does each content idea include a working title and a hook/angle?",
+        "Does each content idea include wikilinks to source notes?",
+        "Does each content idea suggest a platform (LinkedIn or YouTube)?"
+      ]
+    }
+  ]
+}

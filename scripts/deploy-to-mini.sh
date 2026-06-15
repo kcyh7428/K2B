@@ -3,7 +3,7 @@
 #
 # Usage:
 #   deploy-to-mini.sh              # auto-detect what changed, sync it
-#   deploy-to-mini.sh skills       # sync skills + CLAUDE.md + architecture
+#   deploy-to-mini.sh skills       # sync skills + AGENTS.md/CLAUDE.md + architecture
 #   deploy-to-mini.sh code         # sync k2b-remote + rebuild + restart
 #   deploy-to-mini.sh dashboard    # sync k2b-dashboard + rebuild + restart
 #   deploy-to-mini.sh scripts      # sync scripts/
@@ -23,6 +23,7 @@
 #                              a local path to bypass SSH in tests)
 #   K2B_DETECT_ONLY=true       print detected categories and exit 0 before
 #                              the Mini reachability check runs
+#   K2B_DEPLOY_SELFTEST        internal test hook; do not set in prod
 
 set -euo pipefail
 
@@ -73,6 +74,65 @@ err()  { echo -e "${RED}[sync]${NC} $1"; }
 is_remote_target() {
     [[ "$RSYNC_TARGET" == *":"* ]]
 }
+
+remote_shell_quote() {
+    local path="$1"
+    local rest prefix
+    if [[ "$path" == *[[:cntrl:]]* || "$path" == *"\\"* || "$path" == *'"'* ]]; then
+        err "remote path contains unsupported character: $path"
+        exit 1
+    fi
+    if [[ "$path" == "~" ]]; then
+        printf '"$HOME"'
+        return 0
+    fi
+    if [[ "$path" == "~/"* ]]; then
+        printf '"$HOME"/'
+        rest="${path#\~/}"
+    else
+        rest="$path"
+    fi
+    printf "'"
+    while [[ "$rest" == *"'"* ]]; do
+        prefix="${rest%%\'*}"
+        printf "%s'\\\\''" "$prefix"
+        rest="${rest#*\'}"
+    done
+    printf "%s'" "$rest"
+}
+
+ensure_target_dirs() {
+    $DRY_RUN && return 0
+
+    if is_remote_target; then
+        local cmd="mkdir -p $(remote_shell_quote "$MINI_PATH")"
+        local dir
+        for dir in "$@"; do
+            cmd+=" $(remote_shell_quote "$MINI_PATH/$dir")"
+        done
+        ssh "$MINI_HOST" "$cmd"
+    else
+        mkdir -p "$MINI_PATH"
+        local dir
+        for dir in "$@"; do
+            mkdir -p "$MINI_PATH/$dir"
+        done
+    fi
+}
+
+if [[ "${K2B_DEPLOY_SELFTEST:-}" == "remote-shell-quote" ]]; then
+    remote_shell_quote "${1:?path required}"
+    exit 0
+fi
+if [[ "${K2B_DEPLOY_SELFTEST:-}" == "ensure-target-dirs" ]]; then
+    ensure_target_dirs "$@"
+    exit 0
+fi
+if [[ "${K2B_DEPLOY_SELFTEST:-}" == "ensure-target-dirs-dry-run" ]]; then
+    DRY_RUN=true
+    ensure_target_dirs "$@"
+    exit 0
+fi
 
 # rsync_has_changes <source> <target> [extra rsync flags...]
 # Returns 0 if a dry-run rsync with --checksum would transfer or delete
@@ -125,15 +185,33 @@ needs_scripts=false
 # remote drift regardless of how many commits produced it.
 detect_changes() {
     local doc
-    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json DEVLOG.md; do
+    for doc in AGENTS.md CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json DEVLOG.md; do
         if [[ -f "$LOCAL_BASE/$doc" ]]; then
             if rsync_has_changes "$LOCAL_BASE/$doc" "$RSYNC_TARGET/$doc"; then
                 needs_skills=true
             fi
         fi
     done
+    if [[ -f "$LOCAL_BASE/.codex/hooks.json" ]]; then
+        if is_remote_target; then
+            if ! ssh "$MINI_HOST" "test -d $(remote_shell_quote "$MINI_PATH/.codex")" >/dev/null 2>&1; then
+                needs_skills=true
+            elif rsync_has_changes "$LOCAL_BASE/.codex/hooks.json" "$RSYNC_TARGET/.codex/hooks.json"; then
+                needs_skills=true
+            fi
+        elif [[ ! -d "$MINI_PATH/.codex" ]]; then
+            needs_skills=true
+        elif rsync_has_changes "$LOCAL_BASE/.codex/hooks.json" "$RSYNC_TARGET/.codex/hooks.json"; then
+            needs_skills=true
+        fi
+    fi
     if [[ -d "$LOCAL_BASE/.claude/skills" ]]; then
         if rsync_has_changes "$LOCAL_BASE/.claude/skills/" "$RSYNC_TARGET/.claude/skills/" --delete; then
+            needs_skills=true
+        fi
+    fi
+    if [[ -d "$LOCAL_BASE/.agents/skills" ]]; then
+        if rsync_has_changes "$LOCAL_BASE/.agents/skills/" "$RSYNC_TARGET/.agents/skills/" --delete; then
             needs_skills=true
         fi
     fi
@@ -171,6 +249,9 @@ sync_skills() {
     log "Syncing skills + top-level docs..."
     local rsync_flag=""
     $DRY_RUN && rsync_flag="--dry-run"
+    if ! $DRY_RUN; then
+        ensure_target_dirs ".claude/skills" ".agents/skills" ".codex"
+    fi
 
     # Top-level docs: sync any that exist. K2B_ARCHITECTURE.md was removed 2026-04
     # but README.md is user-facing documentation worth keeping in sync.
@@ -181,24 +262,61 @@ sync_skills() {
     # processes (e.g. the Telegram bot) now read DEVLOG.md to introspect
     # "what shipped recently" instead of `git log`, since git no longer exists
     # on Mini. See L-2026-05-07-001.
-    for doc in CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json DEVLOG.md; do
+    for doc in AGENTS.md CLAUDE.md README.md K2B_ARCHITECTURE.md .mcp.json DEVLOG.md; do
         if [[ -f "$LOCAL_BASE/$doc" ]]; then
             rsync -av $rsync_flag "$LOCAL_BASE/$doc" "$RSYNC_TARGET/$doc"
         fi
     done
 
     rsync -av $rsync_flag --delete "$LOCAL_BASE/.claude/skills/" "$RSYNC_TARGET/.claude/skills/"
+    if [[ -d "$LOCAL_BASE/.agents/skills" ]]; then
+        rsync -av $rsync_flag --delete "$LOCAL_BASE/.agents/skills/" "$RSYNC_TARGET/.agents/skills/"
+    fi
+    if [[ -f "$LOCAL_BASE/.codex/hooks.json" ]]; then
+        rsync -av $rsync_flag "$LOCAL_BASE/.codex/hooks.json" "$RSYNC_TARGET/.codex/hooks.json"
+    fi
 
-    if ! $DRY_RUN; then
+    if ! $DRY_RUN && is_remote_target; then
         log "Verifying skills on Mini..."
-        local remote_count
-        remote_count=$(ssh "$MINI_HOST" "ls -d $MINI_PATH/.claude/skills/k2b-*/ 2>/dev/null | wc -l" | tr -d ' ')
-        local local_count
-        local_count=$(ls -d "$LOCAL_BASE/.claude/skills/k2b-"*/ 2>/dev/null | wc -l | tr -d ' ')
+        local remote_count local_count
+        local_count=$(find "$LOCAL_BASE/.claude/skills" -maxdepth 1 -type d -name 'k2b-*' 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$local_count" == "0" ]]; then
+            err "No local Claude skills found under $LOCAL_BASE/.claude/skills"
+            exit 1
+        fi
+        remote_count=$(ssh "$MINI_HOST" "test -d $(remote_shell_quote "$MINI_PATH/.claude/skills") && find $(remote_shell_quote "$MINI_PATH/.claude/skills") -maxdepth 1 -type d -name 'k2b-*' 2>/dev/null | wc -l" | tr -d ' ') || {
+            err "Unable to verify Claude skills on Mini"
+            exit 1
+        }
         if [[ "$remote_count" == "$local_count" ]]; then
             log "Skills verified: $remote_count skill folders on both machines"
         else
-            warn "Skill count mismatch: local=$local_count remote=$remote_count"
+            err "Claude skill count mismatch: local=$local_count remote=$remote_count"
+            exit 1
+        fi
+        if [[ -d "$LOCAL_BASE/.agents/skills" ]]; then
+            local remote_agents_count local_agents_count
+            local_agents_count=$(find "$LOCAL_BASE/.agents/skills" -maxdepth 1 -type d -name 'k2b-*' 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$local_agents_count" == "0" ]]; then
+                err "No local Codex skills found under $LOCAL_BASE/.agents/skills"
+                exit 1
+            fi
+            remote_agents_count=$(ssh "$MINI_HOST" "test -d $(remote_shell_quote "$MINI_PATH/.agents/skills") && find $(remote_shell_quote "$MINI_PATH/.agents/skills") -maxdepth 1 -type d -name 'k2b-*' 2>/dev/null | wc -l" | tr -d ' ') || {
+                err "Unable to verify Codex skills on Mini"
+                exit 1
+            }
+            if [[ "$remote_agents_count" != "$local_agents_count" ]]; then
+                err "Codex skill count mismatch: local=$local_agents_count remote=$remote_agents_count"
+                exit 1
+            fi
+            log "Codex skills verified: $remote_agents_count skill folders on both machines"
+        fi
+        if [[ -f "$LOCAL_BASE/.codex/hooks.json" ]]; then
+            if ! ssh "$MINI_HOST" "test -f $(remote_shell_quote "$MINI_PATH/.codex/hooks.json")"; then
+                err "Codex hooks missing on Mini: $MINI_PATH/.codex/hooks.json"
+                exit 1
+            fi
+            log "Codex hooks verified on Mini"
         fi
     fi
 }
@@ -392,7 +510,7 @@ $DRY_RUN && warn "DRY RUN -- no files will be changed"
 # Summary
 echo ""
 log "Sync plan:"
-$needs_skills && log "  - Skills + CLAUDE.md + README.md + K2B_ARCHITECTURE.md + .mcp.json + DEVLOG.md"
+$needs_skills && log "  - Skills + AGENTS.md/CLAUDE.md + .agents/skills + .codex/hooks.json + top-level docs"
 $needs_code && log "  - k2b-remote code (+ build + restart)"
 $needs_dashboard && log "  - k2b-dashboard code (+ build + restart)"
 $needs_scripts && log "  - scripts/ + launchd router-watchdog files"
