@@ -1,6 +1,6 @@
 ---
 name: k2b-media-generator
-description: Generate K2B media assets through GPTsAPI and current fallback paths
+description: Generate K2B media assets through GPTsAPI and current fallback paths -- images, speech (TTS), audio transcription, and high-end editorial presentation decks (HTML to PDF + PPTX). Use when Keith wants an image, a voiceover, a transcription, or a stunning / visual-led slide deck or presentation.
 ---
 
 # K2B Media Generator
@@ -16,6 +16,7 @@ Generate images, speech, audio transcriptions, video, and music. Images and spee
 - `/media music "description" [slug]` -- Blocked. Respond that music generation is non-functional because the MiniMax subscription lapsed 2026-05-27; do not call any MiniMax API.
 - `/media for <idea-slug>` -- Auto-generate media for a content idea
 - `/media voices` -- List available voices
+- **Presentation decks** (stunning / editorial) -- not a one-shot command; see the **Presentation Decks** section below for the HTML -> headless Chrome -> PDF + image-PPTX build workflow
 
 ## Paths
 
@@ -230,6 +231,111 @@ This is the high-value workflow. Reads a content idea and generates appropriate 
    ```
 6. Print confirmation with the embed path
 
+## Presentation Decks (Stunning / Editorial)
+
+For high-end, visual-led decks (board, MD, or leadership facing), do NOT draw native shapes with pptxgenjs. Hand-build **HTML/CSS, render through headless Chrome to PDF, rasterize to images, and wrap the images in a PPTX**. This produces far better visual quality than pptxgenjs shapes. Proven 2026-06-15 building the SJM AI-HR discussion paper -- the rendered reference deck lives at `K2B-Vault/Assets/decks/2026-06-15_SJM_AI_HR_Discussion-Paper.pdf` (look at it before starting, to set the quality bar).
+
+### Which route to use
+
+| Want | Route |
+|---|---|
+| Editorial / "stunning" / visual-led / leadership-facing deck | **HTML route** (this section) |
+| Quick deck the user will edit the text in afterward | Native pptxgenjs -- use the **anthropic-skills:pptx** skill |
+| Both (polished now, editable later) | Ship the HTML PDF/PPTX as the headline AND offer an editable pptxgenjs version |
+
+The HTML route's PPTX is **flat images, not editable text**. Always say so on delivery, and offer the native pptxgenjs version if the user needs to change wording.
+
+### Pipeline
+
+Pick a shell-safe `SLUG` (lowercase, no spaces or special characters) and work in a fresh scratch dir. Quote `"$WORK"` everywhere below so a stray space can never split a path:
+
+```bash
+SLUG=sjm-ai-hr; WORK="/tmp/deckbuild/$SLUG"; mkdir -p "$WORK"
+```
+
+**1. One HTML file, one `<section class="slide">` per slide, 1280x720 canvas each.** Put a design-system CSS in a single `<style>` block:
+
+```css
+*{margin:0;padding:0;box-sizing:border-box;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;}  /* REQUIRED: without this Chrome drops every background fill in the PDF */
+@page{size:1280px 720px;margin:0;}
+.slide{width:1280px;height:720px;position:relative;overflow:hidden;page-break-after:always;}
+.slide:last-child{page-break-after:auto;}
+:root{
+  --serif:'Charter','Iowan Old Style',Palatino,Georgia,serif;  /* macOS system serif */
+  --sans:-apple-system,'Helvetica Neue',Arial,sans-serif;      /* macOS system sans  */
+  /* one near-black ink, ONE accent, a warm paper bg, a hairline rule color */
+}
+```
+
+Quality comes from the design discipline, NOT the toolchain:
+- Refined, restrained palette: a near-black ink, ONE accent color, a warm paper background, a hairline divider. Restraint over decoration.
+- Serif display + sans body pairing (Charter/Iowan serif headings, -apple-system sans body). Generous margins (~74px top, ~96px sides).
+- A running header and footer on every slide (brand left, doc tag right; thin footer line at the bottom).
+- Build framework diagrams (process loops, phase timelines, pillar rows, 2- and 3-column grids) in pure CSS flex/grid. No images for diagrams.
+
+**2. Render to PDF with headless Chrome (verbatim):**
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --disable-gpu --no-pdf-header-footer \
+  --run-all-compositor-stages-before-draw \
+  --print-to-pdf="$WORK/deck.pdf" \
+  "file://$WORK/deck.html"
+```
+Pass an absolute `file://` path. `--run-all-compositor-stages-before-draw` forces Chrome to finish layout and font loading before it prints, so no slide comes out half-rendered. `--headless=new` is verified on Chrome 149 (bare `--headless` also works on current Chrome). The render is normally 1-2s; if Chrome ever hangs, Ctrl-C and re-run. (Do NOT wrap this in `timeout`/`gtimeout` -- neither ships on macOS by default, so it would fail with "command not found" unless you first `brew install coreutils`.)
+
+**3. Rasterize to crisp 16:9 PNGs (192 DPI -> 2560x1440):**
+```bash
+command -v pdftoppm >/dev/null || brew install poppler   # pdftoppm ships with poppler
+pdftoppm -png -r 192 "$WORK/deck.pdf" "$WORK/slide"
+# -> slide-1.png, slide-2.png, ... (pdftoppm zero-pads to the page count: 10+ slides -> slide-01..slide-10)
+```
+
+**4. Visual QA with fresh eyes: Read the PNGs.** Open each slide image and look for overflow, cramped spacing, weak contrast, misalignment. Fix the CSS, re-render from step 2, repeat until clean. Reading the rendered pixels catches what reading the HTML does not.
+
+**5. Deliver BOTH artifacts:**
+- **Primary: the vector PDF** (`deck.pdf`) -- sharp at any zoom, this is the headline deliverable.
+- **Also: an image-based PPTX** for people who expect PowerPoint. Assemble with pptxgenjs, one full-bleed image per slide (proven `assemble.js`, 2026-06-15):
+
+```js
+// assemble.js -- run from inside $WORK. Globs whatever PNGs pdftoppm produced.
+// Do NOT reconstruct names with a fixed pad width: pdftoppm zero-pads to the
+// TOTAL page count, so a 9-slide deck is slide-1..slide-9 but a 10+ slide deck
+// is slide-01..slide-10. Globbing + numeric sort is correct for any count.
+const fs = require("fs"), path = require("path");
+const pptxgen = require("pptxgenjs");
+const p = new pptxgen();
+p.layout = "LAYOUT_WIDE";                 // 13.333 x 7.5 in = 16:9 (1280px / 96dpi = 13.333in, 720 / 96 = 7.5)
+const slides = fs.readdirSync(__dirname)
+  .filter(f => /^slide-\d+\.png$/.test(f))
+  .sort((a, b) => a.match(/\d+/)[0] - b.match(/\d+/)[0]);   // numeric, pad-width agnostic
+for (const f of slides) {
+  // 2560x1440 PNGs share the 16:9 ratio of the 13.333x7.5 frame, so they
+  // downscale into it crisply -- no stretching, no aspect distortion.
+  p.addSlide().addImage({ path: path.join(__dirname, f), x: 0, y: 0, w: 13.333, h: 7.5 });
+}
+p.writeFile({ fileName: path.join(__dirname, "deck.pptx") });
+```
+```bash
+cd "$WORK" && { [ -f package.json ] || npm init -y; } && npm i pptxgenjs && node assemble.js
+```
+
+Save both to the vault, then clear the scratch dir:
+```bash
+cp "$WORK/deck.pdf"  ~/Projects/K2B-Vault/Assets/decks/$(date +%F)_deck_$SLUG.pdf
+cp "$WORK/deck.pptx" ~/Projects/K2B-Vault/Assets/decks/$(date +%F)_deck_$SLUG.pptx
+rm -rf "$WORK"   # node_modules + PNGs; remove once both artifacts are saved
+```
+New decks follow `YYYY-MM-DD_deck_<slug>.{pdf,pptx}`. (The 2026-06-15 reference deck predates this convention and keeps its descriptive name `2026-06-15_SJM_AI_HR_Discussion-Paper.pdf`.)
+
+### Common mistakes
+- Background colors/fills are missing in the PDF -> you dropped `print-color-adjust:exact`.
+- Slides look blurry in the PPTX -> rasterize at `-r 192` (2560x1440), not the default 150.
+- Content is clipped at a slide edge -> a block overflowed the 720px height and `overflow:hidden` hid it; QA the PNG in step 4 and trim the content.
+- Chrome renders a blank/old page -> use an ABSOLUTE `file://` path, not a relative one.
+- PPTX build dies with `ENOENT ... slide-01.png` (or silently drops slides) -> `pdftoppm` zero-pads to the page count, so a sub-10-slide deck is `slide-1.png` not `slide-01.png`. Glob the real files (the `assemble.js` above does) instead of reconstructing names with a fixed width.
+- Calling the image-PPTX "editable" -> it is NOT text-editable; offer the native pptxgenjs version when the user needs to edit copy.
+
 ## Asset Naming Convention
 
 All generated files follow: `YYYY-MM-DD_type_slug.ext`
@@ -238,6 +344,7 @@ All generated files follow: `YYYY-MM-DD_type_slug.ext`
 - Speech: `Assets/audio/2026-03-25_speech_insight-summary.mp3`
 - Music: `Assets/audio/2026-03-25_music_intro-theme.mp3`
 - Video: `Assets/video/2026-03-25_video_youtube-intro.mp4`
+- Decks: `Assets/decks/2026-06-15_deck_sjm-ai-hr.pdf` and `.pptx` (see the **Presentation Decks** section)
 
 ## Voice Cloning (Future)
 
