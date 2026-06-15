@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-06-15 -- Codex primary Ship 2: builder-family review matrix
+
+**Commit:** `496d1cf` feat(ship): enforce builder-family review matrix
+
+**What shipped:** Ship 2 of the Codex-primary migration. `/ship` now requires an explicit `BUILDER_FAMILY` before official review and routes review by builder family instead of by habit: OpenAI-built diffs require Kimi through the historical `minimax` runner key with `--no-fallback`; Kimi-built diffs require Codex only; Anthropic-built diffs may use Codex or Kimi; and other-builder diffs require an explicit reviewer plus a written reason. The review runner records builder-family, skip-Codex reason, and other-reviewer reason in state/final JSON, and rejects same-family or unaudited fallbacks. The direct Kimi review path enforces the same audit policy. The mirrored `k2b-ship` skills gained the same matrix, a durable Tier 1 non-approve review-log path, a clean-tree Codex reviewer guard, and a plain-English ship-brief contract so Keith gets user-impact wording instead of implementation-only summaries. Added reusable goal-card and ship-brief templates and expanded skill parity checks to verify the new ship-brief structure.
+
+**Review:** Tier 3 (skill + review runner policy). Official independent review was Kimi because Codex built the diff. Final Kimi pass: `APPROVE`, no findings, `.code-reviews/2026-06-15T13-12-07Z_3bae0f.log`. Earlier Kimi findings were either fixed with tests or triaged before the approving pass.
+
+**Tests:** `bash tests/review-runner.test.sh` (31 passed), `bash tests/verify-skills-parity.test.sh`, `scripts/verify-skills-parity.sh`, `bash tests/ship-detect-tier.test.sh`, `git diff --check`, and `python3 -m py_compile scripts/lib/review_runner.py scripts/lib/minimax_review.py`.
+
+**Feature status change:** none (`--no-feature` infrastructure migration ship). The active implementation tracker remains `plans/2026-06-14_codex-primary-migration-spec.md`; Ship 2 is complete there.
+
+**Follow-ups:** Ship 3 should continue the Claude Agent SDK replacement/provider-independent agent interface work and any remaining user-facing Codex-vs-Claude wording gaps.
+
+**Key decisions:** Kept the historical `minimax` runner/provider key as the compatibility name while making the policy language say Kimi, because K2B still routes Kimi through those wrappers. The ship brief is now a required output shape for K2B-facing shipping summaries, not just a preference.
+
+---
 ## 2026-06-15 -- deploy-to-mini: exclude k2b-remote runtime scratch from sync + drift detection
 
 **Commit:** `5c49133` fix(deploy-to-mini): exclude k2b-remote runtime scratch from sync + drift detection
