@@ -4234,3 +4234,19 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** Ship 2 commander/review matrix, Ship 3 Telegram provider bridge, Ship 4 cutover/hardening. Runtime K2Bi path-type enforcement should be handled in a later orchestrator hardening ship. Needs `/sync` (skills + scripts) so the Mac Mini receives Codex surfaces, the committed weave fix, and the router VPS exclusion.
 
 **Key decisions:** kept Ship 1 scoped to local parity rather than moving the Telegram bot off Anthropic Agent SDK. Did not touch the committed weave source files; the weave fix remains as `96311e0` underneath this branch and will deploy with the same sync.
+
+## 2026-06-15 -- k2b-media-generator: stunning-deck (HTML->Chrome->PDF/PPTX) workflow
+
+**Commit:** `8978320` docs(media-generator): add HTML->Chrome->PDF/PPTX stunning-deck workflow
+
+**What shipped:** A documented workflow in the k2b-media-generator skill for building high-end "stunning" presentation decks, proven 2026-06-15 building the SJM AI-HR discussion paper. Technique: each slide is a 1280x720 section in one HTML file with a real CSS design system (serif/sans pairing on macOS system fonts, running header/footer, CSS framework diagrams, `print-color-adjust:exact`); render to a vector PDF via headless Chrome; rasterize at 192 DPI (2560x1440); visually QA the PNGs; deliver the PDF as primary plus an image-per-slide PPTX assembled with pptxgenjs (LAYOUT_WIDE, full-bleed addImage). Adds a route-selection table (HTML route for editorial/visual-led decks vs native anthropic-skills:pptx for quick editable ones), extends the skill description for discoverability, and registers `Assets/decks/` in the naming convention.
+
+**Review:** builder-family=anthropic (Claude-built). Tier 1 (single .md doc) promoted to Tier 2 per the matrix; reviewed by Kimi K2.6 (`--skip-codex codex-cannot-file-scope-unrelated-dirty-tree` -- Codex's whole-tree review can't scope around the unrelated dirty k2b-plate files). Kimi returned NEEDS-ATTENTION/10; triaged against ground truth (the pipeline was run live on this MacBook). False positives: F1 "--headless=new breaks on Chrome 132+" (Chrome is 149, verified working twice), F8 dpi distortion (ratios match exactly, real artifact exists), F9 fonts (CSS fallback chain already present). Applied 6 real findings: shell-safe `$SLUG`/`$WORK` paths, pdftoppm/poppler prereq, scratch cleanup, guarded npm init, naming/reference reconciliation. Log `.code-reviews/2026-06-15T15-17-50Z_0b2c0a.log`.
+
+**MVP test:** n/a (`--no-feature`; documentation addition to an existing skill, not a roadmap feature).
+
+**Feature status change:** none (`--no-feature`).
+
+**Follow-ups:** none. The reference deck `K2B-Vault/Assets/decks/2026-06-15_SJM_AI_HR_Discussion-Paper.pdf` is the visual quality bar; /tmp/deckbuild build files are ephemeral, so the HTML approach in the skill body is the durable record. Needs `/sync` (skills) to reach the Mac Mini.
+
+**Key decisions:** End-to-end re-tested the documented commands verbatim after editing and caught a latent bug the original one-off hid -- pdftoppm zero-pads slide numbers to the page count, so the proven assemble.js's fixed `padStart(2)` would ENOENT on any deck under 10 slides; replaced it with a glob-based, pad-width-agnostic assemble.js. Also dropped a `timeout` wrapper that review suggested -- macOS ships no `timeout`/`gtimeout`, so it would have failed with command-not-found (worse than the problem it solved).
