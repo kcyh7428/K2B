@@ -801,6 +801,92 @@ MOCK
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Scenario 17: k2b-remote runtime upload scratch (workspace/) is NOT code drift
+# The bot writes incoming Telegram attachments to k2b-remote/workspace/uploads/
+# at runtime. Leftover .ogg/.jpg artifacts on the MacBook (absent on the Mini)
+# are runtime scratch, not source -- they must NOT flag the code category, which
+# would needlessly `npm run build && pm2 restart k2b-remote` the production bot.
+# Mirrors Scenario 6 (node_modules) for the workspace scratch dir.
+# ---------------------------------------------------------------------------
+{
+  LOCAL="$(mktmp)"
+  REMOTE="$(mktmp)"
+  build_tree "$LOCAL" "v2"
+  build_tree "$REMOTE" "v2"
+  # Leftover Telegram upload artifacts on the MacBook only -- runtime scratch.
+  mkdir -p "$LOCAL/k2b-remote/workspace/uploads"
+  printf 'OGG-BYTES\n' > "$LOCAL/k2b-remote/workspace/uploads/1774182849905_file.ogg"
+  printf 'JPG-BYTES\n' > "$LOCAL/k2b-remote/workspace/uploads/1774182948381_file.jpg"
+  out="$(run_detect "$LOCAL" "$REMOTE")"
+  assert_detect "k2b-remote workspace upload scratch ignored (not a code-category change)" "" "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 18: detect_changes and sync_code MUST carry identical k2b-remote
+# exclude lists. The script's own line-143 invariant says the dry-run flags
+# must mirror the real-sync flags or detection lies (it would report no code
+# drift while the real sync ships different content, or vice versa). This is a
+# static guard: extract both exclude lists from the script and compare.
+# ---------------------------------------------------------------------------
+{
+  # Exact, order-sensitive sequence (NOT a sorted set) compared against the
+  # known-good expected value, so an order divergence OR a broken/partial grep
+  # extraction both fail loudly -- a brittle pattern that yields a partial list
+  # cannot silently pass the equality check.
+  expected_excl="--exclude node_modules --exclude dist --exclude store --exclude .env --exclude /workspace/"
+  detect_excl="$(grep -A1 'rsync_has_changes "\$LOCAL_BASE/k2b-remote/"' "$SCRIPT" \
+    | grep -oE '\-\-exclude [A-Za-z0-9._/-]+' | paste -sd' ' -)"
+  sync_excl="$(awk '/^sync_code\(\)/,/^}/' "$SCRIPT" \
+    | grep -oE '\-\-exclude [A-Za-z0-9._/-]+' | paste -sd' ' -)"
+  if [ "$detect_excl" = "$expected_excl" ] && [ "$sync_excl" = "$expected_excl" ]; then
+    echo "  PASS: k2b-remote exclude lists match expected + identical (line-143 invariant)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: k2b-remote exclude list drift (line-143 mirror invariant)"
+    echo "    expected: $expected_excl"
+    echo "    detect:   $detect_excl"
+    echo "    sync:     $sync_excl"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 19: workspace scratch present on BOTH machines with different
+# content -- the real steady state, since each machine collects its own
+# Telegram uploads independently. Must still NOT flag the code category.
+# Scenario 17 covers first-run (MacBook has, Mini doesn't); this covers the
+# ongoing two-machine drift case.
+# ---------------------------------------------------------------------------
+{
+  LOCAL="$(mktmp)"
+  REMOTE="$(mktmp)"
+  build_tree "$LOCAL" "v2"
+  build_tree "$REMOTE" "v2"
+  mkdir -p "$LOCAL/k2b-remote/workspace/uploads" "$REMOTE/k2b-remote/workspace/uploads"
+  printf 'MACBOOK-OGG\n' > "$LOCAL/k2b-remote/workspace/uploads/aaa_file.ogg"
+  printf 'MINI-OGG\n'    > "$REMOTE/k2b-remote/workspace/uploads/bbb_file.ogg"
+  out="$(run_detect "$LOCAL" "$REMOTE")"
+  assert_detect "k2b-remote workspace differing on both sides still not code drift" "" "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 20: a regular FILE named workspace (not the runtime dir) at the
+# k2b-remote root IS code drift. The exclude is `/workspace/` (trailing slash =
+# directory only), so a file named workspace must still sync + flag code. This
+# guards the directory-only intent: a regression to a bare `--exclude workspace`
+# would wrongly hide such a file and fail this test.
+# ---------------------------------------------------------------------------
+{
+  LOCAL="$(mktmp)"
+  REMOTE="$(mktmp)"
+  build_tree "$LOCAL" "v2"
+  build_tree "$REMOTE" "v2"
+  printf 'i am a source file, not a scratch dir\n' > "$LOCAL/k2b-remote/workspace"
+  out="$(run_detect "$LOCAL" "$REMOTE")"
+  assert_detect "k2b-remote file named workspace still flags code (dir-only exclude)" "code" "$out"
+}
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

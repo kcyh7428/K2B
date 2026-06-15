@@ -215,9 +215,21 @@ detect_changes() {
             needs_skills=true
         fi
     fi
+    # k2b-remote/workspace/ is the bot's runtime scratch tree: uploads/ holds
+    # incoming Telegram attachments, telegram-outbox/ holds pending replies. The
+    # bot creates both at startup (mkdirSync recursive in media.ts and
+    # telegram-outbox.ts), so they are never source and must not sync. The
+    # `/workspace/` pattern is anchored: the leading slash pins it to the
+    # k2b-remote transfer root (a nested src/.../workspace/ still syncs) and the
+    # trailing slash matches a directory only (a file named "workspace" still
+    # syncs and would correctly flag code). This stops runtime files (and any
+    # future runtime subdir) from faking "code" drift that would needlessly
+    # rebuild + restart the live bot. Source lives in k2b-remote/src/ -- never
+    # place source under workspace/. This exclude list MUST stay identical to
+    # sync_code's (see the line ~143 mirror invariant); the test suite asserts it.
     if [[ -d "$LOCAL_BASE/k2b-remote" ]]; then
         if rsync_has_changes "$LOCAL_BASE/k2b-remote/" "$RSYNC_TARGET/k2b-remote/" \
-            --exclude node_modules --exclude dist --exclude store --exclude .env; then
+            --exclude node_modules --exclude dist --exclude store --exclude .env --exclude /workspace/; then
             needs_code=true
         fi
     fi
@@ -326,11 +338,14 @@ sync_code() {
     local rsync_flag=""
     $DRY_RUN && rsync_flag="--dry-run"
 
+    # The exclude list MUST mirror detect_changes (see its note + line ~143).
+    # /workspace/ = bot runtime scratch (anchored root, directory-only), never source.
     rsync -av $rsync_flag \
         --exclude node_modules \
         --exclude dist \
         --exclude store \
         --exclude .env \
+        --exclude /workspace/ \
         "$LOCAL_BASE/k2b-remote/" "$RSYNC_TARGET/k2b-remote/"
 
     if ! $DRY_RUN; then
