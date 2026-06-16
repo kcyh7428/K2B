@@ -104,10 +104,12 @@ For a single 16:9 image:
 ```bash
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 "$CHROME" --headless=new --disable-gpu --hide-scrollbars \
-  --window-size=1600,900 --default-background-color=00000000 \
+  --window-size=1600,900 \
   --screenshot="$PWD/infographic.png" "file://$PWD/infographic.html"
 test -s "$PWD/infographic.png" || { echo "Chrome render failed: infographic.png missing/empty" >&2; exit 1; }
 ```
+
+The HTML's own `.frame { background: var(--paper); }` rule paints the page, so no `--default-background-color` flag is needed (it varies across Chrome versions and recent builds reject the 8-digit hex form).
 
 For a multi-slide PDF, use `--print-to-pdf` instead (covered in `k2b-media-generator` Presentation Decks section).
 
@@ -142,6 +144,8 @@ The working example, source preserved for re-use as a template:
 - Panels: `K2B-Vault/Assets/images/2026-06-16_image_loop-panel{1-hr,2-floor,3-ops}.png`
 
 Open the HTML source first when starting any new infographic — copy it as the skeleton, swap panels and copy, re-render. Do not start from a blank file.
+
+The build directory at `/tmp/deckbuild/<slug>/` is left in place between iterations on purpose — Keith typically tweaks copy and re-renders multiple times. Vault + Downloads copies are the durable record, so a stale `/tmp` build is harmless and macOS clears `/tmp` on reboot. Only `rm -rf /tmp/deckbuild/<slug>` deliberately when starting a fully unrelated infographic and you want a clean state.
 
 ## Usage logging
 
