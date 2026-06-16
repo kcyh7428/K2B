@@ -66,14 +66,14 @@ Sections in fixed order:
 
 ## Rendering convention (the Hybrid -- agent-side display layer)
 
-The agent (Claude Code) does NOT show the raw script output verbatim by default. It renders into the **Hybrid format** below, established 2026-05-16 after Keith compared three options (Raw, Curated, Hybrid) and picked Hybrid. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
+The agent (Claude Code or Codex) does NOT show the raw script output verbatim by default. It renders into the **Hybrid format** below, established 2026-05-16 after Keith compared three options (Raw, Curated, Hybrid) and picked Hybrid. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
 
 **Per-section rule:**
 
 | Section | Treatment |
 |---|---|
-| ⚠ Pending actions | **Full body verbatim** -- do NOT truncate or summarize. Keith needs the Close: condition and the "how to" in one glance to act on it. |
-| 🔔 Open reminders | **Full body verbatim** -- same reason. |
+| ⚠ Pending actions | **Full actionable body** -- Keith needs the current gate, remaining action, Close/MVP condition, and "how to" in one glance. In wide renderers this can be verbatim; in narrow panes use the compact rendering rule below. |
+| 🔔 Open reminders | **Full actionable body** -- keep enough context to act, but use the compact rendering rule below in narrow panes. |
 | 🎩 K2Bi PM checkpoint | **One-paragraph summary** the agent extracts from the multi-paragraph blockquote. Capture: ship state, next concrete action, binding constraints. Skip the numbered conditional triggers + discipline list unless Keith asks. |
 | ✅ Recently shipped | **Title + date + one-line tag** per item. Skip the long Shipped-table notes. |
 | 🚧 In Progress | **3-column markdown table** (feature / updated date / latest status -- what's next). The status column is a one-line distillation of the Ship/Phase column from `concepts/index.md` -- what state the feature is in AND the concrete next move so Keith doesn't have to open each note to remember what it is. Keep each cell under ~120 chars; if the raw status is longer, compress while preserving the next-action signal (e.g. "Ship 2 commits 2+3 pending: --tier override + Codex --cached"). The script (plate.sh) emits the truncated status alongside the slug + date, so the agent just needs to wrap into table cells and compress further if needed. Established 2026-05-27 after Keith asked for at-a-glance status context on every In Progress feature. |
@@ -81,6 +81,15 @@ The agent (Claude Code) does NOT show the raw script output verbatim by default.
 | 🧠 Memory flags | **Omit entirely when empty**. When populated, render as a 1-line summary per R-ID/E-ID. |
 
 **Why this shape:** pending stuff is what Keith ACTS on -- needs full context. Lanes/snapshots are reference -- need to be visible but not loud. The compression on lanes/checkpoint/shipped is bias-managed (the script still has the full data; agent just narrows the display).
+
+**Narrow-pane rule (Codex Desktop default):** Codex Desktop renders assistant messages in a narrower column than Claude Code, so long verbatim pending-action bodies become hard to read. When rendering `/plate` in Codex or any visibly narrow pane, use **Compact-Hybrid** for the `Needs your decision now` section:
+
+- Preserve all action-critical content: feature/project slug, pending date, current gate/state, exact next action, Close/MVP condition, and any "do not", stop-if, or safety constraint.
+- Compress evidence chains into 1-3 short paragraphs or bullets instead of pasting every transition verbatim.
+- Avoid excessive inline-code chips for long command/event chains; keep code formatting only for identifiers that Keith may need to search or copy.
+- Reminders may be one bullet each if the action, date, linked note/deck, and blocker are preserved.
+- Start the section with `[Compact view -- safety constraints preserved; say "raw plate" for full audit trail]` so Keith can see when compression is active.
+- Do not hide auditability: `raw plate`, `show me raw`, `raw output`, or `full plate` still means dump the script stdout verbatim.
 
 **Override -- "raw plate":** if Keith says "raw plate", "show me raw", "raw output", or "full plate", the agent skips the Hybrid rendering and dumps `plate.sh` stdout verbatim. Use when Keith needs the complete K2Bi Resume Card text, the full Shipped-table notes, or wants to audit what the script actually emits.
 

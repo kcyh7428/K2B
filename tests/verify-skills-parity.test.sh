@@ -206,6 +206,36 @@ expect_pass "negated MiniMax live-worker wording" "$root"
 
 root="$(mktmp)"
 build_fixture "$root"
+printf '\nMiniMax M2.7 is a historical model; K2B no longer uses it as the live worker.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_pass "no-longer MiniMax live-worker wording" "$root"
+
+root="$(mktmp)"
+build_fixture "$root"
+printf '\nThe MiniMax M2.7 API endpoint is documented for historical reference only.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_pass "reference-only MiniMax API wording" "$root"
+
+root="$(mktmp)"
+build_fixture "$root"
+printf '\nMiniMax M2.7 is the active worker; see the docs for details.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_fail "MiniMax active worker with docs wording" "$root" "MiniMax M2.7"
+
+root="$(mktmp)"
+build_fixture "$root"
+printf '\nThe active worker is MiniMax M2.7.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_fail "MiniMax reordered active worker wording" "$root" "MiniMax M2.7"
+
+root="$(mktmp)"
+build_fixture "$root"
+printf '\nSet MiniMax M2.7 as active for text work.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_fail "MiniMax set active wording" "$root" "MiniMax M2.7"
+
+root="$(mktmp)"
+build_fixture "$root"
+printf '\nMiniMax M2.7 active-worker status is still live.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
+expect_fail "MiniMax hyphenated active worker wording" "$root" "MiniMax M2.7"
+
+root="$(mktmp)"
+build_fixture "$root"
 printf '\nMiniMax M2.7 was the text worker.\n' >> "$root/.agents/skills/k2b-ship/SKILL.md"
 expect_fail "MiniMax past-tense text worker wording" "$root" "MiniMax M2.7"
 

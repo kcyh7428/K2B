@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-16 -- Housekeeping: voice retry path + Codex skill parity
+
+**Commit:** this commit -- fix(k2b-remote): retry Telegram voice media downloads
+
+**What shipped:** Closed out leftover dirty-tree work from the June 15/16 sessions. The Codex-side `k2b-media-generator` skill now mirrors the already-shipped Claude-side HTML->Chrome->PDF/PPTX stunning-deck workflow, restoring mirrored skill parity. The mirrored `k2b-plate` skills now explicitly support Codex Desktop's narrower rendering column through a Compact-Hybrid rule that preserves action-critical pending items without dumping hard-to-read long bodies. `k2b-remote` voice messages now route through the shared retry-enabled `downloadMedia(file_id)` path instead of calling `ctx.getFile()` directly, so transient Telegram `getFile` failures get the same retry behavior as photo/document downloads. If downstream agent processing fails after transcription, the user keeps the transcript and gets a processing-specific error instead of a misleading transcription failure. Telegram media downloads now also URL-encode `file_id`, reject every non-2xx response, time out stalled requests, and retry malformed or retryable-error `getFile` metadata instead of saving non-media bodies as audio.
+
+**Review:** Tier 3 (skills + k2b-remote voice/media hardening). Official independent review used Kimi through the historical `minimax` runner because Codex built the diff. Focused Kimi passes: `.code-reviews/2026-06-16T11-49-14Z_03ba42.log`, `.code-reviews/2026-06-16T12-04-12Z_c70505.log`, `.code-reviews/2026-06-16T12-07-38Z_21afe4.log`; concrete findings were fixed with tests. Later Kimi passes continued to emit contradictory or out-of-scope follow-up findings (for example reversing the GROQ_API_KEY wording advice and repeating already-disproved timer claims), so the remaining items were triaged as non-blocking for this housekeeping ship.
+
+**Tests:** `bash tests/verify-skills-parity.test.sh`; `scripts/verify-skills-parity.sh`; `cd k2b-remote && npm test -- --run src/bot.voice.test.ts src/media.test.ts` (14 passed); `cd k2b-remote && npm run typecheck`; `git diff --check`.
+
+**Feature status change:** none (`--no-feature` housekeeping).
+
+**Follow-ups:** The YouTube canary alert text still over-attributes failures to cookies. It should learn to call out dead macOS proxy state when stderr contains `Unable to connect to proxy`.
+
+---
 ## 2026-06-15 -- Codex primary Ship 2: builder-family review matrix
 
 **Commit:** `496d1cf` feat(ship): enforce builder-family review matrix

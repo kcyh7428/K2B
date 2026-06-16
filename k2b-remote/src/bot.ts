@@ -374,6 +374,76 @@ async function handleMessage(
   }
 }
 
+type VoiceMessageContext = Context & {
+  message: NonNullable<Context['message']> & {
+    voice: {
+      file_id: string
+    }
+  }
+  reply(message: string): Promise<unknown>
+}
+
+interface VoiceMessageDeps {
+  voiceCapabilities: typeof voiceCapabilities
+  downloadMedia: (fileId: string, originalFilename?: string) => Promise<string>
+  transcribeAudio: typeof transcribeAudio
+  handleMessage: (ctx: Context, rawText: string) => Promise<void>
+  logVoiceError: (stage: 'download' | 'transcription' | 'processing' | 'reply', err: unknown) => void
+}
+
+async function replyVoiceFailure(
+  ctx: VoiceMessageContext,
+  deps: VoiceMessageDeps,
+  message: string
+): Promise<void> {
+  try {
+    await ctx.reply(message)
+  } catch (err) {
+    deps.logVoiceError('reply', err)
+  }
+}
+
+export async function handleVoiceMessage(ctx: VoiceMessageContext, deps: VoiceMessageDeps): Promise<void> {
+  const caps = deps.voiceCapabilities()
+  if (!caps.stt) {
+    await ctx.reply('Voice transcription is not configured.')
+    return
+  }
+
+  let localPath: string
+  try {
+    // Telegram voice notes do not carry a user filename; media.ts resolves the
+    // .ogg extension from Telegram's getFile response and retries transients.
+    localPath = await deps.downloadMedia(ctx.message.voice.file_id)
+  } catch (err) {
+    deps.logVoiceError('download', err)
+    await replyVoiceFailure(ctx, deps, 'Failed to transcribe voice note. Try again or type your message.')
+    return
+  }
+
+  let transcript: string
+  try {
+    transcript = await deps.transcribeAudio(localPath)
+  } catch (err) {
+    deps.logVoiceError('transcription', err)
+    await replyVoiceFailure(ctx, deps, 'Failed to transcribe voice note. Try again or type your message.')
+    return
+  }
+
+  try {
+    await ctx.reply(`[Transcribed]: ${transcript}`)
+  } catch (err) {
+    deps.logVoiceError('reply', err)
+  }
+
+  try {
+    await deps.handleMessage(ctx, `[Voice transcribed]: ${transcript}`)
+  } catch (err) {
+    deps.logVoiceError('processing', err)
+    await replyVoiceFailure(ctx, deps, 'Transcribed, but processing failed. Try typing the transcribed text above.')
+  }
+}
+
 // --- Bot creation ---
 
 export function createBot(): Bot {
@@ -537,22 +607,13 @@ export function createBot(): Bot {
   })
 
   bot.on('message:voice', async (ctx) => {
-    const caps = voiceCapabilities()
-    if (!caps.stt) {
-      await ctx.reply('Voice transcription not configured. Set GROQ_API_KEY in .env')
-      return
-    }
-
-    try {
-      const file = await ctx.getFile()
-      const localPath = await downloadMedia(file.file_id)
-      const transcript = await transcribeAudio(localPath)
-      await ctx.reply(`[Transcribed]: ${transcript}`)
-      await handleMessage(ctx, `[Voice transcribed]: ${transcript}`)
-    } catch (err) {
-      logger.error({ err }, 'Voice transcription failed')
-      await ctx.reply('Failed to transcribe voice note. Try again or type your message.')
-    }
+    await handleVoiceMessage(ctx, {
+      voiceCapabilities,
+      downloadMedia,
+      transcribeAudio,
+      handleMessage,
+      logVoiceError: (stage, err) => logger.error({ err, stage }, 'Voice message handling failed'),
+    })
   })
 
   bot.on('message:photo', async (ctx) => {

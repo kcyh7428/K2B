@@ -276,17 +276,42 @@ Quality comes from the design discipline, NOT the toolchain:
 
 **2. Render to PDF with headless Chrome (verbatim):**
 ```bash
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+"$CHROME" \
   --headless=new --disable-gpu --no-pdf-header-footer \
   --run-all-compositor-stages-before-draw \
   --print-to-pdf="$WORK/deck.pdf" \
-  "file://$WORK/deck.html"
+  "file://$WORK/deck.html" &
+chrome_pid=$!
+( sleep 30
+  if kill -0 "$chrome_pid" 2>/dev/null; then
+    kill "$chrome_pid" 2>/dev/null || true
+    sleep 5
+    kill -9 "$chrome_pid" 2>/dev/null || true
+  fi
+) &
+watchdog_pid=$!
+wait "$chrome_pid"; chrome_rc=$?
+kill "$watchdog_pid" 2>/dev/null || true
+wait "$watchdog_pid" 2>/dev/null || true
+if [[ "$chrome_rc" -ne 0 ]]; then
+  echo "Chrome PDF render failed or timed out after 30s" >&2
+  exit "$chrome_rc"
+fi
+command -v pdfinfo >/dev/null || {
+  echo "pdfinfo not found; install poppler first: brew install poppler" >&2
+  exit 1
+}
+pdfinfo "$WORK/deck.pdf" >/dev/null
 ```
-Pass an absolute `file://` path. `--run-all-compositor-stages-before-draw` forces Chrome to finish layout and font loading before it prints, so no slide comes out half-rendered. `--headless=new` is verified on Chrome 149 (bare `--headless` also works on current Chrome). The render is normally 1-2s; if Chrome ever hangs, Ctrl-C and re-run. (Do NOT wrap this in `timeout`/`gtimeout` -- neither ships on macOS by default, so it would fail with "command not found" unless you first `brew install coreutils`.)
+Pass an absolute `file://` path. `--run-all-compositor-stages-before-draw` forces Chrome to finish layout and font loading before it prints, so no slide comes out half-rendered. `--headless=new` is verified on Chrome 149 (bare `--headless` also works on current Chrome). The render is normally 1-2s; the 30s watchdog uses only macOS-default shell tools, escalates from TERM to KILL after 5s, and prevents a stuck Chrome render from blocking the session indefinitely. `pdfinfo` verifies Chrome produced a readable PDF before the pipeline proceeds. (Do NOT wrap this in `timeout`/`gtimeout` -- neither ships on macOS by default, so it would fail with "command not found" unless you first `brew install coreutils`.)
 
 **3. Rasterize to crisp 16:9 PNGs (192 DPI -> 2560x1440):**
 ```bash
-command -v pdftoppm >/dev/null || brew install poppler   # pdftoppm ships with poppler
+command -v pdftoppm >/dev/null || {
+  echo "pdftoppm not found; install poppler first: brew install poppler" >&2
+  exit 1
+}
 pdftoppm -png -r 192 "$WORK/deck.pdf" "$WORK/slide"
 # -> slide-1.png, slide-2.png, ... (pdftoppm zero-pads to the page count: 10+ slides -> slide-01..slide-10)
 ```
@@ -322,8 +347,13 @@ cd "$WORK" && { [ -f package.json ] || npm init -y; } && npm i pptxgenjs && node
 
 Save both to the vault, then clear the scratch dir:
 ```bash
-cp "$WORK/deck.pdf"  ~/Projects/K2B-Vault/Assets/decks/$(date +%F)_deck_$SLUG.pdf
-cp "$WORK/deck.pptx" ~/Projects/K2B-Vault/Assets/decks/$(date +%F)_deck_$SLUG.pptx
+dest_pdf="$HOME/Projects/K2B-Vault/Assets/decks/$(date +%F)_deck_$SLUG.pdf"
+dest_pptx="$HOME/Projects/K2B-Vault/Assets/decks/$(date +%F)_deck_$SLUG.pptx"
+test -s "$WORK/deck.pdf" && test -s "$WORK/deck.pptx"
+pdfinfo "$WORK/deck.pdf" >/dev/null
+python3 -m zipfile -t "$WORK/deck.pptx" >/dev/null
+cp "$WORK/deck.pdf" "$dest_pdf"
+cp "$WORK/deck.pptx" "$dest_pptx"
 rm -rf "$WORK"   # node_modules + PNGs; remove once both artifacts are saved
 ```
 New decks follow `YYYY-MM-DD_deck_<slug>.{pdf,pptx}`. (The 2026-06-15 reference deck predates this convention and keeps its descriptive name `2026-06-15_SJM_AI_HR_Discussion-Paper.pdf`.)
