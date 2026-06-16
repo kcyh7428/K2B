@@ -58,7 +58,10 @@ print("\n".join(sorted(variants, key=len, reverse=True)))
 emit_error() {
   local code="$1"
   local detail="$2"
-  detail="${detail//$'\0'/}"
+  # Strip null bytes. `$'\0'` inside `${var//...}` is a bad substitution on
+  # macOS system bash (3.2), which aborts the whole error handler. Use the
+  # printf|tr idiom (matches the sed redactions below) for portability.
+  detail=$(printf '%s' "$detail" | tr -d '\0')
   if [[ -n "${HOME:-}" ]]; then
     detail="${detail//${HOME}/~}"
   fi
