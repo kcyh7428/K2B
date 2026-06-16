@@ -4283,3 +4283,17 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** none. Needs `/sync` (scripts) to reach the Mac Mini -- the fix only helps the Mini once deployed.
 
 **Key decisions:** chose the `printf|tr` replacement over dropping the null-strip entirely so the defensive intent stays visible and matches the existing redaction idiom (a bash variable cannot actually hold a null byte -- argv and command substitution both strip them -- so the line was always a no-op, but a visible no-op that documents intent beats a silent deletion). Left three unrelated dirty working-tree files (`scripts/yt-transcript.sh`, its test, the youtube prefetch hook) untouched -- pre-existing/hook-generated, not part of this ship.
+
+## 2026-06-16 -- k2b-infographic skill (controllable hybrid infographics)
+
+**Commit:** `f0c1e17` feat: add k2b-infographic skill for controllable hybrid infographics
+
+**What shipped:** New skill capturing the hybrid infographic method (text-free gpt-image-2 panels + HTML/CSS frame, headless-rendered to PNG/PDF) proven on the SJM closed-loop service-quality visual for Rachel/the MD. Includes the SJM brand palette + real logo, the discussion-paper voice, and the closed-loop layout lessons. Pointer added from k2b-media-generator.
+
+**Review:** Tier-2 Kimi (builder anthropic; --skip-codex because Codex could not file-scope around the dirty youtube worktree from Codex's in-flight work). 13 findings; 4 doc-safety fixes applied (set -euo + key non-empty check, mkdir -p before scp, post-render test -s, bounded retry). md5sum / scp-user / font-quote nits dismissed as false-positive for our single-machine env.
+
+**Feature status change:** none (--no-feature infrastructure ship)
+
+**Follow-ups:** none
+
+**Key decisions:** Hybrid (AI illustration + HTML text) chosen over pure gpt-image-2 because Keith required exact wording and brand fidelity; documented as the bright-line trigger to switch skills the moment a copy change is requested.
