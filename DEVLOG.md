@@ -2,6 +2,19 @@
 
 
 ---
+## 2026-06-16 -- k2b-infographic skill: doc hardening from Kimi review
+
+**Commit:** `30ecb82` docs(k2b-infographic): drop the questionable Chrome bg flag + cleanup guidance
+
+**What shipped:** Two small documentation safety fixes on the `k2b-infographic` SKILL.md (the base skill itself shipped as `f0c1e17` in the previous session). Removed the `--default-background-color=00000000` flag from the headless-Chrome render snippet because (a) the 8-digit hex form is rejected by recent Chrome builds and (b) the HTML's own `.frame { background: var(--paper); }` rule already paints the page so the flag is unnecessary. Added an explicit paragraph documenting why we deliberately leave `/tmp/deckbuild/<slug>/` in place between iterations (Keith re-renders many times during copy iteration; the vault + Downloads copies are the durable record; macOS clears /tmp on reboot).
+
+**Review:** Tier 2 (skills docs, Claude-built per builder-family matrix). Official independent review via Kimi using `--skip-codex codex-cannot-file-scope-around-dirty-youtube-worktree` because Codex's whole-tree review cannot scope around the unrelated dirty youtube-transcript files Codex itself left in the working tree. Final Kimi pass: `NEEDS-ATTENTION` with 13 findings, log at `.code-reviews/2026-06-16T14-55-06Z_f90e5e.log`. Triaged inline with Keith: 2 findings real (the Chrome flag + the cleanup guidance shipped in this commit); 4 already addressed in the staged file (Kimi missed `set -euo pipefail`, the `KEY` non-empty check, `mkdir -p /tmp/deckbuild/<slug>` before the scp, and `test -s infographic.png` after the render); 7 false positives against K2B conventions (hardcoded Mini path `/Users/fastshower/` is the established K2B convention per CLAUDE.md; `md5sum` is via Homebrew coreutils and used across `k2b-ship` and `k2b-plate`; `[[wikilinks]]` are K2B's Obsidian convention; same-day filename collisions are namespaced by `<slug>` and overwriting Downloads is desired during iteration).
+
+**Feature status change:** none (`--no-feature` doc hardening).
+
+**Follow-ups:** none. The skill body is now safe to follow on a fresh macOS install.
+
+---
 ## 2026-06-16 -- Housekeeping: voice retry path + Codex skill parity
 
 **Commit:** this commit -- fix(k2b-remote): retry Telegram voice media downloads
