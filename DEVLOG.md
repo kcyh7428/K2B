@@ -4265,3 +4265,21 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** none. The reference deck `K2B-Vault/Assets/decks/2026-06-15_SJM_AI_HR_Discussion-Paper.pdf` is the visual quality bar; /tmp/deckbuild build files are ephemeral, so the HTML approach in the skill body is the durable record. Needs `/sync` (skills) to reach the Mac Mini.
 
 **Key decisions:** End-to-end re-tested the documented commands verbatim after editing and caught a latent bug the original one-off hid -- pdftoppm zero-pads slide numbers to the page count, so the proven assemble.js's fixed `padStart(2)` would ENOENT on any deck under 10 slides; replaced it with a glob-based, pad-width-agnostic assemble.js. Also dropped a `timeout` wrapper that review suggested -- macOS ships no `timeout`/`gtimeout`, so it would have failed with command-not-found (worse than the problem it solved).
+
+## 2026-06-16 -- gptsapi-image emit_error: bash 3.2 portable null-strip
+
+**Commit:** `c624393` fix(gptsapi-image): portable null-strip in emit_error for bash 3.2
+
+**What shipped:** A one-line portability fix in `scripts/gptsapi-image.sh`. The `emit_error()` handler stripped null bytes with `${detail//$'\0'/}`, which macOS system bash (3.2.57 -- the Mac Mini's `/bin/bash`) rejects as "bad substitution", aborting the whole handler. Effect: every failed image generation on the Mini crashed inside `emit_error` instead of printing the real GPTsAPI error, so the true failure reason was masked (Keith hit it twice on 2026-06-16 on the "closed-loop cycle" infographic prompt). Replaced with `printf '%s' "$detail" | tr -d '\0'`, matching the `printf|sed` redaction idiom already used two lines below. Key/Bearer/HOME/vault/tmp redaction unchanged.
+
+**Review:** builder-family=anthropic (Claude-built). Tier 2, runner Codex primary (`.code-reviews/2026-06-16T12-28-24Z_c80731.log`). Codex APPROVE, zero findings; it independently re-ran `/bin/bash --version && /bin/bash -n scripts/gptsapi-image.sh` (exit 0) to confirm the file parses under 3.2.57. No Kimi fallback needed.
+
+**Verification:** Reproduced the crash on the MacBook's own `/bin/bash` 3.2.57 (identical to the Mini), then verified the fix end-to-end under `/bin/bash`: `bash -n` clean; drove the real script into a forced `prediction_failed` via a stubbed curl carrying the key + Bearer header + `$HOME` + `/tmp` + vault paths; the handler now emits the real error JSON (`...content policy violation for closed-loop cycle prompt...`) instead of crashing; 12/12 assertions passed (raw key absent, key/Bearer -> `<gptsapi-key>`, tmp -> `<tmp>`, HOME -> `~`, vault -> `$K2B_VAULT_PATH`).
+
+**MVP test:** n/a (`--no-feature`; portability bugfix to an existing script, not a roadmap feature).
+
+**Feature status change:** none (`--no-feature`).
+
+**Follow-ups:** none. Needs `/sync` (scripts) to reach the Mac Mini -- the fix only helps the Mini once deployed.
+
+**Key decisions:** chose the `printf|tr` replacement over dropping the null-strip entirely so the defensive intent stays visible and matches the existing redaction idiom (a bash variable cannot actually hold a null byte -- argv and command substitution both strip them -- so the line was always a no-op, but a visible no-op that documents intent beats a silent deletion). Left three unrelated dirty working-tree files (`scripts/yt-transcript.sh`, its test, the youtube prefetch hook) untouched -- pre-existing/hook-generated, not part of this ship.
