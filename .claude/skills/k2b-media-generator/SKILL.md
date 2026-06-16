@@ -17,6 +17,7 @@ Generate images, speech, audio transcriptions, video, and music. Images and spee
 - `/media for <idea-slug>` -- Auto-generate media for a content idea
 - `/media voices` -- List available voices
 - **Presentation decks** (stunning / editorial) -- not a one-shot command; see the **Presentation Decks** section below for the HTML -> headless Chrome -> PDF + image-PPTX build workflow
+- **Single infographics with exact wording** -- use the [[k2b-infographic]] skill instead. It composites text-free `gpt-image-2` panels under a crisp HTML/CSS frame so labels, captions and brand colours are EXACTLY what Keith asked for. Trigger the moment wording must be controlled.
 
 ## Paths
 
