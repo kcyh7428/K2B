@@ -4310,3 +4310,35 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** none
 
 **Key decisions:** Hybrid (AI illustration + HTML text) chosen over pure gpt-image-2 because Keith required exact wording and brand fidelity; documented as the bright-line trigger to switch skills the moment a copy change is requested.
+
+## 2026-06-17 -- yt-transcript Mac Mini remote-retry tier
+
+**Commit:** `4cfa129` feat(yt-transcript): add Mac Mini remote-retry tier to shared transcript helper
+
+**What shipped:** `scripts/yt-transcript.sh` now has an explicit Mac Mini retry tier between local caption attempts and local Groq Whisper. The shared helper stays local-first, then retries on the Mini only when `K2B_YT_REMOTE_HOST` is set, validates the remote helper with SSH preflight, rejects diagnostic stdout bleed-through before treating anything as transcript text, and falls through to local Whisper if the Mini path fails. The Claude YouTube prefetch hook now defaults the remote host to `macmini`, disables remote fallback when an exposed outer hook budget is too small, and keeps browser-cookie access non-interactive. Both `k2b-research` skill surfaces now make `yt-transcript.sh` the canonical YouTube path and position transcript MCP as last-resort fallback only.
+
+**Review:** builder-family=`openai`. Independent Kimi review ran repeatedly and stayed `NEEDS-ATTENTION`; operator explicitly overrode further review churn and shipped after adjudication. The final substantive fixes from that loop were: fail-closed SSH host checking (`StrictHostKeyChecking=yes`), targeted Homebrew PATH probing instead of blind mutation, broader remote stdout rejection for `INFO:` and `[youtube]` diagnostics, removal of the username-based Mini heuristic, safer shell snippet guidance in the research skill, and the hook-side remote-budget guard. Final log: `.code-reviews/2026-06-17T00-02-08Z_2570a2.log`.
+
+**Verification:** `bash tests/yt-transcript.test.sh`; `bash tests/yt-canary.test.sh`; `scripts/verify-skills-parity.sh`; `git diff --check`. Added coverage for Mini fallback success, explicit remote disablement, rejection of `METHOD:` / `INFO:` / `[youtube]` polluted remote stdout, and recovery to local Whisper.
+
+**Feature status change:** none (`--no-feature`; shared helper + skill-surface hardening).
+
+**Follow-ups:** Kimi's remaining churn items were deferred: unify `METHOD` reporting across shell vs hook callers, cover more SSH preflight edge cases in bash tests, and consider deriving the remote script path from deployed Mini config instead of the current default path.
+
+**Key decisions:** kept the contract simple: stdout is transcript-or-empty, stderr is diagnostic only, and the hook path remains silent on failure. The Mini retry is opt-in and now fails closed on host keys rather than silently trusting first use.
+
+## 2026-06-17 -- k2b-infographic Codex mirror + Mini image-gen hardening
+
+**Commit:** `3587767` docs(k2b-infographic): add .agents mirror + harden Mini image-gen
+
+**What shipped:** Added the missing `.agents/skills/k2b-infographic/SKILL.md` mirror so the Codex and Claude skill surfaces stay in parity, then hardened the infographic skill guidance itself. The Mini image-generation example now uses a login shell instead of grepping `~/.zshrc` for `GPTSAPI_KEY`, copies the SJM logo into the local build dir on each run, writes panel images via `--output`, makes the Chrome binary overrideable, restores a valid YAML description field, and removes the stale `bad substitution` workaround that `c624393` already fixed in `scripts/gptsapi-image.sh`.
+
+**Review:** builder-family=`openai`. Kimi review on this docs-only scope stayed `NEEDS-ATTENTION`, mostly on speculative operational concerns around example commands and Chrome flag drift. Operator chose to ship the parity repair and doc hardening now instead of continuing review churn on a non-production code path.
+
+**Verification:** `scripts/verify-skills-parity.sh`; `git diff --check`. The new `.agents` mirror is present, frontmatter now parses cleanly, and parity no longer fails on `k2b-infographic`.
+
+**Feature status change:** none (`--no-feature`; mirrored skill/documentation maintenance).
+
+**Follow-ups:** the docs still deserve a later cleanup pass if Keith wants the infographic skill examples reduced further or moved onto a shared helper. That is separate from this parity repair.
+
+**Key decisions:** treated the missing `.agents` mirror as a repo-health issue, not optional polish. Parity had to be restored before future ships could pass the migration guard cleanly.
