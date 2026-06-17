@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Unified YouTube-URL -> transcript helper.
-# Cascade: yt-dlp auto-subs (en -> zh) -> Groq Whisper (via yt-transcribe-whisper.sh).
-# Used by both k2b-youtube-capture (batch playlist flow) and k2b-remote (ad-hoc
-# Telegram URL flow), so the caption-first-then-Whisper logic lives in ONE place.
+# Cascade: local yt-dlp auto-subs (en -> zh) -> optional Mac Mini retry ->
+# local Groq Whisper (via yt-transcribe-whisper.sh). Used by both
+# k2b-youtube-capture (batch playlist flow) and k2b-remote (ad-hoc Telegram URL
+# flow), so the transcript-routing logic lives in ONE place.
 #
 # Usage: yt-transcript.sh <youtube-url> [--language <lang>]
 #
@@ -24,12 +25,29 @@ set -euo pipefail
 # bare-env config). cron on macOS uses PATH=/usr/bin:/bin:/usr/sbin:/sbin
 # which does NOT include /opt/homebrew/bin (Apple Silicon Homebrew) or
 # /usr/local/bin (Intel-mac Homebrew). yt-dlp + ffmpeg live in one of those,
-# so without the prefix the script silently falls through every cascade
+# so without a targeted fix the script silently falls through every cascade
 # tier and reports METHOD: failed. Discovered 2026-05-26 -- yt-canary cron
-# had 5 consecutive FAILs since afc59a6 landed because of this. Prepending
-# both common Homebrew prefixes is safe (idempotent if already present)
-# and a no-op for interactive invocations.
-export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+# had 5 consecutive FAILs since afc59a6 landed because of this. Prefer the
+# caller's existing PATH first, then prepend only the first Homebrew prefix
+# that actually contains the missing tool.
+export PATH="${PATH:-/usr/bin:/bin}"
+ensure_path_tool() {
+  local tool="$1"
+  shift
+  local dir
+  if command -v "$tool" >/dev/null 2>&1; then
+    return 0
+  fi
+  for dir in "$@"; do
+    if [[ -x "$dir/$tool" ]]; then
+      export PATH="$dir:$PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+ensure_path_tool yt-dlp /opt/homebrew/bin /usr/local/bin || true
+ensure_path_tool ffmpeg /opt/homebrew/bin /usr/local/bin || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMPDIR_BASE=""
@@ -117,6 +135,120 @@ build_cookie_browser() {
       echo "$choice"
       ;;
   esac
+}
+
+is_local_mini() {
+  local host
+  if [[ "${K2B_YT_IS_MINI:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  host=$(hostname -s 2>/dev/null || true)
+  case "$host" in
+    Matthews-Mac-mini|Mac-mini|macmini|macmini-local)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# On Keith's MacBook, the Mini often has the healthier YouTube session. Keep
+# the main extraction logic local-first. Mini retry is explicit opt-in through
+# K2B_YT_REMOTE_HOST so this helper does not silently send URLs to SSH targets
+# on unrelated machines.
+build_remote_host() {
+  local choice="${K2B_YT_REMOTE_HOST:-none}"
+  if [[ "${K2B_YT_REMOTE_FALLBACK:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  if is_local_mini; then
+    return 0
+  fi
+
+  case "$choice" in
+    none|auto|"")
+      return 0
+      ;;
+    *)
+      if command -v ssh >/dev/null 2>&1; then
+        echo "$choice"
+      fi
+      ;;
+  esac
+}
+
+try_remote_helper() {
+  local remote_host="$1"
+  local remote_script="${K2B_YT_REMOTE_SCRIPT:-/Users/fastshower/Projects/K2B/scripts/yt-transcript.sh}"
+  local remote_preflight_timeout="${K2B_YT_REMOTE_PREFLIGHT_TIMEOUT:-10}"
+  local remote_timeout="${K2B_YT_REMOTE_TIMEOUT:-30}"
+  local remote_out="$TMPDIR_BASE/remote.out"
+  local remote_err="$TMPDIR_BASE/remote.err"
+  local remote_cmd
+  local remote_script_q
+  local ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes)
+
+  remote_script_q=$(printf '%q' "$remote_script")
+  remote_cmd="K2B_YT_REMOTE_FALLBACK=0"
+  remote_cmd+=" bash $remote_script_q"
+  remote_cmd+=" $(printf '%q' "$URL")"
+  if [[ -n "$LANGUAGE_HINT" ]]; then
+    remote_cmd+=" --language $(printf '%q' "$LANGUAGE_HINT")"
+  fi
+
+  echo "Local captions failed. Retrying transcript extraction on ${remote_host}..." >&2
+  set +e
+  run_command_with_timeout "$remote_preflight_timeout" \
+    ssh "${ssh_opts[@]}" "$remote_host" "test -x $remote_script_q" \
+    >/dev/null 2>"$remote_err"
+  local preflight_rc=$?
+  set -e
+  if [[ "$preflight_rc" -ne 0 ]]; then
+    if [[ "$preflight_rc" -eq 255 ]]; then
+      echo "FATAL: remote SSH preflight to ${remote_host} failed (exit 255); check host key trust and SSH auth before using Mini fallback" >&2
+    fi
+    if [[ -s "$remote_err" ]]; then
+      if grep -qiE 'host key|strict checking' "$remote_err"; then
+        echo "FATAL: remote SSH host key for ${remote_host} is not trusted; pre-seed it in ~/.ssh/known_hosts before using Mini fallback" >&2
+      fi
+      cat "$remote_err" >&2
+    else
+      echo "WARN: remote transcript preflight failed on ${remote_host} (exit ${preflight_rc})" >&2
+    fi
+    return "$preflight_rc"
+  fi
+
+  set +e
+  run_command_with_timeout "$remote_timeout" \
+    ssh "${ssh_opts[@]}" "$remote_host" "$remote_cmd" \
+    >"$remote_out" 2>"$remote_err"
+  local rc=$?
+  set -e
+
+  if [[ -s "$remote_err" ]]; then
+    awk '
+      /^METHOD: / {
+        method = $2
+        sub(/^METHOD: /, "")
+        if (method !~ /-remote$/) {
+          print "METHOD: " method "-remote"
+        } else {
+          print "METHOD: " method
+        }
+        next
+      }
+      { print }
+    ' "$remote_err" >&2
+  fi
+  if [[ "$rc" -eq 0 && -s "$remote_out" ]]; then
+    if grep -qE '(\[youtube\]|^(METHOD:|ERROR:|WARNING:|WARN:|INFO:|DEBUG:|FATAL:|TRACE:|NOTICE:|STATUS:))' "$remote_out"; then
+      echo "WARN: remote transcript stdout contained diagnostic markers; rejecting remote output" >&2
+      return 1
+    fi
+    cat "$remote_out"
+  fi
+  return "$rc"
 }
 
 run_yt_dlp_with_timeout() {
@@ -229,6 +361,7 @@ PY
 
 COOKIE_SOURCE_FILE=$(build_cookies_file)
 COOKIE_BROWSER=$(build_cookie_browser)
+REMOTE_HOST=$(build_remote_host)
 
 # Strip VTT timing/formatting into plain paragraph text.
 # YouTube auto-captions use a rolling/progressive format where consecutive cues
@@ -338,6 +471,18 @@ if [[ -z "$LANGUAGE_HINT" || "$LANGUAGE_HINT" == "zh" ]]; then
     echo "METHOD: captions-zh" >&2
     exit 0
   fi
+fi
+
+if [[ -n "$REMOTE_HOST" ]]; then
+  set +e
+  OUTPUT=$(try_remote_helper "$REMOTE_HOST")
+  REMOTE_EXIT=$?
+  set -e
+  if [[ $REMOTE_EXIT -eq 0 && -n "$OUTPUT" ]]; then
+    printf '%s\n' "$OUTPUT"
+    exit 0
+  fi
+  echo "WARN: transcript retry on ${REMOTE_HOST} failed; continuing with local Whisper fallback" >&2
 fi
 
 # --- Tier 2: Groq Whisper (audio download + ASR) ---

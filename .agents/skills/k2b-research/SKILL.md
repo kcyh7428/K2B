@@ -50,11 +50,22 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 Detect URL type and handle accordingly:
 
 **YouTube URLs:**
-1. Fetch transcript using the YouTube Transcript MCP tool
+1. Fetch transcript with the shared K2B helper, not the transcript MCP:
+   ```bash
+   set -euo pipefail
+   ERRFILE=$(mktemp -t yt-transcript-err.XXXXXX.log)
+   trap 'rm -f "$ERRFILE"' EXIT INT TERM
+   TRANSCRIPT=$(K2B_YT_REMOTE_HOST="${K2B_YT_REMOTE_HOST:-macmini}" K2B_YT_REMOTE_TIMEOUT="${K2B_YT_REMOTE_TIMEOUT:-30}" ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE")
+   METHOD=$(grep "^METHOD:" "$ERRFILE" | tail -1 | awk '{print $2}')
+   ```
+   This helper is the canonical path for Codex, Claude Code, and Telegram. It tries local captions (`no cookies -> cookie file -> browser cookies`), an explicit Mac Mini retry when configured, and Groq Whisper. If you are already on the Mini, set `K2B_YT_IS_MINI=1` to force local-only behavior, or `K2B_YT_REMOTE_FALLBACK=0` to disable SSH fallback entirely.
+   Expected methods are `captions-en`, `captions-zh`, `captions-en-remote`, `captions-zh-remote`, `groq-whisper`, `groq-whisper-remote`, and `failed`.
+   This `METHOD=` parsing pattern is for explicit shell use of `yt-transcript.sh`; the Claude hook path only consumes stdout, not stderr.
+   If `yt-transcript.sh` exits non-zero or returns empty stdout, fall back to the transcript MCP only as a last resort and note why the shared helper failed.
 2. Analyze the full transcript
 3. Extract key concepts, techniques, tools mentioned
 4. Map each to K2B applicability
-5. Note timestamps for the most relevant segments
+5. Note timestamps for the most relevant segments when they are present in the transcript or source metadata
 
 **GitHub repo URLs:**
 1. Fetch and read the README
@@ -1576,7 +1587,7 @@ The `notebooklm` skill at `~/.agents/skills/notebooklm/` has full command docume
 - Rule of thumb: if you would only read the source once to extract, Opus-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, Kimi-extract wins.
 
 **Workflow**:
-1. Fetch the source content as usual (WebFetch, YouTube transcript MCP, Read for GitHub README, etc.).
+1. Fetch the source content as usual (`scripts/yt-transcript.sh` for YouTube, WebFetch for articles, Read for GitHub README, etc.).
 2. If fetched content is under 10K chars, skip the offload entirely and extract on Opus. See size gate above.
 3. Otherwise, write the fetched content to a temp file, e.g. `/tmp/k2b-research-input-$(date +%s).txt`, remembering the exact filename for the next step.
 4. Call the extractor with the SAME filename from step 3:
@@ -1653,6 +1664,6 @@ echo -e "$(date +%Y-%m-%d)\tk2b-research\t$(echo $RANDOM | md5sum | head -c 8)\t
 - No em dashes, no AI cliches, no sycophancy
 - Be specific in recommendations -- "improve the meeting processor" is useless, "add an explicit instruction for formatting action items with owner names in brackets" is actionable
 - External findings should be filtered for relevance -- don't dump every search result
-- When scanning YouTube videos, use the transcript MCP tools
+- When scanning YouTube videos, use `~/Projects/K2B/scripts/yt-transcript.sh` first, with `K2B_YT_REMOTE_HOST=macmini` on the MacBook when SSH to the Mini is available. Do not use transcript MCP tools as the primary path; they are a fallback only if the shared helper is unavailable.
 - When scanning GitHub repos, focus on README, key source files, and patterns
 - Always cross-link findings to existing vault notes where relevant

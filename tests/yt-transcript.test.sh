@@ -79,7 +79,10 @@ SH
 
   out="$d/out.txt"
   err="$d/err.txt"
-  if ! PATH="$fakebin:$PATH" YT_DLP_COOKIE_BROWSER=none /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
+  if ! PATH="$fakebin:$PATH" \
+    K2B_YT_REMOTE_FALLBACK=0 \
+    YT_DLP_COOKIE_BROWSER=none \
+    /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
     cat "$err" >&2
     fail "no-cookie captions should succeed under /bin/bash"
   fi
@@ -168,6 +171,7 @@ SH
   err="$d/err.txt"
   if ! PATH="$fakebin:$PATH" \
     K2B_YT_COOKIES_FILE="$cookies" \
+    K2B_YT_REMOTE_FALLBACK=0 \
     YT_DLP_COOKIE_BROWSER=none \
     FAKE_YTDLP_CALLS="$calls" \
     EXPECTED_COOKIE_FILE="$cookies" \
@@ -243,6 +247,7 @@ SH
   if ! PATH="$fakebin:$PATH" \
     K2B_YT_COOKIES_FILE="$cookies" \
     K2B_YT_DLP_ATTEMPT_TIMEOUT=1 \
+    K2B_YT_REMOTE_FALLBACK=0 \
     YT_DLP_COOKIE_BROWSER=none \
     /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
     cat "$err" >&2
@@ -283,6 +288,7 @@ SH
     K2B_YT_COOKIES_FILE=none \
     YT_DLP_COOKIE_BROWSER=none \
     K2B_YT_DLP_ATTEMPT_TIMEOUT=1 \
+    K2B_YT_REMOTE_FALLBACK=0 \
     K2B_YT_WHISPER_HELPER="$helper" \
     K2B_YT_WHISPER_TIMEOUT=1 \
     /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err" || EXIT=$?
@@ -292,4 +298,283 @@ SH
   grep -q "command timed out after 1s" "$err" || fail "expected Whisper timeout warning"
   ! grep -q "should not print" "$out" || fail "timed-out helper output should not be treated as transcript"
   echo "  PASS: Whisper fallback is timeout-bounded"
+}
+
+{
+  d="$TMPROOT/remote-mini-fallback"
+  fakebin="$d/bin"
+  helper="$d/should-not-run-whisper.sh"
+  ssh_calls="$d/ssh-calls.txt"
+  whisper_marker="$d/whisper-ran.txt"
+  mkdir -p "$fakebin"
+
+  cat > "$fakebin/yt-dlp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Sign in to confirm you're not a bot" >&2
+exit 1
+SH
+  chmod +x "$fakebin/yt-dlp"
+
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_SSH_CALLS"
+case "$*" in
+  *"test -x"*)
+    exit 0
+    ;;
+esac
+echo "Remote Mini transcript succeeded after the local helper hit the bot wall."
+echo "METHOD: captions-en" >&2
+exit 0
+SH
+  chmod +x "$fakebin/ssh"
+
+  cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+touch "$FAKE_WHISPER_MARKER"
+echo "local whisper should not run when Mini fallback succeeds" >&2
+exit 1
+SH
+  chmod +x "$helper"
+
+  out="$d/out.txt"
+  err="$d/err.txt"
+  if ! PATH="$fakebin:$PATH" \
+    K2B_YT_COOKIES_FILE=none \
+    YT_DLP_COOKIE_BROWSER=none \
+    K2B_YT_REMOTE_HOST=fake-mini \
+    K2B_YT_REMOTE_SCRIPT="/Users/fastshower/Projects/K2B/scripts/yt-transcript.sh" \
+    K2B_YT_WHISPER_HELPER="$helper" \
+    FAKE_SSH_CALLS="$ssh_calls" \
+    FAKE_WHISPER_MARKER="$whisper_marker" \
+    /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
+    cat "$err" >&2
+    fail "Mini fallback should succeed when local captions hit the bot wall"
+  fi
+  grep -q "Remote Mini transcript succeeded" "$out" \
+    || fail "expected transcript text from Mini fallback"
+  grep -q "METHOD: captions-en-remote" "$err" \
+    || fail "expected remote-tagged method from Mini fallback stderr"
+  grep -q "fake-mini" "$ssh_calls" \
+    || fail "expected ssh fallback to target the configured Mini host"
+  grep -q "StrictHostKeyChecking=yes" "$ssh_calls" \
+    || fail "expected ssh fallback to require a pre-trusted host key"
+  [[ ! -e "$whisper_marker" ]] \
+    || fail "local whisper helper should not run after successful Mini fallback"
+  echo "  PASS: Mini fallback succeeds before local whisper"
+}
+
+{
+  d="$TMPROOT/remote-fallback-disabled"
+  fakebin="$d/bin"
+  helper="$d/fast-whisper.sh"
+  ssh_calls="$d/ssh-calls.txt"
+  mkdir -p "$fakebin"
+
+  cat > "$fakebin/yt-dlp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+SH
+  chmod +x "$fakebin/yt-dlp"
+
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_SSH_CALLS"
+echo "remote should not run when fallback is disabled" >&2
+exit 1
+SH
+  chmod +x "$fakebin/ssh"
+
+  cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "local whisper ran after remote fallback was disabled"
+SH
+  chmod +x "$helper"
+
+  out="$d/out.txt"
+  err="$d/err.txt"
+  if ! PATH="$fakebin:$PATH" \
+    K2B_YT_COOKIES_FILE=none \
+    YT_DLP_COOKIE_BROWSER=none \
+    K2B_YT_REMOTE_HOST=fake-mini \
+    K2B_YT_REMOTE_FALLBACK=0 \
+    K2B_YT_WHISPER_HELPER="$helper" \
+    FAKE_SSH_CALLS="$ssh_calls" \
+    /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
+    cat "$err" >&2
+    fail "local whisper should run when explicit remote fallback is disabled"
+  fi
+  [[ ! -s "$ssh_calls" ]] || fail "ssh should not run when K2B_YT_REMOTE_FALLBACK=0"
+  grep -q "local whisper ran" "$out" || fail "expected local whisper output"
+  grep -q "METHOD: groq-whisper" "$err" || fail "expected local whisper method"
+  echo "  PASS: explicit remote disablement suppresses ssh fallback"
+}
+
+{
+  d="$TMPROOT/remote-diagnostic-stdout-rejected"
+  fakebin="$d/bin"
+  helper="$d/fast-whisper.sh"
+  mkdir -p "$fakebin"
+
+  cat > "$fakebin/yt-dlp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+SH
+  chmod +x "$fakebin/yt-dlp"
+
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *"test -x"*)
+    exit 0
+    ;;
+esac
+echo "METHOD: captions-en"
+echo "this should not be accepted as transcript"
+echo "METHOD: captions-en" >&2
+exit 0
+SH
+  chmod +x "$fakebin/ssh"
+
+  cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "local whisper recovered after rejecting polluted remote stdout"
+SH
+  chmod +x "$helper"
+
+  out="$d/out.txt"
+  err="$d/err.txt"
+  if ! PATH="$fakebin:$PATH" \
+    K2B_YT_COOKIES_FILE=none \
+    YT_DLP_COOKIE_BROWSER=none \
+    K2B_YT_REMOTE_HOST=fake-mini \
+    K2B_YT_WHISPER_HELPER="$helper" \
+    /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
+    cat "$err" >&2
+    fail "local whisper should recover after rejecting polluted remote stdout"
+  fi
+  ! grep -q "this should not be accepted" "$out" \
+    || fail "diagnostic remote stdout must not be treated as transcript"
+  grep -q "rejecting remote output" "$err" \
+    || fail "expected rejection warning for polluted remote stdout"
+  grep -q "local whisper recovered" "$out" \
+    || fail "expected local whisper recovery output"
+  echo "  PASS: polluted remote stdout is rejected before local whisper"
+}
+
+{
+  d="$TMPROOT/remote-info-stdout-rejected"
+  fakebin="$d/bin"
+  helper="$d/fast-whisper.sh"
+  mkdir -p "$fakebin"
+
+  cat > "$fakebin/yt-dlp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+SH
+  chmod +x "$fakebin/yt-dlp"
+
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *"test -x"*)
+    exit 0
+    ;;
+esac
+echo "INFO: remote helper emitted diagnostics on stdout"
+echo "METHOD: captions-en" >&2
+exit 0
+SH
+  chmod +x "$fakebin/ssh"
+
+  cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "local whisper recovered after rejecting INFO stdout"
+SH
+  chmod +x "$helper"
+
+  out="$d/out.txt"
+  err="$d/err.txt"
+  if ! PATH="$fakebin:$PATH" \
+    K2B_YT_COOKIES_FILE=none \
+    YT_DLP_COOKIE_BROWSER=none \
+    K2B_YT_REMOTE_HOST=fake-mini \
+    K2B_YT_WHISPER_HELPER="$helper" \
+    /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
+    cat "$err" >&2
+    fail "local whisper should recover after rejecting INFO-prefixed remote stdout"
+  fi
+  ! grep -q "INFO: remote helper" "$out" \
+    || fail "INFO-prefixed remote stdout must not be treated as transcript"
+  grep -q "rejecting remote output" "$err" \
+    || fail "expected rejection warning for INFO-prefixed remote stdout"
+  grep -q "local whisper recovered after rejecting INFO stdout" "$out" \
+    || fail "expected local whisper recovery after INFO-prefixed stdout"
+  echo "  PASS: INFO-prefixed remote stdout is rejected before local whisper"
+}
+
+{
+  d="$TMPROOT/remote-youtube-stdout-rejected"
+  fakebin="$d/bin"
+  helper="$d/fast-whisper.sh"
+  mkdir -p "$fakebin"
+
+  cat > "$fakebin/yt-dlp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+SH
+  chmod +x "$fakebin/yt-dlp"
+
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *"test -x"*)
+    exit 0
+    ;;
+esac
+echo "WARNING: [youtube] Sign in to confirm you're not a bot"
+echo "METHOD: captions-en" >&2
+exit 0
+SH
+  chmod +x "$fakebin/ssh"
+
+  cat > "$helper" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "local whisper recovered after rejecting youtube-tagged stdout"
+SH
+  chmod +x "$helper"
+
+  out="$d/out.txt"
+  err="$d/err.txt"
+  if ! PATH="$fakebin:$PATH" \
+    K2B_YT_COOKIES_FILE=none \
+    YT_DLP_COOKIE_BROWSER=none \
+    K2B_YT_REMOTE_HOST=fake-mini \
+    K2B_YT_WHISPER_HELPER="$helper" \
+    /bin/bash "$SCRIPT" "https://youtu.be/fakeVideo123" >"$out" 2>"$err"; then
+    cat "$err" >&2
+    fail "local whisper should recover after rejecting [youtube]-tagged remote stdout"
+  fi
+  ! grep -q '\[youtube\]' "$out" \
+    || fail "[youtube]-tagged remote stdout must not be treated as transcript"
+  grep -q "rejecting remote output" "$err" \
+    || fail "expected rejection warning for [youtube]-tagged remote stdout"
+  grep -q "local whisper recovered after rejecting youtube-tagged stdout" "$out" \
+    || fail "expected local whisper recovery after [youtube]-tagged stdout"
+  echo "  PASS: [youtube]-tagged remote stdout is rejected before local whisper"
 }

@@ -2,8 +2,8 @@
 # K2B UserPromptSubmit Hook -- YouTube Transcript Prefetch
 #
 # When Keith pastes a YouTube URL into a Claude Code message, this hook
-# fetches the transcript via scripts/yt-transcript.sh (the path proven to
-# work from his Macau/Oracle Cloud Singapore IP via yt-dlp + Chrome cookies)
+# fetches the transcript via scripts/yt-transcript.sh (the shared helper that
+# can retry on the Mac Mini when the local MacBook path hits YouTube's bot wall)
 # and injects it as additionalContext, so Claude sees the transcript before
 # generating its response.
 #
@@ -21,6 +21,24 @@ set -uo pipefail  # NOT -e: a failed fetch must not abort the hook
 # block Keith mid-keystroke. A dedicated K2B cookie file is still allowed because
 # it is non-interactive and is the stable daemon path.
 export YT_DLP_COOKIE_BROWSER=none
+export K2B_YT_REMOTE_HOST="${K2B_YT_REMOTE_HOST:-macmini}"
+case "${K2B_YT_REMOTE_TIMEOUT:-30}" in
+  ''|*[!0-9]*)
+    export K2B_YT_REMOTE_TIMEOUT=30
+    ;;
+  *)
+    export K2B_YT_REMOTE_TIMEOUT
+    ;;
+esac
+if [[ -n "${CLAUDE_HOOK_TIMEOUT_MS:-}" && "${CLAUDE_HOOK_TIMEOUT_MS}" =~ ^[0-9]+$ ]]; then
+  min_budget_ms=$(( (K2B_YT_REMOTE_TIMEOUT + 10) * 1000 ))
+  if (( CLAUDE_HOOK_TIMEOUT_MS <= min_budget_ms )); then
+    export K2B_YT_REMOTE_FALLBACK=0
+  fi
+fi
+# The outer Claude Code hook timeout still bounds total prefetch latency; if a
+# future runtime budget env var is exposed, compare it against the remote retry
+# plus local overhead before fetching.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRANSCRIPT_SCRIPT="$HERE/../yt-transcript.sh"
