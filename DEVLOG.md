@@ -4394,3 +4394,17 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** keep `🎯 总模式` on the temporary working fallback until the private path remains stable, then decide when to move back to `🔒 私有线路`. Install AWS CLI on the Mini if we want incident bundles there to classify Lightsail state without relying on MacBook-side AWS CLI.
 
 **Key decisions:** no new router-side software; the Mac Mini owns monitoring, Telegram alerts, incident bundles, AWS CLI, and SSH diagnosis. Live incident during ship showed the right failure class: all private VPS leaves failed while DIRECT stayed OK, then HK recovered after five good checks.
+
+## 2026-06-20 -- private VPN watchdog minute cadence follow-up
+
+**Commit:** `69dde29` infra: run private VPN watchdog every minute
+
+**What shipped:** Corrected the private VPN launch agent throttle from 300 seconds to 60 seconds so the new watchdog actually keeps the planned once-per-minute Mihomo path probe cadence. Added a plist guard for `StartInterval` / `ThrottleInterval` and expanded the private-route test to prove AWS/SSH tracing still waits for the incident threshold instead of running every minute.
+
+**Review:** builder-family=`openai`. Kimi review flagged the intentional 60-second throttle tradeoff in `.code-reviews/2026-06-20T10-13-03Z_0cc0a8.log` and `.code-reviews/2026-06-20T10-14-07Z_9832b0.log`; the ship keeps that tradeoff because Keith explicitly wanted 60-second cheap router checks. Later Kimi retries were provider-rejected as high risk because the test diff included fake `ssh`/`aws` stubs: `.code-reviews/2026-06-20T10-15-47Z_f0f1bc.log`, `.code-reviews/2026-06-20T10-16-04Z_ae75a0.log`.
+
+**Verification:** `plutil -lint launchd/com.k2b.router-private-vpn-watchdog.plist`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog-ship-2.test.sh`; `git diff --check`.
+
+**Feature status change:** none (`--no-feature`; router infrastructure hardening).
+
+**Key decisions:** keep cheap Mihomo checks at 60 seconds during outages; continue to gate expensive AWS/SSH trace work behind the private-route incident threshold.
