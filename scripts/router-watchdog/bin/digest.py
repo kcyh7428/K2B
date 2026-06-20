@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import os
 import re
+import sys
 from collections import Counter
 
 
@@ -110,6 +111,82 @@ def drift_summary(rows: list[dict]) -> tuple[int, str | None]:
     return sum(kinds.values()), summary
 
 
+def leaf_check(row: dict, leaf: str) -> dict:
+    checks = row.get("checks")
+    if not isinstance(checks, dict):
+        checks = {}
+    check = checks.get(leaf)
+    return check if isinstance(check, dict) else {}
+
+
+def latency_text(row: dict, leaf: str) -> str:
+    check = leaf_check(row, leaf)
+    latency = check.get("latency_ms")
+    if latency is None:
+        return "unknown"
+    return f"{latency} ms"
+
+
+def private_vpn_digest(rows: list[dict]) -> tuple[str, str] | None:
+    if not rows:
+        return None
+    try:
+        return _private_vpn_digest(rows)
+    except (AttributeError, TypeError, ValueError, ZeroDivisionError) as exc:
+        sys.stderr.write(f"private VPN digest unavailable: {type(exc).__name__}: {exc}\n")
+        return None
+
+
+def _private_vpn_digest(rows: list[dict]) -> tuple[str, str] | None:
+    primary = os.environ.get("K2B_PRIVATE_VPN_PRIMARY", "🇭🇰 K2B-VPS-HK")
+    failover = os.environ.get("K2B_PRIVATE_VPN_FAILOVER", "🇹🇼 K2B-VPS-TW")
+    emergency = os.environ.get("K2B_PRIVATE_VPN_EMERGENCY", "🇲🇾 K2B-VPS-KL")
+    latest = rows[-1]
+    latest_status = "OK" if latest.get("overall_ok") else "FAILING"
+    primary_observed = [row for row in rows if leaf_check(row, primary)]
+    primary_ok = [row for row in primary_observed if leaf_check(row, primary).get("ok") is True]
+    health = (len(primary_ok) / len(primary_observed)) if primary_observed else 0
+    classifications = Counter(str(row.get("classification") or "unknown") for row in rows)
+    incident_classes = Counter(
+        str(row.get("classification") or "unknown")
+        for row in rows
+        if str(row.get("classification") or "unknown") not in {"ok", "unknown"}
+    )
+    failovers = classifications.get("hk_only_down", 0)
+    incident_summary = "none"
+    if incident_classes:
+        incident_summary = ", ".join(f"{kind} x{count}" for kind, count in incident_classes.most_common(4))
+    aws_state = latest.get("aws_state") or "unknown"
+    fallback_healthy = leaf_check(latest, failover).get("ok") is True
+    if latest.get("overall_ok") and fallback_healthy:
+        recommendation = "keep HK primary"
+    elif fallback_healthy:
+        recommendation = "stay on TW fallback until HK is stable"
+    else:
+        recommendation = "inspect incident trace before changing router state"
+
+    return (
+        latest_status,
+        "\n".join(
+            [
+                f"Router VPN digest: {latest_status}",
+                "",
+                "Primary route: HK",
+                "Fallback route: TW",
+                f"HK health: {health:.1%}",
+                f"Failovers: {failovers}",
+                f"Incidents: {sum(incident_classes.values())} {incident_summary}",
+                "Current latency: "
+                f"HK {latency_text(latest, primary)}, "
+                f"TW {latency_text(latest, failover)}, "
+                f"KL {latency_text(latest, emergency)}",
+                f"AWS HK: {aws_state}",
+                f"Recommendation: {recommendation}",
+            ]
+        ),
+    )
+
+
 def filter_drift_rows(rows: list[dict], cutoff: dt.datetime) -> tuple[list[dict], int]:
     """Backwards-compatible alias for filter_log_by_recent_timestamp."""
     return filter_log_by_recent_timestamp(rows, cutoff)
@@ -120,12 +197,16 @@ def main() -> int:
     parser.add_argument("--health-log", default=os.path.expanduser("~/Library/Logs/k2b-router-watchdog/health.jsonl"))
     parser.add_argument("--score-log", default=os.path.expanduser("~/Library/Logs/k2b-router-watchdog/node-score.jsonl"))
     parser.add_argument("--confirm-failures-log", default=os.path.expanduser("~/Library/Logs/k2b-router-watchdog/confirm-failures.jsonl"))
+    parser.add_argument("--private-vpn-log", default=os.path.expanduser("~/Library/Logs/k2b-router-watchdog/private-vpn-health.jsonl"))
     parser.add_argument("--now", default=None)
     parser.add_argument("--candidate-regex", default=os.environ.get("K2B_AUTOSWITCH_CANDIDATE_REGEX", r"^♻️ 手动切换"))
     args = parser.parse_args()
 
     now = parse_ts(args.now) if args.now else dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     cutoff = now - dt.timedelta(hours=24)
+    private_raw, _ = load_jsonl_with_errors(args.private_vpn_log)
+    private_rows, _private_skipped = filter_log_by_recent_timestamp(private_raw, cutoff)
+    private_digest = private_vpn_digest(private_rows)
 
     # Use the tolerant loader for all three logs so a single bad row in any
     # log can't crash the digest. health and score logs are pre-existing
@@ -215,7 +296,19 @@ def main() -> int:
         node, count = node_fail_counts.most_common(1)[0]
         lines.append(f"Watch: {node} had {count} failed check observations.")
 
-    print("\n".join(lines))
+    if private_digest:
+        private_status, private_text = private_digest
+        overall = "FAILING" if "FAILING" in {private_status, latest_status} else "OK"
+        print(
+            f"Overall router digest: {overall} "
+            f"(private VPN {private_status}; router {latest_status})"
+            + "\n\n"
+            + private_text
+            + "\n\n"
+            + "\n".join(lines)
+        )
+    else:
+        print("\n".join(lines))
     return 0
 
 

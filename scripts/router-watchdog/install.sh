@@ -8,6 +8,7 @@ SOURCE_LAUNCHD="$REPO_ROOT/launchd"
 PROFILE_FILE="$SOURCE_BIN/leaf-optimizer-profiles.json"
 PLISTS=(
   com.k2b.router-watchdog.plist
+  com.k2b.router-private-vpn-watchdog.plist
   com.k2b.router-daily-rollup.plist
   com.k2b.router-node-score.plist
   com.k2b.router-leaf-optimizer.plist
@@ -44,7 +45,7 @@ load_watchdog_env() {
     key="${key#export }"
     key="${key//[[:space:]]/}"
     case "$key" in
-      TELEGRAM_BOT_TOKEN|KEITH_CHAT_ID|MIHOMO_*|K2B_LEAF_OPTIMIZER_*)
+      TELEGRAM_BOT_TOKEN|KEITH_CHAT_ID|MIHOMO_*|K2B_LEAF_OPTIMIZER_*|K2B_PRIVATE_VPN_*)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -96,6 +97,56 @@ for name in required:
 PY
 }
 
+validate_optional_ssh_target() {
+  local name="$1" value="${!1:-}"
+  [[ -z "$value" ]] && return 0
+  [[ "$value" != -* ]] || fail "$name must not start with '-'"
+  [[ "$value" != *[[:space:]]* ]] || fail "$name must not contain whitespace"
+}
+
+validate_optional_ssh_key() {
+  local name="$1" value="${!1:-}"
+  [[ -z "$value" ]] && return 0
+  python3 - "$value" <<'PY' || fail "$name is not a usable SSH key path"
+import os, pwd, stat, sys
+raw = sys.argv[1]
+if ".." in raw.split(os.sep):
+    raise SystemExit(1)
+path = os.path.abspath(os.path.expanduser(raw))
+home = os.path.abspath(os.path.expanduser("~"))
+real_home = os.path.abspath(pwd.getpwuid(os.getuid()).pw_dir)
+if home != real_home:
+    raise SystemExit(1)
+ssh_dir = os.path.join(home, ".ssh")
+if not (path == ssh_dir or path.startswith(ssh_dir + os.sep)):
+    raise SystemExit(1)
+if os.path.islink(path) or not os.path.isfile(path):
+    raise SystemExit(1)
+mode = os.stat(path, follow_symlinks=False).st_mode
+if mode & 0o077:
+    raise SystemExit(1)
+current = os.path.dirname(path) or "."
+while True:
+    if os.path.islink(current):
+        raise SystemExit(1)
+    mode = os.stat(current, follow_symlinks=False).st_mode
+    if mode & 0o022:
+        raise SystemExit(1)
+    if os.path.abspath(current) == ssh_dir:
+        break
+    parent = os.path.dirname(current)
+    if parent == current:
+        raise SystemExit(1)
+    current = parent
+PY
+}
+
+warn_missing_private_env() {
+  local name="$1" fallback="$2"
+  [[ -n "${!name:-}" ]] && return 0
+  log "WARNING: env file is missing $name; private VPN incident traces will use ${fallback}"
+}
+
 [[ -d "$SOURCE_BIN" ]] || fail "missing source bin dir: $SOURCE_BIN"
 [[ -d "$SOURCE_LAUNCHD" ]] || fail "missing launchd dir: $SOURCE_LAUNCHD"
 [[ -f "$PROFILE_FILE" ]] || fail "missing leaf optimizer profile file: $PROFILE_FILE"
@@ -115,6 +166,13 @@ while IFS= read -r required_env; do
   [[ -z "$required_env" ]] && continue
   : "${!required_env:?env file is missing $required_env}"
 done < <(required_profile_envs)
+validate_optional_ssh_target K2B_PRIVATE_VPN_ROUTER_SSH_TARGET
+validate_optional_ssh_target K2B_PRIVATE_VPN_HK_SSH_TARGET
+validate_optional_ssh_key K2B_PRIVATE_VPN_HK_SSH_KEY
+warn_missing_private_env K2B_PRIVATE_VPN_HK_SSH_TARGET "server trace=unknown"
+warn_missing_private_env K2B_PRIVATE_VPN_AWS_PROFILE "default k2b-aws-signhubdev-hk"
+warn_missing_private_env K2B_PRIVATE_VPN_AWS_REGION "default ap-east-1"
+warn_missing_private_env K2B_PRIVATE_VPN_AWS_INSTANCE "default Ubuntu-1"
 
 if [[ -e "$LEAFOPT_SENTINEL" ]]; then
   log "WARNING: $LEAFOPT_SENTINEL exists; router leaf optimizer will be allowed to mutate manual selectors after install"

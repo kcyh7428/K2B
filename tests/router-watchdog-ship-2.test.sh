@@ -78,8 +78,8 @@ EOF
   manifest_file="$app_dir/install-manifest.sha256"
   rm -f "$manifest_file"
 
-  # Build a fake source tree with 5 plists and a few bin files.
-  # Use the actual launchd dir from the repo (it has all 5 plists).
+  # Build a fake source tree with the router-watchdog plists and a few bin files.
+  # Use the actual launchd dir from the repo so the installer fleet stays current.
   cp -a "$REPO_ROOT/launchd" "$d/launchd-source"
 
   # Stage a fresh INSTALL source that matches the repo layout but with new bin content.
@@ -93,6 +93,7 @@ EOF
   # Seed the existing plist files (so we have "prior" plists to roll back to).
   for plist in com.k2b.router-watchdog.plist com.k2b.router-daily-rollup.plist \
                com.k2b.router-node-score.plist com.k2b.router-leaf-optimizer.plist \
+               com.k2b.router-private-vpn-watchdog.plist \
                com.k2b.router-digest.plist; do
     printf 'OLD-%s\n' "$plist" > "$d/launch-agents/$plist"
   done
@@ -144,6 +145,7 @@ EOF
   # Each plist must be restored to its OLD-* content.
   for plist in com.k2b.router-watchdog.plist com.k2b.router-daily-rollup.plist \
                com.k2b.router-node-score.plist com.k2b.router-leaf-optimizer.plist \
+               com.k2b.router-private-vpn-watchdog.plist \
                com.k2b.router-digest.plist; do
     actual_plist="$(<"$d/launch-agents/$plist")"
     expected_plist="OLD-$plist"

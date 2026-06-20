@@ -63,6 +63,7 @@ paths:
   # awake).
   - "scripts/router-watchdog/**"
   - "launchd/com.k2b.router-watchdog.plist"
+  - "launchd/com.k2b.router-private-vpn-watchdog.plist"
   - "launchd/com.k2b.router-daily-rollup.plist"
   - "launchd/com.k2b.router-node-score.plist"
   - "launchd/com.k2b.router-leaf-optimizer.plist"

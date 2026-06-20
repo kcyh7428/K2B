@@ -15,6 +15,23 @@ K2B_NETWORK_ALERT_THREAD_ID=6
 MIHOMO_API_BASE=http://192.168.50.1:9990
 MIHOMO_API_SECRET=<secret>
 MIHOMO_OPENAI_GROUP=🤖 OpenAI
+K2B_PRIVATE_VPN_ROUTE_GROUP=🎯 总模式
+K2B_PRIVATE_VPN_PRIVATE_GROUP=🔒 私有线路
+K2B_PRIVATE_VPN_PRIMARY=🇭🇰 K2B-VPS-HK
+K2B_PRIVATE_VPN_FAILOVER=🇹🇼 K2B-VPS-TW
+K2B_PRIVATE_VPN_EMERGENCY=🇲🇾 K2B-VPS-KL
+K2B_PRIVATE_VPN_FAIL_THRESHOLD=2
+K2B_PRIVATE_VPN_RECOVERY_THRESHOLD=5
+K2B_PRIVATE_VPN_INCIDENT_KEEP=50
+K2B_PRIVATE_VPN_INCIDENT_MAX_AGE_DAYS=30
+K2B_PRIVATE_VPN_ALERT_RECOVERY_MAX_AGE_HOURS=168
+K2B_PRIVATE_VPN_AWS_PROFILE=k2b-aws-signhubdev-hk
+K2B_PRIVATE_VPN_AWS_REGION=ap-east-1
+K2B_PRIVATE_VPN_AWS_INSTANCE=Ubuntu-1
+K2B_PRIVATE_VPN_ROUTER_SSH_TARGET=router
+K2B_PRIVATE_VPN_HK_SSH_TARGET=ubuntu@<hk-server-ip>
+# Optional: if not using ssh-agent, this must be a non-symlink key under ~/.ssh with 0600 or stricter permissions.
+# K2B_PRIVATE_VPN_HK_SSH_KEY=~/.ssh/<key>
 EOF
 chmod 600 ~/.k2b-router-watchdog.env
 
@@ -31,13 +48,17 @@ launchd runs that installed copy. Runtime state and logs live outside the repo:
 
 ```text
 ~/Library/Application Support/k2b-router-watchdog/state.json
+~/Library/Application Support/k2b-router-watchdog/private-vpn-state.json
 ~/Library/Application Support/k2b-router-watchdog/pending-partition-events.jsonl
 ~/Library/Application Support/k2b-router-watchdog/node-top3.json
 ~/Library/Logs/k2b-router-watchdog/health.jsonl
+~/Library/Logs/k2b-router-watchdog/private-vpn-health.jsonl
 ~/Library/Logs/k2b-router-watchdog/alerts.jsonl
+~/Library/Logs/k2b-router-watchdog/private-vpn-alerts.jsonl
 ~/Library/Logs/k2b-router-watchdog/node-score.jsonl
 ~/Library/Logs/k2b-router-watchdog/leaf-optimizer.jsonl
 ~/Library/Logs/k2b-router-watchdog/auto-switch.jsonl
+~/Library/Logs/k2b-router-watchdog/incidents/
 ~/Library/Logs/k2b-router-watchdog/install.log
 ```
 
@@ -49,6 +70,7 @@ Check launchd:
 
 ```bash
 launchctl print gui/$(id -u)/com.k2b.router-watchdog
+launchctl print gui/$(id -u)/com.k2b.router-private-vpn-watchdog
 launchctl print gui/$(id -u)/com.k2b.router-daily-rollup
 launchctl print gui/$(id -u)/com.k2b.router-node-score
 launchctl print gui/$(id -u)/com.k2b.router-leaf-optimizer
@@ -59,6 +81,12 @@ Run one dry tick:
 
 ```bash
 bash "$HOME/Library/Application Support/k2b-router-watchdog/bin/check.sh" --dry-run
+```
+
+Run one private VPN tick:
+
+```bash
+bash "$HOME/Library/Application Support/k2b-router-watchdog/bin/private-vpn-watchdog.sh"
 ```
 
 Run the daily rollup manually:
@@ -85,10 +113,13 @@ Generate the recommendation digest without sending it:
 bash "$HOME/Library/Application Support/k2b-router-watchdog/bin/digest.sh"
 ```
 
+When private VPN health rows exist, the digest starts with a combined worst-status line, then prints the private route section before the general router watchdog section. This keeps HK/TW route health visible first without hiding a failing general router watchdog section in Telegram previews.
+
 Stop the watchdog:
 
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-watchdog.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-private-vpn-watchdog.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-daily-rollup.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-node-score.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-leaf-optimizer.plist
@@ -99,11 +130,41 @@ Start it again:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-watchdog.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-private-vpn-watchdog.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-daily-rollup.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-node-score.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-leaf-optimizer.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-digest.plist
 ```
+
+## Private VPN Watchdog
+
+`com.k2b.router-private-vpn-watchdog` runs every 60 seconds from the Mac Mini. It does not install software on the router and it does not run AWS CLI or SSH during green checks.
+
+The intended private route is:
+
+```text
+🎯 总模式 -> 🔒 私有线路 -> 🇭🇰 K2B-VPS-HK -> 🇹🇼 K2B-VPS-TW -> 🇲🇾 K2B-VPS-KL
+```
+
+HK is primary, TW is the real fallback, and KL is emergency/monitor-only. Each minute the job reads the Mihomo selector chain and measures HK, TW, KL, and DIRECT against `http://www.gstatic.com/generate_204` and Apple's success URL. Two consecutive HK failures create an incident bundle and Telegram alert. Five consecutive HK successes after an alerted outage create the recovery alert. The expensive checks are limited to incident transitions:
+
+- AWS Lightsail state for HK
+- HK server SSH service/socket check
+- router SSH log tail
+- Mihomo selector/history snapshot
+
+Incident JSON is written under:
+
+```text
+~/Library/Logs/k2b-router-watchdog/incidents/
+```
+
+The watcher keeps the newest `K2B_PRIVATE_VPN_INCIDENT_KEEP` incident bundles and also prunes bundles older than `K2B_PRIVATE_VPN_INCIDENT_MAX_AGE_DAYS`.
+
+Recovery alerts normally rely on `private-vpn-state.json`. If that state file is deleted while the route is recovering, the watcher can still infer an unresolved outage from `private-vpn-alerts.jsonl` and send one recovery alert when HK is stable again. `K2B_PRIVATE_VPN_ALERT_RECOVERY_MAX_AGE_HOURS` caps that alert-log lookback; the default is 168 hours.
+
+The selector chain and recovery alert wording are snapshots from the start of that tick. The private VPN watchdog never mutates Mihomo selectors, so a simultaneous manual dashboard change or another watchdog mutation can make the snapshot best-effort.
 
 ## Auto-Switch
 
