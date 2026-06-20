@@ -10,6 +10,7 @@ SCRIPT="$REPO_ROOT/scripts/verify-skills-parity.sh"
 TMP_DIRS=()
 cleanup() {
   local d
+  [[ ${#TMP_DIRS[@]} -eq 0 ]] && return 0
   for d in "${TMP_DIRS[@]}"; do
     [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
   done
@@ -31,7 +32,16 @@ fail() {
 build_fixture() {
   local root="$1"
   mkdir -p "$root/.claude/skills/k2b-ship" "$root/.agents/skills/k2b-ship" "$root/.codex" "$root/plans/templates"
-  printf '# Agents\n' > "$root/AGENTS.md"
+  cat > "$root/AGENTS.md" <<'AGENTS'
+# Agents
+
+## Session Discipline
+
+At the END of every K2B desktop session, before closing, run /ship.
+Plain implementation requests without delivery command wording are not ship authorization.
+If shipping is blocked, preserve the work and report the blocker.
+If Keith explicitly declines to ship, do not claim the work shipped.
+AGENTS
   printf '{"hooks":{}}\n' > "$root/.codex/hooks.json"
   cat > "$root/plans/templates/ship-brief.md" <<'BRIEF'
 # Prepare Keith-facing ship brief
@@ -57,6 +67,16 @@ description: Ship K2B changes safely
 # k2b-ship
 
 Text worker calls use Kimi through historical minimax scripts.
+
+Codex Desktop manual ship contract.
+Delivery command wording means the full manual ship path is already authorized.
+Delivery words in a descriptive or architectural context do not authorize shipping.
+If the wording is ambiguous, ask one direct confirmation question before shipping.
+Mixed-mode examples require completed implementation evidence or confirmation.
+For compound instructions, the first clause must be complete.
+Before shipping, list the done checks implied by X.
+At least one done check must cite a concrete test command, file assertion, or live verification result.
+If the agent cannot produce inspectable evidence, pause before shipping.
 
 ### 8.5 Prepare Keith-facing ship brief
 

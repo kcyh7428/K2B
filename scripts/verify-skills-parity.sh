@@ -80,6 +80,24 @@ SHIP_BRIEF_MARKERS = (
     "Under the hood",
     "Risk / rollback",
 )
+AGENTS_SESSION_DISCIPLINE_MARKERS = (
+    "## Session Discipline",
+    "At the END of every K2B desktop session",
+    "Plain implementation requests without delivery command wording are not ship authorization",
+    "If shipping is blocked",
+    "explicitly declines to ship",
+)
+SHIP_CONTRACT_MARKERS = (
+    "Codex Desktop manual ship contract",
+    "already authorized",
+    "descriptive or architectural context",
+    "If the wording is ambiguous",
+    "first clause must be complete",
+    "list the done checks implied by X",
+    "concrete test command, file assertion, or live verification result",
+    "cannot produce inspectable evidence",
+    "Mixed-mode examples",
+)
 
 
 def read(path: Path) -> str:
@@ -121,6 +139,15 @@ def check_ship_brief_contract(path: Path, text: str) -> None:
     if path.parent.name != "k2b-ship":
         return
     check_ship_brief_markers(path, text)
+    for marker in SHIP_CONTRACT_MARKERS:
+        if marker not in text:
+            errors.append(f"missing Codex ship contract marker in {path}: {marker}")
+
+
+def check_agents_session_discipline(path: Path, text: str) -> None:
+    for marker in AGENTS_SESSION_DISCIPLINE_MARKERS:
+        if marker not in text:
+            errors.append(f"missing Codex session discipline marker in {path}: {marker}")
 
 
 def frontmatter(path: Path, text: str) -> dict[str, object]:
@@ -151,6 +178,8 @@ if not agents_dir.is_dir():
     errors.append(f"missing Codex skills directory: {agents_dir}")
 if not (root / "AGENTS.md").is_file():
     errors.append(f"missing Codex instruction surface: {root / 'AGENTS.md'}")
+else:
+    check_agents_session_discipline(root / "AGENTS.md", read(root / "AGENTS.md"))
 if not (root / ".codex" / "hooks.json").is_file():
     errors.append(f"missing Codex hook surface: {root / '.codex' / 'hooks.json'}")
 ship_brief_template = root / "plans" / "templates" / "ship-brief.md"

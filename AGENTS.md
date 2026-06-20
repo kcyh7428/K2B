@@ -200,6 +200,18 @@ Omitting `--builder-family` is for ad-hoc reviews only, not official `/ship` gat
 
 `/ship` owns commit, push, feature-note lane changes, DEVLOG, `wiki/log.md`, and pending-sync mailbox behavior. If `/ship` is not available in this harness, follow the `k2b-ship` skill body manually and state any missing step clearly.
 
+## Session Discipline
+
+At the END of every K2B desktop session, before closing, run **`/ship`**. Codex does not have Claude Code's slash-command runtime in every harness, so this means invoking `k2b-ship` and executing its manual fallback end to end: review, commit, push, DEVLOG, `wiki/log.md`, Step 14 vault sweep, and sync-now/defer resolution. Keep this section in sync with the `Codex Desktop manual ship contract` in `k2b-ship`.
+
+When Keith has already used delivery command wording -- for example "ship it", "commit this", "push this", "sync this to the Mini", "deploy this", "merge this", "do all the commit/etc.", "make sure this is shipped", or "implement X, then commit/push/sync it" -- treat that as authorization to complete the ship path without asking a second "should I ship?" question. Plain implementation requests without delivery command wording are not ship authorization. Still surface reviewer findings, commit message, test results, sync result, and any explicit override in the final report.
+
+It is never allowed to end with a bare reminder like "run `/ship`" or "run `/sync`" after Codex modified K2B project files. Either the work is shipped and synced now, or a durable `.pending-sync/` entry exists for later.
+
+If shipping is blocked by review findings, missing credentials, network failure, a rejected push, or an explicit Keith stop, do not loop and do not pretend the ship finished. Surface the blocking condition, preserve the work in the repo, and resolve the deploy obligation explicitly: fix-and-retry when the blocker is actionable now, or write the normal `.pending-sync/` entry only after a commit has landed but Mini deployment must be deferred.
+
+If Keith explicitly declines to ship or says to leave the work uncommitted, treat that as an intentional checkpoint, not a failed ship. Report the uncommitted files and verification state, do not create a `.pending-sync/` entry because no commit exists, and do not claim the work is shipped.
+
 ## Goal Mode
 
 Use Codex `/goal` only for bounded missions with a real stop condition. For serious K2B or K2Bi runs, start from `plans/templates/goal-card.md` or include the same fields inline:

@@ -13,7 +13,15 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 **Proactive prompt:** At the natural end of any session where K2B modified project files in `AGENTS.md`, `CLAUDE.md`, Claude/Codex skill surfaces, Codex hook surfaces, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
 
-**Do NOT auto-ship.** Always confirm the commit message and the reviewer findings before committing.
+**Codex Desktop manual ship contract:** In Codex harnesses where `/ship` is unavailable as a slash command, the agent must run this skill body manually instead of stopping at code edits. Keep this block in sync with `AGENTS.md` -> `Session Discipline`. If Keith's request uses delivery command wording -- for example "ship it", "commit this", "push this", "sync this to the Mini", "deploy this", "merge this", "do all the commit/etc.", or "make sure this is shipped" -- the full manual ship path is already authorized. Delivery command wording can also be a compound instruction such as "implement X, then commit/push/sync it." Do not ask a second "should I ship?" question; proceed through review, commit, push, DEVLOG, `wiki/log.md`, Step 14 sweep, and sync-now/defer resolution. Still report the proposed commit message, reviewer findings, tests, sync result, and any explicit override.
+
+Delivery words in a descriptive or architectural context do not authorize shipping. Examples: "implement the sync protocol", "explain the deploy topology", "merge these data structures", or "review how push works" are not ship requests unless Keith also gives a command to commit/push/sync/ship the current repo changes.
+
+If the wording is ambiguous, ask one direct confirmation question before shipping. Ambiguous means the delivery word could be describing an object or architecture rather than commanding repo delivery, or the sentence mixes design discussion with possible ship language and does not clearly point at completed current-repo work. Mixed-mode examples such as "review how push works and then commit" or "think through the sync protocol and push this" require either completed implementation evidence tied to "this" or a confirmation question.
+
+For compound instructions such as "implement X, then commit/push/sync it", the first clause must be complete before the delivery clause authorizes shipping. Before shipping, list the done checks implied by X and verify each one against tests, code state, or live evidence; at least one done check must cite a concrete test command, file assertion, or live verification result that Keith can inspect. If the agent cannot produce inspectable evidence for the done checks, pause and ask before shipping. If X is only partially handled, report the incomplete done check and do not commit partial work just because the original instruction included "then ship".
+
+**Do NOT silently auto-ship unrelated or exploratory work.** If Keith did not ask for delivery and the session is exploratory, ask before committing. When the request is delivery-scoped, the confirmation is already present in the request and the correct behavior is to finish the ship.
 
 ## When NOT to Use
 
@@ -246,10 +254,13 @@ The staged set is now the source of truth for Step 3 and Step 5. Build it from t
 ```bash
 # 1) Write the intended commit set from Step 1, one path per line.
 # Include every file this ship owns. Exclude unrelated dirty files.
-K2B_SHIP_TMP_FILES=()
-INTENDED_FILES_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-intended-files.XXXXXX")"
-K2B_SHIP_TMP_FILES+=("$INTENDED_FILES_FILE")
-trap 'rm -f "${K2B_SHIP_TMP_FILES[@]}"' EXIT
+K2B_SHIP_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/k2b-ship.XXXXXX")"
+cleanup_k2b_ship_tmp() {
+  trap '' INT TERM
+  [ -n "${K2B_SHIP_TMP_DIR:-}" ] && rm -rf "$K2B_SHIP_TMP_DIR"
+}
+trap cleanup_k2b_ship_tmp EXIT INT TERM
+INTENDED_FILES_FILE="$K2B_SHIP_TMP_DIR/intended-files"
 
 cat > "$INTENDED_FILES_FILE" <<'EOF'
 <path/from/step-1>
@@ -260,10 +271,9 @@ if [ ! -s "$INTENDED_FILES_FILE" ]; then
   exit 3
 fi
 
-INTENDED_SORTED_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-intended-sorted.XXXXXX")"
-STAGED_SORTED_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-staged-sorted.XXXXXX")"
-STALE_STAGED_FILE="$(mktemp "${TMPDIR:-/tmp}/k2b-ship-stale-staged.XXXXXX")"
-K2B_SHIP_TMP_FILES+=("$INTENDED_SORTED_FILE" "$STAGED_SORTED_FILE" "$STALE_STAGED_FILE")
+INTENDED_SORTED_FILE="$K2B_SHIP_TMP_DIR/intended-sorted"
+STAGED_SORTED_FILE="$K2B_SHIP_TMP_DIR/staged-sorted"
+STALE_STAGED_FILE="$K2B_SHIP_TMP_DIR/stale-staged"
 sort "$INTENDED_FILES_FILE" > "$INTENDED_SORTED_FILE"
 
 # 2) Remove stale staged entries that do not belong to this ship.
