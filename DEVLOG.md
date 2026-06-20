@@ -4378,3 +4378,19 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** run the binary A5 MVP only under an explicit PM gate; address the seven Kimi residual hardening items before relying on A5 for a live deploy beyond the current single-operator fixture-backed path.
 
 **Key decisions:** did not mark the feature shipped because the named bug is not dead until the live deploy gap is proven closed. Kept A5 as a separate feature from the already-shipped Stage 0-15 orchestrator loop.
+
+## 2026-06-20 -- private VPS router watchdog
+
+**Commit:** `ebcb638` infra: add private VPN router watchdog
+
+**What shipped:** Added a Mac Mini private VPN watchdog for the router path: HK primary, TW fallback, KL emergency monitoring. It checks Mihomo every 60 seconds, writes private health rows, emits route-aware degraded/recovery alerts, creates incident bundles only after threshold, and keeps AWS/SSH tracing out of green checks.
+
+**Review:** builder-family=`openai`, Tier 3. Kimi review stayed `NEEDS-ATTENTION`; concrete findings were fixed across repeated passes, including state reset reconstruction, alert delivery logging, bounded timeouts, stricter SSH key handling, protected incident pruning, digest hardening, and loud missing-config behavior. Remaining review churn was accepted as current operational tradeoff and recorded in the code commit body. Final logs include `.code-reviews/2026-06-20T09-56-04Z_6140de.log` and `.code-reviews/2026-06-20T10-00-02Z_210154.log`.
+
+**Verification:** `python3 -m py_compile scripts/router-watchdog/bin/private-vpn-watchdog.py scripts/router-watchdog/bin/digest.py`; `bash -n scripts/router-watchdog/bin/private-vpn-watchdog.sh scripts/router-watchdog/install.sh`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog.test.sh`; `bash tests/router-watchdog-phase234.test.sh`; `bash tests/router-watchdog-ship-2.test.sh`; `bash tests/router-watchdog-leaf-optimizer.test.sh`; `bash tests/deploy-to-mini.test.sh`; `bash tests/ship-detect-tier.test.sh`; `git diff --check`.
+
+**Feature status change:** none (`--no-feature`; router infrastructure hardening).
+
+**Follow-ups:** keep `🎯 总模式` on the temporary working fallback until the private path remains stable, then decide when to move back to `🔒 私有线路`. Install AWS CLI on the Mini if we want incident bundles there to classify Lightsail state without relying on MacBook-side AWS CLI.
+
+**Key decisions:** no new router-side software; the Mac Mini owns monitoring, Telegram alerts, incident bundles, AWS CLI, and SSH diagnosis. Live incident during ship showed the right failure class: all private VPS leaves failed while DIRECT stayed OK, then HK recovered after five good checks.
