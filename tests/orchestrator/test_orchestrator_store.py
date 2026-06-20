@@ -183,6 +183,105 @@ class TestTransitionAndHeartbeat:
         assert t["blocker_reason"] == "x"
         assert t["finished_at"] is not None
 
+    def test_update_payload_locked_blocker_reason_set_clear_and_unchanged(self, store):
+        tid = store.add_task(
+            assignee_profile="k2bi",
+            command_key="test-echo-readonly",
+            success_criteria="ok",
+            permissions="analyst-command",
+        )
+        store.transition(tid, "blocked", blocker_reason="keep me")
+
+        with store._acquire_lock():
+            conn = store.connect()
+            store.init_db(conn)
+            row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+            payload = json.loads(row["payload"])
+            payload["step"] = "unchanged"
+            assert store._update_payload_locked(conn, tid, payload, status=row["status"])
+            conn.commit()
+            conn.close()
+        assert store.get_task(tid)["blocker_reason"] == "keep me"
+
+        with store._acquire_lock():
+            conn = store.connect()
+            store.init_db(conn)
+            row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+            payload = json.loads(row["payload"])
+            payload["step"] = "cleared"
+            assert store._update_payload_locked(
+                conn,
+                tid,
+                payload,
+                status=row["status"],
+                blocker_reason=None,
+            )
+            conn.commit()
+            conn.close()
+        assert store.get_task(tid)["blocker_reason"] is None
+
+        with store._acquire_lock():
+            conn = store.connect()
+            store.init_db(conn)
+            row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+            payload = json.loads(row["payload"])
+            payload["step"] = "set"
+            assert store._update_payload_locked(
+                conn,
+                tid,
+                payload,
+                status=row["status"],
+                blocker_reason="new reason",
+            )
+            conn.commit()
+            conn.close()
+        assert store.get_task(tid)["blocker_reason"] == "new reason"
+
+        with store._acquire_lock():
+            conn = store.connect()
+            store.init_db(conn)
+            row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+            payload = json.loads(row["payload"])
+            with pytest.raises(ValueError, match="invalid blocker_reason sentinel"):
+                store._update_payload_locked(
+                    conn,
+                    tid,
+                    payload,
+                    status=row["status"],
+                    blocker_reason=store._BlockerReasonUnchanged(),
+                )
+            conn.close()
+
+        class FakeBlockerReasonUnchanged(store._BlockerReasonUnchanged):
+            pass
+
+        with store._acquire_lock():
+            conn = store.connect()
+            store.init_db(conn)
+            row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+            payload = json.loads(row["payload"])
+            with pytest.raises(ValueError, match="invalid blocker_reason sentinel"):
+                store._update_payload_locked(
+                    conn,
+                    tid,
+                    payload,
+                    status=row["status"],
+                    blocker_reason=FakeBlockerReasonUnchanged(),
+                )
+            conn.close()
+
+    def test_normalize_blocker_reason_is_single_line_and_bounded(self, store):
+        raw = " first line\nsecond\tline  " + ("x" * 220)
+
+        normalized = store._normalize_blocker_reason(raw, limit=40)
+
+        assert normalized == "first line second line xxxxxxxxxxxxxx..."
+        assert len(normalized) == 40
+        assert store._normalize_blocker_reason(raw, limit=0) == ""
+        assert store._normalize_blocker_reason(raw, limit=2) == "fi"
+        with pytest.raises(TypeError, match="blocker reason must be a string"):
+            store._normalize_blocker_reason({"not": "a string"})
+
     def test_heartbeat_updates(self, store):
         tid = store.add_task(
             assignee_profile="k2bi",
@@ -362,6 +461,23 @@ class TestRenderBoard:
         assert os.path.exists(store.BOARD_PATH)
         content = Path(store.BOARD_PATH).read_text()
         assert tid in content
+
+    def test_render_board_suppresses_terminal_blocker_reason(self, store):
+        tid = store.add_task(
+            assignee_profile="k2bi",
+            command_key="test-echo-readonly",
+            success_criteria="ok",
+            permissions="analyst-command",
+        )
+        store.set_blocked_by(tid, "holder-123")
+        store.transition(tid, "terminal_deployed", blocker_reason="stale blocker")
+
+        store.render_board(store.BOARD_PATH)
+
+        content = Path(store.BOARD_PATH).read_text()
+        assert "terminal_deployed" in content
+        assert "stale blocker" not in content
+        assert "blocked by holder-123" not in content
 
 
 class TestNotify:

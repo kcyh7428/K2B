@@ -61,6 +61,16 @@ TERMINAL_STATUSES = frozenset({
     "terminal_limits_applied",
     "terminal_deployed",
 })
+
+
+class _BlockerReasonUnchanged:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "BLOCKER_REASON_UNCHANGED"
+
+
+_BLOCKER_REASON_UNCHANGED = _BlockerReasonUnchanged()
 ALL_STATUSES = frozenset({
     "ready", "running", "blocked", "zombie",
     "waiting_for_kimi_output", "needs_human", "returned",
@@ -921,6 +931,19 @@ def _payload_is_logically_terminal(raw_payload) -> bool:
     return False
 
 
+def _normalize_blocker_reason(reason: str, *, limit: int = 200) -> str:
+    if not isinstance(reason, str):
+        raise TypeError("blocker reason must be a string")
+    normalized = " ".join(str(reason or "").split())
+    if limit <= 0:
+        return ""
+    if limit < 3:
+        return normalized[:limit]
+    if len(normalized) > limit:
+        return normalized[: limit - 3] + "..."
+    return normalized
+
+
 def _a4_limits_resume_from_payload(status: str, payload: dict) -> str:
     # status is ALWAYS non-terminal here (the parent oracle returns on terminal
     # status before the chain_kind branch), so a non-terminal row carrying
@@ -978,8 +1001,15 @@ def _update_payload_locked(
     payload: dict,
     *,
     status: str | None = None,
-    blocker_reason: str | None = None,
+    blocker_reason: str | None | _BlockerReasonUnchanged = _BLOCKER_REASON_UNCHANGED,
 ) -> bool:
+    # blocker_reason is tri-state: omit to preserve, pass None to clear, pass
+    # a string to set the operator-facing board reason.
+    if (
+        isinstance(blocker_reason, _BlockerReasonUnchanged)
+        and blocker_reason is not _BLOCKER_REASON_UNCHANGED
+    ):
+        raise ValueError("invalid blocker_reason sentinel")
     row = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
     if row and row["status"] in TERMINAL_STATUSES and status != row["status"]:
         raise ValueError(
@@ -996,7 +1026,7 @@ def _update_payload_locked(
         if status in TERMINAL_STATUSES:
             updates.append("finished_at=?")
             params.append(now)
-    if blocker_reason is not None:
+    if blocker_reason is not _BLOCKER_REASON_UNCHANGED:
         updates.append("blocker_reason=?")
         params.append(blocker_reason)
     params.append(task_id)
@@ -3845,7 +3875,15 @@ def a5_verify_deploy(task_id: str) -> tuple[bool, str]:
                 payload["deploy_verification_scope"] = verification_scope
             else:
                 payload.pop("deploy_verification_scope", None)
-            _update_payload_locked(conn, task_id, payload, status="terminal_deployed")
+            payload.pop("deploy_verify_failed_at", None)
+            payload.pop("deploy_verify_failed_reason", None)
+            _update_payload_locked(
+                conn,
+                task_id,
+                payload,
+                status="terminal_deployed",
+                blocker_reason=None,
+            )
             conn.commit()
             conn.close()
             return (True, "")
@@ -3855,7 +3893,17 @@ def a5_verify_deploy(task_id: str) -> tuple[bool, str]:
         payload.pop("deploy_verified", None)
         payload.pop("deploy_verified_at", None)
         payload.pop("deploy_verification_scope", None)
-        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        blocker_reason = (
+            _normalize_blocker_reason(refusal)
+            or "deploy verification failed (reason unknown)"
+        )
+        _update_payload_locked(
+            conn,
+            task_id,
+            payload,
+            status=task["status"],
+            blocker_reason=blocker_reason,
+        )
         conn.commit()
         conn.close()
     return (False, reason)
@@ -4980,9 +5028,12 @@ def render_board(path=BOARD_PATH) -> None:
         lines.append("|---|---|---|---|---|---|")
         for t in flights[fid]:
             worker = "yes" if t.get("status") == "running" else "no"
-            blocker = t.get("blocker_reason") or ""
-            if t.get("blocked_by"):
+            if t.get("status") in TERMINAL_STATUSES:
+                blocker = ""
+            elif t.get("blocked_by"):
                 blocker = f"blocked by {t['blocked_by']}"
+            else:
+                blocker = t.get("blocker_reason") or ""
             result = t.get("result_url") or ""
             lines.append(
                 f"| {_cell(t['id'])} | {_cell(t['stage_name'])} | {_cell(t['status'])} | "

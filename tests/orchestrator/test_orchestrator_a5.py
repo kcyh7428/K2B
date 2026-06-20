@@ -130,16 +130,36 @@ def _a5_parent(
     )
 
 
-def _force_payload(store, tid: str, updates: dict) -> None:
+def _force_payload(
+    store,
+    tid: str,
+    updates: dict,
+    *,
+    blocker_reason: str | None = None,
+    update_blocker_reason: bool = False,
+) -> None:
     with store._acquire_lock():
         conn = store.connect()
         store.init_db(conn)
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
         payload = json.loads(dict(row)["payload"])
         payload.update(updates)
-        store._update_payload_locked(conn, tid, payload, status=dict(row)["status"])
+        kwargs = {}
+        if update_blocker_reason:
+            kwargs["blocker_reason"] = blocker_reason
+        store._update_payload_locked(conn, tid, payload, status=dict(row)["status"], **kwargs)
         conn.commit()
         conn.close()
+
+
+def _force_blocker_reason(store, tid: str, reason: str) -> None:
+    _force_payload(
+        store,
+        tid,
+        {},
+        blocker_reason=store._normalize_blocker_reason(reason),
+        update_blocker_reason=True,
+    )
 
 
 def _preflight_task(payload: dict, *, entity="CDNS") -> dict:
@@ -700,6 +720,56 @@ class TestA5DeployGate:
         terminal_payload = json.loads(task["payload"])
         assert terminal_payload["deploy_verification_scope"] == "category_scoped"
 
+    def test_a5_verify_clears_stale_blocker_reason_on_terminal_deployed(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["scripts", "execution"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-scoped-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(
+            store,
+            parent,
+            {
+                "deploy_verify_result_path": str(result),
+                "deploy_verify_failed_at": "2026-06-20T00:00:00+00:00",
+                "deploy_verify_failed_reason": "old failure",
+            },
+        )
+        _force_blocker_reason(store, parent, "old partial deploy note")
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert ok, reason
+        task = store.get_task(parent)
+        assert task["status"] == "terminal_deployed"
+        assert task["blocker_reason"] is None
+        terminal_payload = json.loads(task["payload"])
+        assert "deploy_verify_failed_at" not in terminal_payload
+        assert "deploy_verify_failed_reason" not in terminal_payload
+
     def test_a5_verify_refuses_category_scoped_evidence_missing_expected_category(
         self, store, tmp_path
     ):
@@ -1106,10 +1176,13 @@ class TestA5DeployGate:
         result = result_dir / "category-wrong-sync-state-result.json"
         result.write_text(json.dumps(inspect), encoding="utf-8")
         _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+        _force_blocker_reason(store, parent, "old partial deploy note")
 
         ok, reason = store.a5_verify_deploy(parent)
         assert not ok
         assert "sync_state_sha does not match deploy target sha" in reason
+        task = store.get_task(parent)
+        assert task["blocker_reason"] == "sync_state_sha does not match deploy target sha"
 
     def test_a5_verify_refuses_category_scope_when_remote_head_is_target(self, store, tmp_path):
         manifest = _manifest(tmp_path / "preview.json")
