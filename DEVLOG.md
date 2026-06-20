@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-06-20 -- Private VPN watchdog: root-cause tracing
+
+**Commit:** `9a76691` infra: add private VPN root-cause tracing
+
+**What shipped:** The private VPS watchdog now records root-cause evidence when HK/TW/KL private leaves flap. Incident bundles include ASUS LAN ping, upstream modem gateway ping, a redacted IP-literal TCP reachability probe, Tailscale status, Tailscale netcheck, expanded router-side route/interface/DNS/ping logs, and an evidence hint such as `UDP/NAT path suspect`. The normal 60-second watchdog still uses the existing cheap Mihomo checks; AWS CLI, SSH, and Tailscale netcheck remain incident-threshold-only.
+
+**Review:** Tier 3, builder-family `openai`. Initial Kimi review ran and returned `NEEDS-ATTENTION`; valid findings were fixed with tests: reduced default TCP probing to one public IP target, redacted TCP targets, made custom TCP probes IP-literal-only to avoid DNS stalls, disabled Tailscale CLI calls during normal ticks, shortened Tailscale incident timeout, tightened env parsing, and added disabled-edge-trace coverage. Final Kimi reruns were blocked by Kimi API `HTTP 400 high risk`; Keith explicitly approved shipping with this recorded override. Review logs: `.code-reviews/2026-06-20T13-02-52Z_e7395a.log`, `.code-reviews/2026-06-20T13-07-04Z_5135ce.log`, `.code-reviews/2026-06-20T13-07-25Z_ad1eeb.log`, `.code-reviews/2026-06-20T13-11-49Z_7bbac3.log`, `.code-reviews/2026-06-20T13-12-21Z_42c374.log`.
+
+**Tests:** `python3 -m py_compile scripts/router-watchdog/bin/private-vpn-watchdog.py`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog.test.sh`; `bash tests/router-watchdog-ship-2.test.sh`.
+
+**Feature status change:** none (`--no-feature` infrastructure tracing).
+
+**Follow-ups:** Let the next live outage produce a new incident JSON bundle, then classify whether the failure is ASUS LAN, upstream modem/NAT, UDP-only, VPS/server-side, or Mihomo/router-local. If direct GitHub HTTPS keeps resetting while proxy GitHub works, keep using explicit per-command git proxy until the router/modem path is fixed.
+
+**Key decisions:** Did not change routing or failover policy. HK remains primary, TW remains the fallback, and KL remains emergency/monitor-only. Did not install anything on the router; all new tracing runs from the Mac Mini watchdog.
+
+---
 ## 2026-06-16 -- k2b-infographic skill: doc hardening from Kimi review
 
 **Commit:** `30ecb82` docs(k2b-infographic): drop the questionable Chrome bg flag + cleanup guidance
