@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
+
+from scripts.lib.orchestrator_a5_utils import (
+    path_has_symlink_component as _a5_path_has_symlink_component,
+    safe_read_text as _a5_safe_read_text,
+)
 
 try:
     import fcntl
@@ -52,13 +59,14 @@ TERMINAL_STATUSES = frozenset({
     "terminal_bear_veto",
     "terminal_shipped",
     "terminal_limits_applied",
+    "terminal_deployed",
 })
 ALL_STATUSES = frozenset({
     "ready", "running", "blocked", "zombie",
     "waiting_for_kimi_output", "needs_human", "returned",
     "waiting_for_agent_theme",
     "done", "failed", "cancelled", "terminal_bear_veto", "terminal_shipped",
-    "terminal_limits_applied",
+    "terminal_limits_applied", "terminal_deployed",
 })
 NON_COMPLETABLE_STATUSES = tuple(sorted(
     TERMINAL_STATUSES
@@ -878,6 +886,7 @@ def transition(task_id, status, **fields) -> None:
 A1_MAX_REVISIONS = 3
 A3_MAX_SHIP_ATTEMPTS = 3
 A4_MAX_APPLY_ATTEMPTS = 3
+A5_MAX_DEPLOY_ATTEMPTS = 3
 A1_BACKTEST_LOOK_AHEAD_VALUES = frozenset({"passed", "suspicious"})
 TERMINAL_TTL_CREATED_AT_FLOOR = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
@@ -936,6 +945,31 @@ def _a4_limits_resume_from_payload(status: str, payload: dict) -> str:
     if not payload.get("limits_dispatch_started_at"):
         return "dispatch_limits"
     return "verify_limits"
+
+
+def _a5_deploy_resume_from_payload(status: str, payload: dict) -> str:
+    # status is non-terminal here except for defensive direct calls. As with A4,
+    # a non-terminal row carrying deploy_verified=True is corruption; only the
+    # terminal row status can claim completion.
+    if status == "terminal_deployed":
+        return "terminal_deployed"
+    if payload.get("terminal_reason"):
+        return "needs_human_terminal"
+    if payload.get("deploy_partial_detected_at"):
+        return "deploy_partial"
+    if payload.get("deploy_rolled_back_at"):
+        return "deploy_rolled_back"
+    if payload.get("deploy_deferred_at"):
+        return "deploy_deferred"
+    if not payload.get("deploy_preview_recorded"):
+        return "preview_deploy"
+    if not payload.get("deploy_authorized"):
+        return "await_deploy_approval"
+    if not payload.get("deploy_approval_token") or not payload.get("deploy_approved_at"):
+        return "needs_human_terminal"
+    if not payload.get("deploy_dispatch_started_at"):
+        return "dispatch_deploy"
+    return "verify_deploy"
 
 
 def _update_payload_locked(
@@ -1060,11 +1094,15 @@ def a1_resume_action_locked(conn, task_id: str) -> str:
         return "terminal_shipped"
     if status == "terminal_limits_applied":
         return "terminal_limits_applied"
+    if status == "terminal_deployed":
+        return "terminal_deployed"
     if status in TERMINAL_STATUSES:
         return f"terminal_{status}"
     payload = _payload_dict(task.get("payload"))
     if payload.get("chain_kind") == "limits":
         return _a4_limits_resume_from_payload(status, payload)
+    if payload.get("chain_kind") == "deploy":
+        return _a5_deploy_resume_from_payload(status, payload)
     if payload.get("bear_verdict") == "VETO":
         return "terminal_bear_veto"
     try:
@@ -2974,6 +3012,796 @@ def a4_retry_limits_after_rollback(task_id: str) -> tuple[bool, str]:
     return (True, "")
 
 
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _a5_deploy_token(
+    target_sha: str,
+    remote_baseline_sha: str,
+    manifest_sha: str,
+    approved_at: str,
+    lease: str,
+) -> str:
+    return (
+        f"APPROVE_DEPLOY:{target_sha}:{remote_baseline_sha}:"
+        f"{manifest_sha}:{approved_at}:{lease}"
+    )
+
+
+def _a5_load_manifest_with_sha(path: Path) -> tuple[dict | None, str | None, str]:
+    text, reason = _a5_safe_read_text(path, "deploy preview manifest")
+    if text is None:
+        return (None, None, reason)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return (None, None, f"deploy preview manifest unreadable: {exc}")
+    if not isinstance(data, dict):
+        return (None, None, "deploy preview manifest must be a JSON object")
+    manifest_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return (data, manifest_sha, "")
+
+
+def _a5_load_manifest(path: Path) -> tuple[dict | None, str]:
+    data, _manifest_sha, reason = _a5_load_manifest_with_sha(path)
+    return (data, reason)
+
+
+def _a5_validate_manifest(
+    manifest: dict,
+    *,
+    target_sha: str,
+    expected_remote_baseline_sha: str | None = None,
+) -> tuple[bool, str]:
+    manifest_target = str(manifest.get("target_sha") or "").strip().lower()
+    if not _SHA40_RE.match(target_sha):
+        return (False, "deploy_target_sha must be a 40-character git sha")
+    if manifest_target != target_sha:
+        return (
+            False,
+            f"deploy preview target_sha {manifest_target!r} does not match "
+            f"task deploy_target_sha {target_sha!r}",
+        )
+    remote = str(manifest.get("remote_baseline_sha") or "").strip().lower()
+    if not _SHA40_RE.match(remote):
+        return (False, "deploy preview remote_baseline_sha must be a 40-character git sha")
+    if expected_remote_baseline_sha and remote != expected_remote_baseline_sha:
+        return (
+            False,
+            f"deploy preview remote_baseline_sha {remote!r} changed from recorded "
+            f"{expected_remote_baseline_sha!r}",
+        )
+    categories = manifest.get("categories")
+    if not isinstance(categories, list) or not all(
+        isinstance(item, str) and item.strip() for item in categories
+    ):
+        return (False, "deploy preview categories must be a non-empty string list")
+    restart_services = manifest.get("restart_services")
+    if restart_services is None:
+        restart_services = []
+    if not isinstance(restart_services, list) or not all(
+        isinstance(item, str) and item.strip() for item in restart_services
+    ):
+        return (False, "deploy preview restart_services must be a string list")
+    return (True, "")
+
+
+def _a5_manifest_sha_matches_record(payload: dict) -> tuple[bool, str]:
+    raw_path = payload.get("deploy_preview_manifest_path")
+    recorded_sha = str(payload.get("deploy_preview_manifest_sha256") or "").strip().lower()
+    if not raw_path or not recorded_sha:
+        return (False, "deploy preview not recorded; re-run record-deploy-preview")
+    path = Path(str(raw_path)).expanduser()
+    if _a5_path_has_symlink_component(path):
+        return (False, "deploy preview manifest must not be a symlink; re-run preview")
+    if not path.is_file():
+        return (False, "deploy preview manifest changed since record; re-run preview")
+    recorded_realpath = str(payload.get("deploy_preview_manifest_realpath") or "").strip()
+    if recorded_realpath and str(path.resolve(strict=False)) != recorded_realpath:
+        return (False, "deploy preview manifest realpath changed since record; re-run preview")
+    manifest, current_sha, reason = _a5_load_manifest_with_sha(path)
+    if manifest is None or current_sha is None:
+        return (False, reason)
+    if current_sha != recorded_sha:
+        return (False, "deploy preview manifest changed since record; re-run preview")
+    target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+    remote_sha = str(payload.get("deploy_remote_baseline_sha") or "").strip().lower()
+    ok, reason = _a5_validate_manifest(
+        manifest,
+        target_sha=target_sha,
+        expected_remote_baseline_sha=remote_sha,
+    )
+    return (ok, reason)
+
+
+def _a5_current_k2bi_head() -> tuple[str | None, str]:
+    try:
+        from scripts.lib import orchestrator_profiles as profiles
+    except Exception as exc:
+        return (None, f"K2Bi profile unavailable for deploy resume: {exc}")
+    repo = Path(profiles.k2bi_repo()).expanduser()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return (None, f"K2Bi repo HEAD unavailable for deploy resume: {exc}")
+    head = result.stdout.strip().lower()
+    if result.returncode != 0 or not _SHA40_RE.match(head):
+        return (None, "K2Bi repo HEAD unavailable for deploy resume")
+    return (head, "")
+
+
+def _a5_terminalize_attempt_limit_locked(
+    conn,
+    task_id: str,
+    payload: dict,
+    *,
+    status: str = "needs_human",
+) -> None:
+    payload["terminal_reason"] = "deploy_attempt_limit_exceeded"
+    payload.setdefault("terminal_reason_at", now_iso())
+    _update_payload_locked(
+        conn,
+        task_id,
+        payload,
+        status=status,
+        blocker_reason=(
+            "deploy attempt limit exceeded; inspect the pending deploy/remote "
+            "state and make a fresh operator decision before retrying"
+        ),
+    )
+
+
+def a5_record_deploy_preview(task_id: str, manifest_path: str) -> tuple[bool, str]:
+    path = Path(str(manifest_path)).expanduser()
+    manifest, manifest_sha, reason = _a5_load_manifest_with_sha(path)
+    if manifest is None or manifest_sha is None:
+        return (False, reason)
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("chain_kind") != "deploy":
+            conn.close()
+            return (False, "record-deploy-preview requires payload.chain_kind=deploy")
+        if payload.get("deploy_authorized"):
+            conn.close()
+            return (
+                False,
+                "deploy already authorized; cancel or clear before re-recording preview",
+            )
+        source_status = str(payload.get("deploy_source_status") or "").strip()
+        if source_status not in {"terminal_shipped", "terminal_limits_applied"}:
+            conn.close()
+            return (
+                False,
+                "deploy_source_status must be terminal_shipped or terminal_limits_applied",
+            )
+        target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+        ok, reason = _a5_validate_manifest(manifest, target_sha=target_sha)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        payload["deploy_preview_recorded"] = True
+        payload["deploy_preview_recorded_at"] = now_iso()
+        payload["deploy_preview_manifest_path"] = str(path)
+        payload["deploy_preview_manifest_realpath"] = str(path.resolve(strict=False))
+        payload["deploy_preview_manifest_sha256"] = manifest_sha
+        payload["deploy_remote_baseline_sha"] = str(manifest["remote_baseline_sha"]).strip().lower()
+        payload["deploy_categories"] = [
+            str(item).strip() for item in manifest.get("categories", []) if str(item).strip()
+        ]
+        payload["deploy_restart_services"] = [
+            str(item).strip()
+            for item in manifest.get("restart_services", [])
+            if str(item).strip()
+        ]
+        payload["deploy_live_effect"] = str(manifest.get("live_effect") or "").strip()
+        for key in (
+            "deploy_deferred_at",
+            "deploy_defer_reason",
+            "deploy_pending_marker_path",
+            "deploy_authorized",
+            "deploy_authorized_at",
+            "deploy_lease_id",
+            "deploy_approved_at",
+            "deploy_approval_token",
+            "deploy_dispatch_started_at",
+            "deploy_dispatch_nonce",
+            "deploy_verified",
+            "deploy_verified_at",
+            "deploy_deployed_sha",
+            "deploy_failed_at",
+            "deploy_failure_reason",
+            "deploy_partial_detected_at",
+            "deploy_partial_reason",
+            "deploy_verify_failed_at",
+            "deploy_verify_failed_reason",
+            "deploy_inspect_state",
+            "deploy_inspect",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a5_authorize_deploy(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        if payload.get("deploy_authorized"):
+            conn.close()
+            return (True, "")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "await_deploy_approval":
+            conn.close()
+            return (
+                False,
+                "deploy authorization requires resume action await_deploy_approval "
+                f"(got {action!r})",
+            )
+        ok, reason = _a5_manifest_sha_matches_record(payload)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+        remote_sha = str(payload.get("deploy_remote_baseline_sha") or "").strip().lower()
+        manifest_sha = str(payload.get("deploy_preview_manifest_sha256") or "").strip().lower()
+        entity = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(task.get("entity_key") or "deploy")).strip("-")
+        entity = entity.lower() or "deploy"
+        dt = datetime.now(timezone.utc)
+        approved_at = dt.isoformat()
+        lease_id = f"{entity}-deploy-a1-{dt.strftime('%Y%m%dT%H%M%SZ')}"
+        token = _a5_deploy_token(target_sha, remote_sha, manifest_sha, approved_at, lease_id)
+        payload["deploy_authorized"] = True
+        payload["deploy_authorized_at"] = approved_at
+        payload["deploy_lease_id"] = lease_id
+        payload["deploy_approved_at"] = approved_at
+        payload["deploy_approval_token"] = token
+        for key in ("deploy_deferred_at", "deploy_defer_reason"):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a5_mark_deploy_dispatch_started(task_id: str) -> tuple[bool, dict | str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        try:
+            attempts = int(payload.get("deploy_attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= A5_MAX_DEPLOY_ATTEMPTS:
+            _a5_terminalize_attempt_limit_locked(conn, task_id, payload)
+            conn.commit()
+            conn.close()
+            return (False, f"deploy attempt limit exceeded ({A5_MAX_DEPLOY_ATTEMPTS})")
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "dispatch_deploy":
+            conn.close()
+            return (False, f"deploy dispatch requires resume action dispatch_deploy (got {action!r})")
+        ok, reason = _a5_manifest_sha_matches_record(payload)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        token = str(payload.get("deploy_approval_token") or "").strip()
+        target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+        remote_sha = str(payload.get("deploy_remote_baseline_sha") or "").strip().lower()
+        manifest_sha = str(payload.get("deploy_preview_manifest_sha256") or "").strip().lower()
+        approved_at = str(payload.get("deploy_approved_at") or "").strip()
+        lease_id = str(payload.get("deploy_lease_id") or "").strip()
+        expected = _a5_deploy_token(target_sha, remote_sha, manifest_sha, approved_at, lease_id)
+        if token != expected:
+            conn.close()
+            return (False, "deploy approval token does not bind current preview manifest")
+        payload["deploy_attempt_count"] = attempts + 1
+        dispatch_started_at = now_iso()
+        dispatch_nonce = secrets.token_hex(16)
+        payload["deploy_dispatch_started_at"] = dispatch_started_at
+        payload["deploy_dispatch_nonce"] = dispatch_nonce
+        for key in (
+            "deploy_failed_at",
+            "deploy_failure_reason",
+            "deploy_partial_detected_at",
+            "deploy_partial_reason",
+            "deploy_verify_failed_at",
+            "deploy_verify_failed_reason",
+            "deploy_inspect_state",
+            "deploy_inspect",
+        ):
+            payload.pop(key, None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (
+        True,
+        {
+            "lease_id": lease_id,
+            "deploy_lease_id": lease_id,
+            "target_sha": target_sha,
+            "remote_baseline_sha": remote_sha,
+            "manifest_sha256": manifest_sha,
+            "manifest_realpath": payload.get("deploy_preview_manifest_realpath"),
+            "approved_at": approved_at,
+            "approval_token": token,
+            "dispatch_nonce": dispatch_nonce,
+            "manifest_path": payload.get("deploy_preview_manifest_path"),
+            "categories": payload.get("deploy_categories") or [],
+            "restart_services": payload.get("deploy_restart_services") or [],
+        },
+    )
+
+
+def _a5_pending_deploy_path(task_id: str, payload: dict) -> Path:
+    target_sha = str(payload.get("deploy_target_sha") or "unknown").strip().lower()
+    source_parent = str(payload.get("deploy_source_parent") or "unknown").strip()
+    safe_source = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_parent).strip("-") or "unknown"
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_id).strip("-") or "unknown"
+    return (
+        Path(K2B_VAULT)
+        / "System"
+        / "orchestrator"
+        / "pending-deploy"
+        / f"{target_sha}-{safe_source}-{safe_task}.json"
+    )
+
+
+def a5_defer_deploy(task_id: str, *, reason: str = "operator_deferred") -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "await_deploy_approval":
+            conn.close()
+            return (
+                False,
+                f"deploy defer requires resume action await_deploy_approval (got {action!r})",
+            )
+        marker_path = _a5_pending_deploy_path(task_id, payload)
+        marker = {
+            "type": "k2bi-pending-deploy",
+            "created_at": now_iso(),
+            "source_parent": payload.get("deploy_source_parent"),
+            "source_status": payload.get("deploy_source_status"),
+            "target_sha": payload.get("deploy_target_sha"),
+            "remote_baseline_sha": payload.get("deploy_remote_baseline_sha"),
+            "preview_manifest_sha256": payload.get("deploy_preview_manifest_sha256"),
+            "reason": reason,
+            "next_action": "run A5 preview again, then approve-deploy or defer",
+        }
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker_path.with_suffix(marker_path.suffix + f".tmp.{os.getpid()}")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(marker, indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, marker_path)
+        try:
+            dir_fd = os.open(marker_path.parent, os.O_RDONLY)
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        payload["deploy_deferred_at"] = marker["created_at"]
+        payload["deploy_defer_reason"] = reason
+        payload["deploy_pending_marker_path"] = str(marker_path)
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, str(marker_path))
+
+
+def a5_resume_deferred_deploy(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "deploy_deferred":
+            conn.close()
+            return (
+                False,
+                f"resume deferred deploy requires resume action deploy_deferred (got {action!r})",
+            )
+        marker_path = Path(str(payload.get("deploy_pending_marker_path") or "")).expanduser()
+        if not marker_path.is_file():
+            conn.close()
+            return (False, "pending deploy marker missing; re-run record-deploy-preview")
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            conn.close()
+            return (False, f"pending deploy marker unreadable: {exc}")
+        expected = {
+            "type": "k2bi-pending-deploy",
+            "source_parent": payload.get("deploy_source_parent"),
+            "source_status": payload.get("deploy_source_status"),
+            "target_sha": payload.get("deploy_target_sha"),
+            "remote_baseline_sha": payload.get("deploy_remote_baseline_sha"),
+            "preview_manifest_sha256": payload.get("deploy_preview_manifest_sha256"),
+        }
+        for key, value in expected.items():
+            if marker.get(key) != value:
+                conn.close()
+                return (False, f"pending deploy marker {key} does not match current payload")
+        ok, reason = _a5_manifest_sha_matches_record(payload)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        current_head, reason = _a5_current_k2bi_head()
+        if current_head is None:
+            conn.close()
+            return (False, reason)
+        target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+        if current_head != target_sha:
+            conn.close()
+            return (
+                False,
+                "K2Bi repo advanced while deferred; create a fresh A5 flight "
+                "for the current HEAD before approving deploy",
+            )
+        for key in (
+            "deploy_deferred_at",
+            "deploy_defer_reason",
+            "deploy_preview_recorded",
+            "deploy_preview_recorded_at",
+            "deploy_preview_manifest_path",
+            "deploy_preview_manifest_realpath",
+            "deploy_preview_manifest_sha256",
+            "deploy_remote_baseline_sha",
+            "deploy_categories",
+            "deploy_restart_services",
+            "deploy_live_effect",
+            "deploy_authorized",
+            "deploy_authorized_at",
+            "deploy_lease_id",
+            "deploy_approved_at",
+            "deploy_approval_token",
+            "deploy_dispatch_nonce",
+        ):
+            payload.pop(key, None)
+        payload["deploy_deferred_resumed_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def _a5_inspect_deploy_state_from_payload(task_id: str, payload: dict) -> dict:
+    verify_path = payload.get("deploy_verify_result_path")
+    inspect_path = payload.get("deploy_inspect_path")
+    if verify_path and inspect_path and str(verify_path) != str(inspect_path):
+        return {
+            "state": "unknown",
+            "reason": "ambiguous deploy verification paths; keep only deploy_verify_result_path",
+        }
+    raw_path = verify_path or inspect_path
+    if raw_path:
+        path = Path(str(raw_path)).expanduser()
+        trusted_root_raw = Path(K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        if _a5_path_has_symlink_component(trusted_root_raw):
+            return {"state": "unknown", "reason": "deploy verify result root must not be a symlink"}
+        try:
+            root_stat = os.stat(trusted_root_raw, follow_symlinks=False)
+        except OSError:
+            return {
+                "state": "unknown",
+                "reason": "deploy verify result root missing or not a directory",
+            }
+        if not stat.S_ISDIR(root_stat.st_mode):
+            return {
+                "state": "unknown",
+                "reason": "deploy verify result root missing or not a directory",
+            }
+        trusted_root = trusted_root_raw.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+        if _a5_path_has_symlink_component(path):
+            return {"state": "unknown", "reason": "deploy verify result path must not be a symlink"}
+        try:
+            under_trusted_root = os.path.commonpath([str(resolved), str(trusted_root)]) == str(
+                trusted_root
+            )
+        except ValueError:
+            under_trusted_root = False
+        if not under_trusted_root:
+            return {
+                "state": "unknown",
+                "reason": f"deploy verify result path must be under {trusted_root}",
+            }
+        dispatch_dt = _parse_iso_dt(payload.get("deploy_dispatch_started_at"))
+        if dispatch_dt is not None and path.exists():
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError as exc:
+                return {"state": "unknown", "reason": f"deploy verify result unreadable: {exc}"}
+            if mtime < dispatch_dt:
+                return {
+                    "state": "unknown",
+                    "reason": "deploy verify result is older than dispatch start",
+                }
+        try:
+            before_stat = os.stat(resolved, follow_symlinks=False)
+        except OSError as exc:
+            return {"state": "unknown", "reason": f"deploy verify result unreadable: {exc}"}
+        if not hasattr(os, "O_NOFOLLOW"):
+            return {
+                "state": "unknown",
+                "reason": "deploy verify result requires O_NOFOLLOW for symlink-safe reads",
+            }
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        try:
+            fd = os.open(resolved, flags)
+        except OSError as exc:
+            return {"state": "unknown", "reason": f"deploy verify result unreadable: {exc}"}
+        try:
+            fd_stat = os.fstat(fd)
+            if (fd_stat.st_dev, fd_stat.st_ino) != (before_stat.st_dev, before_stat.st_ino):
+                return {"state": "unknown", "reason": "deploy verify result changed while opening"}
+            with os.fdopen(fd, "r", encoding="utf-8") as fh:
+                fd = None
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"state": "unknown", "reason": f"deploy verify result unreadable: {exc}"}
+        finally:
+            if fd is not None:
+                os.close(fd)
+        if isinstance(data, dict):
+            return data
+        return {"state": "unknown", "reason": "deploy verify result must be a JSON object"}
+    return {"state": "unknown", "reason": "deploy independent verification result missing"}
+
+
+def _a5_deploy_inspect_clean(payload: dict, inspect: dict) -> tuple[bool, str]:
+    target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+    if inspect.get("state") != "deployed":
+        return (False, inspect.get("reason") or f"inspect state {inspect.get('state')!r}")
+    if str(inspect.get("remote_head") or "").strip().lower() != target_sha:
+        return (False, "remote_head does not match deploy target sha")
+    if str(inspect.get("sync_state_sha") or "").strip().lower() != target_sha:
+        return (False, "sync_state_sha does not match deploy target sha")
+    if str(inspect.get("approval_token") or "").strip() != str(
+        payload.get("deploy_approval_token") or ""
+    ).strip():
+        return (False, "deploy verification approval_token does not match current dispatch")
+    if str(inspect.get("dispatch_started_at") or "").strip() != str(
+        payload.get("deploy_dispatch_started_at") or ""
+    ).strip():
+        return (False, "deploy verification dispatch_started_at does not match current dispatch")
+    if str(inspect.get("dispatch_nonce") or "").strip() != str(
+        payload.get("deploy_dispatch_nonce") or ""
+    ).strip():
+        return (False, "deploy verification dispatch_nonce does not match current dispatch")
+    restart_services = payload.get("deploy_restart_services")
+    if restart_services:
+        services = inspect.get("services")
+        if isinstance(services, dict):
+            for service in restart_services:
+                if services.get(service) is not True:
+                    return (False, f"expected restarted service is not active: {service}")
+        elif inspect.get("service_active") is not True:
+            return (False, "expected restarted service is not active")
+    try:
+        mismatch_count = int(inspect.get("recovery_state_mismatch_count") or 0)
+    except (TypeError, ValueError):
+        return (False, "recovery_state_mismatch_count is not an integer")
+    if mismatch_count != 0:
+        return (False, "recovery_state_mismatch detected")
+    return (True, "")
+
+
+def _a5_compact_deploy_inspect(inspect: dict) -> dict:
+    return {
+        key: inspect.get(key)
+        for key in (
+            "state",
+            "remote_head",
+            "sync_state_sha",
+            "service_active",
+            "recovery_state_mismatch_count",
+            "reason",
+        )
+        if key in inspect
+    }
+
+
+def a5_inspect_deploy_state(task_id: str) -> dict:
+    task = get_task(task_id)
+    if task is None:
+        return {"state": "unknown", "reason": f"task {task_id} not found"}
+    payload = _payload_dict(task.get("payload"))
+    return _a5_inspect_deploy_state_from_payload(task_id, payload)
+
+
+def a5_verify_deploy(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        action = a1_resume_action_locked(conn, task_id)
+        if action != "verify_deploy":
+            conn.close()
+            return (False, f"deploy verify requires resume action verify_deploy (got {action!r})")
+        inspect = _a5_inspect_deploy_state_from_payload(task_id, payload)
+        payload["deploy_inspect_state"] = inspect.get("state")
+        payload["deploy_inspect"] = _a5_compact_deploy_inspect(inspect)
+        ok, refusal = _a5_deploy_inspect_clean(payload, inspect)
+        if ok:
+            payload["deploy_verified"] = True
+            payload["deploy_verified_at"] = now_iso()
+            payload["deploy_deployed_sha"] = str(inspect.get("sync_state_sha") or "").strip().lower()
+            _update_payload_locked(conn, task_id, payload, status="terminal_deployed")
+            conn.commit()
+            conn.close()
+            return (True, "")
+        reason = f"deploy verification refused: {refusal}"
+        payload["deploy_verify_failed_at"] = now_iso()
+        payload["deploy_verify_failed_reason"] = reason
+        payload.pop("deploy_verified", None)
+        payload.pop("deploy_verified_at", None)
+        _update_payload_locked(conn, task_id, payload, status=task["status"])
+        conn.commit()
+        conn.close()
+    return (False, reason)
+
+
+def a5_record_deploy_failed(task_id: str, *, reason: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a5_inspect_deploy_state_from_payload(task_id, payload)
+        n = now_iso()
+        payload.setdefault("deploy_failed_at", n)
+        payload.setdefault("deploy_failure_reason", reason)
+        payload["deploy_inspect_state"] = inspect.get("state")
+        payload["deploy_inspect"] = _a5_compact_deploy_inspect(inspect)
+        _update_payload_locked(conn, task_id, payload, status="needs_human", blocker_reason=reason)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
+def a5_retry_deploy_after_rollback(task_id: str) -> tuple[bool, str]:
+    with _acquire_lock():
+        conn = connect()
+        init_db(conn)
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return (False, f"task {task_id} not found")
+        task = dict(row)
+        if task["status"] in TERMINAL_STATUSES:
+            conn.close()
+            return (False, f"task {task_id} is terminal: {task['status']}")
+        payload = _payload_dict(task.get("payload"))
+        inspect = _a5_inspect_deploy_state_from_payload(task_id, payload)
+        if inspect.get("state") != "clean_rollback":
+            conn.close()
+            return (
+                False,
+                f"retry requires deploy inspect state clean_rollback "
+                f"(got {inspect.get('state')!r})",
+            )
+        ok, reason = _a5_manifest_sha_matches_record(payload)
+        if not ok:
+            conn.close()
+            return (False, reason)
+        current_head, reason = _a5_current_k2bi_head()
+        if current_head is None:
+            conn.close()
+            return (False, reason)
+        target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+        if current_head != target_sha:
+            conn.close()
+            return (
+                False,
+                "K2Bi repo advanced since deploy authorization; create a fresh A5 flight "
+                "for the current HEAD before retrying deploy",
+            )
+        try:
+            attempts = int(payload.get("deploy_attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= A5_MAX_DEPLOY_ATTEMPTS:
+            _a5_terminalize_attempt_limit_locked(conn, task_id, payload)
+            conn.commit()
+            conn.close()
+            return (False, f"deploy attempt limit exceeded ({A5_MAX_DEPLOY_ATTEMPTS})")
+        if not payload.get("deploy_failed_at"):
+            conn.close()
+            return (False, "retry requires a recorded deploy_failed_at")
+        for key in (
+            "deploy_dispatch_started_at",
+            "deploy_dispatch_nonce",
+            "deploy_failed_at",
+            "deploy_failure_reason",
+            "deploy_partial_detected_at",
+            "deploy_partial_reason",
+            "deploy_verify_failed_at",
+            "deploy_verify_failed_reason",
+            "deploy_inspect_state",
+            "deploy_inspect",
+        ):
+            payload.pop(key, None)
+        payload["deploy_retry_ready_at"] = now_iso()
+        _update_payload_locked(conn, task_id, payload, status="needs_human", blocker_reason=None)
+        conn.commit()
+        conn.close()
+    return (True, "")
+
+
 def a1_authorize_ship(task_id: str) -> tuple[bool, str]:
     """Record the fourth human gate that authorizes A3 ship-to-engine."""
     with _acquire_lock():
@@ -4517,6 +5345,63 @@ def _main():
     )
     inspect_limits_p.add_argument("id")
 
+    record_deploy_preview_p = sub.add_parser(
+        "record-deploy-preview",
+        help="Record the A5 deploy dry-run/manifest preview before approval",
+    )
+    record_deploy_preview_p.add_argument("id")
+    record_deploy_preview_p.add_argument("path")
+
+    authorize_deploy_p = sub.add_parser(
+        "authorize-deploy",
+        help="Mint the A5 approve-deploy token after preview review",
+    )
+    authorize_deploy_p.add_argument("id")
+
+    mark_deploy_dispatch_p = sub.add_parser(
+        "mark-deploy-dispatch-started",
+        help="Record the A5 deploy dispatch attempt before worker launch",
+    )
+    mark_deploy_dispatch_p.add_argument("id")
+
+    verify_deploy_p = sub.add_parser(
+        "verify-deploy",
+        help="Verify the A5 deploy state and terminalize only when deployed",
+    )
+    verify_deploy_p.add_argument("id")
+
+    record_deploy_failed_p = sub.add_parser(
+        "record-deploy-failed",
+        help="Record a failed A5 deploy attempt using independent inspection",
+    )
+    record_deploy_failed_p.add_argument("id")
+    record_deploy_failed_p.add_argument("--reason", required=True)
+
+    defer_deploy_p = sub.add_parser(
+        "defer-deploy",
+        help="Write a durable pending-deploy marker without dispatching deploy",
+    )
+    defer_deploy_p.add_argument("id")
+    defer_deploy_p.add_argument("--reason", default="operator_deferred")
+
+    resume_deferred_deploy_p = sub.add_parser(
+        "resume-deferred-deploy",
+        help="Clear a valid A5 pending-deploy deferral back to the approval gate",
+    )
+    resume_deferred_deploy_p.add_argument("id")
+
+    retry_deploy_p = sub.add_parser(
+        "retry-deploy",
+        help="Clear a clean-rollback A5 deploy failure for one bounded retry",
+    )
+    retry_deploy_p.add_argument("id")
+
+    inspect_deploy_p = sub.add_parser(
+        "inspect-deploy-state",
+        help="Inspect recorded A5 deploy verification evidence",
+    )
+    inspect_deploy_p.add_argument("id")
+
     register_strategy_revision_p = sub.add_parser(
         "register-strategy-revision",
         help="Increment the bounded A2 strategy revision counter",
@@ -4944,6 +5829,82 @@ def _main():
 
     if args.cmd == "inspect-limits-state":
         print(json.dumps(a4_inspect_limits_state(args.id), indent=2, sort_keys=True))
+        return
+
+    if args.cmd == "record-deploy-preview":
+        ok, reason = a5_record_deploy_preview(args.id, args.path)
+        if ok:
+            render_board()
+            print(f"Task {args.id} deploy preview recorded")
+            return
+        print(f"record-deploy-preview rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "authorize-deploy":
+        ok, reason = a5_authorize_deploy(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} deploy authorized")
+            return
+        print(f"authorize-deploy rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "mark-deploy-dispatch-started":
+        ok, result = a5_mark_deploy_dispatch_started(args.id)
+        if ok:
+            render_board()
+            print(json.dumps(result, sort_keys=True))
+            return
+        print(f"mark-deploy-dispatch-started rejected {args.id}: {result}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "verify-deploy":
+        ok, reason = a5_verify_deploy(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} deploy verified")
+            return
+        print(f"verify-deploy rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "record-deploy-failed":
+        ok, reason = a5_record_deploy_failed(args.id, reason=args.reason)
+        if ok:
+            render_board()
+            print(f"Task {args.id} deploy failure recorded")
+            return
+        print(f"record-deploy-failed rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "defer-deploy":
+        ok, result = a5_defer_deploy(args.id, reason=args.reason)
+        if ok:
+            render_board()
+            print(result)
+            return
+        print(f"defer-deploy rejected {args.id}: {result}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "resume-deferred-deploy":
+        ok, reason = a5_resume_deferred_deploy(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} deploy deferral resumed")
+            return
+        print(f"resume-deferred-deploy rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "retry-deploy":
+        ok, reason = a5_retry_deploy_after_rollback(args.id)
+        if ok:
+            render_board()
+            print(f"Task {args.id} deploy retry opened")
+            return
+        print(f"retry-deploy rejected {args.id}: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cmd == "inspect-deploy-state":
+        print(json.dumps(a5_inspect_deploy_state(args.id), indent=2, sort_keys=True))
         return
 
     if args.cmd == "register-strategy-revision":

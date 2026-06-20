@@ -105,6 +105,15 @@ Do not carry a generic shell variable named `repo_root` between A2 and A3. Use `
 | `return` | `<id> (--text T \| --path P)` | For a `waiting_for_kimi_output` flight: run the acceptance gate on the pasted/file DR output (size 500B-2MB, >=3 URLs, >=5 substantive lines, and a task-bound completion sentinel `=== END OF <ENGINE> RESEARCH: <id> ===` -- ENGINE-AGNOSTIC, any engine token KIMI/CHATGPT/PERPLEXITY/..., and POSITION-TOLERANT so a trailing `## References`/footnote block may follow it), store raw + sha256 -> `returned`. For `blocked`/`needs_human`: re-ready it (no gate). Prefer `--path` for multi-line content (see the conductor). |
 | `poll-once` | - | Run one dispatcher tick (reclaim zombies, spawn one ready task) |
 | `render-board` | - | Write `board.md` from current DB state |
+| `record-deploy-preview` | `<id> <manifest.json>` | Record the A5 deploy dry-run/manifest preview |
+| `authorize-deploy` | `<id>` | Mint the A5 `APPROVE_DEPLOY` token after preview review |
+| `defer-deploy` | `<id> [--reason R]` | Write a durable pending-deploy marker without dispatching deploy |
+| `resume-deferred-deploy` | `<id>` | Validate the pending marker and return a deferred A5 flight to a fresh preview gate |
+| `mark-deploy-dispatch-started` | `<id>` | Consume one A5 attempt and return deploy dispatch evidence |
+| `verify-deploy` | `<id>` | Verify independent deploy evidence and set `terminal_deployed` only when clean |
+| `record-deploy-failed` | `<id> --reason R` | Record a failed A5 deploy attempt |
+| `retry-deploy` | `<id>` | Reopen dispatch only after independent `clean_rollback` evidence |
+| `inspect-deploy-state` | `<id>` | Show recorded/fixture deploy inspection evidence |
 
 ## Ship 1a scope
 
@@ -585,6 +594,80 @@ approved and the current on-disk `config.yaml` bytes. Dispatch promptly; K2Bi en
    `python3 -m scripts.lib.orchestrator_store record-limits-failed <parent> --reason "<worker/preflight reason>"`
    and surface `inspect-limits-state`. Do not re-fire. `retry-limits` is allowed only when a fresh live
    `inspect-limits-state` returns `clean_rollback`; `partial_approved_uncommitted` requires human recovery.
+
+## A5 deploy conductor -- preview -> approve/defer -> dispatch -> verify
+
+A5 closes the gap where a K2Bi repo ship can reach `terminal_shipped` or `terminal_limits_applied` without the
+live VPS engine being updated. A5 wraps K2Bi's existing `scripts/deploy-to-vps.sh` path; it does not replace it.
+K2B owns the human gate, state ledger, approval token, pending marker, and independent verification evidence.
+K2Bi owns the actual deploy script and runtime verification. No live deploy is authorized unless Keith gives a
+separate PM gate for that deploy. No live broker mutation is part of A5.
+
+### A5 durable model
+
+- Parent flight: `profile=k2b`, `entity=<ticker-or-change>`, `status=needs_human`, payload
+  `{"chain_kind":"deploy", "deploy_source_parent":"<A3/A4 id>", "deploy_source_status":"terminal_shipped|terminal_limits_applied", "deploy_target_sha":"<40-char K2Bi sha>"}`.
+- Parent payload flags: `deploy_preview_recorded`, `deploy_preview_manifest_path`,
+  `deploy_preview_manifest_sha256`, `deploy_remote_baseline_sha`, `deploy_categories`,
+  `deploy_restart_services`, `deploy_authorized`, `deploy_lease_id`, `deploy_approved_at`,
+  `deploy_approval_token`, `deploy_dispatch_started_at`, `deploy_attempt_count`, `deploy_verified`,
+  `deploy_dispatch_nonce`, `deploy_deployed_sha`, `deploy_deferred_at`, `deploy_pending_marker_path`.
+- Resume ladder: no preview -> `preview_deploy`; preview recorded -> `await_deploy_approval`; deferred ->
+  `deploy_deferred`; authorized -> `dispatch_deploy`; dispatched -> `verify_deploy`; row status
+  `terminal_deployed` -> `terminal_deployed`.
+- Deploy attempts are bounded at 3. Hitting the limit parks `needs_human` with
+  `terminal_reason=deploy_attempt_limit_exceeded`.
+
+### A5 allowlisted dispatch
+
+- `k2bi-deploy-to-vps` resolves to `bash scripts/deploy-to-vps.sh auto`.
+- The worker and preflight both require `K2B_ORCH_ALLOW_DEPLOY_TO_VPS=1` plus a per-flight
+  `APPROVE_DEPLOY` token. Without both, the deploy command is not resolved.
+- The deploy child uses `K2B_ORCH_SHIP_CMD_TIMEOUT` (default 1200s), same as A3/A4 capital commands.
+- The preflight is read-only: it checks the K2Bi repo is a git checkout, `scripts/deploy-to-vps.sh` exists and
+  is executable/tracked, the preview manifest hash still matches, the current remote baseline still equals the
+  preview baseline, local K2Bi `HEAD` equals the approved `target_sha`, the kill-switch is not present, and the
+  K2Bi tree is fully clean. It never writes broker, kill-switch, or validator state.
+
+### APPROVE_DEPLOY token
+
+Build the approval from the values in the A5 parent payload:
+
+```text
+APPROVE_DEPLOY:<target_sha>:<remote_baseline_sha>:<manifest_sha256>:<approved_at>:<deploy_lease_id>
+```
+
+`approved_at` must be ISO-8601 UTC with an explicit `+00:00` offset. `deploy_lease_id` uses
+`<entity>-deploy-a1-YYYYMMDDTHHMMSSZ` and must match the same lease regex family as A3/A4.
+
+### Procedure
+
+1. **Preview.** Use a closed fixture/backtest or K2Bi deploy dry-run helper to produce a JSON manifest with
+   `target_sha`, `remote_baseline_sha`, `categories`, `restart_services`, and `live_effect`. Then run
+   `python3 -m scripts.lib.orchestrator_store record-deploy-preview <parent> <manifest.json>`.
+2. **Human gate.** Show Keith the target sha, remote baseline, categories, restart services, and live effect.
+   If he defers, run `defer-deploy`; this writes
+   `K2B-Vault/System/orchestrator/pending-deploy/<target_sha>-<source_parent>-<task_id>.json` and does not
+   dispatch. To resume a deferred flight, run `resume-deferred-deploy`; it verifies the pending marker and that
+   local K2Bi `HEAD` still equals the deferred `deploy_target_sha`, then clears the old preview/approval fields
+   and returns to `preview_deploy` so the remote baseline and manifest are captured again before approval. If
+   K2Bi `HEAD` advanced, create a fresh A5 flight for the current HEAD instead. If he approves after the fresh
+   preview, run `authorize-deploy`.
+3. **Dispatch.** Run `mark-deploy-dispatch-started <parent>`. Build the `k2bi-deploy-to-vps` child payload
+   from the returned evidence: `target_sha`, `remote_baseline_sha`, `manifest_path`, `manifest_sha256`,
+   `dispatch_nonce`, `remote_baseline_path` or `current_remote_baseline_sha`, `categories`, `restart_services`,
+   and `approval={final_approval_token, approved_by, approved_at, deploy_lease_id}`. Set
+   `K2B_ORCH_ALLOW_DEPLOY_TO_VPS=1` only inside the explicit deploy PM-gated run, then run `poll-once`.
+4. **Verify.** After the child finishes, record independent verification evidence as JSON under
+   `K2B-Vault/System/orchestrator/deploy-results/` and set `deploy_verify_result_path` or
+   `deploy_inspect_path` in the parent payload. Run `verify-deploy <parent>`.
+   Only evidence with state `deployed`, `remote_head == target_sha`, `sync_state_sha == target_sha`,
+   expected named services active, zero `recovery_state_mismatch_count`, and the matching dispatch
+   token/time/nonce sets `terminal_deployed`.
+5. **Failure.** If the worker errors or verification refuses, run `record-deploy-failed <parent> --reason
+   "<worker/preflight reason>"` and surface `inspect-deploy-state`. `retry-deploy` is allowed only when fresh
+   trusted deploy-results evidence reports `clean_rollback`; otherwise do not retry without a fresh human
+   decision.
 
 ## Canonical add example
 

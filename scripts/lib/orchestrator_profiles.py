@@ -6,10 +6,16 @@ import hashlib
 import os
 import re
 import socket
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+from scripts.lib.orchestrator_a5_utils import (
+    path_has_symlink_component as _a5_path_has_symlink_component,
+    safe_read_text as _a5_safe_read_text,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 A1_ADAPTER_RUNNER = REPO_ROOT / "scripts" / "lib" / "orchestrator_k2bi_adapter.py"
@@ -112,6 +118,7 @@ def k2bi_allowed_commands():
             str(A1_ADAPTER_RUNNER),
             "apply-limits",
         ],
+        "k2bi-deploy-to-vps": ["bash", str(Path(k2bi_workspace()) / "scripts" / "deploy-to-vps.sh"), "auto"],
         "test-echo-readonly": ["/bin/echo", "orchestrator-smoke-ok"],
     }
 
@@ -220,6 +227,19 @@ def resolve_command(profile_name, command_key, payload=None) -> list[str] | None
                 if payload_args is None:
                     return None
                 argv.extend(payload_args)
+            if command_key == "k2bi-deploy-to-vps":
+                # Worker-boundary guard: even if a task is manually marked
+                # running without dispatcher preflight, do not resolve the live
+                # deploy command unless the explicit deploy permission scope and
+                # approval-token payload are present.
+                ok, _reason = validate_a5_deploy_payload(
+                    payload_view if isinstance(payload_view, dict) else {}
+                )
+                if not ok:
+                    return None
+                ok, _reason = validate_a5_deploy_script_ready()
+                if not ok:
+                    return None
             return argv
     return None
 
@@ -899,6 +919,265 @@ def _limits_approval_payload(payload: dict) -> tuple[dict | None, str]:
     return (approval, "")
 
 
+def _deploy_token(
+    target_sha: str,
+    remote_baseline_sha: str,
+    manifest_sha: str,
+    approved_at: str,
+    lease: str,
+) -> str:
+    return (
+        f"APPROVE_DEPLOY:{target_sha}:{remote_baseline_sha}:"
+        f"{manifest_sha}:{approved_at}:{lease}"
+    )
+
+
+def _sha40(value: str) -> bool:
+    return re.match(r"^[0-9a-f]{40}$", str(value or "").strip().lower()) is not None
+
+
+def _sha256_hex(value: str) -> bool:
+    return re.match(r"^[0-9a-f]{64}$", str(value or "").strip().lower()) is not None
+
+
+def _deploy_approval_payload(payload: dict) -> tuple[dict | None, str]:
+    approval = payload.get("approval")
+    if not isinstance(approval, dict):
+        return (None, "A5 deploy payload approval must be an object")
+    for key in ("final_approval_token", "approved_by", "approved_at", "deploy_lease_id"):
+        value = approval.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return (None, f"A5 deploy payload approval.{key} must be a non-empty string")
+    return (approval, "")
+
+
+def _a5_deploy_permission_and_payload_shape(payload: dict) -> tuple[bool, str]:
+    if os.environ.get("K2B_ORCH_ALLOW_DEPLOY_TO_VPS") != "1":
+        return (
+            False,
+            "A5 deploy permission scope missing: set K2B_ORCH_ALLOW_DEPLOY_TO_VPS=1 "
+            "only after the approve-deploy PM gate",
+        )
+    if not isinstance(payload, dict):
+        return (False, "A5 deploy payload must be an object")
+    target_sha = str(payload.get("target_sha") or "").strip().lower()
+    remote_baseline_sha = str(payload.get("remote_baseline_sha") or "").strip().lower()
+    manifest_sha = str(payload.get("manifest_sha256") or "").strip().lower()
+    if not _sha40(target_sha):
+        return (False, "A5 target_sha must be a 40-character git sha")
+    if not _sha40(remote_baseline_sha):
+        return (False, "A5 remote_baseline_sha must be a 40-character git sha")
+    if not _sha256_hex(manifest_sha):
+        return (False, "A5 manifest_sha256 must be a 64-character sha256")
+    approval, reason = _deploy_approval_payload(payload)
+    if approval is None:
+        return (False, reason)
+    try:
+        approved_at = datetime.fromisoformat(approval["approved_at"])
+    except ValueError:
+        return (False, "A5 approved_at must be ISO-8601")
+    if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+        return (False, "A5 approved_at must include an explicit timezone offset")
+    if approved_at.utcoffset().total_seconds() != 0:
+        return (False, "A5 approved_at must be UTC")
+    if not SHIP_LEASE_RE.match(approval["deploy_lease_id"]):
+        return (False, "A5 deploy_lease_id does not match the required format")
+    expected = _deploy_token(
+        target_sha,
+        remote_baseline_sha,
+        manifest_sha,
+        approval["approved_at"],
+        approval["deploy_lease_id"],
+    )
+    if approval["final_approval_token"] != expected:
+        return (False, "A5 approval token does not bind target/remote baseline/manifest sha")
+    return (True, "")
+
+
+def validate_a5_deploy_payload(payload: dict) -> tuple[bool, str]:
+    """Public worker/preflight contract for A5 deploy payload authorization."""
+    ok, reason = _a5_deploy_permission_and_payload_shape(payload)
+    if not ok:
+        return (False, reason)
+    manifest_path = Path(str(payload.get("manifest_path") or "")).expanduser()
+    manifest, manifest_sha, reason = _a5_load_deploy_manifest_with_sha(manifest_path)
+    if manifest is None or manifest_sha is None:
+        return (False, reason)
+    expected_manifest_sha = str(payload.get("manifest_sha256") or "").strip().lower()
+    if manifest_sha != expected_manifest_sha:
+        return (False, "A5 manifest hash mismatch; re-run deploy preview")
+    return _a5_manifest_matches_payload(manifest, payload)
+
+
+def _a5_deploy_script_ready(repo: Path) -> tuple[bool, str]:
+    deploy_script = repo / "scripts" / "deploy-to-vps.sh"
+    try:
+        script_stat = os.stat(deploy_script, follow_symlinks=False)
+    except OSError:
+        return (False, "K2Bi scripts/deploy-to-vps.sh missing; deploy refused")
+    if not stat.S_ISREG(script_stat.st_mode):
+        return (False, "K2Bi scripts/deploy-to-vps.sh is not a regular file; deploy refused")
+    if script_stat.st_mode & 0o100 == 0:
+        return (False, "K2Bi scripts/deploy-to-vps.sh is not executable; deploy refused")
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "scripts/deploy-to-vps.sh"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return (False, "K2Bi scripts/deploy-to-vps.sh tracking check failed; deploy refused")
+    if tracked.returncode != 0:
+        return (False, "K2Bi scripts/deploy-to-vps.sh is not tracked at HEAD; deploy refused")
+    return (True, "")
+
+
+def validate_a5_deploy_script_ready() -> tuple[bool, str]:
+    """Public worker-time deploy-script integrity check for A5."""
+    repo = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    return _a5_deploy_script_ready(repo)
+
+
+def _a5_load_deploy_manifest_with_sha(path: Path) -> tuple[dict | None, str | None, str]:
+    text, reason = _a5_safe_read_text(path, "A5 manifest_path")
+    if text is None:
+        return (None, None, reason)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return (None, None, f"A5 manifest unreadable: {exc}")
+    if not isinstance(data, dict):
+        return (None, None, "A5 manifest must be a JSON object")
+    manifest_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return (data, manifest_sha, "")
+
+
+def _a5_load_deploy_manifest(path: Path) -> tuple[dict | None, str]:
+    data, _manifest_sha, reason = _a5_load_deploy_manifest_with_sha(path)
+    return (data, reason)
+
+
+def _a5_manifest_matches_payload(manifest: dict, payload: dict) -> tuple[bool, str]:
+    target_sha = str(payload.get("target_sha") or "").strip().lower()
+    remote_baseline_sha = str(payload.get("remote_baseline_sha") or "").strip().lower()
+    if str(manifest.get("target_sha") or "").strip().lower() != target_sha:
+        return (False, "A5 manifest target_sha does not match approved target_sha")
+    if str(manifest.get("remote_baseline_sha") or "").strip().lower() != remote_baseline_sha:
+        return (False, "A5 manifest remote baseline does not match approved remote baseline")
+    categories = manifest.get("categories")
+    if not isinstance(categories, list) or not all(
+        isinstance(item, str) and item.strip() for item in categories
+    ):
+        return (False, "A5 manifest categories must be a non-empty string list")
+    restart_services = manifest.get("restart_services")
+    if restart_services is not None and (
+        not isinstance(restart_services, list)
+        or not all(isinstance(item, str) and item.strip() for item in restart_services)
+    ):
+        return (False, "A5 manifest restart_services must be a string list")
+    return (True, "")
+
+
+def _a5_current_remote_baseline(payload: dict) -> tuple[str | None, str]:
+    if "current_remote_baseline_sha" in payload:
+        current = str(payload.get("current_remote_baseline_sha") or "").strip().lower()
+        return (current, "") if _sha40(current) else (None, "A5 current remote baseline sha invalid")
+    raw_path = payload.get("remote_baseline_path")
+    if not raw_path:
+        return (None, "A5 remote baseline source missing")
+    path = Path(str(raw_path)).expanduser()
+    text, reason = _a5_safe_read_text(path, "A5 remote baseline")
+    if text is None:
+        return (None, reason)
+    try:
+        current = text.strip().splitlines()[0].strip().lower()
+    except IndexError:
+        return (None, f"A5 remote baseline unreadable: {path}")
+    if not _sha40(current):
+        return (None, f"A5 remote baseline is not a 40-character git sha: {path}")
+    return (current, "")
+
+
+def _preflight_a5_deploy(task, payload: dict) -> tuple[bool, str]:
+    ok, reason = _a5_deploy_permission_and_payload_shape(payload)
+    if not ok:
+        return (False, reason)
+
+    vault = Path(k2bi_vault()).expanduser()
+    if (vault / "System" / ".killed").exists():
+        return (False, "engine kill-switch engaged (System/.killed present); deploy refused")
+
+    repo = Path(k2bi_repo()).expanduser().resolve(strict=False)
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return (False, "K2Bi repo git checkout unavailable; deploy refused")
+    if result.returncode != 0 or result.stdout.strip() != "true":
+        return (False, "K2Bi repo path is not a git checkout; deploy refused")
+    ok, reason = _a5_deploy_script_ready(repo)
+    if not ok:
+        return (False, reason)
+
+    prof = get_profile("k2bi")
+    worker_lock = (prof or {}).get("worker_lock") or "/tmp/k2b-orch-k2bi-worker.lock"
+    if os.path.exists(worker_lock):
+        if _worker_lock_is_stale(worker_lock):
+            try:
+                os.unlink(worker_lock)
+            except OSError:
+                pass
+        else:
+            return (False, "active K2Bi worker lock present")
+
+    manifest_path = Path(str(payload.get("manifest_path") or "")).expanduser()
+    expected_realpath = str(payload.get("manifest_realpath") or "").strip()
+    if expected_realpath and str(manifest_path.resolve(strict=False)) != expected_realpath:
+        return (False, "A5 manifest realpath changed since preview; re-run deploy preview")
+    manifest, current_manifest_sha, reason = _a5_load_deploy_manifest_with_sha(manifest_path)
+    if manifest is None or current_manifest_sha is None:
+        return (False, reason)
+    expected_manifest_sha = str(payload.get("manifest_sha256") or "").strip().lower()
+    if current_manifest_sha != expected_manifest_sha:
+        return (False, "A5 manifest hash mismatch; re-run deploy preview")
+    ok, reason = _a5_manifest_matches_payload(manifest, payload)
+    if not ok:
+        return (False, reason)
+
+    current_baseline, reason = _a5_current_remote_baseline(payload)
+    if current_baseline is None:
+        return (False, reason)
+    approved_baseline = str(payload.get("remote_baseline_sha") or "").strip().lower()
+    if current_baseline != approved_baseline:
+        return (
+            False,
+            "A5 remote baseline changed since preview; re-run deploy preview before dispatch",
+        )
+
+    try:
+        head_result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return (False, "K2Bi repo HEAD unavailable; deploy refused")
+    target_sha = str(payload.get("target_sha") or "").strip().lower()
+    if head_result.returncode != 0 or head_result.stdout.strip().lower() != target_sha:
+        return (
+            False,
+            "A5 target sha does not match current K2Bi repo HEAD; deploy refused",
+        )
+
+    return _git_tree_clean_except_target(repo)
+
+
 def _markdown_yaml_block_after_heading(text: str, heading: str) -> tuple[dict | None, str]:
     pattern = re.compile(
         rf"(?ims)^##\s+{re.escape(heading)}\s*$.*?^```yaml\s*$\n(.*?)^```\s*$"
@@ -1156,6 +1435,9 @@ def preflight_k2bi(task) -> tuple[bool, str]:
             "Chat-2 path (waiting_for_agent_theme + verify-theme). Set "
             "K2B_ORCH_ALLOW_LEGACY_NARRATIVE=1 only to force the legacy Kimi pipeline.",
         )
+
+    if command_key == "k2bi-deploy-to-vps":
+        return _preflight_a5_deploy(task, payload)
 
     # 1. allowlist check
     if resolve_command("k2bi", command_key, payload) is None:

@@ -16,7 +16,7 @@ SHIP_COMMAND_KEY = "k2bi-run-full-ship"
 # (runtime-patchable) SHIP_COMMAND_KEY constant in the timeout branch, so a
 # rename/patch of the ship key still routes correctly. Keeping it out of this
 # frozenset avoids the redundant double-listing.
-CAPITAL_COMMAND_KEYS = frozenset({"k2bi-apply-limits"})
+CAPITAL_COMMAND_KEYS = frozenset({"k2bi-apply-limits", "k2bi-deploy-to-vps"})
 DEFAULT_CMD_TIMEOUT_S = 540
 DEFAULT_SHIP_CMD_TIMEOUT_S = 1200
 
@@ -131,6 +131,15 @@ def main(task_id):
         store.transition(task_id, "failed", blocker_reason=reason)
         store.notify(f"[orchestrator] Task {task_id} FAILED. {reason}")
         return 1
+    if command_key == "k2bi-deploy-to-vps":
+        ok, reason = profiles.validate_a5_deploy_payload(
+            payload if isinstance(payload, dict) else {}
+        )
+        if not ok:
+            reason = f"A5 deploy worker token recheck failed: {reason}"
+            store.transition(task_id, "failed", blocker_reason=reason)
+            store.notify(f"[orchestrator] Task {task_id} FAILED. {reason}")
+            return 1
 
     # 3. Resolve trusted workspace and record own PID. If the task is no longer
     # 'running' at registration time (cancelled or reclaimed out from under us
@@ -184,6 +193,13 @@ def main(task_id):
             store.transition(task_id, "failed", blocker_reason=reason)
             store.notify(f"[orchestrator] Task {task_id} FAILED. {reason}")
             return 1
+        if command_key == "k2bi-deploy-to-vps":
+            ok, reason = profiles.validate_a5_deploy_script_ready()
+            if not ok:
+                reason = f"A5 deploy worker script recheck failed: {reason}"
+                store.transition(task_id, "failed", blocker_reason=reason)
+                store.notify(f"[orchestrator] Task {task_id} FAILED. {reason}")
+                return 1
 
         # The command runs in THIS worker's process group (no start_new_session),
         # which is deliberate: the dispatcher's zombie reclaim kills the worker's
