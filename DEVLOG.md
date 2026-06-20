@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-20 -- Orchestrator A5 terminal blocker cleanup
+
+**Commit:** `c0fb360` fix(orchestrator): clear terminal deploy blockers
+
+**What shipped:** A5 deploy verification now cleans up operator-facing board metadata after terminal success. The shared payload updater has an explicit blocker contract: omitted preserves the current board reason, `None` clears it, and a string sets it. A5 terminal success clears stale blocker text and stale deploy verify failure markers; A5 verification failure records a normalized current refusal; and `render-board` suppresses stale blocker/blocked-by text for terminal rows.
+
+**Review:** Tier 3, builder-family `openai`, Kimi-only through the historical `minimax` runner with `--no-fallback`. Concrete findings across review passes were fixed with regression coverage: explicit blocker tri-state semantics, A5 success/failure board behavior, normalized blocker text, terminal board suppression, sentinel misuse guard, and stale failure marker cleanup. Later Kimi output repeated false positives around already-tested terminal `blocked_by` suppression and sentinel behavior, plus one unparseable run over a 400K+ prompt context; these were dispositioned in the commit body after direct code/test verification.
+
+**Tests:** `PYTHONPATH=. pytest tests/orchestrator/test_orchestrator_a5.py tests/orchestrator/test_orchestrator_store.py -q` (100 passed); `PYTHONPATH=. pytest -q` (684 passed); `python3 -m py_compile scripts/lib/orchestrator_store.py`; `bash scripts/verify-skills-parity.sh`; `git diff --check`.
+
+**Feature status change:** `feature_orchestrator-deploy-gate` stays shipped. Existing task `2026-06-20-001` remains `terminal_deployed`; the stale "partial proof" board blocker was cleared from the live orchestrator DB and `board.md` was re-rendered.
+
+**Follow-ups:** none for A5.
+
+---
 ## 2026-06-20 -- Orchestrator A5 category-scoped deploy verifier
 
 **Commit:** this commit -- feat(orchestrator): add A5 category-scoped deploy verification
