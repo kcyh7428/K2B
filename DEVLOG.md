@@ -4360,3 +4360,21 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** Build a maintained `scripts/gptsapi-image-edit.sh` wrapper before treating image-edit as operational. The wrapper should solve public URL preparation, response schema handling, polling if needed, atomic asset save, and Telegram/Obsidian delivery.
 
 **Key decisions:** kept exact endpoint knowledge in the skill because Keith explicitly supplied it, but downgraded usage to an endpoint reference rather than a direct-run command. Captured a new learning after Keith corrected the process: skill-surface edits should immediately follow through with ship/sync instead of waiting for him to ask.
+
+## 2026-06-20 -- orchestrator A5 deploy gate code ship
+
+**Commit:** `d198528` feat: add orchestrator A5 deploy gate
+
+**What shipped:** K2B now has the A5 deploy-gate wiring for the repo-to-live-engine gap: preview manifest recording, defer/resume with pending-deploy marker, `APPROVE_DEPLOY` authorization, dispatch nonce, failure/retry handling, trusted deploy-result verification, and the new `terminal_deployed` state. The worker only resolves `k2bi-deploy-to-vps` when both the explicit deploy env permission and the per-flight approval payload validate.
+
+**Review:** builder-family=`openai`, Tier 3. Final Kimi review log `.code-reviews/2026-06-20T08-28-54Z_f07b8a.log` remained `NEEDS-ATTENTION`; Keith explicitly instructed the ship to proceed. Residual hardening items are recorded in the commit body and feature note: deploy script TOCTOU/ownership, named-service fallback removal, deferred-preview manifest rebinding, worker-lock staleness, baseline error specificity, git tracking timeout, and verification-result SHA binding.
+
+**Verification:** `PYTHONPATH=. pytest tests/orchestrator/test_orchestrator_a5.py -q` -> 34 passed; `PYTHONPATH=. pytest -q` -> 655 passed; `bash scripts/verify-skills-parity.sh` -> ok; `git diff --check` clean; `python3 -m py_compile scripts/lib/orchestrator_store.py scripts/lib/orchestrator_profiles.py scripts/lib/orchestrator_worker.py scripts/lib/orchestrator_a5_utils.py` clean.
+
+**MVP test:** not yet passed. This was a no-live-deploy code ship. The binary A5 MVP still requires an explicit approved deploy gate or a durable deferred-marker proof; no live deploy ran and no live broker state was mutated.
+
+**Feature status change:** `feature_orchestrator-deploy-gate` moved `next` -> `in-progress` as code-shipped with live MVP pending.
+
+**Follow-ups:** run the binary A5 MVP only under an explicit PM gate; address the seven Kimi residual hardening items before relying on A5 for a live deploy beyond the current single-operator fixture-backed path.
+
+**Key decisions:** did not mark the feature shipped because the named bug is not dead until the live deploy gap is proven closed. Kept A5 as a separate feature from the already-shipped Stage 0-15 orchestrator loop.
