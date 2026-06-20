@@ -4342,3 +4342,21 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** the docs still deserve a later cleanup pass if Keith wants the infographic skill examples reduced further or moved onto a shared helper. That is separate from this parity repair.
 
 **Key decisions:** treated the missing `.agents` mirror as a repo-health issue, not optional polish. Parity had to be restored before future ships could pass the migration guard cleanly.
+
+## 2026-06-20 -- k2b-media-generator GPTSAPI image-edit endpoint reference
+
+**Commit:** `be8e82f` docs(k2b-media): document GPTSAPI image-edit endpoint
+
+**What shipped:** `k2b-media-generator` now records the GPTSAPI `gpt-image-2/image-edit` endpoint shape for transforming existing images. The documentation marks it as experimental and manual-only until a maintained wrapper exists, records the endpoint payload fields and limits, requires public HTTPS `input_urls`, blocks private/local vault images without a public or presigned URL path, and prevents `/media for` from invoking image-edit automatically.
+
+**Review:** builder-family=`openai`. Kimi review ran repeatedly and stayed `NEEDS-ATTENTION`, mostly pushing the docs away from a copy-paste shell recipe. Applied the substantive fixes: removed raw curl execution guidance, redacted the auth header, added manual-only and public-URL constraints, added output-handling guardrails, aligned naming to `image_edit`, and added a machine-checkable `/media for` hard stop. Remaining endpoint-redaction/parity objections were adjudicated as non-blocking: the provider endpoint is public routing information, and `scripts/verify-skills-parity.sh` passed.
+
+**Verification:** `scripts/verify-skills-parity.sh`; `git diff --check`; pushed branch `codex/orchestrator-a5-deploy-gate`; synced skills to the Mac Mini from a clean `HEAD` export so unrelated dirty orchestrator worktree changes did not ride along.
+
+**MVP test:** n/a (`--no-feature`; skill-surface knowledge update).
+
+**Feature status change:** none (`--no-feature`).
+
+**Follow-ups:** Build a maintained `scripts/gptsapi-image-edit.sh` wrapper before treating image-edit as operational. The wrapper should solve public URL preparation, response schema handling, polling if needed, atomic asset save, and Telegram/Obsidian delivery.
+
+**Key decisions:** kept exact endpoint knowledge in the skill because Keith explicitly supplied it, but downgraded usage to an endpoint reference rather than a direct-run command. Captured a new learning after Keith corrected the process: skill-surface edits should immediately follow through with ship/sync instead of waiting for him to ask.
