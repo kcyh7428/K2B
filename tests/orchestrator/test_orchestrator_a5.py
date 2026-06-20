@@ -194,7 +194,8 @@ class TestA5DeployGate:
         )
         ok, reason = store.a5_verify_deploy(parent)
         assert ok, reason
-        assert store.get_task(parent)["status"] == "terminal_deployed"
+        task = store.get_task(parent)
+        assert task["status"] == "terminal_deployed"
         assert store.a1_resume_action(parent) == "terminal_deployed"
 
     def test_a5_defer_writes_pending_deploy_marker_without_dispatch(self, store, tmp_path):
@@ -225,8 +226,11 @@ class TestA5DeployGate:
         parent = _a5_parent(store, target_sha=head)
         ok, reason = store.a5_record_deploy_preview(parent, str(manifest))
         assert ok, reason
+        _force_payload(store, parent, {"deploy_verification_scope": "category_scoped"})
         ok, marker_path = store.a5_defer_deploy(parent, reason="operator_deferred")
         assert ok, marker_path
+        deferred_payload = json.loads(store.get_task(parent)["payload"])
+        assert "deploy_verification_scope" not in deferred_payload
 
         ok, reason = store.a5_authorize_deploy(parent)
         assert not ok
@@ -235,6 +239,8 @@ class TestA5DeployGate:
         ok, reason = store.a5_resume_deferred_deploy(parent)
         assert ok, reason
         assert store.a1_resume_action(parent) == "preview_deploy"
+        resumed_payload = json.loads(store.get_task(parent)["payload"])
+        assert "deploy_verification_scope" not in resumed_payload
 
         ok, reason = store.a5_record_deploy_preview(parent, str(manifest))
         assert ok, reason
@@ -655,6 +661,639 @@ class TestA5DeployGate:
         assert ok, reason
         assert store.get_task(parent)["status"] == "terminal_deployed"
 
+    def test_a5_verify_accepts_category_scoped_evidence_with_stale_remote_head(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["scripts", "execution"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-scoped-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert ok, reason
+        task = store.get_task(parent)
+        assert task["status"] == "terminal_deployed"
+        terminal_payload = json.loads(task["payload"])
+        assert terminal_payload["deploy_verification_scope"] == "category_scoped"
+
+    def test_a5_verify_refuses_category_scoped_evidence_missing_expected_category(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["scripts"]
+        inspect["category_results"] = {
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-missing-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy verification categories do not match preview categories" in reason
+        assert store.get_task(parent)["status"] != "terminal_deployed"
+
+    def test_a5_verify_refuses_category_scoped_extra_category_result(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "skills": {
+                "matched_target": True,
+                "path_count": 1,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-extra-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy verification category_results do not match preview categories" in reason
+
+    def test_a5_verify_refuses_category_scoped_result_missing_required_path_keys(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+            },
+        }
+        result = result_dir / "category-missing-key-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy verification category extra_paths missing" in reason
+
+    def test_a5_verify_refuses_category_scoped_non_list_path_results(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": "[]",
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-non-list-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy verification category missing_paths must be a list" in reason
+
+    def test_a5_verify_refuses_unknown_verification_scope(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category-scoped"
+        result = result_dir / "unknown-scope-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "unknown verification_scope" in reason
+
+    @pytest.mark.parametrize(
+        ("path_count", "expected_reason"),
+        [
+            (0, "deploy verification category has no matched paths"),
+            (-1, "deploy verification category has no matched paths"),
+            ("2", "deploy verification category path_count invalid"),
+            (1.0, "deploy verification category path_count invalid"),
+            (True, "deploy verification category path_count invalid"),
+        ],
+    )
+    def test_a5_verify_refuses_category_scoped_invalid_path_count(
+        self, store, tmp_path, path_count, expected_reason
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": path_count,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-bad-path-count-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert expected_reason in reason
+
+    def test_a5_verify_refuses_category_scoped_baseline_tampered_after_approval(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        tampered_baseline = "c" * 40
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = tampered_baseline
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-tampered-baseline-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(
+            store,
+            parent,
+            {
+                "deploy_remote_baseline_sha": tampered_baseline,
+                "deploy_verify_result_path": str(result),
+            },
+        )
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy_remote_baseline_sha does not match deploy approval token" in reason
+
+    def test_a5_verify_refuses_category_scoped_unexpected_stale_remote_head(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = "c" * 40
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-wrong-head-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "category-scoped remote_head does not match deploy baseline sha" in reason
+
+    @pytest.mark.parametrize(
+        ("baseline_sha", "expected_reason"),
+        [
+            ("", "deploy_remote_baseline_sha missing from payload"),
+            ("not-a-sha", "deploy_remote_baseline_sha malformed in payload"),
+        ],
+    )
+    def test_a5_verify_refuses_category_scoped_missing_or_malformed_baseline(
+        self, store, tmp_path, baseline_sha, expected_reason
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-bad-baseline-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(
+            store,
+            parent,
+            {
+                "deploy_remote_baseline_sha": baseline_sha,
+                "deploy_verify_result_path": str(result),
+            },
+        )
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert expected_reason in reason
+
+    def test_a5_verify_refuses_empty_preview_category_in_category_scoped_evidence(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-empty-preview-category-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(
+            store,
+            parent,
+            {
+                "deploy_categories": ["execution", "", "scripts"],
+                "deploy_verify_result_path": str(result),
+            },
+        )
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy preview categories contains empty category" in reason
+
+    def test_a5_verify_refuses_category_scoped_sync_state_mismatch(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["sync_state_sha"] = "c" * 40
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-wrong-sync-state-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "sync_state_sha does not match deploy target sha" in reason
+
+    def test_a5_verify_refuses_category_scope_when_remote_head_is_target(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-scope-full-head-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "category-scoped remote_head does not match deploy baseline sha" in reason
+
+    def test_a5_verify_refuses_category_scoped_noop_baseline(self, store, tmp_path):
+        manifest = _manifest(
+            tmp_path / "preview.json",
+            target_sha=REMOTE_BASELINE_SHA,
+            remote_sha=REMOTE_BASELINE_SHA,
+        )
+        parent = _authorized_dispatched_a5(store, manifest, target_sha=REMOTE_BASELINE_SHA)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["sync_state_sha"] = REMOTE_BASELINE_SHA
+        inspect["verification_scope"] = "category_scoped"
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+        result = result_dir / "category-scope-noop-baseline-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "category-scoped sync_state_sha did not advance from deploy baseline sha" in reason
+
+    def test_a5_verify_refuses_empty_manifest_sha_bound_to_approval_token(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result = result_dir / "empty-manifest-sha-result.json"
+        result.write_text(json.dumps(_clean_deploy_inspect(payload)), encoding="utf-8")
+        _force_payload(
+            store,
+            parent,
+            {
+                "deploy_preview_manifest_sha256": "",
+                "deploy_verify_result_path": str(result),
+            },
+        )
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy_preview_manifest_sha256 missing from deploy approval token payload" in reason
+
+    def test_a5_verify_refuses_manifest_sha_mismatch_bound_to_approval_token(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result = result_dir / "wrong-manifest-sha-result.json"
+        result.write_text(json.dumps(_clean_deploy_inspect(payload)), encoding="utf-8")
+        _force_payload(
+            store,
+            parent,
+            {
+                "deploy_preview_manifest_sha256": "c" * 64,
+                "deploy_verify_result_path": str(result),
+            },
+        )
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy_preview_manifest_sha256 does not match deploy approval token" in reason
+
+    def test_a5_category_scoped_helper_requires_explicit_scope(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        inspect = _clean_deploy_inspect(payload)
+        inspect["remote_head"] = REMOTE_BASELINE_SHA
+        inspect["deployed_categories"] = ["execution", "scripts"]
+        inspect["category_results"] = {
+            "execution": {
+                "matched_target": True,
+                "path_count": 3,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+            "scripts": {
+                "matched_target": True,
+                "path_count": 2,
+                "missing_paths": [],
+                "mismatched_paths": [],
+                "extra_paths": [],
+            },
+        }
+
+        ok, reason = store._a5_category_scoped_deploy_inspect_clean(payload, inspect)
+        assert not ok
+        assert "verification_scope must be category_scoped" in reason
+
+    def test_a5_verify_refuses_empty_dispatch_nonce_even_if_evidence_matches(
+        self, store, tmp_path
+    ):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect["dispatch_nonce"] = ""
+        result = result_dir / "empty-nonce-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {
+            "deploy_dispatch_nonce": "",
+            "deploy_verify_result_path": str(result),
+        })
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy dispatch nonce missing from current dispatch" in reason
+
+    def test_a5_verify_refuses_missing_dispatch_nonce_from_evidence(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        payload = json.loads(store.get_task(parent)["payload"])
+        result_dir = Path(store.K2B_VAULT) / "System" / "orchestrator" / "deploy-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        inspect = _clean_deploy_inspect(payload)
+        inspect.pop("dispatch_nonce")
+        result = result_dir / "missing-nonce-result.json"
+        result.write_text(json.dumps(inspect), encoding="utf-8")
+        _force_payload(store, parent, {"deploy_verify_result_path": str(result)})
+
+        ok, reason = store.a5_verify_deploy(parent)
+        assert not ok
+        assert "deploy verification dispatch_nonce missing" in reason
+
     def test_a5_verify_refuses_ambiguous_dual_inspector_paths(self, store, tmp_path):
         manifest = _manifest(tmp_path / "preview.json")
         parent = _authorized_dispatched_a5(store, manifest)
@@ -745,6 +1384,16 @@ class TestA5DeployGate:
         ok, reason = store.a5_retry_deploy_after_rollback(parent)
         assert ok, reason
         assert store.a1_resume_action(parent) == "dispatch_deploy"
+
+    def test_a5_record_deploy_failed_clears_stale_verification_scope(self, store, tmp_path):
+        manifest = _manifest(tmp_path / "preview.json")
+        parent = _authorized_dispatched_a5(store, manifest)
+        _force_payload(store, parent, {"deploy_verification_scope": "category_scoped"})
+
+        ok, reason = store.a5_record_deploy_failed(parent, reason="worker failed")
+        assert ok, reason
+        payload = json.loads(store.get_task(parent)["payload"])
+        assert "deploy_verification_scope" not in payload
 
     def test_a5_retry_refuses_manifest_drift_before_reopen(self, store, tmp_path):
         manifest = _manifest(tmp_path / "preview.json")

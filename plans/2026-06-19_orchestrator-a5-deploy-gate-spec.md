@@ -213,6 +213,44 @@ Minimum clean result:
 compatibility fallback when no named service map is present. Evidence whose token, dispatch time, or nonce does
 not match the current dispatch is refused.
 
+Category-scoped clean result, for deploys where `deploy-to-vps.sh` synced only the previewed categories and the
+VPS git `HEAD` intentionally remains at an older checkout, extends the clean result with:
+
+```json
+{
+  "verification_scope": "category_scoped",
+  "remote_head": "<observed VPS git head, may be older than target>",
+  "deployed_categories": ["scripts", "skills"],
+  "category_results": {
+    "scripts": {
+      "matched_target": true,
+      "path_count": 2,
+      "missing_paths": [],
+      "mismatched_paths": [],
+      "extra_paths": []
+    },
+    "skills": {
+      "matched_target": true,
+      "path_count": 2,
+      "missing_paths": [],
+      "mismatched_paths": [],
+      "extra_paths": []
+    }
+  }
+}
+```
+
+`remote_head` must equal the preview manifest's recorded `remote_baseline_sha`, not an arbitrary stale SHA.
+`sync_state_sha` must still equal the approved target SHA and must not still equal the recorded baseline SHA.
+`verification_scope` must be exactly `category_scoped`; unknown scope strings are refused. `deployed_categories`
+must exactly match the preview manifest's `categories` set, and both category lists must be non-empty string
+lists with no empty or duplicate entries. Every expected category must have `matched_target: true`, positive
+non-bool integer `path_count`, and present empty-list `missing_paths`, `mismatched_paths`, and `extra_paths`.
+`path_count` is a trusted deploy-helper assertion over its category path set; the verifier requires it to be
+positive but does not infer file names from the count. Successful category-scoped verification records
+`deploy_verification_scope: category_scoped` in the parent payload for audit and recovery. This proves the
+category-scoped deploy contract without pretending the full VPS checkout has advanced to the target commit.
+
 ## Tests To Add First
 
 ### K2B focused tests

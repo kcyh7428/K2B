@@ -661,9 +661,17 @@ APPROVE_DEPLOY:<target_sha>:<remote_baseline_sha>:<manifest_sha256>:<approved_at
 4. **Verify.** After the child finishes, record independent verification evidence as JSON under
    `K2B-Vault/System/orchestrator/deploy-results/` and set `deploy_verify_result_path` or
    `deploy_inspect_path` in the parent payload. Run `verify-deploy <parent>`.
-   Only evidence with state `deployed`, `remote_head == target_sha`, `sync_state_sha == target_sha`,
+   Full-checkout evidence with state `deployed`, `remote_head == target_sha`, `sync_state_sha == target_sha`,
    expected named services active, zero `recovery_state_mismatch_count`, and the matching dispatch
-   token/time/nonce sets `terminal_deployed`.
+   token/time/nonce sets `terminal_deployed`. Category-scoped evidence may pass with a stale `remote_head` only
+   when it still has `sync_state_sha == target_sha`, that sync-state SHA is not still the recorded baseline,
+   explicitly sets `verification_scope: category_scoped`, its `remote_head` equals the recorded
+   `remote_baseline_sha`, `deployed_categories` exactly matches the preview `categories` as a non-empty string
+   list with no empty or duplicate entries, and `category_results` proves every expected category
+   `matched_target: true` with positive non-bool integer `path_count` and present
+   empty-list `missing_paths`, `mismatched_paths`, and `extra_paths`. Unknown `verification_scope` values are
+   refused, and successful category-scoped verification records
+   `deploy_verification_scope: category_scoped` in the parent payload for audit/recovery.
 5. **Failure.** If the worker errors or verification refuses, run `record-deploy-failed <parent> --reason
    "<worker/preflight reason>"` and surface `inspect-deploy-state`. `retry-deploy` is allowed only when fresh
    trusted deploy-results evidence reports `clean_rollback`; otherwise do not retry without a fresh human

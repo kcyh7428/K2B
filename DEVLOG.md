@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-20 -- Orchestrator A5 category-scoped deploy verifier
+
+**Commit:** this commit -- feat(orchestrator): add A5 category-scoped deploy verification
+
+**What shipped:** A5 deploy verification can now terminalize a category-scoped K2Bi deploy without forcing the VPS Git `HEAD` to the target commit. Full-checkout proof still requires `remote_head == target_sha`. Category-scoped proof is fail-closed: `verification_scope` must be exactly `category_scoped`; `remote_head` must equal the recorded deploy baseline; `sync_state_sha` must equal the approved target and differ from the baseline; the approval token must still bind target, baseline, manifest hash, approval time, and lease; dispatch token/time/nonce must match; deployed categories and category result keys must strictly match the preview categories; and every category must report `matched_target: true`, positive integer `path_count`, and empty `missing_paths`, `mismatched_paths`, and `extra_paths`. Stale `deploy_verification_scope` is cleared across preview, dispatch, defer, resume, failure, and retry paths.
+
+**Review:** Tier 3 capital-path orchestrator verifier. Builder-family `openai`; independent Kimi review through the historical `minimax` runner with `--no-fallback`. Review logs: `.code-reviews/2026-06-20T13-21-23Z_a7ecbe.log`, `.code-reviews/2026-06-20T13-27-42Z_5c1f06.log`, `.code-reviews/2026-06-20T13-32-45Z_d131b5.log`, `.code-reviews/2026-06-20T13-38-45Z_10cd7e.log`. Concrete review findings were folded with tests: strict path-result keys/lists, baseline token binding, token-field fail-closed checks, non-bool integer `path_count`, no-op category scope refusal, and stale scope cleanup. The final review still returned `NEEDS-ATTENTION`; the named critical sync-state bypass is false in the current code because `_a5_deploy_inspect_clean` checks `sync_state_sha == target_sha` after the category branch, and focused regressions cover wrong sync state and no-op baseline refusal.
+
+**Tests:** `PYTHONPATH=. pytest tests/orchestrator/test_orchestrator_a5.py -q` (59 passed); `PYTHONPATH=. pytest -q` (680 passed); `python3 -m py_compile scripts/lib/orchestrator_store.py`; `bash scripts/verify-skills-parity.sh`; `git diff --check`.
+
+**Feature status change:** `feature_orchestrator-deploy-gate` remains in-progress. The verifier is code-shipped, but task `2026-06-20-001` still needs fresh trusted category-scoped deploy-results evidence before `verify-deploy` can honestly set `terminal_deployed`.
+
+**Follow-ups:** Generate fresh trusted A5 deploy-results evidence for task `2026-06-20-001` proving the `scripts` and `skills` category payloads match K2Bi target `d7b1245494aba1bf761943ea1272859940ff7488`, then run `verify-deploy`. No live broker mutation is authorized or required.
+
+---
 ## 2026-06-20 -- Private VPN watchdog: root-cause tracing
 
 **Commit:** `9a76691` infra: add private VPN root-cause tracing

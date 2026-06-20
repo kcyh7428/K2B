@@ -3014,6 +3014,14 @@ def a4_retry_limits_after_rollback(task_id: str) -> tuple[bool, str]:
 
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_A5_DEPLOY_TOKEN_RE = re.compile(
+    r"^APPROVE_DEPLOY:"
+    r"(?P<target>[0-9a-f]{40}):"
+    r"(?P<remote_baseline>[0-9a-f]{40}):"
+    r"(?P<manifest>[0-9a-f]{64}):"
+    r"(?P<approved_at>.+):"
+    r"(?P<lease>[^:]+)$"
+)
 
 
 def _a5_deploy_token(
@@ -3027,6 +3035,39 @@ def _a5_deploy_token(
         f"APPROVE_DEPLOY:{target_sha}:{remote_baseline_sha}:"
         f"{manifest_sha}:{approved_at}:{lease}"
     )
+
+
+def _a5_deploy_token_matches_payload(payload: dict) -> tuple[bool, str]:
+    token = str(payload.get("deploy_approval_token") or "").strip()
+    match = _A5_DEPLOY_TOKEN_RE.match(token)
+    if match is None:
+        return (False, "deploy approval_token malformed")
+    target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
+    remote_baseline_sha = str(payload.get("deploy_remote_baseline_sha") or "").strip().lower()
+    manifest_sha = str(payload.get("deploy_preview_manifest_sha256") or "").strip().lower()
+    approved_at = str(payload.get("deploy_approved_at") or "").strip()
+    lease_id = str(payload.get("deploy_lease_id") or "").strip()
+    if not target_sha:
+        return (False, "deploy_target_sha missing from deploy approval token payload")
+    if not remote_baseline_sha:
+        return (False, "deploy_remote_baseline_sha missing from deploy approval token payload")
+    if not manifest_sha:
+        return (False, "deploy_preview_manifest_sha256 missing from deploy approval token payload")
+    if not approved_at:
+        return (False, "deploy_approved_at missing from deploy approval token payload")
+    if not lease_id:
+        return (False, "deploy_lease_id missing from deploy approval token payload")
+    if match.group("target").lower() != target_sha:
+        return (False, "deploy_target_sha does not match deploy approval token")
+    if match.group("remote_baseline").lower() != remote_baseline_sha:
+        return (False, "deploy_remote_baseline_sha does not match deploy approval token")
+    if match.group("manifest").lower() != manifest_sha:
+        return (False, "deploy_preview_manifest_sha256 does not match deploy approval token")
+    if match.group("approved_at") != approved_at:
+        return (False, "deploy_approved_at does not match deploy approval token")
+    if match.group("lease") != lease_id:
+        return (False, "deploy_lease_id does not match deploy approval token")
+    return (True, "")
 
 
 def _a5_load_manifest_with_sha(path: Path) -> tuple[dict | None, str | None, str]:
@@ -3232,6 +3273,7 @@ def a5_record_deploy_preview(task_id: str, manifest_path: str) -> tuple[bool, st
             "deploy_verify_failed_reason",
             "deploy_inspect_state",
             "deploy_inspect",
+            "deploy_verification_scope",
         ):
             payload.pop(key, None)
         _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
@@ -3344,6 +3386,7 @@ def a5_mark_deploy_dispatch_started(task_id: str) -> tuple[bool, dict | str]:
             "deploy_verify_failed_reason",
             "deploy_inspect_state",
             "deploy_inspect",
+            "deploy_verification_scope",
         ):
             payload.pop(key, None)
         _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
@@ -3433,6 +3476,7 @@ def a5_defer_deploy(task_id: str, *, reason: str = "operator_deferred") -> tuple
         payload["deploy_deferred_at"] = marker["created_at"]
         payload["deploy_defer_reason"] = reason
         payload["deploy_pending_marker_path"] = str(marker_path)
+        payload.pop("deploy_verification_scope", None)
         _update_payload_locked(conn, task_id, payload, status=task["status"], blocker_reason=None)
         conn.commit()
         conn.close()
@@ -3514,6 +3558,7 @@ def a5_resume_deferred_deploy(task_id: str) -> tuple[bool, str]:
             "deploy_approved_at",
             "deploy_approval_token",
             "deploy_dispatch_nonce",
+            "deploy_verification_scope",
         ):
             payload.pop(key, None)
         payload["deploy_deferred_resumed_at"] = now_iso()
@@ -3611,21 +3656,44 @@ def _a5_deploy_inspect_clean(payload: dict, inspect: dict) -> tuple[bool, str]:
     target_sha = str(payload.get("deploy_target_sha") or "").strip().lower()
     if inspect.get("state") != "deployed":
         return (False, inspect.get("reason") or f"inspect state {inspect.get('state')!r}")
-    if str(inspect.get("remote_head") or "").strip().lower() != target_sha:
+    verification_scope = str(inspect.get("verification_scope") or "").strip()
+    if verification_scope and verification_scope != "category_scoped":
+        return (False, f"unknown verification_scope: {verification_scope!r}")
+    remote_head = str(inspect.get("remote_head") or "").strip().lower()
+    if verification_scope == "category_scoped":
+        ok, reason = _a5_category_scoped_deploy_inspect_clean(payload, inspect)
+        if not ok:
+            return (False, reason)
+    elif remote_head != target_sha:
         return (False, "remote_head does not match deploy target sha")
     if str(inspect.get("sync_state_sha") or "").strip().lower() != target_sha:
         return (False, "sync_state_sha does not match deploy target sha")
-    if str(inspect.get("approval_token") or "").strip() != str(
-        payload.get("deploy_approval_token") or ""
-    ).strip():
+    approval_token = str(payload.get("deploy_approval_token") or "").strip()
+    inspect_approval_token = str(inspect.get("approval_token") or "").strip()
+    if not approval_token:
+        return (False, "deploy approval_token missing from current dispatch")
+    if not inspect_approval_token:
+        return (False, "deploy verification approval_token missing")
+    if inspect_approval_token != approval_token:
         return (False, "deploy verification approval_token does not match current dispatch")
-    if str(inspect.get("dispatch_started_at") or "").strip() != str(
-        payload.get("deploy_dispatch_started_at") or ""
-    ).strip():
+    ok, reason = _a5_deploy_token_matches_payload(payload)
+    if not ok:
+        return (False, reason)
+    dispatch_started_at = str(payload.get("deploy_dispatch_started_at") or "").strip()
+    inspect_dispatch_started_at = str(inspect.get("dispatch_started_at") or "").strip()
+    if not dispatch_started_at:
+        return (False, "deploy dispatch_started_at missing from current dispatch")
+    if not inspect_dispatch_started_at:
+        return (False, "deploy verification dispatch_started_at missing")
+    if inspect_dispatch_started_at != dispatch_started_at:
         return (False, "deploy verification dispatch_started_at does not match current dispatch")
-    if str(inspect.get("dispatch_nonce") or "").strip() != str(
-        payload.get("deploy_dispatch_nonce") or ""
-    ).strip():
+    dispatch_nonce = str(payload.get("deploy_dispatch_nonce") or "").strip()
+    inspect_dispatch_nonce = str(inspect.get("dispatch_nonce") or "").strip()
+    if not dispatch_nonce:
+        return (False, "deploy dispatch nonce missing from current dispatch")
+    if not inspect_dispatch_nonce:
+        return (False, "deploy verification dispatch_nonce missing")
+    if inspect_dispatch_nonce != dispatch_nonce:
         return (False, "deploy verification dispatch_nonce does not match current dispatch")
     restart_services = payload.get("deploy_restart_services")
     if restart_services:
@@ -3645,13 +3713,92 @@ def _a5_deploy_inspect_clean(payload: dict, inspect: dict) -> tuple[bool, str]:
     return (True, "")
 
 
+def _a5_strict_category_set(raw: object, label: str) -> tuple[set[str] | None, str]:
+    if not isinstance(raw, list):
+        return (None, f"{label} must be a string list")
+    categories: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return (None, f"{label} contains empty category")
+        category = item.strip()
+        if category in categories:
+            return (None, f"{label} contains duplicate category: {category}")
+        categories.add(category)
+    if not categories:
+        return (None, f"{label} missing")
+    return (categories, "")
+
+
+def _a5_category_scoped_deploy_inspect_clean(payload: dict, inspect: dict) -> tuple[bool, str]:
+    if inspect.get("verification_scope") != "category_scoped":
+        return (False, "verification_scope must be category_scoped")
+    remote_head = str(inspect.get("remote_head") or "").strip().lower()
+    baseline_sha = str(payload.get("deploy_remote_baseline_sha") or "").strip().lower()
+    if not baseline_sha:
+        return (False, "deploy_remote_baseline_sha missing from payload")
+    if not _SHA40_RE.match(baseline_sha):
+        return (False, "deploy_remote_baseline_sha malformed in payload")
+    if remote_head != baseline_sha:
+        return (False, "category-scoped remote_head does not match deploy baseline sha")
+    sync_state_sha = str(inspect.get("sync_state_sha") or "").strip().lower()
+    if sync_state_sha == baseline_sha:
+        return (False, "category-scoped sync_state_sha did not advance from deploy baseline sha")
+    expected, reason = _a5_strict_category_set(
+        payload.get("deploy_categories"), "deploy preview categories"
+    )
+    if expected is None:
+        return (False, reason)
+    observed, reason = _a5_strict_category_set(
+        inspect.get("deployed_categories"), "deploy verification deployed_categories"
+    )
+    if observed is None:
+        return (False, reason)
+    if observed != expected:
+        return (False, "deploy verification categories do not match preview categories")
+    results = inspect.get("category_results")
+    if not isinstance(results, dict):
+        return (False, "deploy verification category_results missing")
+    result_categories, reason = _a5_strict_category_set(
+        list(results.keys()), "deploy verification category_results"
+    )
+    if result_categories is None:
+        return (False, reason)
+    if result_categories != expected:
+        return (False, "deploy verification category_results do not match preview categories")
+    for category in sorted(expected):
+        result = results.get(category)
+        if not isinstance(result, dict):
+            return (False, f"deploy verification category result missing: {category}")
+        if result.get("matched_target") is not True:
+            return (False, f"deploy verification category did not match target: {category}")
+        if "path_count" not in result:
+            return (False, f"deploy verification category path_count missing: {category}")
+        path_count = result.get("path_count")
+        if not isinstance(path_count, int) or isinstance(path_count, bool):
+            return (False, f"deploy verification category path_count invalid: {category}")
+        if path_count <= 0:
+            return (False, f"deploy verification category has no matched paths: {category}")
+        for key in ("missing_paths", "mismatched_paths", "extra_paths"):
+            if key not in result:
+                return (False, f"deploy verification category {key} missing: {category}")
+            values = result.get(key)
+            if not isinstance(values, list):
+                return (False, f"deploy verification category {key} must be a list: {category}")
+            if values:
+                return (False, f"deploy verification category has {key}: {category}")
+    return (True, "")
+
+
 def _a5_compact_deploy_inspect(inspect: dict) -> dict:
     return {
         key: inspect.get(key)
         for key in (
             "state",
+            "verification_scope",
             "remote_head",
             "sync_state_sha",
+            "deployed_categories",
+            "category_results",
             "service_active",
             "recovery_state_mismatch_count",
             "reason",
@@ -3693,6 +3840,11 @@ def a5_verify_deploy(task_id: str) -> tuple[bool, str]:
             payload["deploy_verified"] = True
             payload["deploy_verified_at"] = now_iso()
             payload["deploy_deployed_sha"] = str(inspect.get("sync_state_sha") or "").strip().lower()
+            verification_scope = str(inspect.get("verification_scope") or "").strip()
+            if verification_scope:
+                payload["deploy_verification_scope"] = verification_scope
+            else:
+                payload.pop("deploy_verification_scope", None)
             _update_payload_locked(conn, task_id, payload, status="terminal_deployed")
             conn.commit()
             conn.close()
@@ -3702,6 +3854,7 @@ def a5_verify_deploy(task_id: str) -> tuple[bool, str]:
         payload["deploy_verify_failed_reason"] = reason
         payload.pop("deploy_verified", None)
         payload.pop("deploy_verified_at", None)
+        payload.pop("deploy_verification_scope", None)
         _update_payload_locked(conn, task_id, payload, status=task["status"])
         conn.commit()
         conn.close()
@@ -3727,6 +3880,7 @@ def a5_record_deploy_failed(task_id: str, *, reason: str) -> tuple[bool, str]:
         payload.setdefault("deploy_failure_reason", reason)
         payload["deploy_inspect_state"] = inspect.get("state")
         payload["deploy_inspect"] = _a5_compact_deploy_inspect(inspect)
+        payload.pop("deploy_verification_scope", None)
         _update_payload_locked(conn, task_id, payload, status="needs_human", blocker_reason=reason)
         conn.commit()
         conn.close()
@@ -3793,6 +3947,7 @@ def a5_retry_deploy_after_rollback(task_id: str) -> tuple[bool, str]:
             "deploy_verify_failed_reason",
             "deploy_inspect_state",
             "deploy_inspect",
+            "deploy_verification_scope",
         ):
             payload.pop(key, None)
         payload["deploy_retry_ready_at"] = now_iso()
