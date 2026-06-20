@@ -1,11 +1,11 @@
 ---
 name: k2b-media-generator
-description: Generate K2B media assets through GPTsAPI and current fallback paths -- images, speech (TTS), audio transcription, and high-end editorial presentation decks (HTML to PDF + PPTX). Use when Keith wants an image, a voiceover, a transcription, or a stunning / visual-led slide deck or presentation.
+description: Generate K2B media assets through GPTsAPI and current fallback paths -- images, image edits, speech (TTS), audio transcription, and high-end editorial presentation decks (HTML to PDF + PPTX). Use when Keith wants an image, an existing image transformed, a voiceover, a transcription, or a stunning / visual-led slide deck or presentation.
 ---
 
 # K2B Media Generator
 
-Generate images, speech, audio transcriptions, video, and music. Images and speech default to GPTsAPI (`gpt-image-2`, `tts-1-hd`). Transcription defaults to GPTsAPI Whisper (`whisper-1`) with Groq Whisper as fallback. MiniMax image fallback was retired on 2026-05-27.
+Generate images, image edits, speech, audio transcriptions, video, and music. Images and speech default to GPTsAPI (`gpt-image-2`, `tts-1-hd`). Image edits are direct-endpoint only until a maintained wrapper exists. Transcription defaults to GPTsAPI Whisper (`whisper-1`) with Groq Whisper as fallback. MiniMax image fallback was retired on 2026-05-27.
 
 ## Commands
 
@@ -26,6 +26,7 @@ Generate images, speech, audio transcriptions, video, and music. Images and spee
 - **Retired (do NOT call):** the legacy MiniMax image and OCR wrapper scripts were deleted 2026-05-27. `scripts/minimax-speech.sh` deleted 2026-05-16. `mcp__minimax__text_to_audio` MCP tool still exists in the agent's tool list but its backend is dead (status_code 2049). `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created -- MiniMax has no STT endpoint.
 - Assets: `~/Projects/K2B-Vault/Assets/` (images/, audio/, video/)
 - Vault: `~/Projects/K2B-Vault`
+- Mirror copies must stay synchronized; run `scripts/verify-skills-parity.sh` after editing this skill. If the script is unavailable, manually compare the mirrored copy before shipping.
 
 ## Integration Method
 
@@ -36,6 +37,41 @@ Use the bash wrapper for image generation:
 ```
 
 The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
+
+**Image-to-image edit: GPTsAPI direct endpoint (experimental)**
+When Keith wants to transform, restyle, preserve, or improve an existing image, use this user-provided GPTsAPI image-edit endpoint shape as a reference until a maintained wrapper exists. This path is not equivalent to `/media image`: no K2B wrapper, polling, automatic asset save, Telegram delivery, or Obsidian embed handling exists yet.
+
+Endpoint:
+```text
+POST https://api.gptsapi.net/api/v3/openai/gpt-image-2/image-edit
+Authorization: Bearer <GPTSAPI_KEY_FROM_ENV>
+Content-Type: application/json
+```
+
+Payload shape:
+```json
+{
+  "prompt": "Transform this product image into a premium e-commerce poster style.",
+  "input_urls": ["<VERIFIED_PUBLIC_HTTPS_IMAGE_URL>"],
+  "aspect_ratio": "1:1",
+  "resolution": "1K"
+}
+```
+`input_urls` must be HTTPS URL strings reachable by GPTSAPI, not local file paths, `file://` URLs, localhost/private-network URLs, or plain `http://` URLs. K2B does not yet have a maintained local-image-to-public-URL path for this endpoint. If the source image is private or only in the local vault, pause and ask Keith for a public/presigned HTTPS URL or build an upload/presign wrapper first. Do not paste raw API keys into chat or scripts; read `GPTSAPI_KEY` from the environment.
+
+Safety constraints for image-edit:
+- Manual-only. Do not call from cron, scheduled jobs, batch workflows, or unattended pipelines.
+- Do not paste or run raw one-off curl commands from chat. Build or extend a wrapper first, or create a reviewed one-off script that reads `GPTSAPI_KEY` from the environment and uses a file-based payload.
+- Process one image-edit request at a time. Confirm with Keith before multiple edits because pricing/rate limits may differ from plain `gpt-image-2`.
+- `GPTSAPI_KEY` must only appear in the HTTP `Authorization` header. Never embed it in request bodies, URL query parameters, or form fields.
+- Never send placeholder URLs. Verify every `input_urls` value is the actual public HTTPS image URL before sending.
+- Keep the response JSON outside the vault. Never move, copy, paste, or reference the temp JSON file inside any vault note.
+
+Output handling for image-edit:
+1. Save the raw provider response to a temp JSON file outside the vault.
+2. Inspect the JSON. If it contains only a task ID or an unknown schema, stop and build/verify a wrapper before polling or updating the vault. Delete the temp JSON after inspection; do not store it in the vault.
+3. If the response clearly contains a downloadable image URL or base64 image payload, save through a reviewed script that creates `K2B-Vault/Assets/images/`, verifies it is writable, writes to a temp file in that directory, and atomically moves the completed image to `YYYY-MM-DD_image_edit_<slug>.png`. The script must use `mktemp` plus `trap`/`finally` cleanup for temp JSON and image files on success, error, and interruption. Do not write partial downloads directly to the final vault path.
+4. Verify the saved image exists and is non-empty before printing `![[Assets/images/YYYY-MM-DD_image_edit_<slug>.png]]` or updating any vault note.
 
 **Other media: MiniMax MCP Server** (DEAD since 2026-05-27 -- subscription lapsed; these tools return status_code 2049. Listed for reference only; do NOT call.)
 The MiniMax MCP server (`minimax-mcp-js`) exposes these tools, but its backend is dead:
@@ -62,6 +98,15 @@ If MCP tools are unavailable, use the bash scripts:
 - **aspect**: GPTsAPI supports `1:1`, `16:9`, `9:16`, `4:3`, `3:4` (default: `16:9`).
 - **slug**: Filename slug (auto-generated from prompt if omitted)
 - Default model: GPTsAPI `gpt-image-2`
+
+### Image-to-image edit parameters
+- **endpoint**: `POST https://api.gptsapi.net/api/v3/openai/gpt-image-2/image-edit`
+- **prompt**: Required, max 20,000 characters.
+- **input_urls**: Required array of image URLs, max 16 images. URLs must be externally reachable by GPTsAPI.
+- **aspect_ratio**: `auto`, `1:1`, `9:16`, `16:9`, `4:3`, or `3:4`.
+- **resolution**: `1K`, `2K`, or `4K`.
+- **limits**: `1:1` cannot convert to `4K`. If `aspect_ratio` is `auto` or omitted, output is only `1K`.
+- **cost**: Check the GPTSAPI dashboard for current image-edit pricing. Do not batch image edits without explicit confirmation.
 
 ### Provider choice
 - Default GPTsAPI for executive editorial images, typography, diagrams, quote cards, LinkedIn headers, and clean business visuals.
@@ -220,17 +265,18 @@ This is the high-value workflow. Reads a content idea and generates appropriate 
 ### Workflow
 1. Read `K2B-Vault/wiki/content-pipeline/content_<slug>.md`
 2. Extract: title, hook, platform (linkedin/youtube), core insight
-3. Based on platform:
+3. If the idea note contains frontmatter `image_edit: true`, frontmatter `image_source: existing`, an Obsidian image embed (`![[...]]`), or a Markdown image (`![...](...)`), STOP. Image-edit is experimental and manual-only, and is never invoked from `/media for` or any automated workflow regardless of confirmation. End the `/media for` run with a note to Keith; a separate manual request handles image-edit.
+4. Based on platform:
    - **LinkedIn**: Generate a 16:9 header image using the hook + topic as prompt context. Add style: "professional, corporate, modern design, suitable for LinkedIn"
    - **YouTube**: Generate a 16:9 thumbnail. Add style: "bold, eye-catching, high contrast, YouTube thumbnail style"
-4. Optionally generate TTS of the hook/summary (ask Keith first if he wants audio)
-5. Update the idea note by adding a `## Generated Assets` section:
+5. Optionally generate TTS of the hook/summary (ask Keith first if he wants audio)
+6. Update the idea note by adding a `## Generated Assets` section:
    ```markdown
    ## Generated Assets
 
    ![[Assets/images/YYYY-MM-DD_image_slug.png]]
    ```
-6. Print confirmation with the embed path
+7. Print confirmation with the embed path
 
 ## Presentation Decks (Stunning / Editorial)
 
