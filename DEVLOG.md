@@ -4408,3 +4408,17 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Feature status change:** none (`--no-feature`; router infrastructure hardening).
 
 **Key decisions:** keep cheap Mihomo checks at 60 seconds during outages; continue to gate expensive AWS/SSH trace work behind the private-route incident threshold.
+
+## 2026-06-20 -- Codex ship discipline alignment
+
+**Commit:** `741583a` policy: align Codex ship discipline with Claude
+
+**What shipped:** Codex now has the same end-of-session shipping obligation that Claude Code already had. `AGENTS.md` tells Codex to run the `k2b-ship` manual fallback when `/ship` is unavailable, and the `k2b-ship` skill now treats explicit delivery commands like "commit this", "push this", "sync this to the Mini", or "make sure this is shipped" as authorization to finish review, commit, push, devlog, wiki log, Step 14 sweep, and sync/defer resolution without asking Keith to repeat himself.
+
+**Review:** builder-family=`openai`, Tier 3. Kimi stayed `NEEDS-ATTENTION` across repeated passes. Concrete findings were folded in: plain "implement" is not ship authorization, descriptive/architectural uses of sync/deploy/merge do not authorize shipping, ambiguous mixed-mode wording asks once, compound "implement X then ship" requires done-check evidence, blocked ships have an explicit recovery path, and the ship temp-file snippet uses a private cleanup directory. Remaining Kimi suggestions to require renewed confirmation after clear delivery commands or build a natural-language parser were rejected because they would recreate the reminder loop this ship fixes. Review logs include `.code-reviews/2026-06-20T11-00-25Z_c3affa.log`, `.code-reviews/2026-06-20T11-02-47Z_28a70b.log`, `.code-reviews/2026-06-20T11-04-49Z_06776d.log`, `.code-reviews/2026-06-20T11-07-52Z_baea56.log`, and `.code-reviews/2026-06-20T11-11-06Z_41561c.log`.
+
+**Verification:** `bash tests/codex-ship-discipline.test.sh`; `bash tests/verify-skills-parity.test.sh`; `scripts/verify-skills-parity.sh`; `bash tests/codex-hooks.test.sh`; `git diff --check`.
+
+**Feature status change:** none (`--no-feature`; Codex workflow policy hardening).
+
+**Key decisions:** this is a hard Codex-facing contract, not a memory-only preference. Clear delivery wording finishes the ship path; ambiguous, exploratory, blocked, or explicitly uncommitted work does not get silently shipped.
