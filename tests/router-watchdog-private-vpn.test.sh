@@ -140,15 +140,17 @@ PY
 write_fake_commands() {
   local d="$1"
   mkdir -p "$d/fakebin"
-  cat > "$d/fakebin/aws" <<'EOF'
+  cat > "$d/fakebin/aws" <<EOF
 #!/usr/bin/env bash
+printf 'aws %s\n' "\$*" >> "$d/expensive-commands.log"
 cat <<'JSON'
 {"state":{"code":16,"name":"running"}}
 JSON
 EOF
-  cat > "$d/fakebin/ssh" <<'EOF'
+  cat > "$d/fakebin/ssh" <<EOF
 #!/usr/bin/env bash
-if printf '%s\n' "$*" | grep -q 'router'; then
+printf 'ssh %s\n' "\$*" >> "$d/expensive-commands.log"
+if printf '%s\n' "\$*" | grep -q 'router'; then
   printf 'router-log: no mihomo restart\n'
 else
   cat <<'TEXT'
@@ -195,6 +197,7 @@ echo "=== router-watchdog-private-vpn.test.sh ==="
   run_watchdog "$d" "2026-06-20T07:00:00Z" "$base"
   [[ ! -s "$d/alerts.jsonl" ]] || fail "first HK failure should log only"
   [[ ! -d "$d/incidents" || -z "$(find "$d/incidents" -type f -print -quit)" ]] || fail "first HK failure should not trace"
+  [[ ! -e "$d/expensive-commands.log" ]] || fail "first HK failure should not run AWS or SSH trace"
   [[ ! -e "$d/private-vpn-watchdog.lock" ]] || fail "lock file should be removed after successful tick"
 
   run_watchdog "$d" "2026-06-20T07:01:00Z" "$base"
@@ -202,6 +205,8 @@ echo "=== router-watchdog-private-vpn.test.sh ==="
   grep -q "K2B VPN watchdog: private route degraded" "$d/alerts.jsonl" || fail "failure alert title missing"
   grep -q "Classification: hk_only_down" "$d/alerts.jsonl" || fail "failure alert classification missing"
   grep -q "route is using TW fallback" "$d/alerts.jsonl" || fail "failure alert should mention TW fallback"
+  grep -q '^aws ' "$d/expensive-commands.log" || fail "second HK failure should run AWS trace"
+  grep -q '^ssh ' "$d/expensive-commands.log" || fail "second HK failure should run SSH trace"
 
   incident="$(find "$d/incidents" -type f -name '*private-vpn.json' | head -1)"
   [[ -n "$incident" ]] || fail "incident trace should be written on second failure"

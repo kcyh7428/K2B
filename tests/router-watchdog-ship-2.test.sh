@@ -13,6 +13,8 @@ SRC_DIR="$REPO_ROOT/scripts/router-watchdog"
 INSTALL="$SRC_DIR/install.sh"
 STATE_MACHINE="$SRC_DIR/bin/state-machine.py"
 PARTITION_QUEUE="$SRC_DIR/bin/partition-queue.py"
+PRIVATE_VPN_PLIST="$REPO_ROOT/launchd/com.k2b.router-private-vpn-watchdog.plist"
+PRIVATE_VPN_EXPECTED_INTERVAL=60
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -47,6 +49,31 @@ PY
 }
 
 echo "=== router-watchdog-ship-2.test.sh ==="
+
+{
+  python3 - "$PRIVATE_VPN_PLIST" "$PRIVATE_VPN_EXPECTED_INTERVAL" <<'PY' || fail "private VPN watchdog launchd cadence drifted from 60 seconds"
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as f:
+    plist = plistlib.load(f)
+
+expected_interval = int(sys.argv[2])
+start_interval = plist.get("StartInterval")
+throttle_interval = plist.get("ThrottleInterval")
+
+if start_interval != expected_interval:
+    raise SystemExit(f"StartInterval expected {expected_interval} seconds, got {start_interval!r}")
+if throttle_interval != expected_interval:
+    raise SystemExit(f"ThrottleInterval expected {expected_interval} seconds, got {throttle_interval!r}")
+if throttle_interval < start_interval:
+    raise SystemExit(
+        f"ThrottleInterval must not be lower than StartInterval: "
+        f"{throttle_interval!r} < {start_interval!r}"
+    )
+PY
+  echo "  PASS: private VPN launchd cadence stays at 60 seconds"
+}
 
 # ---------------------------------------------------------------------------
 # Test HIGH-3a: install.sh rolls back when launchctl bootstrap fails partway.
