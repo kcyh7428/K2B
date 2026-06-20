@@ -12,9 +12,9 @@
 
 **Tests:** `PYTHONPATH=. pytest tests/orchestrator/test_orchestrator_a5.py -q` (59 passed); `PYTHONPATH=. pytest -q` (680 passed); `python3 -m py_compile scripts/lib/orchestrator_store.py`; `bash scripts/verify-skills-parity.sh`; `git diff --check`.
 
-**Feature status change:** `feature_orchestrator-deploy-gate` remains in-progress. The verifier is code-shipped, but task `2026-06-20-001` still needs fresh trusted category-scoped deploy-results evidence before `verify-deploy` can honestly set `terminal_deployed`.
+**Feature status change:** `feature_orchestrator-deploy-gate` shipped after the follow-up live proof. Task `2026-06-20-001` reached `terminal_deployed` with category-scoped evidence for K2Bi target `d7b1245494aba1bf761943ea1272859940ff7488`: scripts path count 6, skills path count 3, service active, recovery mismatch 0, kill switch absent, and no broker/order, strategy approval, validator, whitelist, kill-switch, checkout, or reset mutation.
 
-**Follow-ups:** Generate fresh trusted A5 deploy-results evidence for task `2026-06-20-001` proving the `scripts` and `skills` category payloads match K2Bi target `d7b1245494aba1bf761943ea1272859940ff7488`, then run `verify-deploy`. No live broker mutation is authorized or required.
+**Follow-ups:** none for A5. The broader orchestrator can now be used from the normal front door for future ticker work; live broker/order actions remain separately gated by K2Bi policy.
 
 ---
 ## 2026-06-20 -- Private VPN watchdog: root-cause tracing
