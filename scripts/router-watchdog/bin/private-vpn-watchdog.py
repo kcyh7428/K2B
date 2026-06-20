@@ -4,13 +4,17 @@ import atexit
 import copy
 import datetime as dt
 import fcntl
+import ipaddress
 import json
 import os
 import pwd
 import re
+import shutil
+import socket
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -273,6 +277,52 @@ def bounded_env_float(name: str, default: float, minimum: float, maximum: float)
     return min(max(value, minimum), maximum)
 
 
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"", "0", "false", "no", "off", "disable", "disabled"}
+
+
+def env_csv(name: str, default: str) -> list[str]:
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def parse_latency_ms(output: str) -> float | None:
+    match = re.search(r"time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms", output)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"=\s*[0-9.]+/([0-9]+(?:\.[0-9]+)?)/[0-9.]+/[0-9.]+\s*ms", output)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def boolish(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "1", "ok"}:
+            return True
+        if normalized in {"false", "no", "0", "off"}:
+            return False
+    return None
+
+
+def first_boolish(*values: Any) -> bool | None:
+    for value in values:
+        parsed = boolish(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def shell_safe_host(host: str, fallback: str) -> str:
+    return host if re.fullmatch(r"[A-Za-z0-9_.-]+", host) else fallback
+
+
 class MihomoClient:
     def __init__(self, base: str, secret: str, timeout: float) -> None:
         self.base = base.rstrip("/")
@@ -419,6 +469,202 @@ def run_command(command: list[str], timeout: int) -> dict[str, Any]:
         }
 
 
+def ping_probe(label: str, host: str) -> dict[str, Any]:
+    if not host:
+        return {"label": label, "host": "unset", "ok": False, "latency_ms": None, "error": "host unset"}
+    ping_bin = os.environ.get("K2B_PRIVATE_VPN_PING_BIN", "ping")
+    timeout_ms = bounded_env_int("K2B_PRIVATE_VPN_PING_TIMEOUT_MS", 1000, 200, 5000)
+    result = run_command([ping_bin, "-c", "1", "-W", str(timeout_ms), host], max(2, int(timeout_ms / 1000) + 2))
+    output = "\n".join(part for part in (result.get("stdout", ""), result.get("stderr", "")) if part)
+    return {
+        "label": label,
+        "host": host,
+        "ok": result["ok"],
+        "latency_ms": parse_latency_ms(output),
+        "error": None if result["ok"] else (result.get("stderr") or result.get("stdout") or "ping failed"),
+    }
+
+
+def parse_tcp_target(target: str) -> tuple[str, int] | None:
+    if not target:
+        return None
+    if target.startswith("[") and "]:" in target:
+        host, port = target[1:].split("]:", 1)
+    elif target.count(":") == 1:
+        host, port = target.rsplit(":", 1)
+    else:
+        return None
+    try:
+        return host, int(port)
+    except ValueError:
+        return None
+
+
+def is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def redacted_tcp_target(target: str) -> str:
+    parsed = parse_tcp_target(target)
+    if parsed is None:
+        return "[invalid-target]"
+    host, port = parsed
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host) or ":" in host:
+        return f"[redacted-ip]:{port}"
+    return f"[redacted-host]:{port}"
+
+
+def tcp_probe(target: str) -> dict[str, Any]:
+    parsed = parse_tcp_target(target)
+    if parsed is None:
+        return {"target": "[invalid-target]", "ok": False, "latency_ms": None, "error": "invalid target"}
+    host, port = parsed
+    if not is_ip_literal(host):
+        return {"target": "[invalid-target]", "ok": False, "latency_ms": None, "error": "TCP target must use an IP literal"}
+    timeout = bounded_env_float("K2B_PRIVATE_VPN_TCP_TIMEOUT", 2.0, 0.5, 10.0)
+    start = time.monotonic()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            latency = round((time.monotonic() - start) * 1000, 1)
+        return {"target": redacted_tcp_target(target), "ok": True, "latency_ms": latency, "error": None}
+    except OSError as exc:
+        return {"target": redacted_tcp_target(target), "ok": False, "latency_ms": None, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def find_tailscale_bin() -> str | None:
+    configured = os.environ.get("K2B_PRIVATE_VPN_TAILSCALE_BIN", "")
+    if configured:
+        return configured
+    mac_app = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    if os.path.exists(mac_app):
+        return mac_app
+    return shutil.which("tailscale")
+
+
+def trace_tailscale_status() -> dict[str, Any]:
+    if not env_bool("K2B_PRIVATE_VPN_TAILSCALE_STATUS", True):
+        return {"enabled": False}
+    tailscale_bin = find_tailscale_bin()
+    if not tailscale_bin:
+        return {"enabled": True, "available": False, "ok": False, "error": "tailscale binary not found"}
+    result = run_command([tailscale_bin, "status", "--json"], bounded_env_int("K2B_PRIVATE_VPN_TAILSCALE_TIMEOUT", 4, 2, 30))
+    payload: dict[str, Any] = {}
+    if result["stdout"]:
+        try:
+            raw = json.loads(result["stdout"])
+            payload = raw if isinstance(raw, dict) else {}
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+    self_info = payload.get("Self") if isinstance(payload.get("Self"), dict) else {}
+    tailnet = payload.get("CurrentTailnet") if isinstance(payload.get("CurrentTailnet"), dict) else {}
+    peers = payload.get("Peer") if isinstance(payload.get("Peer"), dict) else {}
+    return {
+        "enabled": True,
+        "available": True,
+        "ok": result["ok"],
+        "backend_state": payload.get("BackendState", "unknown"),
+        "self_online": boolish(self_info.get("Online")),
+        "current_tailnet": tailnet.get("Name", "unknown"),
+        "peer_count": len(peers),
+        "stderr": result["stderr"] if not result["ok"] else "",
+    }
+
+
+def trace_tailscale_netcheck() -> dict[str, Any]:
+    if not env_bool("K2B_PRIVATE_VPN_TAILSCALE_NETCHECK_ON_INCIDENT", True):
+        return {"enabled": False, "skipped": True}
+    tailscale_bin = find_tailscale_bin()
+    if not tailscale_bin:
+        return {"enabled": True, "available": False, "ok": False, "error": "tailscale binary not found"}
+    result = run_command([tailscale_bin, "netcheck", "--json"], bounded_env_int("K2B_PRIVATE_VPN_TAILSCALE_TIMEOUT", 4, 2, 30))
+    payload: dict[str, Any] = {}
+    if result["stdout"]:
+        try:
+            raw = json.loads(result["stdout"])
+            payload = raw if isinstance(raw, dict) else {}
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+    report = payload.get("Report") if isinstance(payload.get("Report"), dict) else payload
+    if not isinstance(report, dict):
+        report = {}
+    return {
+        "enabled": True,
+        "available": True,
+        "ok": result["ok"],
+        "udp": boolish(report.get("UDP")),
+        "ipv4": first_boolish(report.get("IPv4"), report.get("IPv4CanSend")),
+        "ipv6": first_boolish(report.get("IPv6"), report.get("IPv6CanSend")),
+        "mapping_varies_by_dest_ip": boolish(report.get("MappingVariesByDestIP")),
+        "port_mapping": report.get("PortMapping", "unknown"),
+        "nearest_derp": report.get("NearestDERP", report.get("NearestDERPRegion", "unknown")),
+        "stderr": result["stderr"] if not result["ok"] else "",
+        "stdout": "" if payload else bounded(result["stdout"], 1200),
+    }
+
+
+def edge_diagnostics(include_netcheck: bool = False) -> dict[str, Any]:
+    if not env_bool("K2B_PRIVATE_VPN_EDGE_TRACE", True):
+        return {"enabled": False}
+    tailscale_status_every_tick = env_bool("K2B_PRIVATE_VPN_TAILSCALE_STATUS_EVERY_TICK", False)
+    router_lan = os.environ.get("K2B_PRIVATE_VPN_ROUTER_LAN_IP", "192.168.50.1")
+    upstream = os.environ.get("K2B_PRIVATE_VPN_UPSTREAM_GATEWAY", "192.168.1.1")
+    edge = {
+        "enabled": True,
+        "pings": {
+            "router_lan": ping_probe("router_lan", router_lan),
+            "upstream_gateway": ping_probe("upstream_gateway", upstream),
+        },
+        "tcp": {
+            "targets": [tcp_probe(target) for target in env_csv("K2B_PRIVATE_VPN_TCP_TARGETS", "1.1.1.1:443")],
+        },
+        "tailscale_status": trace_tailscale_status() if include_netcheck or tailscale_status_every_tick else {"skipped": True},
+    }
+    if include_netcheck:
+        edge["tailscale_netcheck"] = trace_tailscale_netcheck()
+    else:
+        edge["tailscale_netcheck"] = {"skipped": True}
+    return edge
+
+
+def any_tcp_ok(edge: dict[str, Any]) -> bool:
+    tcp = edge.get("tcp") if isinstance(edge.get("tcp"), dict) else {}
+    targets = tcp.get("targets") if isinstance(tcp.get("targets"), list) else []
+    return any(isinstance(target, dict) and target.get("ok") is True for target in targets)
+
+
+def evidence_hint(classification_value: str, edge: dict[str, Any]) -> str:
+    pings = edge.get("pings") if isinstance(edge.get("pings"), dict) else {}
+    router_lan = pings.get("router_lan") if isinstance(pings.get("router_lan"), dict) else {}
+    upstream = pings.get("upstream_gateway") if isinstance(pings.get("upstream_gateway"), dict) else {}
+    netcheck = edge.get("tailscale_netcheck") if isinstance(edge.get("tailscale_netcheck"), dict) else {}
+    if router_lan.get("ok") is False:
+        return "mac_mini_to_asus_lan_suspect"
+    if upstream.get("ok") is False:
+        return "upstream_modem_gateway_suspect"
+    if classification_value == "hk_only_down":
+        return "primary_path_specific"
+    if classification_value == "all_private_udp_down" and (netcheck.get("udp") is False or any_tcp_ok(edge)):
+        return "udp_nat_mapping_or_isp_modem_suspect"
+    if classification_value == "router_mihomo_down":
+        return "asus_mihomo_api_or_lan_suspect"
+    return "insufficient_edge_evidence"
+
+
+def evidence_text(hint: str) -> str:
+    return {
+        "primary_path_specific": "primary path specific",
+        "udp_nat_mapping_or_isp_modem_suspect": "UDP/NAT path suspect",
+        "mac_mini_to_asus_lan_suspect": "Mac Mini to ASUS LAN suspect",
+        "upstream_modem_gateway_suspect": "upstream modem gateway suspect",
+        "asus_mihomo_api_or_lan_suspect": "ASUS Mihomo API or LAN suspect",
+        "insufficient_edge_evidence": "insufficient edge evidence",
+    }.get(hint, hint)
+
+
 def trace_aws() -> dict[str, Any]:
     profile = os.environ.get("K2B_PRIVATE_VPN_AWS_PROFILE", "k2b-aws-signhubdev-hk")
     region = os.environ.get("K2B_PRIVATE_VPN_AWS_REGION", "ap-east-1")
@@ -465,9 +711,19 @@ def trace_router() -> dict[str, Any]:
             "stdout": "",
             "stderr": "K2B_PRIVATE_VPN_ROUTER_SSH_TARGET is invalid",
         }
+    upstream_gateway = shell_safe_host(os.environ.get("K2B_PRIVATE_VPN_UPSTREAM_GATEWAY", "192.168.1.1"), "192.168.1.1")
     command = os.environ.get(
         "K2B_PRIVATE_VPN_ROUTER_TRACE_COMMAND",
-        "date; uptime; tail -n 120 /tmp/syslog.log 2>/dev/null || true; tail -n 120 /tmp/clash_run.log 2>/dev/null || true",
+        "date; uptime; "
+        "(ip route 2>/dev/null || route -n 2>/dev/null || true); "
+        "(ifconfig eth0 2>/dev/null || true); "
+        "(ifconfig br0 2>/dev/null || true); "
+        "(cat /etc/resolv.conf 2>/dev/null || true); "
+        f"(ping -c 2 -W 1 {upstream_gateway} 2>&1 || true); "
+        "(ping -c 2 -W 1 1.1.1.1 2>&1 || true); "
+        "(nslookup www.gstatic.com 2>&1 || true); "
+        "tail -n 120 /tmp/syslog.log 2>/dev/null || true; "
+        "tail -n 120 /tmp/clash_run.log 2>/dev/null || true",
     )
     result = run_command(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, command],
@@ -621,6 +877,7 @@ def failure_message(
     classification: str,
     aws: dict[str, Any],
     server: dict[str, Any],
+    hint: str,
     trace_path: str,
 ) -> str:
     lines = [
@@ -639,6 +896,7 @@ def failure_message(
             f"AWS HK: {aws.get('state', 'unknown')}",
             f"HK server: hysteria {server.get('hysteria_active', 'unknown')}, UDP 443 {server.get('udp443', 'unknown')}",
             f"Classification: {classification}",
+            f"Evidence: {evidence_text(hint)}",
             "",
             f"Action: {action_for(classification, chain, failover)}",
             f"Trace: {trace_path}",
@@ -697,11 +955,16 @@ def write_incident(
     cheap: dict[str, Any],
     checks: dict[str, dict[str, Any]],
     state: dict[str, Any],
-) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any], str]:
+    edge: dict[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any], str, str]:
     Path(incident_dir).mkdir(parents=True, exist_ok=True)
     aws = trace_aws()
     router = trace_router()
     server = trace_server()
+    incident_edge = copy.deepcopy(edge)
+    if incident_edge.get("enabled") is not False:
+        incident_edge["tailscale_status"] = trace_tailscale_status()
+        incident_edge["tailscale_netcheck"] = trace_tailscale_netcheck()
     route_group = os.environ.get("K2B_PRIVATE_VPN_ROUTE_GROUP", "🎯 总模式")
     private_group = os.environ.get("K2B_PRIVATE_VPN_PRIVATE_GROUP", "🔒 私有线路")
     primary = os.environ.get("K2B_PRIVATE_VPN_PRIMARY", "🇭🇰 K2B-VPS-HK")
@@ -718,13 +981,16 @@ def write_incident(
     )
     if final_classification == "ok":
         final_classification = classification_value
+    hint = evidence_hint(final_classification, incident_edge)
     filename = f"{now.strftime('%Y-%m-%dT%H%M%S')}.{now.microsecond:06d}Z-{uuid.uuid4().hex[:8]}-private-vpn.json"
     path = str(Path(incident_dir) / filename)
     payload = {
         "timestamp": isoformat(now),
         "classification": final_classification,
+        "evidence_hint": hint,
         "chain": cheap.get("chain", []),
         "checks": checks,
+        "edge": incident_edge,
         "aws": aws,
         "server": server,
         "router": router,
@@ -737,7 +1003,7 @@ def write_incident(
         "state_before": state,
     }
     atomic_write_json(path, payload)
-    return path, aws, server, router, final_classification
+    return path, aws, server, router, final_classification, hint
 
 
 def incident_timestamp(path: Path) -> float:
@@ -948,6 +1214,7 @@ def main() -> int:
     state.setdefault("recovery_alerted", False)
 
     cheap = cheap_check(client, route_group, private_group, primary, failover, emergency)
+    edge = edge_diagnostics(include_netcheck=False)
     checks = cheap.get("checks", {}) if isinstance(cheap.get("checks"), dict) else {}
     preliminary = classify(cheap.get("api_ok") is True, checks, primary, failover, emergency)
     primary_ok = preliminary == "ok"
@@ -957,6 +1224,7 @@ def main() -> int:
     aws: dict[str, Any] = {"state": "unknown"}
     server: dict[str, Any] = {"hysteria_active": "unknown", "udp443": "unknown"}
     final_classification = preliminary
+    hint = "insufficient_edge_evidence"
 
     if primary_ok:
         previous_alerted = bool(state.get("incident_alerted")) or has_unresolved_degraded_alert(args.alerts_file, now)
@@ -997,13 +1265,14 @@ def main() -> int:
         state["primary_recovery_count"] = 0
         state["status"] = "degraded"
         if state["primary_fail_count"] >= fail_threshold and not state.get("incident_alerted") and not previous_alerted:
-            trace_path, aws, server, _router, final_classification = write_incident(
+            trace_path, aws, server, _router, final_classification, hint = write_incident(
                 args.incident_dir,
                 now,
                 preliminary,
                 cheap,
                 checks,
                 copy.deepcopy(state),
+                edge,
             )
             prune_incidents(args.incident_dir, protect_path=trace_path)
             message = failure_message(
@@ -1016,6 +1285,7 @@ def main() -> int:
                 final_classification,
                 aws,
                 server,
+                hint,
                 trace_path,
             )
             alert_event = {
@@ -1037,6 +1307,7 @@ def main() -> int:
         "classification": final_classification,
         "chain": cheap.get("chain", []),
         "checks": checks,
+        "edge": edge,
         "fail_count": state.get("primary_fail_count", 0),
         "recovery_count": state.get("primary_recovery_count", 0),
     }

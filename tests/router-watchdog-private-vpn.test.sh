@@ -160,11 +160,52 @@ udp443=UNCONN 0 0 *:443 *:* users:(("hysteria",pid=123,fd=3))
 TEXT
 fi
 EOF
-  chmod +x "$d/fakebin/aws" "$d/fakebin/ssh"
+  cat > "$d/fakebin/ping" <<'EOF'
+#!/usr/bin/env bash
+host="${@: -1}"
+case "$host" in
+  192.168.50.1)
+    printf '64 bytes from %s: icmp_seq=0 ttl=64 time=2.4 ms\n' "$host"
+    exit 0
+    ;;
+  192.168.1.1)
+    printf '64 bytes from %s: icmp_seq=0 ttl=63 time=3.8 ms\n' "$host"
+    exit 0
+    ;;
+  *)
+    printf 'ping: request timeout for %s\n' "$host" >&2
+    exit 2
+    ;;
+esac
+EOF
+  cat > "$d/fakebin/tailscale" <<'EOF'
+#!/usr/bin/env bash
+[[ -n "${K2B_FAKE_TAILSCALE_LOG:-}" ]] && printf 'tailscale %s\n' "$*" >> "$K2B_FAKE_TAILSCALE_LOG"
+case "${1:-}" in
+  status)
+    cat <<'JSON'
+{"BackendState":"Running","Self":{"Online":true},"CurrentTailnet":{"Name":"test-tailnet"}}
+JSON
+    ;;
+  netcheck)
+    udp="${K2B_FAKE_TAILSCALE_UDP:-true}"
+    cat <<JSON
+{"Report":{"UDP":$udp,"IPv4":true,"MappingVariesByDestIP":true,"PortMapping":"UPnP","NearestDERP":"sin"}}
+JSON
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+  chmod +x "$d/fakebin/aws" "$d/fakebin/ssh" "$d/fakebin/ping" "$d/fakebin/tailscale"
 }
 
 run_watchdog() {
   local d="$1" ts="$2" base="$3"
+  local tcp_target="${base#http://}"
+  tcp_target="${tcp_target%%/*}"
+  local tcp_targets="${K2B_TEST_TCP_TARGETS:-$tcp_target}"
   PATH="$d/fakebin:$PATH" \
   MIHOMO_API_BASE="$base" \
   MIHOMO_API_SECRET="test-secret" \
@@ -176,6 +217,12 @@ run_watchdog() {
   K2B_PRIVATE_VPN_INCIDENT_KEEP="${K2B_PRIVATE_VPN_INCIDENT_KEEP:-50}" \
   K2B_PRIVATE_VPN_INCIDENT_MAX_AGE_DAYS="${K2B_PRIVATE_VPN_INCIDENT_MAX_AGE_DAYS:-30}" \
   K2B_PRIVATE_VPN_HK_SSH_TARGET="ubuntu@127.0.0.1" \
+  K2B_PRIVATE_VPN_ROUTER_LAN_IP="192.168.50.1" \
+  K2B_PRIVATE_VPN_UPSTREAM_GATEWAY="192.168.1.1" \
+  K2B_PRIVATE_VPN_TCP_TARGETS="$tcp_targets" \
+  K2B_PRIVATE_VPN_PING_BIN="$d/fakebin/ping" \
+  K2B_PRIVATE_VPN_TAILSCALE_BIN="$d/fakebin/tailscale" \
+  K2B_FAKE_TAILSCALE_LOG="$d/tailscale-commands.log" \
   python3 "$WATCHDOG" \
     --state-file "$d/state.json" \
     --health-log "$d/private-vpn-health.jsonl" \
@@ -198,6 +245,7 @@ echo "=== router-watchdog-private-vpn.test.sh ==="
   [[ ! -s "$d/alerts.jsonl" ]] || fail "first HK failure should log only"
   [[ ! -d "$d/incidents" || -z "$(find "$d/incidents" -type f -print -quit)" ]] || fail "first HK failure should not trace"
   [[ ! -e "$d/expensive-commands.log" ]] || fail "first HK failure should not run AWS or SSH trace"
+  [[ ! -e "$d/tailscale-commands.log" ]] || fail "first HK failure should not run Tailscale status/netcheck"
   [[ ! -e "$d/private-vpn-watchdog.lock" ]] || fail "lock file should be removed after successful tick"
 
   run_watchdog "$d" "2026-06-20T07:01:00Z" "$base"
@@ -207,6 +255,8 @@ echo "=== router-watchdog-private-vpn.test.sh ==="
   grep -q "route is using TW fallback" "$d/alerts.jsonl" || fail "failure alert should mention TW fallback"
   grep -q '^aws ' "$d/expensive-commands.log" || fail "second HK failure should run AWS trace"
   grep -q '^ssh ' "$d/expensive-commands.log" || fail "second HK failure should run SSH trace"
+  grep -q '^tailscale status --json$' "$d/tailscale-commands.log" || fail "incident trace should run Tailscale status"
+  grep -q '^tailscale netcheck --json$' "$d/tailscale-commands.log" || fail "incident trace should run Tailscale netcheck"
 
   incident="$(find "$d/incidents" -type f -name '*private-vpn.json' | head -1)"
   [[ -n "$incident" ]] || fail "incident trace should be written on second failure"
@@ -217,8 +267,56 @@ assert payload["classification"] == "hk_only_down", payload
 assert payload["aws"]["state"] == "running", payload
 assert payload["server"]["hysteria_active"] == "active", payload
 assert payload["checks"]["🇹🇼 K2B-VPS-TW"]["ok"] is True, payload
+edge = payload["edge"]
+assert edge["pings"]["router_lan"]["ok"] is True, edge
+assert edge["pings"]["upstream_gateway"]["ok"] is True, edge
+assert edge["tcp"]["targets"][0]["ok"] is True, edge
+assert edge["tcp"]["targets"][0]["target"].startswith("[redacted-"), edge
+assert edge["tailscale_status"]["backend_state"] == "Running", edge
+assert edge["tailscale_netcheck"]["udp"] is True, edge
+assert payload["evidence_hint"] == "primary_path_specific", payload
 PY
   echo "  PASS: HK failure traces and alerts with TW fallback"
+}
+
+{
+  d="$TMPROOT/edge-trace-disabled"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  start_mihomo "$d" hk_fail_tw_ok
+  base="http://127.0.0.1:$(cat "$d/port")"
+
+  K2B_PRIVATE_VPN_EDGE_TRACE=0 run_watchdog "$d" "2026-06-20T07:03:00Z" "$base"
+  K2B_PRIVATE_VPN_EDGE_TRACE=0 run_watchdog "$d" "2026-06-20T07:04:00Z" "$base"
+  [[ ! -e "$d/tailscale-commands.log" ]] || fail "disabled edge tracing should not run Tailscale probes"
+  incident="$(find "$d/incidents" -type f -name '*private-vpn.json' | head -1)"
+  python3 - "$d/private-vpn-health.jsonl" "$incident" <<'PY' || fail "disabled edge tracing should be explicit in health and incident rows"
+import json, sys
+health_rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+incident = json.load(open(sys.argv[2], encoding="utf-8"))
+assert health_rows[-1]["edge"] == {"enabled": False}, health_rows[-1]
+assert incident["edge"] == {"enabled": False}, incident
+PY
+  echo "  PASS: edge tracing can be disabled without probe side effects"
+}
+
+{
+  d="$TMPROOT/tcp-hostname-rejected"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  start_mihomo "$d" all_ok
+  base="http://127.0.0.1:$(cat "$d/port")"
+
+  K2B_TEST_TCP_TARGETS="private.internal.example:443" run_watchdog "$d" "2026-06-20T07:04:30Z" "$base"
+  python3 - "$d/private-vpn-health.jsonl" <<'PY' || fail "hostname TCP targets should be rejected before DNS resolution"
+import json, sys
+row = json.loads(open(sys.argv[1], encoding="utf-8").read().splitlines()[-1])
+target = row["edge"]["tcp"]["targets"][0]
+assert target["target"] == "[invalid-target]", target
+assert target["ok"] is False, target
+assert "IP literal" in target["error"], target
+PY
+  echo "  PASS: TCP probes reject hostnames before DNS"
 }
 
 {
@@ -349,8 +447,17 @@ PY
   base="http://127.0.0.1:$(cat "$d/port")"
 
   run_watchdog "$d" "2026-06-20T08:00:00Z" "$base"
-  run_watchdog "$d" "2026-06-20T08:01:00Z" "$base"
+  K2B_FAKE_TAILSCALE_UDP=false run_watchdog "$d" "2026-06-20T08:01:00Z" "$base"
   grep -q "Classification: all_private_udp_down" "$d/alerts.jsonl" || fail "all-private failure should classify as all_private_udp_down"
+  grep -q "Evidence: UDP/NAT path suspect" "$d/alerts.jsonl" || fail "all-private failure alert should include UDP/NAT evidence hint"
+  incident="$(find "$d/incidents" -type f -name '*private-vpn.json' | head -1)"
+  python3 - "$incident" <<'PY' || fail "all-private incident should capture Tailscale UDP/NAT evidence"
+import json, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+assert payload["edge"]["tailscale_netcheck"]["udp"] is False, payload
+assert payload["edge"]["tailscale_netcheck"]["mapping_varies_by_dest_ip"] is True, payload
+assert payload["evidence_hint"] == "udp_nat_mapping_or_isp_modem_suspect", payload
+PY
   echo "  PASS: all private leaves down classification"
 }
 
