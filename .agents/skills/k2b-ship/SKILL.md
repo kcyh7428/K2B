@@ -1088,6 +1088,21 @@ fi
 
 For a multi-ship feature where this ship closes a sub-task reminder, pass the specific matching token(s) -- the helper attributes each closed line to the slug that actually matched it, so the audit trail stays correct.
 
+**Status fanout is code-enforced for K2B/K2Bi/orchestrator ships** -- run the plate freshness audit before declaring the ship complete. This catches the drift class where `wiki/concepts/index.md` says a feature shipped, but the K2Bi Resume Card or orchestrator tracker still names it as current/next work:
+
+```bash
+if [ ! -x scripts/audit-plate-freshness.py ]; then
+  echo "[fatal] plate-freshness audit script missing in $(pwd); restore it or record an explicit Keith override before completing /ship" >&2
+  exit 3
+fi
+if ! python3 scripts/audit-plate-freshness.py; then
+  echo "[fatal] plate-freshness audit failed; update stale source notes and rerun before completing /ship" >&2
+  exit 3
+fi
+```
+
+If the audit reports stale source notes, `/ship` stops. Update those sources and rerun the audit plus `/plate` before saying the plate is current. Bypass requires an explicit Keith override in the ship record.
+
 **Categories 1-4 stay agent-driven** (they need judgment about what THIS ship resolved):
 
 1. **Supersession references** -- when shipping vN+1, add a "Superseded by vN+1" note to the predecessor feature note's Updates section.

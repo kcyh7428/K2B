@@ -193,16 +193,146 @@ fi
 echo "## ✅ Recently shipped (last 7 days)"
 echo ""
 cutoff=$(date_7d_ago)
-shipped_lines=$(quiet grep -E '^\| \[\[Shipped/feature_' "$VAULT"/wiki/concepts/index.md | head -20 | while IFS= read -r line; do
-  # Extract date by regex (avoid \| split issues with escaped wikilinks)
-  date_col=$(echo "$line" | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' | head -1)
-  if [[ -n "$date_col" && -n "$cutoff" && ! "$date_col" < "$cutoff" ]]; then
-    slug=$(echo "$line" | grep -oE 'feature_[a-z0-9-]+' | head -1)
-    # Extract notes column: everything after the date, before the trailing |
-    note=$(echo "$line" | sed -E "s/.*${date_col}[[:space:]]*\|[[:space:]]*//" | sed 's/[[:space:]]*|[[:space:]]*$//' | cut -c1-150)
-    echo "- **${slug}** (${date_col}): ${note}..."
-  fi
-done)
+shipped_lines=$(python3 - "$VAULT/wiki/concepts/index.md" "$cutoff" <<'PY'
+from pathlib import Path
+import re
+import sys
+import unicodedata
+
+path = Path(sys.argv[1])
+cutoff = sys.argv[2] if len(sys.argv) > 2 else ""
+
+def split_markdown_row(line: str) -> list[str]:
+    cells = []
+    buf = []
+    wiki_depth = 0
+    square_depth = 0
+    paren_depth = 0
+    escape = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if escape:
+            buf.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            buf.append(ch)
+            escape = True
+            i += 1
+            continue
+
+        pair = line[i:i + 2]
+        if pair == "[[":
+            wiki_depth += 1
+            buf.append(pair)
+            i += 2
+            continue
+        if pair == "]]":
+            wiki_depth = max(0, wiki_depth - 1)
+            buf.append(pair)
+            i += 2
+            continue
+
+        if wiki_depth == 0:
+            if ch == "[":
+                square_depth += 1
+            elif ch == "]" and square_depth:
+                square_depth -= 1
+            elif ch == "(" and square_depth == 0 and buf and buf[-1] == "]":
+                paren_depth += 1
+            elif ch == ")" and paren_depth:
+                paren_depth -= 1
+
+        if ch == "|" and wiki_depth == 0 and square_depth == 0 and paren_depth == 0:
+            cells.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    cells.append("".join(buf).strip())
+    if cells and cells[0] == "":
+        cells = cells[1:]
+    if cells and cells[-1] == "":
+        cells = cells[:-1]
+    return cells
+
+def strip_link(cell: str) -> str:
+    match = re.search(r"\[\[([^]]+)\]\]", cell)
+    if not match:
+        return cell.strip()
+    raw = match.group(1)
+    buf = []
+    target = raw
+    alias = ""
+    escape = False
+    for index, ch in enumerate(raw):
+        if escape:
+            buf.append(ch)
+            escape = False
+            continue
+        if ch == "\\":
+            buf.append(ch)
+            escape = True
+            continue
+        if ch == "|":
+            target = "".join(buf).strip()
+            alias = raw[index + 1:].replace("\\|", "|").strip()
+            break
+        buf.append(ch)
+    target_slug = target.rsplit("/", 1)[-1].strip()
+    if re.fullmatch(r"feature_[a-z0-9-]+", alias):
+        return alias
+    return target_slug
+
+def truncate_display(text: str, max_width: int = 150) -> str:
+    text = unicodedata.normalize("NFC", text)
+    width = 0
+    out = []
+    for ch in text:
+        ch_width = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1)
+        if width + ch_width > max_width - 3:
+            suffix = "".join(out).rstrip()
+            if " " in suffix:
+                suffix = suffix.rsplit(" ", 1)[0].rstrip() or suffix
+            return suffix + "..."
+        out.append(ch)
+        width += ch_width
+    return "".join(out)
+
+if not path.exists():
+    sys.exit(0)
+
+in_section = False
+count = 0
+for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    if line.startswith("## Shipped"):
+        in_section = True
+        continue
+    if in_section and line.startswith("## "):
+        break
+    if not in_section or not line.startswith("|"):
+        continue
+    if "|------" in line or "| Page " in line:
+        continue
+
+    parts = split_markdown_row(line)
+    if len(parts) < 3:
+        continue
+    slug = strip_link(parts[0])
+    if not slug.startswith("feature_"):
+        continue
+    date = parts[1].strip() if len(parts) > 1 and re.fullmatch(r"20\d\d-\d\d-\d\d", parts[1].strip()) else ""
+    if not date or (cutoff and date < cutoff):
+        continue
+    note = parts[-1].strip()
+    print(f"- **{slug}** ({date}): {truncate_display(note)}")
+    count += 1
+    if count >= 20:
+        break
+PY
+)
 if [[ -n "$shipped_lines" ]]; then
   echo "$shipped_lines"
 else
@@ -243,22 +373,47 @@ def strip_invisible(text: str) -> str:
 def split_markdown_row(line: str) -> list[str]:
     cells = []
     buf = []
-    bracket_depth = 0
+    wiki_depth = 0
+    square_depth = 0
+    paren_depth = 0
+    escape = False
     i = 0
     while i < len(line):
+        ch = line[i]
+        if escape:
+            buf.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            buf.append(ch)
+            escape = True
+            i += 1
+            continue
+
         pair = line[i:i + 2]
         if pair == "[[":
-            bracket_depth += 1
+            wiki_depth += 1
             buf.append(pair)
             i += 2
             continue
         if pair == "]]":
-            bracket_depth = max(0, bracket_depth - 1)
+            wiki_depth = max(0, wiki_depth - 1)
             buf.append(pair)
             i += 2
             continue
-        ch = line[i]
-        if ch == "|" and bracket_depth == 0:
+
+        if wiki_depth == 0:
+            if ch == "[":
+                square_depth += 1
+            elif ch == "]" and square_depth:
+                square_depth -= 1
+            elif ch == "(" and square_depth == 0 and buf and buf[-1] == "]":
+                paren_depth += 1
+            elif ch == ")" and paren_depth:
+                paren_depth -= 1
+
+        if ch == "|" and wiki_depth == 0 and square_depth == 0 and paren_depth == 0:
             cells.append("".join(buf).strip())
             buf = []
         else:
@@ -272,6 +427,7 @@ def split_markdown_row(line: str) -> list[str]:
     return cells
 
 def truncate_display(text: str, max_width: int = 120) -> str:
+    text = unicodedata.normalize("NFC", text)
     width = 0
     out = []
     for ch in text:
@@ -286,7 +442,7 @@ def truncate_display(text: str, max_width: int = 120) -> str:
     return "".join(out)
 
 in_section = False
-for line in path.read_text(encoding="utf-8").splitlines():
+for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
     if line.startswith("## In Progress"):
         in_section = True
         continue
@@ -301,12 +457,20 @@ for line in path.read_text(encoding="utf-8").splitlines():
             continue
         name = re.sub(r"\\?\|.*", "", m.group(1))
         parts = split_markdown_row(line)
-        status = " | ".join(parts[1:-3]).strip() if len(parts) >= 5 else (parts[1] if len(parts) > 1 else "")
+        if len(parts) < 2:
+            continue
+        # In Progress rows treat the rightmost YYYY-MM-DD cell as Updated;
+        # every cell between Page and Updated is status context to display.
+        date_index = next((i for i in range(len(parts) - 1, 0, -1) if re.fullmatch(r"20\d\d-\d\d-\d\d", parts[i])), None)
+        if date_index is not None:
+            status = " | ".join(parts[1:date_index]).strip()
+        else:
+            status = " | ".join(parts[1:]).strip()
         status = status.replace("|", "·")
         status = strip_invisible(status).strip()
         if display_width(status) > 120:
             status = truncate_display(status)
-        date = next((p for p in reversed(parts) if re.fullmatch(r"20\d\d-\d\d-\d\d", p)), "?")
+        date = parts[date_index] if date_index is not None else "?"
         if status:
             print(f"- **{name}** (updated {date}): {status}")
         else:
