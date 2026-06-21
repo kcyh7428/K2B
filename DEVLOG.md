@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-06-21 -- Plate freshness audit Mini follow-up
+
+**Commit:** `85f5bdf` fix(plate): make freshness audit Mini-aware
+
+**What shipped:** `scripts/audit-plate-freshness.py` now keeps K2B source files fail-closed while allowing a missing default `K2Bi-Vault` only when the caller explicitly sets `K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1`. Explicit `K2BI_VAULT_PATH`, including an empty value, remains fail-closed. The Mini can now run the audit as an incomplete-scan smoke without pretending it checked the K2Bi Resume Card.
+
+**Review:** Kimi-only review through the historical `minimax` runner with `--builder-family openai --no-fallback`. Valid findings were folded in: explicit missing-path behavior, explicit empty-path behavior, clear incomplete-scan warning, K2B stale detection still active under the Mini opt-in, default K2Bi path scanned when present, and a controlled `FileNotFoundError` path for source disappearance between existence check and read. Remaining review comments were policy/maintenance concerns around warning-vs-failure semantics and UTF-8 replacement handling; accepted for this Mini compatibility follow-up.
+
+**Tests:** `bash tests/k2b-plate.test.sh`; `python3 scripts/audit-plate-freshness.py`; `python3 -m py_compile scripts/audit-plate-freshness.py`; `git diff --check`; Mini smoke with `K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1 python3 scripts/audit-plate-freshness.py`.
+
+**Feature status change:** none (`--no-feature` infrastructure/source-of-truth repair).
+
+**Follow-ups:** If the Mini later hosts `K2Bi-Vault`, remove the opt-in from Mini smoke/runtime so the Resume Card is checked there too.
+
+---
 ## 2026-06-21 -- Plate freshness repair for orchestrator closeout
 
 **Commit:** `f48c00d` fix(plate): audit shipped status freshness
