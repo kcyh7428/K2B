@@ -13,6 +13,10 @@ def vault_path(env_name: str, default_suffix: str) -> Path:
     return Path(os.environ.get(env_name, str(Path.home() / "Projects" / default_suffix))).expanduser()
 
 
+def empty_env_paths(*env_names: str) -> list[str]:
+    return [env_name for env_name in env_names if env_name in os.environ and os.environ[env_name] == ""]
+
+
 def split_markdown_row(line: str) -> list[str]:
     cells: list[str] = []
     buf: list[str] = []
@@ -159,15 +163,16 @@ def relevant_lines(path: Path, lines: list[str]) -> list[tuple[int, str]]:
     return relevant
 
 
-def stale_findings(k2b_vault: Path, k2bi_vault: Path) -> list[str]:
+def stale_findings(k2b_vault: Path, k2bi_vault: Path, include_k2bi_planning: bool) -> list[str]:
     shipped = shipped_features(k2b_vault / "wiki" / "concepts" / "index.md")
     if not shipped:
         return []
 
     tracked_paths = [
-        (k2bi_vault / "wiki" / "planning" / "index.md", "K2Bi Resume Card"),
         (k2b_vault / "wiki" / "concepts" / "feature_k2b-orchestrator.md", "orchestrator tracker"),
     ]
+    if include_k2bi_planning:
+        tracked_paths.append((k2bi_vault / "wiki" / "planning" / "index.md", "K2Bi Resume Card"))
 
     generic_patterns = {feature: stale_keyword_pattern(feature) for feature in shipped}
     a5_shipped = "feature_orchestrator-deploy-gate" in shipped
@@ -176,8 +181,13 @@ def stale_findings(k2b_vault: Path, k2bi_vault: Path) -> list[str]:
     findings: list[str] = []
     for path, label in tracked_paths:
         if not path.exists():
+            findings.append(f"{path}: {label} expected source missing before scan")
             continue
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            findings.append(f"{path}: {label} expected source missing before scan")
+            continue
         for line_number, line in relevant_lines(path, lines):
             for feature, pattern in generic_patterns.items():
                 if pattern.search(line):
@@ -189,25 +199,55 @@ def stale_findings(k2b_vault: Path, k2bi_vault: Path) -> list[str]:
     return findings
 
 
+ALLOW_MISSING_K2BI_ENV = "K2B_PLATE_ALLOW_MISSING_K2BI_VAULT"
+
+
+def missing_k2bi_planning_allowed() -> bool:
+    if "K2BI_VAULT_PATH" in os.environ:
+        return False
+    # The Mac Mini K2B runtime does not host K2Bi-Vault. Missing K2Bi planning
+    # is allowed only when the caller explicitly opts into that incomplete
+    # scan; local MacBook and explicit override paths fail closed.
+    return os.environ.get(ALLOW_MISSING_K2BI_ENV) == "1"
+
+
 def main() -> int:
+    empty_paths = empty_env_paths("K2B_VAULT_PATH", "K2BI_VAULT_PATH")
+    if empty_paths:
+        print("plate-freshness audit failed: required source file missing")
+        for env_name in empty_paths:
+            print(f"- {env_name} is set but empty")
+        return 2
+
     k2b_vault = vault_path("K2B_VAULT_PATH", "K2B-Vault")
     k2bi_vault = vault_path("K2BI_VAULT_PATH", "K2Bi-Vault")
+    k2bi_planning = k2bi_vault / "wiki" / "planning" / "index.md"
     required_files = [
         k2b_vault / "wiki" / "concepts" / "index.md",
-        k2bi_vault / "wiki" / "planning" / "index.md",
         k2b_vault / "wiki" / "concepts" / "feature_k2b-orchestrator.md",
     ]
+    optional_missing: list[Path] = []
+    if not k2bi_planning.exists():
+        if missing_k2bi_planning_allowed():
+            optional_missing.append(k2bi_planning)
+        else:
+            required_files.append(k2bi_planning)
     missing = [path for path in required_files if not path.exists()]
     if missing:
         print("plate-freshness audit failed: required source file missing")
         for path in missing:
             print(f"- {path}")
         return 2
+    for path in optional_missing:
+        print(
+            "plate-freshness audit warning: optional source file missing; "
+            f"K2Bi Resume Card stale check skipped: {path}"
+        )
     shipped = shipped_features(k2b_vault / "wiki" / "concepts" / "index.md")
     if not shipped:
         print("plate-freshness audit failed: no shipped feature rows found in concepts index")
         return 2
-    findings = stale_findings(k2b_vault, k2bi_vault)
+    findings = stale_findings(k2b_vault, k2bi_vault, include_k2bi_planning=not optional_missing)
     if findings:
         print("plate-freshness audit failed:")
         for finding in findings:

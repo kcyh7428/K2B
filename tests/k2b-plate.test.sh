@@ -44,6 +44,25 @@ write_minimal_vaults() {
 EOF
 }
 
+write_clean_audit_sources() {
+  local k2b_vault="$1"
+  mkdir -p "$k2b_vault/wiki/concepts"
+  cat > "$k2b_vault/wiki/concepts/index.md" <<'EOF'
+# Wiki Concepts Index
+
+## Shipped
+
+| Page | Shipped | Notes |
+|------|---------|-------|
+| [[feature_orchestrator-deploy-gate]] | 2026-06-20 | A5 shipped. |
+EOF
+  cat > "$k2b_vault/wiki/concepts/feature_k2b-orchestrator.md" <<'EOF'
+# K2B Orchestrator
+
+**Where we are now (2026-06-21):** A5 deploy-to-engine shipped separately; no current orchestrator build gate remains.
+EOF
+}
+
 test_recent_shipped_reads_inline_and_archived_rows() {
   local tmp k2b_vault k2bi_vault today out
   tmp="$(mktmp)"
@@ -251,6 +270,164 @@ EOF
   echo "PASS: test_stale_audit_detects_shipped_feature_named_current_or_next"
 }
 
+test_stale_audit_fails_explicit_missing_k2bi_path() {
+  local tmp k2b_vault missing_k2bi out rc
+  tmp="$(mktmp)"
+  k2b_vault="$tmp/K2B-Vault"
+  missing_k2bi="$tmp/missing-K2Bi-Vault"
+
+  write_clean_audit_sources "$k2b_vault"
+
+  set +e
+  out="$(
+    K2B_VAULT_PATH="$k2b_vault" \
+    K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1 \
+    K2BI_VAULT_PATH="$missing_k2bi" \
+      python3 "$AUDIT_SCRIPT" 2>&1
+  )"
+  rc=$?
+  set -e
+
+  [ "$rc" -eq 2 ] || fail "explicit missing K2BI_VAULT_PATH should fail with rc=2, got rc=$rc: $out"
+  echo "$out" | grep -q "required source file missing" || fail "explicit missing K2BI_VAULT_PATH should be a required-source failure: $out"
+  echo "$out" | grep -q "wiki/planning/index.md" || fail "missing K2Bi planning path should be named: $out"
+  echo "PASS: test_stale_audit_fails_explicit_missing_k2bi_path"
+}
+
+test_stale_audit_fails_empty_explicit_k2bi_path() {
+  local tmp k2b_vault fake_home default_k2bi out rc
+  tmp="$(mktmp)"
+  k2b_vault="$tmp/K2B-Vault"
+  fake_home="$tmp/home"
+  default_k2bi="$fake_home/Projects/K2Bi-Vault"
+
+  write_clean_audit_sources "$k2b_vault"
+  mkdir -p "$default_k2bi/wiki/planning"
+  cat > "$default_k2bi/wiki/planning/index.md" <<'EOF'
+# K2Bi Planning Workspace
+
+> **Current state.** Clean default planning file exists and should not be used when K2BI_VAULT_PATH is explicitly empty.
+EOF
+
+  set +e
+  out="$(
+    HOME="$fake_home" \
+    K2B_VAULT_PATH="$k2b_vault" \
+    K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1 \
+    K2BI_VAULT_PATH= \
+      python3 "$AUDIT_SCRIPT" 2>&1
+  )"
+  rc=$?
+  set -e
+
+  [ "$rc" -eq 2 ] || fail "empty explicit K2BI_VAULT_PATH should fail with rc=2, got rc=$rc: $out"
+  echo "$out" | grep -q "required source file missing" || fail "empty explicit K2BI_VAULT_PATH should be a required-source failure: $out"
+  echo "$out" | grep -q "K2BI_VAULT_PATH is set but empty" || fail "empty explicit K2BI_VAULT_PATH should be rejected before default-path resolution: $out"
+  echo "PASS: test_stale_audit_fails_empty_explicit_k2bi_path"
+}
+
+test_stale_audit_allows_explicit_missing_k2bi_vault_opt_in() {
+  local tmp k2b_vault fake_home out rc
+  tmp="$(mktmp)"
+  k2b_vault="$tmp/K2B-Vault"
+  fake_home="$tmp/home"
+
+  write_clean_audit_sources "$k2b_vault"
+  mkdir -p "$fake_home"
+
+  cat > "$k2b_vault/wiki/concepts/feature_k2b-orchestrator.md" <<'EOF'
+# K2B Orchestrator
+
+**Where we are now (2026-06-21):** Next work is feature_orchestrator-deploy-gate.
+EOF
+
+  set +e
+  out="$(
+    env -u K2BI_VAULT_PATH \
+      HOME="$fake_home" \
+      K2B_VAULT_PATH="$k2b_vault" \
+      K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1 \
+      python3 "$AUDIT_SCRIPT" 2>&1
+  )"
+  rc=$?
+  set -e
+
+  [ "$rc" -eq 1 ] || fail "K2B stale detection should still run when missing K2Bi is explicitly allowed, got rc=$rc: $out"
+  echo "$out" | grep -q "optional source file missing" || fail "allowed missing K2Bi-Vault should print warning: $out"
+  echo "$out" | grep -q "feature_k2b-orchestrator.md" || fail "K2B stale detection should still report stale orchestrator tracker: $out"
+
+  write_clean_audit_sources "$k2b_vault"
+
+  set +e
+  out="$(
+    env -u K2BI_VAULT_PATH \
+      HOME="$fake_home" \
+      K2B_VAULT_PATH="$k2b_vault" \
+      K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1 \
+      python3 "$AUDIT_SCRIPT" 2>&1
+  )"
+  rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ] || fail "explicit missing K2Bi opt-in should pass clean K2B sources with warning, got rc=$rc: $out"
+  echo "$out" | grep -q "optional source file missing" || fail "allowed missing K2Bi-Vault should print warning on clean pass: $out"
+  echo "$out" | grep -q "plate-freshness audit passed" || fail "allowed missing K2Bi-Vault should pass after K2B sources are clean: $out"
+  echo "PASS: test_stale_audit_allows_explicit_missing_k2bi_vault_opt_in"
+}
+
+test_stale_audit_checks_default_k2bi_vault_when_present() {
+  local tmp k2b_vault fake_home default_k2bi out rc
+  tmp="$(mktmp)"
+  k2b_vault="$tmp/K2B-Vault"
+  fake_home="$tmp/home"
+  default_k2bi="$fake_home/Projects/K2Bi-Vault"
+
+  write_clean_audit_sources "$k2b_vault"
+  mkdir -p "$default_k2bi/wiki/planning"
+  cat > "$default_k2bi/wiki/planning/index.md" <<'EOF'
+# K2Bi Planning Workspace
+
+> **Current state.** Current work still includes feature_orchestrator-deploy-gate.
+EOF
+
+  set +e
+  out="$(
+    env -u K2BI_VAULT_PATH \
+      HOME="$fake_home" \
+      K2B_VAULT_PATH="$k2b_vault" \
+      K2B_PLATE_ALLOW_MISSING_K2BI_VAULT=1 \
+      python3 "$AUDIT_SCRIPT" 2>&1
+  )"
+  rc=$?
+  set -e
+
+  [ "$rc" -eq 1 ] || fail "default K2Bi path should be scanned when present, got rc=$rc: $out"
+  echo "$out" | grep -q "wiki/planning/index.md" || fail "default K2Bi stale finding should name planning file: $out"
+  if echo "$out" | grep -q "optional source file missing"; then
+    fail "present default K2Bi path should not emit missing-source warning: $out"
+  fi
+
+  cat > "$default_k2bi/wiki/planning/index.md" <<'EOF'
+# K2Bi Planning Workspace
+
+> **Current state.** No shipped feature is listed as current or next.
+EOF
+
+  env -u K2BI_VAULT_PATH \
+    HOME="$fake_home" \
+    K2B_VAULT_PATH="$k2b_vault" \
+    python3 "$AUDIT_SCRIPT" >"$tmp/default-present-clean.out" 2>&1 || {
+      cat "$tmp/default-present-clean.out" >&2
+      fail "default K2Bi path should pass when present and clean"
+    }
+  grep -q "plate-freshness audit passed" "$tmp/default-present-clean.out" || fail "clean default K2Bi path should print pass message"
+  if grep -q "optional source file missing" "$tmp/default-present-clean.out"; then
+    cat "$tmp/default-present-clean.out" >&2
+    fail "clean present default K2Bi path should not print missing-source warning"
+  fi
+  echo "PASS: test_stale_audit_checks_default_k2bi_vault_when_present"
+}
+
 test_plate_skill_script_mirrors_stay_identical() {
   cmp -s \
     "$REPO_ROOT/.agents/skills/k2b-plate/scripts/plate.sh" \
@@ -263,4 +440,8 @@ test_recent_shipped_reads_inline_and_archived_rows
 test_recent_shipped_empty_section_falls_back_to_none
 test_recent_shipped_missing_section_falls_back_to_none
 test_stale_audit_detects_shipped_feature_named_current_or_next
+test_stale_audit_fails_explicit_missing_k2bi_path
+test_stale_audit_fails_empty_explicit_k2bi_path
+test_stale_audit_allows_explicit_missing_k2bi_vault_opt_in
+test_stale_audit_checks_default_k2bi_vault_when_present
 test_plate_skill_script_mirrors_stay_identical
