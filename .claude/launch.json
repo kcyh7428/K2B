@@ -24,6 +24,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "/Users/keithmbpm2/Projects/K2B/k2b-dashboard"],
       "port": 5174
+    },
+    {
+      "name": "aicounsels-site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8095", "--directory", "/Users/keithmbpm2/Projects/aicounsels/site"],
+      "port": 8095
     }
   ]
 }
