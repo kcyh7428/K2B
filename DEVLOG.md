@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-06-21 -- Plate freshness repair for orchestrator closeout
+
+**Commit:** `f48c00d` fix(plate): audit shipped status freshness
+
+**What shipped:** `/plate` now reads recent shipped rows from the whole `## Shipped` table, including inline `[[feature_*]]` rows that have not been moved to `Shipped/`. Added `scripts/audit-plate-freshness.py` to fail when a shipped feature is still named as current/next work in the K2Bi Resume Card or the orchestrator full-scope tracker. `/ship` Step 14 now calls out the audit as mandatory for K2B/K2Bi/orchestrator status fanout.
+
+**Source updates:** The K2Bi Resume Card was archived/replaced for the 2026-06-21 A5-shipped state, and `feature_k2b-orchestrator.md` now says A5 shipped separately on 2026-06-20 instead of calling it the next separate feature.
+
+**Review:** Tier 3, builder-family `openai`, Kimi-only through the historical `minimax` runner with `--no-fallback`. Parseable passes raised concrete parser/audit findings that were fixed with tests: inline vs archived Shipped rows, markdown links, escaped pipes, empty notes, date-in-URL old-row exclusion, generic shipped/current drift, note-only feature refs, active-section history boundaries, executable audit/test scripts, and fail-closed `/ship` guidance. Later Kimi passes repeated maintainability items around parser duplication and A5 alias debt; accepted for this MVP with focused tests and live audit passing.
+
+**Tests:** `bash tests/k2b-plate.test.sh`; `python3 -m py_compile scripts/audit-plate-freshness.py`; `bash scripts/verify-skills-parity.sh`; `python3 scripts/audit-plate-freshness.py`; `bash .agents/skills/k2b-plate/scripts/plate.sh`; `git diff --check`.
+
+**Feature status change:** none (`--no-feature` infrastructure/source-of-truth repair).
+
+**Follow-ups:** none for A5. General open `/plate` reminders remain normal user-action items, not stale A5 state.
+
+---
 ## 2026-06-20 -- Orchestrator A5 terminal blocker cleanup
 
 **Commit:** `c0fb360` fix(orchestrator): clear terminal deploy blockers
