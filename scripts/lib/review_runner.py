@@ -6,7 +6,7 @@ Three guarantees:
      10s later if the child still hasn't exited.
   2. Fallback: if the primary reviewer (Codex by default) exits non-zero
      or hits the deadline, automatically retry on the secondary reviewer
-     (the `minimax`-keyed reviewer, which is Kimi K2.6-backed by default via
+     (the `minimax`-keyed reviewer, which is Kimi K2.7-backed by default via
      scripts/lib/minimax_common.py -- the "minimax" key name is historical and
      retained because it is load-bearing in the fallback-selection logic and
      tests) for the same scope. If both fail, exit code 2. Callers that
@@ -20,7 +20,7 @@ Three guarantees:
      Claude can never mistake "in final inference" for "wedged".
 
 Nothing in this file calls the Bash tool; Codex and the Kimi-backed reviewer
-(scripts/minimax-review.sh) are spawned
+(scripts/kimi-review.sh, or the historical scripts/minimax-review.sh shim) are spawned
 via subprocess.Popen, so the .claude PreToolUse guard hook does not block
 them -- the hook only fires on direct user-invoked Bash calls.
 
@@ -57,10 +57,12 @@ _LIB_DIR = Path(__file__).resolve().parent
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 try:
-    from minimax_common import MinimaxError, load_api_key  # type: ignore
+    from minimax_common import MinimaxError, load_api_key, load_kimi_api_key  # type: ignore
 except Exception:
     MinimaxError = RuntimeError  # type: ignore
     def load_api_key() -> str:  # type: ignore
+        raise RuntimeError("minimax_common not importable")
+    def load_kimi_api_key() -> str:  # type: ignore
         raise RuntimeError("minimax_common not importable")
 
 REPO_ROOT = Path(
@@ -367,9 +369,11 @@ def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
     return cmd
 
 
-def build_minimax_cmd(scope: str, files: list[str] | None, plan: str | None,
-                      focus: str) -> list[str]:
-    script = str(REPO_ROOT / "scripts" / "minimax-review.sh")
+def build_kimi_cmd(scope: str, files: list[str] | None, plan: str | None,
+                   focus: str) -> list[str]:
+    preferred = REPO_ROOT / "scripts" / "kimi-review.sh"
+    fallback = REPO_ROOT / "scripts" / "minimax-review.sh"
+    script = str(preferred if preferred.is_file() else fallback)
     cmd = [script, "--scope", scope]
     if files:
         cmd += ["--files", ",".join(files)]
@@ -386,18 +390,29 @@ def spawn_child(cmd: list[str], logf, extra_env: dict | None = None
     if extra_env:
         env.update(extra_env)
     env["CLAUDE_PLUGIN_ROOT"] = str(CODEX_PLUGIN_DEFAULT)
-    # A3: defense-in-depth for pm2-on-Mini. If we can load the key, ship it
-    # explicitly. If not, log the reason (so --poll callers and post-mortem
-    # log readers can see why MiniMax later failed) and continue -- the
-    # child's own fallback chain (minimax-review.sh sources ~/.zshrc;
-    # minimax_common parses it again) still has a shot, and Codex-only
-    # paths don't care about the MiniMax key.
-    if "MINIMAX_API_KEY" not in env:
-        try:
-            env["MINIMAX_API_KEY"] = load_api_key()
-        except Exception as exc:
-            log_line(logf, f"[{utc_now_iso()}] MINIMAX_KEY_LOAD_FAILED "
-                     f"reason={type(exc).__name__}: {exc}")
+    # Harden provider/key preconditions before spawn for MiniMax/Kimi reviewer
+    # launches only. Codex review paths intentionally do not need these keys.
+    if cmd and cmd[0].endswith(("kimi-review.sh", "minimax-review.sh")):
+        provider = env.get("K2B_LLM_PROVIDER", "kimi").lower()
+        if provider not in {"kimi", "minimax"}:
+            raise RuntimeError(
+                f"unsupported K2B_LLM_PROVIDER={provider!r}; expected "
+                "'kimi' or 'minimax'"
+            )
+        if provider == "kimi":
+            if "KIMI_API_KEY" not in env:
+                try:
+                    env["KIMI_API_KEY"] = load_kimi_api_key()
+                except Exception as exc:
+                    raise RuntimeError(f"KIMI_API_KEY missing: {type(exc).__name__}: {exc}")
+        elif provider == "minimax":
+            if "MINIMAX_API_KEY" not in env:
+                try:
+                    env["MINIMAX_API_KEY"] = load_api_key()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"MINIMAX_API_KEY missing: {type(exc).__name__}: {exc}"
+                    )
     log_line(logf, f"[{utc_now_iso()}] SPAWN argv={cmd!r}")
     # A2 note: process_group=0 (Python 3.11+) replaces preexec_fn=os.setsid
     # from the K2Bi reference. Subtle semantic deviation: os.setsid creates
@@ -661,7 +676,7 @@ def run_one_reviewer(
                      f"reason={disabled_reason}")
         try:
             proc = spawn_child(cmd, logf, extra_env)
-        except FileNotFoundError as e:
+        except Exception as e:
             log_line(logf, f"[{utc_now_iso()}] SPAWN_FAILED {e}")
             state.update({"status": "spawn_failed", "error": str(e),
                           "reviewer_current": reviewer})
@@ -724,7 +739,8 @@ def run_one_reviewer(
             except OSError:
                 log_text = ""
             verdict_markers = (
-                "# Codex Review", "# MiniMax", "# kimi-for-coding review",
+                "# Codex Review", "# MiniMax", "# kimi-k2.7-code review",
+                "# kimi-for-coding review",
                 "APPROVE", "NEEDS-ATTENTION",
                 '"verdict"', "Review output captured",
             )
@@ -754,7 +770,7 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
         if reviewer == "codex":
             return build_codex_cmd(args.scope, files, args.plan, args.focus,
                                    Path(args.codex_plugin), job)
-        return build_minimax_cmd(args.scope, files, args.plan, args.focus)
+        return build_kimi_cmd(args.scope, files, args.plan, args.focus)
 
     for idx, reviewer in enumerate(reviewers):
         cmd = cmd_for(reviewer)

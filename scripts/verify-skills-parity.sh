@@ -21,7 +21,7 @@ Checks:
   - frontmatter name and description match
   - .agents skills do not reference stale Codex skills paths
   - .agents skill files do not reference Claude-only skill paths, project memory, or CLAUDE_PROJECT_DIR
-  - .agents skills do not describe MiniMax M2.7 as the live text worker
+  - .agents skills do not describe MiniMax M2.7 or Kimi K2.6 as the live text worker
 USAGE
       exit 0
       ;;
@@ -51,8 +51,22 @@ STALE_CLAUDE_SKILL_RE = re.compile(r"(?i)(?:^|[~./\\`\"']|\s)\.?claude[/\\]skill
 STALE_CLAUDE_MEMORY_RE = re.compile(r"(?i)~[/\\]\.claude[/\\]projects[/\\][^\s`\"']*[/\\]memory")
 CLAUDE_CODEX_ONLY_PATH_RE = re.compile(r"(?i)(?:^|[~./\\`\"']|\s)(?:\.agents[/\\]skills|\.codex[/\\]hooks\.json)")
 MINIMAX_M2_RE = re.compile(r"(?i)(?:minimax(?:[- ]?m2\.7| model m2\.7)|\bm2\.7\b)")
+KIMI_K2_6_RE = re.compile(r"(?i)\bkimi(?:\s+k2)?\.?6\b|\bk2\.6\b")
 LIVE_WORKER_RE = re.compile(
     r"(?i)(live|primary|current|active|main|default|preferred|chosen|worker|handles text|text worker|text routing|text calls|powered by|uses|utilizes|employs|relies on|routes to|delegates|backup|secondary|standby|reserve|spare|contingency)"
+)
+KIMI_K2_NEGATION_TOKENS = (
+    "historical",
+    "dead",
+    "subscription",
+    "lapsed",
+    "old",
+    "removed",
+    "legacy",
+    "retired",
+    "previous",
+    "no longer",
+    "not ",
 )
 MINIMAX_HISTORICAL_TOKENS = (
     "historical",
@@ -240,6 +254,16 @@ for source_skill in sorted(claude_dir.glob("k2b-*/SKILL.md")):
             continue
         if LIVE_WORKER_RE.search(line):
             errors.append(f"MiniMax M2.7 live-worker wording in {target_skill}:{lineno}: {line.strip()}")
+        if KIMI_K2_6_RE.search(line) and LIVE_WORKER_RE.search(line):
+            for match in KIMI_K2_6_RE.finditer(lowered):
+                context = lowered[max(0, match.start() - 80): match.end() + 80]
+                if any(token in context for token in KIMI_K2_NEGATION_TOKENS):
+                    break
+            else:
+                errors.append(
+                    f"Kimi K2.6 live-worker wording in {target_skill}:{lineno}: "
+                    f"{line.strip()}"
+                )
 
 for target_skill in sorted(agents_dir.glob("k2b-*/SKILL.md")):
     rel = target_skill.relative_to(agents_dir)

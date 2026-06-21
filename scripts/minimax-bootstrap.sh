@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time wiki bootstrap: cross-link enrichment pass
-# Reads all wiki pages in 3 batches, asks the text worker (Kimi K2.6 by default, via minimax-common.sh) to identify missing connections
+# Reads all wiki pages in 3 batches, asks the text worker (Kimi K2.7 Code by default, via minimax-common.sh) to identify missing connections
 #
 # Usage: minimax-bootstrap.sh
 # Output: JSON plan to stdout (pipe to file for later application)
@@ -8,9 +8,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
-# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
-# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
-MODEL="MiniMax-M2.7"
+MODEL="$K2B_LLM_MODEL"
 MAX_TOKENS=16000
 TEMPERATURE=0.2
 
@@ -93,7 +91,7 @@ PROJECT PAGES:
 WORK PAGES:
 '"$work_content"''
 
-log "Batch 1: Calling MiniMax..."
+log "Batch 1: Calling ${K2B_TEXT_WORKER_NAME}..."
 batch1_body=$(jq -n \
   --arg model "$MODEL" \
   --arg system "$SYSTEM_BASE" \
@@ -178,7 +176,7 @@ INSIGHT PAGES:
 REFERENCE PAGES:
 '"$reference_content"''
 
-log "Batch 2: Calling MiniMax..."
+log "Batch 2: Calling ${K2B_TEXT_WORKER_NAME}..."
 batch2_body=$(jq -n \
   --arg model "$MODEL" \
   --arg system "$SYSTEM_BASE" \
@@ -260,7 +258,7 @@ CONTENT PIPELINE PAGES:
 CONTEXT PAGES:
 '"$context_content"''
 
-log "Batch 3: Calling MiniMax..."
+log "Batch 3: Calling ${K2B_TEXT_WORKER_NAME}..."
 batch3_body=$(jq -n \
   --arg model "$MODEL" \
   --arg system "$SYSTEM_BASE" \

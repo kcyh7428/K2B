@@ -27,14 +27,14 @@ MINIMAX_API_HOST = os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com"
 CHAT_PATH = "/v1/text/chatcompletion_v2"
 DEFAULT_TIMEOUT_S = 300
 
-# Kimi K2.6 via the Anthropic-compatible /coding endpoint. Primary text
+# Kimi K2.7 via the Anthropic-compatible /coding endpoint. Primary text
 # provider as of 2026-04-25 -- see scripts/minimax-common.sh header.
 # Kimi is text-only. GPTsAPI owns image, VLM/OCR, TTS, and STT in K2B now.
 # Rollback text routing: K2B_LLM_PROVIDER=minimax.
 K2B_LLM_PROVIDER = os.environ.get("K2B_LLM_PROVIDER", "kimi").strip() or "kimi"
 KIMI_API_HOST = os.environ.get("KIMI_API_HOST", "https://api.kimi.com/coding")
 KIMI_MESSAGES_PATH = "/v1/messages"
-KIMI_DEFAULT_MODEL = os.environ.get("KIMI_DEFAULT_MODEL", "kimi-for-coding")
+KIMI_DEFAULT_MODEL = os.environ.get("KIMI_DEFAULT_MODEL", "kimi-k2.7-code")
 
 # Transient server-side HTTP statuses worth retrying. 529 = "overloaded"
 # (MiniMax congestion peak), 502/503/504 = upstream gateway hiccups. Anything
@@ -115,7 +115,7 @@ def chat_completion(
 ) -> dict:
     """POST a chat-completion request and return the parsed JSON response.
 
-    Routes to Kimi K2.6 when K2B_LLM_PROVIDER=kimi (default as of 2026-04-25,
+    Routes to Kimi K2.7 when K2B_LLM_PROVIDER=kimi (default as of 2026-04-25,
     since MiniMax text models are returning status_code 2061 "plan not
     supported"). Falls back to MiniMax chatcompletion_v2 when
     K2B_LLM_PROVIDER=minimax.
@@ -259,7 +259,7 @@ def _kimi_chat_completion(
     temperature: float,
     timeout: int,
 ) -> dict:
-    """Call Kimi K2.6 at /coding/v1/messages and return the response in
+    """Call Kimi K2.7 at /coding/v1/messages and return the response in
     MiniMax chatcompletion_v2 envelope shape.
 
     Translation:

@@ -39,7 +39,7 @@ Prefer DQL queries over Glob+Read+Filter when scanning multiple files for frontm
 
 Read `preference-signals.jsonl`. This file has two signal sources:
 
-1. **Observer-loop (primary, active)**: The background observer on Mac Mini analyzes vault behavior via Kimi K2.6 and appends signals with schema: `{date, source, type, description, confidence, skill}`. This is the main source of signals today.
+1. **Observer-loop (primary, active)**: The background observer on Mac Mini analyzes vault behavior via Kimi K2.7 Code and appends signals with schema: `{date, source, type, description, confidence, skill}`. This is the main source of signals today.
 2. **Review queue outcomes (secondary)**: When k2b-review processes review/ items, it appends signals with schema: `{date, file, source_skill, type, action, days_in_inbox, has_feedback, feedback}`. This source activates as Keith uses /review more frequently.
 
 If the file doesn't exist or is empty, tell Keith: "No preference signals yet. The observer-loop will start generating signals automatically, or process some review/ items with /review."
@@ -257,7 +257,7 @@ When Keith says `/observe reset`:
 
 One JSON object per line, append-only. Two signal sources produce different schemas:
 
-**Observer-loop signals** (primary source, written by background Kimi K2.6 analysis):
+**Observer-loop signals** (primary source, written by background Kimi K2.7 Code analysis):
 ```json
 {"date":"2026-04-08","source":"observer-loop","type":"vault-behavior","description":"Keith revised the daily note 3 times, shortening each section","confidence":"high","skill":"k2b-daily-capture"}
 {"date":"2026-04-09","source":"observer-loop","type":"content-preference","description":"YouTube captures from AI channels archived without review","confidence":"medium","skill":"k2b-youtube-capture"}
@@ -280,7 +280,7 @@ See Phase 3 above for full format. This is a vault note with frontmatter, readab
 K2B runs a background observer on Mac Mini (`scripts/observer-loop.sh`, managed by pm2 as `k2b-observer`). This loop:
 
 1. Captures observations via a Stop hook (`scripts/hooks/stop-observe.sh`) after every Claude response
-2. When 20+ observations accumulate, calls Kimi K2.6 API to analyze patterns
+2. When 20+ observations accumulate, calls Kimi K2.7 Code to analyze patterns
 3. Writes findings to `observer-candidates.md` (surfaced by session-start hook)
 4. Appends detected patterns to `preference-signals.jsonl`
 5. Archives processed observations
@@ -333,7 +333,7 @@ Stop hook captures observations
     |
     +--> appends to observations.jsonl
     |
-Background observer loop (Kimi K2.6, pm2)
+Background observer loop (Kimi K2.7 Code, pm2)
     |
     +--> reads observations.jsonl periodically
     +--> calls Kimi API for pattern detection

@@ -19,6 +19,7 @@ RUNNER="$REPO_ROOT/scripts/lib/review_runner.py"
 TMP_DIRS=()
 cleanup() {
   local d
+  ((${#TMP_DIRS[@]})) || return 0
   for d in "${TMP_DIRS[@]}"; do
     [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
   done

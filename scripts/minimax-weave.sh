@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# minimax-weave.sh -- call the text worker (Kimi K2.6 by default, via minimax-common.sh) to propose missing cross-links
+# minimax-weave.sh -- call the text worker (Kimi K2.7 Code by default, via minimax-common.sh) to propose missing cross-links
 # Name is historical; provider follows K2B_LLM_PROVIDER (default kimi).
 #
 # Input (stdin): JSON with shape {pages: [...], exclude: [...]}
 #   pages: array of {path, slug, title, type, category, body}
-#   exclude: array of {from, to} pair keys MiniMax must NOT propose
+#   exclude: array of {from, to} pair keys Kimi must NOT propose
 #
 # Output (stdout): JSON array of proposals matching the schema:
 #   [{from_path, to_path, from_slug, to_slug, confidence, rationale, evidence_span}, ...]
@@ -30,9 +30,7 @@ if [[ -n "${K2B_WEAVE_MOCK_RESPONSE:-}" ]]; then
   fi
 fi
 
-# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
-# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
-readonly MODEL="MiniMax-M2.7"
+readonly MODEL="$K2B_LLM_MODEL"
 readonly MAX_COMPLETION_TOKENS=6000
 readonly TEMPERATURE=0.1
 readonly PROMPT_VERSION="weave-v2-2026-04-12"
@@ -118,7 +116,7 @@ request_body=$(jq -n \
 input_bytes=$(printf '%s' "$request_body" | wc -c | tr -d ' ')
 start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
 
-# --- Call MiniMax ---
+# --- Call text worker ---
 
 parse_status="ok"
 response=$(mm_api POST /v1/text/chatcompletion_v2 "$request_body") || {
@@ -143,7 +141,7 @@ if [[ -z "$content" ]]; then
   exit 0
 fi
 
-# Strip code fences if MiniMax wrapped the JSON
+# Strip code fences if the text worker wrapped the JSON
 content=$(echo "$content" | sed -E 's/^```(json)?//; s/```$//' | sed -e '/^[[:space:]]*$/d')
 
 # Remove any leading prose before the first [
@@ -166,11 +164,11 @@ sys.stdout.write(data)
 if ! echo "$content" | jq -e . >/dev/null 2>&1; then
   parse_status="invalid"
   log_job_invocation "weave" "$PROMPT_VERSION" "$MODEL" "$input_bytes" "${#content}" "$parse_status" "$duration_ms"
-  echo '{"error": "invalid JSON from MiniMax", "raw": '"$(echo "$content" | jq -Rs .)"'}' >&2
+  echo '{"error": "invalid JSON from '"${K2B_TEXT_WORKER_NAME}"'", "raw": '"$(echo "$content" | jq -Rs .)"'}' >&2
   exit 1
 fi
 
-# If MiniMax returned an object wrapping an array (common), unwrap
+# If the text worker returned an object wrapping an array (common), unwrap
 content=$(echo "$content" | jq 'if type == "array" then . elif type == "object" and (.proposals // .results // .pairs // .links) then (.proposals // .results // .pairs // .links) else . end')
 
 # Must be an array at this point

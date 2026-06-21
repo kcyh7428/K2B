@@ -35,7 +35,7 @@ Reads raw source captures and compiles them into wiki knowledge pages. Based on 
 
 ## Commander/Worker Architecture
 
-**Kimi K2.6** does the heavy cognitive work (reading, analyzing, generating structured output).
+**Kimi K2.7 Code** does the heavy cognitive work (reading, analyzing, generating structured output).
 **Opus** orchestrates (calls the script, presents summary, applies file changes, updates indexes).
 
 This is the same pattern used by the observer loop. ~30-50x cheaper than running everything on Opus.
@@ -64,7 +64,7 @@ Before creating or updating ANY wiki page, check the policy ledger:
 The script:
 1. Reads the raw source file
 2. Reads wiki/index.md + relevant subfolder indexes (people, projects, work, concepts, insights, reference)
-3. Sends everything to Kimi K2.6 with a structured extraction prompt
+3. Sends everything to Kimi K2.7 Code with a structured extraction prompt
 4. Returns JSON with: pages_to_update, pages_to_create, content_seeds, summary
 
 ### 2. Parse, Validate, and Present Summary

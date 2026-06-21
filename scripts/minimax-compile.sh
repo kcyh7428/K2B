@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Kimi-backed knowledge compilation (routes via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi).
-# The "minimax" in the name is historical; the worker is Kimi K2.6 unless K2B_LLM_PROVIDER=minimax.
+# The "minimax" in the name is historical; the worker is Kimi K2.7 Code unless K2B_LLM_PROVIDER=minimax.
 # Reads a raw source + wiki context, returns structured JSON for Opus to apply
 #
 # Usage: minimax-compile.sh <raw-source-path>
@@ -9,9 +9,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
-# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
-# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
-MODEL="MiniMax-M2.7"
+MODEL="$K2B_LLM_MODEL"
 MAX_TOKENS=8000
 TEMPERATURE=0.2
 
@@ -110,7 +108,7 @@ $wiki_index
 SUBFOLDER INDEXES:
 $subfolder_indexes"
 
-# --- Call MiniMax API ---
+# --- Call text worker API ---
 
 request_body=$(jq -n \
   --arg model "$MODEL" \
@@ -129,7 +127,7 @@ request_body=$(jq -n \
   }')
 
 response=$(mm_api POST /v1/text/chatcompletion_v2 "$request_body") || {
-  echo '{"error": "MiniMax API call failed"}' >&2
+  echo '{"error": "'"${K2B_TEXT_WORKER_NAME}"' API call failed"}' >&2
   exit 1
 }
 
@@ -137,17 +135,17 @@ response=$(mm_api POST /v1/text/chatcompletion_v2 "$request_body") || {
 content=$(echo "$response" | jq -r '.choices[0].message.content // empty')
 
 if [[ -z "$content" ]]; then
-  echo '{"error": "Empty response from MiniMax"}' >&2
+  echo '{"error": "Empty response from '"${K2B_TEXT_WORKER_NAME}"'"}' >&2
   echo "$response" >&2
   exit 1
 fi
 
-# Strip markdown code fences if MiniMax wraps the JSON
+# Strip markdown code fences if the text worker wraps the JSON
 content=$(echo "$content" | sed 's/^```json//; s/^```//; s/```$//')
 
 # Validate it's valid JSON
 if ! echo "$content" | jq . >/dev/null 2>&1; then
-  echo '{"error": "Invalid JSON from MiniMax", "raw_response": '"$(echo "$content" | jq -Rs .)"'}' >&2
+  echo '{"error": "Invalid JSON from '"${K2B_TEXT_WORKER_NAME}"'", "raw_response": '"$(echo "$content" | jq -Rs .)"'}' >&2
   exit 1
 fi
 

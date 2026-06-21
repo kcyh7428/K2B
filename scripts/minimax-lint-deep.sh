@@ -10,9 +10,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
-# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
-# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
-MODEL="MiniMax-M2.7"
+MODEL="$K2B_LLM_MODEL"
 MAX_TOKENS=4000
 TEMPERATURE=0.1
 
@@ -103,14 +101,14 @@ request_body=$(jq -n \
   }')
 
 response=$(mm_api POST /v1/text/chatcompletion_v2 "$request_body") || {
-  echo '{"error": "MiniMax API call failed"}' >&2
+  echo '{"error": "'"${K2B_TEXT_WORKER_NAME}"' API call failed"}' >&2
   exit 1
 }
 
 content=$(echo "$response" | jq -r '.choices[0].message.content // empty')
 
 if [[ -z "$content" ]]; then
-  echo '{"error": "Empty response from MiniMax"}' >&2
+  echo '{"error": "Empty response from '"${K2B_TEXT_WORKER_NAME}"'"}' >&2
   exit 1
 fi
 
@@ -119,7 +117,7 @@ content=$(echo "$content" | sed 's/^```json//; s/^```//; s/```$//')
 
 # Validate JSON
 if ! echo "$content" | jq . >/dev/null 2>&1; then
-  echo '{"error": "Invalid JSON from MiniMax", "raw_response": '"$(echo "$content" | jq -Rs .)"'}' >&2
+  echo '{"error": "Invalid JSON from '"${K2B_TEXT_WORKER_NAME}"'", "raw_response": '"$(echo "$content" | jq -Rs .)"'}' >&2
   exit 1
 fi
 

@@ -168,11 +168,11 @@ Before tier detection, identify who built the diff. This is mandatory for offici
 | Builder family | Examples | Required official review path |
 |---|---|---|
 | `openai` | Codex, OpenAI Agents, OpenAI Responses | Kimi only: `--builder-family openai --primary minimax --no-fallback` |
-| `kimi` | Kimi K2.6 worker edits | Codex only: `--builder-family kimi --primary codex --no-fallback` |
+| `kimi` | Kimi K2.7 Code worker edits | Codex only: `--builder-family kimi --primary codex --no-fallback` |
 | `anthropic` | Claude Code, Claude Agent SDK | Codex or Kimi are both independent |
 | `other` | Human, shell-only, unknown or mixed tool | Choose one independent reviewer, pass `--builder-family other --no-fallback`, and record why |
 
-The reviewer key `minimax` is historical. In current K2B, that path routes to Kimi K2.6 by default through `K2B_LLM_PROVIDER=kimi`.
+The reviewer key `minimax` is historical. In current K2B, that path routes to Kimi K2.7 Code by default through `K2B_LLM_PROVIDER=kimi`.
 
 Set:
 
@@ -434,7 +434,7 @@ if [ "$TIER" = "1" ] && [ "$BUILDER_FAMILY" = "openai" ]; then
     set +e
     # Tier 1 only runs for builder-family=openai, so skip-codex and
     # other-reviewer audit args are intentionally irrelevant here.
-    VERDICT_JSON=$(scripts/minimax-review.sh \
+    VERDICT_JSON=$(scripts/kimi-review.sh \
       --scope diff \
       --files "$CHANGED_FILES" \
       --builder-family "$BUILDER_FAMILY" \
@@ -558,7 +558,7 @@ if [ "$TIER" = "2" ]; then
 fi
 ```
 
-After the runner returns, the ship-agent reads `$REVIEW_LOG` and surfaces the findings to Keith verbatim. Find the last `# Codex Review` or `# kimi-for-coding review --` section in the log and present it -- do not paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) and Kimi's own ordering (CRITICAL/HIGH/MEDIUM/LOW) stay intact.
+After the runner returns, the ship-agent reads `$REVIEW_LOG` and surfaces the findings to Keith verbatim. Find the last `# Codex Review` or `# kimi-k2.7-code review --` section in the log and present it -- do not paraphrase, rank, or pre-filter. Codex's own prioritization (P0/P1/P2/P3) and Kimi's own ordering (CRITICAL/HIGH/MEDIUM/LOW) stay intact.
 
 #### 3c. Tier 3 flow -- iterate-until-clean via runner
 
@@ -607,7 +607,7 @@ if [ "$TIER" = "3" ]; then
 fi
 ```
 
-**How the ship-agent reads the verdict:** open `$REVIEW_LOG`, find the last `# Codex Review` or `# kimi-for-coding review --` section, and present it to Keith verbatim. Do NOT paraphrase, rank, or pre-filter. Use the **last** section in the log because quality-gate-triggered fallbacks write both a failed Codex attempt AND a successful Kimi run into the same log; only the final section is the actual verdict.
+**How the ship-agent reads the verdict:** open `$REVIEW_LOG`, find the last `# Codex Review` or `# kimi-k2.7-code review --` section, and present it to Keith verbatim. Do NOT paraphrase, rank, or pre-filter. Use the **last** section in the log because quality-gate-triggered fallbacks write both a failed Codex attempt AND a successful Kimi run into the same log; only the final section is the actual verdict.
 
 **Keith's iteration loop** (human-driven across `/ship` invocations, not inside bash):
 
@@ -638,7 +638,7 @@ Exit codes:
 
 The log at `log_path` is a plain-text unified log with two kinds of lines:
 - **Runner-tagged** (`[ISO] TAG payload`) -- `JOB_START`, `REVIEWER_START`, `SPAWN`, `REVIEWER_SKIP`, `HEARTBEAT`, `HEARTBEAT_STALE`, `WEDGE_SUSPECTED`, `SOFT_DEADLINE`, `HARD_DEADLINE`, `SIGKILL`, `REVIEWER_END`, `QUALITY_GATE_FAIL`, `FALLBACK`, `MINIMAX_KEY_LOAD_FAILED`.
-- **Verbatim reviewer stdout** -- including the actual `# Codex Review` sections and `# kimi-for-coding review -- APPROVE|NEEDS-ATTENTION` headers. These are what the ship-agent reads to surface findings.
+- **Verbatim reviewer stdout** -- including the actual `# Codex Review` sections and `# kimi-k2.7-code review -- APPROVE|NEEDS-ATTENTION` headers. These are what the ship-agent reads to surface findings.
 
 Runner state lives in `.code-reviews/<job_id>.json` (updated by the watchdog while running; finalized at completion with `status`, `primary_used`, `fallback_used`, `exit_code`, `reviewer_attempts[]`). For background mode (no `--wait`), `scripts/review-poll.sh <job_id>` returns a snapshot with `phase`, `elapsed_s`, `last_activity_s_ago`, `tail`, `should_poll_again`, and `recommended_poll_interval_s`. The skill doesn't use background mode in the Tier 2/3 flows (they use `--wait`) but the poll path exists for ad-hoc use.
 
@@ -652,7 +652,7 @@ Runner state lives in `.code-reviews/<job_id>.json` (updated by the watchdog whi
 - For Kimi findings specifically: the reviewer cannot see files outside the git working tree, so "file not verified" / "consumer not visible" findings often dissolve under a quick direct `grep`. Triage real-vs-false-positive before triggering a fix.
 - The archived JSON at `.minimax-reviews/<ts>_<scope>.json` (Kimi) and the unified log at `.code-reviews/<job_id>.log` (runner) are durable evidence of the gate.
 
-**Kimi invocation contract (inherited through the runner).** The `scripts/minimax-review.sh` child exits 0 on success (any verdict including NEEDS-ATTENTION counts as success -- the verdict is review output, not script status), non-zero on failure (missing API key, network error, malformed Kimi response, JSON Schema validation failure). Empty stdout from a 0-exit run is impossible by design (the formatter always emits a verdict). If the runner observes exit 0 with no verdict marker in the log, the quality gate forces a fallback (`effective_rc = 125`) -- silent emptiness is worse than a loud error.
+**Kimi invocation contract (inherited through the runner).** The `scripts/kimi-review.sh` child exits 0 on success (any verdict including NEEDS-ATTENTION counts as success -- the verdict is review output, not script status), non-zero on failure (missing API key, network error, malformed Kimi response, JSON Schema validation failure). Empty stdout from a 0-exit run is impossible by design (the formatter always emits a verdict). If the runner observes exit 0 with no verdict marker in the log, the quality gate forces a fallback (`effective_rc = 125`) -- silent emptiness is worse than a loud error.
 
 #### 3d. Record the tier used
 
@@ -676,16 +676,16 @@ K2B uses an independent second-model reviewer to catch blind spots the builder c
 - **OpenAI-built plans**: use Kimi only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family openai --primary minimax --no-fallback --wait`.
 - **Kimi-built plans**: use Codex only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family kimi --primary codex --no-fallback --wait`.
 - **Claude/other-built plans**: Codex can review while available: `scripts/review.sh plan --plan <repo-relative-path> --builder-family anthropic --primary codex --wait`.
-- **Bare Kimi fallback caveat**: Kimi CANNOT see files outside the git working tree, and plan files may live outside a repo. A bare `minimax-review.sh` invocation gathers context from `git status` / `git diff` only, so pass `--scope plan --plan <path>` through `scripts/review.sh` when possible. If not possible, use one of these workarounds:
-  - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/minimax-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` Kimi K2.6 has a generous prompt window so even multi-thousand-line plans fit.
-  - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .minimax-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
+- **Bare Kimi fallback caveat**: Kimi CANNOT see files outside the git working tree, and plan files may live outside a repo. A bare `scripts/kimi-review.sh` invocation gathers context from `git status` / `git diff` only, so pass `--scope plan --plan <path>` through `scripts/review.sh` when possible. If not possible, use one of these workarounds:
+  - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/kimi-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` Kimi K2.7 Code has a large prompt window so even multi-thousand-line plans fit.
+  - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .kimi-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
   - **(c) Skip Plan Review entirely and rely on Checkpoint 2 being mandatory** when Checkpoint 1 was skipped. Acceptable for small plans where adversarial review at pre-commit time catches the same issues; not acceptable for large architectural plans where catching the issue early matters.
 - Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
 - Adjust the plan based on findings BEFORE writing code
 
 This checkpoint lives outside `/ship` -- it is the author's responsibility at plan-time. `/ship` only sees the result (the already-reviewed plan, or its absence) via the diff it is about to commit. If no independent reviewer was run on the plan, Checkpoint 2 (pre-commit) becomes mandatory and cannot be skipped.
 
-**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` with `--builder-family`. Tier 1 stays on the direct `scripts/minimax-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
+**Checkpoint 2: Pre-Commit Review.** Before committing changes from a build session, `/ship` runs adversarial review on the uncommitted diff via the tier-specific block in step 3 above. Tier 2 and Tier 3 flows both invoke the unified runner `scripts/review.sh` with `--builder-family`. Tier 1 stays on the direct `scripts/kimi-review.sh --json` loop because Tier 1 verdict parsing requires parseable JSON that the runner's unified log doesn't expose. Look for: bugs, logic errors, drift from the plan, edge cases. Fix issues before committing.
 
 **When pre-commit review can be skipped (gate-not-applicable cases):**
 

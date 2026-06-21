@@ -130,13 +130,13 @@ Steps:
 
 ### 12. Contradiction Detection (Cole's check #7, semantic)
 
-Kimi K2.6-powered semantic check -- only runs when explicitly requested (`/lint deep`):
+Kimi K2.7 Code-powered semantic check -- only runs when explicitly requested (`/lint deep`):
 
 ```bash
 ~/Projects/K2B/scripts/minimax-lint-deep.sh [domain]
 ```
 
-- Runs on Kimi K2.6 (not Opus) -- cheap (~$0.02-0.05 per run)
+- Runs on Kimi K2.7 Code (not Opus) -- cheap (~$0.02-0.05 per run)
 - Script reads wiki pages, sends to Kimi, returns JSON with contradiction pairs
 - Opus parses JSON and presents findings to Keith
 - Add confirmed contradictions to review/ queue for Keith's judgment

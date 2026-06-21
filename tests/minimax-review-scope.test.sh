@@ -18,6 +18,7 @@ SCRIPT="$REPO_ROOT/scripts/lib/minimax_review.py"
 TMP_DIRS=()
 cleanup() {
   local d
+  ((${#TMP_DIRS[@]})) || return 0
   for d in "${TMP_DIRS[@]}"; do
     [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
   done
@@ -221,6 +222,68 @@ echo "$ctx" | grep -q 'return 99' || \
 echo "$ctx" | grep -q '```diff' || \
   fail "test3: missing diff section for file_a.py"
 echo "ok test3: diff-scoped excludes unrelated dirty files"
+
+# --- Test 3b: small markdown diffs still include full file context ----
+# Diff-scope token hardening must stay size-gated. A single small markdown file
+# should still show both the diff and the current full-file body so the reviewer
+# can judge the change in context.
+TMP3B="$(mktmp)"
+build_fixture_repo "$TMP3B"
+cat > "$TMP3B/guide.md" <<'EOF'
+# Guide
+
+alpha
+beta
+gamma
+EOF
+(
+  cd "$TMP3B" || exit 1
+  git add guide.md
+  git commit -q -m "add guide"
+)
+cat > "$TMP3B/guide.md" <<'EOF'
+# Guide
+
+alpha changed
+beta
+gamma
+EOF
+
+ctx=$(call_gatherer gather_diff_scoped_context "$TMP3B" '["guide.md"]')
+
+echo "$ctx" | grep -q '### guide.md' || \
+  fail "test3b: missing guide.md section"
+echo "$ctx" | grep -q '```diff' || \
+  fail "test3b: missing diff block for guide.md"
+echo "$ctx" | grep -qE '^\s*1\s+# Guide$' || \
+  fail "test3b: markdown full-file content missing from diff-scoped output"
+if echo "$ctx" | grep -q 'markdown full-content budget exhausted'; then
+  fail "test3b: small markdown file should not hit the omission budget"
+fi
+echo "ok test3b: small markdown diffs keep full file context"
+
+# --- Test 3c: markdown omission only triggers after budget exhaustion ---
+ctx=$(python3 - "$LIB_DIR" "$TMP3B" <<'PY'
+import sys
+from pathlib import Path
+lib_dir, repo = sys.argv[1:3]
+sys.path.insert(0, lib_dir)
+mod = __import__("minimax_review")
+ctx, _ = mod.gather_diff_scoped_context(
+    ["guide.md"],
+    repo_root=Path(repo),
+    optional_markdown_bytes=0,
+)
+print(ctx)
+PY
+)
+
+echo "$ctx" | grep -q 'markdown full-content budget exhausted' || \
+  fail "test3c: markdown omission marker missing when budget is exhausted"
+if echo "$ctx" | grep -qE '^\s*1\s+# Guide$'; then
+  fail "test3c: markdown full-file content should be omitted once budget is exhausted"
+fi
+echo "ok test3c: markdown omission is budget-gated"
 
 # --- Test 4: file-list happy path -- two files, both in output -------
 TMP4="$(mktmp)"

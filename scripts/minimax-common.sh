@@ -21,19 +21,30 @@
 
 set -euo pipefail
 
+# Optional dedicated credentials file for non-interactive environments.
+# Prefer ~/.k2b-env over ~/.zshrc when it exists so review/review-runner
+# scripts avoid sourcing large interactive shell logic.
+K2B_ENV_FILE="${K2B_ENV_FILE:-$HOME/.k2b-env}"
+
 # --- Config ---
 # The shell that sources this file may be non-interactive (e.g. Claude Code's
 # Bash tool, a cron job, or a background pm2 process) and may not have sourced
-# ~/.zshrc. If MINIMAX_API_KEY isn't in env, fall back to sourcing .zshrc once.
+# ~/.zshrc. Prefer sourcing ~/.k2b-env if present (minimal exports only), then
+# fallback to ~/.zshrc for existing machine setups.
 # This makes every minimax-*.sh script work from any shell without the caller
 # having to remember to source the profile first. Same pattern already used
-# by scripts/claude-minimaxi.sh and scripts/minimax-review.sh.
+# by scripts/claude-minimaxi.sh, scripts/kimi-review.sh, and the historical
+# scripts/minimax-review.sh alias.
 #
-# Safety assumption: Keith's ~/.zshrc contains only PATH exports and API key
-# exports (no early-exit guards like `[[ $- != *i* ]] || return`, no
-# zsh-specific control flow). If that assumption ever stops holding, the
-# better fix is a dedicated ~/.minimax-env credentials-only file updated in
-# all three callers at once (MiniMax review note 2026-04-21).
+if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) ]]; then
+  if [[ -f "$K2B_ENV_FILE" ]]; then
+    # shellcheck disable=SC1091
+    set +eu
+    source "$K2B_ENV_FILE" >/dev/null 2>&1 || true
+    set -euo pipefail
+  fi
+fi
+
 if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) && -f "$HOME/.zshrc" ]]; then
   # set +e in addition to +u: a stale `source /path/to/missing-file` line in
   # ~/.zshrc will fail INSIDE .zshrc with set -e still active, killing the
@@ -41,28 +52,33 @@ if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) && -f "$HOME/.zshr
   # when an uninstalled openclaw line in .zshrc broke the VLM extractor chain.
   set +eu
   source "$HOME/.zshrc" >/dev/null 2>&1 || true
-  set -eu
+  set -euo pipefail
 fi
 
 MINIMAX_API_KEY="${MINIMAX_API_KEY:?Set MINIMAX_API_KEY in your environment}"
 MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
 
-# --- LLM text-provider switch (Kimi K2.6 primary, MiniMax fallback) ---
+# --- LLM text-provider switch (Kimi K2.7 primary, MiniMax fallback) ---
 # 2026-04-25: MiniMax Plus plan started returning status_code 2061 "your current
 # token plan not support model" for every text model (M2.7, M2.5, abab6.5, etc.).
-# Kimi K2.6 via the /coding/v1 Anthropic-compatible endpoint is the new primary.
+# Kimi K2.7 via the /coding/v1 Anthropic-compatible endpoint is the new primary.
 # Kimi is text-only. GPTsAPI owns image, VLM/OCR, TTS, and STT in K2B now.
 # To roll back to MiniMax for text when MiniMax releases a supported model, export
 # K2B_LLM_PROVIDER=minimax (no other changes needed).
 K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
 KIMI_API_HOST="${KIMI_API_HOST:-https://api.kimi.com/coding}"
-KIMI_DEFAULT_MODEL="${KIMI_DEFAULT_MODEL:-kimi-for-coding}"
+KIMI_DEFAULT_MODEL="${KIMI_DEFAULT_MODEL:-kimi-k2.7-code}"
 # Convenience exposed to callers: use this instead of hardcoding model ids.
 if [[ "$K2B_LLM_PROVIDER" == "kimi" ]]; then
   K2B_LLM_MODEL="${K2B_LLM_MODEL:-$KIMI_DEFAULT_MODEL}"
+  K2B_TEXT_WORKER_NAME="${K2B_TEXT_WORKER_NAME:-Kimi}"
+  K2B_TEXT_WORKER_ERROR_KEY="${K2B_TEXT_WORKER_ERROR_KEY:-kimi_api_error}"
 else
   K2B_LLM_MODEL="${K2B_LLM_MODEL:-MiniMax-M2.7}"
+  K2B_TEXT_WORKER_NAME="${K2B_TEXT_WORKER_NAME:-MiniMax}"
+  K2B_TEXT_WORKER_ERROR_KEY="${K2B_TEXT_WORKER_ERROR_KEY:-minimax_api_error}"
 fi
+export K2B_TEXT_WORKER_NAME K2B_TEXT_WORKER_ERROR_KEY
 
 # KIMI_API_KEY must be in env. The .zshrc-source fallback above already covers
 # non-interactive shells (cron, pm2, Bash tool) if the export is present. If
@@ -158,7 +174,7 @@ _mm_api_minimax() {
   echo "$response"
 }
 
-# Kimi K2.6 (Anthropic Messages shape at /coding/v1/messages).
+# Kimi K2.7 (Anthropic Messages shape at /coding/v1/messages).
 # Translates an OpenAI chatcompletion_v2 body IN, and returns an OpenAI-shape
 # envelope OUT so existing jq callers see no wire difference:
 #   .choices[0].message.content    <- content[0].text
@@ -181,7 +197,7 @@ _mm_api_kimi_text() {
   kimi_body=$(jq -c --arg model "$K2B_LLM_MODEL" '
     {
       model: $model,
-      max_tokens: (.max_tokens // 4096),
+      max_tokens: (.max_tokens // .max_completion_tokens // 4096),
       messages: [.messages[] | select(.role != "system")]
     }
     + ( if (.messages | map(select(.role=="system")) | length) > 0

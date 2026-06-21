@@ -225,7 +225,7 @@ Deep research adds Gemini (via NotebookLM) as a third worker alongside Kimi:
 |------|-----|-------------------------------|
 | Commander | Opus | Source gathering, question design, K2B framing, vault integration |
 | Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers |
-| Worker 2 | Kimi K2.6 | Bulk extraction on individual long sources (if needed, per size gate) |
+| Worker 2 | Kimi K2.7 Code | Bulk extraction on individual long sources (if needed, per size gate) |
 
 Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. Kimi handles individual source extraction when sources exceed the 10K char size gate.
 
@@ -273,7 +273,7 @@ Each lens has a specific "already-have anchor" and a fixed set of "stake-a-claim
 
 #### Stack lens (Claude Code, agent harness, dev tool content)
 
-- **Already-have anchor**: K2B's harness -- Commander/Worker (Opus + Kimi K2.6), adversarial review (Codex primary + Kimi fallback), 30+ specialized skills, hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
+- **Already-have anchor**: K2B's harness -- Commander/Worker (Opus + Kimi K2.7 Code), adversarial review (Codex primary + Kimi fallback), 30+ specialized skills, hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
 - **Check every claim against the anchor**: state explicitly "you already have this as X" or "new to you".
 - **Stake-a-claim options** (pick one): `Adopt` (rare -- whole-cloth migration justified) / `Retrofit` (steal specific ideas into existing stack, with file paths) / `Skip` / `Watch` (track, revisit later).
 
@@ -1572,7 +1572,7 @@ The `notebooklm` skill at `~/.claude/skills/notebooklm/` has full command docume
 
 ## Kimi extraction offload (added 2026-04-10)
 
-**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.6 and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
+**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.7 Code and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
 
 **Contract**:
 - Kimi produces a compressed, citation-backed digest: `{tldr, source_type, key_claims[], entities[], methodology_notes[], open_questions[]}`.

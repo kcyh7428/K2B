@@ -1,4 +1,4 @@
-"""Standalone adversarial code reviewer (Kimi K2.6 by default; historically MiniMax M2.7).
+"""Standalone adversarial code reviewer (Kimi K2.7 by default; historically MiniMax M2.7).
 
 Phase A MVP: working-tree scope, single-shot, JSON output validated against
 Codex's review-output schema. Touches nothing in /ship or the codex plugin.
@@ -32,6 +32,8 @@ SCHEMA_PATH = LIB_DIR / "review-output.schema.json"
 DEFAULT_ARCHIVE_DIR = REPO_ROOT / ".minimax-reviews"
 
 MAX_FILE_BYTES = 256 * 1024  # skip large files; M2.7 has 200K context but stay sane
+DIFF_SCOPE_OPTIONAL_MARKDOWN_SUFFIXES = {".md"}
+DIFF_SCOPE_OPTIONAL_MARKDOWN_BYTES = 128 * 1024
 BINARY_SNIFF_BYTES = 4096
 
 
@@ -126,18 +128,29 @@ def gather_working_tree_context(
 def gather_diff_scoped_context(
     files: list[str],
     repo_root: Path | None = None,
+    optional_markdown_bytes: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return (context_text, file_list) restricted to the given files.
 
     Includes per-file `git diff HEAD <file>` and per-file `git status -- <file>`,
-    plus full content of each file. Other dirty files in the working tree
-    are NOT included -- this is the "review only what I asked for" gatherer.
+    plus full content of each file. Markdown file bodies are optional and share
+    a cumulative budget: small markdown diffs still include the full file, but
+    large skill/doc batches omit some markdown bodies once the shared budget is
+    exhausted. Other dirty files in the working tree are NOT included -- this
+    is the "review only what I asked for" gatherer.
     """
     root = repo_root or REPO_ROOT
     if not files:
         return "", []
     files_sorted = sorted(set(files))
     sections: list[str] = []
+    optional_markdown_bytes_used = 0
+    markdown_budget_warning = False
+    markdown_budget = (
+        DIFF_SCOPE_OPTIONAL_MARKDOWN_BYTES
+        if optional_markdown_bytes is None
+        else optional_markdown_bytes
+    )
     sections.append("## diff-scoped review (explicit file list)")
     for rel in files_sorted:
         path = root / rel if not Path(rel).is_absolute() else Path(rel)
@@ -174,6 +187,23 @@ def gather_diff_scoped_context(
         if len(data) > MAX_FILE_BYTES:
             data = data[:MAX_FILE_BYTES]
             truncated_note = f"\n_(truncated to {MAX_FILE_BYTES} bytes)_"
+        if path.suffix.lower() in DIFF_SCOPE_OPTIONAL_MARKDOWN_SUFFIXES:
+            if (
+                optional_markdown_bytes_used + len(data)
+                > markdown_budget
+            ):
+                sections.append(
+                    "_(full file omitted for markdown diff review: markdown full-content budget exhausted; review below is limited to the unified diff)_"
+                )
+                if not markdown_budget_warning:
+                    markdown_budget_warning = True
+                    print(
+                        "[minimax-review] warning: markdown full-content budget exhausted; "
+                        "remaining markdown files are omitted from inline content.",
+                        file=sys.stderr,
+                    )
+                continue
+            optional_markdown_bytes_used += len(data)
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
@@ -544,7 +574,7 @@ def append_usage_log(archive_dir: Path, model: str, scope: str, usage: dict) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Standalone MiniMax M2.7 adversarial code reviewer."
+        description="Standalone Kimi K2.7 Code adversarial code reviewer."
     )
     parser.add_argument(
         "--scope",
@@ -567,15 +597,33 @@ def main() -> int:
         default=None,
         help="Comma-separated list of paths (required when --scope diff or files)",
     )
-    # Default model tracks the active provider: Kimi's kimi-for-coding when
+    # Default model tracks the active provider: Kimi's kimi-k2.7-code when
     # K2B_LLM_PROVIDER=kimi (current default), MiniMax-M2.7 on MiniMax
     # rollback. Callers can still pass --model to override.
-    _default_model = os.environ.get(
-        "K2B_LLM_MODEL",
-        "kimi-for-coding"
-        if os.environ.get("K2B_LLM_PROVIDER", "kimi") == "kimi"
-        else "MiniMax-M2.7",
-    )
+    provider = os.environ.get("K2B_LLM_PROVIDER", "kimi").lower()
+    if provider not in {"kimi", "minimax"}:
+        print(
+            f"[minimax-review] unsupported provider: {provider!r}; "
+            "expected 'kimi' or 'minimax'.",
+            file=sys.stderr,
+        )
+        return 1
+    if provider == "kimi":
+        _default_model = os.environ.get("K2B_LLM_MODEL", "kimi-k2.7-code")
+        if not _default_model.lower().startswith("kimi-"):
+            print(
+                "[minimax-review] K2B_LLM_MODEL must be a Kimi model id "
+                "when K2B_LLM_PROVIDER=kimi.",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        print(
+            "[minimax-review] K2B_LLM_PROVIDER=minimax is deprecated; "
+            "MiniMax subscription is inactive.",
+            file=sys.stderr,
+        )
+        _default_model = os.environ.get("K2B_LLM_MODEL", "MiniMax-M2.7")
     parser.add_argument(
         "--model",
         default=_default_model,
@@ -760,7 +808,7 @@ def main() -> int:
         if args.json:
             print(json.dumps({"error": "unparseable", "raw": raw_text}, indent=2))
         else:
-            print("# kimi-for-coding review -- UNPARSEABLE\n")
+            print("# kimi-k2.7-code review -- UNPARSEABLE\n")
             print("Raw response (truncated to 4KB):\n")
             print("```\n" + raw_text[:4096] + "\n```")
         return 3

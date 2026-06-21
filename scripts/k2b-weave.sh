@@ -26,7 +26,7 @@ readonly LOG_FILE="$K2B_VAULT/wiki/log.md"
 readonly REVIEW_DIR="$K2B_VAULT/review"
 readonly WIKI_DIR="$K2B_VAULT/wiki"
 # Pre-flight INPUT budget, in rough estimated tokens (bytes/4; see cmd_run). Caps the
-# input bundle ONLY. Kimi K2.6's 256K context window is shared by input + system prompt
+# input bundle ONLY. Kimi's long context window is shared by input + system prompt
 # + JSON schema + the up-to-10-proposal output + Kimi's own reasoning tokens, and bytes/4
 # measures none of those except the input. So this is set as a RESERVATION: 256K window
 # minus ~86K held back for everything that is not the input bundle. ~86K is far above the
@@ -450,7 +450,7 @@ lines.append("---")
 lines.append("")
 lines.append(f"# Cross-link proposals -- {today} ({run_id})")
 lines.append("")
-lines.append(f"MiniMax M2.7 found {len(proposals)} candidate pairs. Mark each row with `check` / `x` / `defer` in the Decision column, save, then run `/review` to apply.")
+lines.append(f"Kimi K2.7 Code found {len(proposals)} candidate pairs. Mark each row with `check` / `x` / `defer` in the Decision column, save, then run `/review` to apply.")
 lines.append("")
 lines.append("| # | From | To | Confidence | Why | Evidence | Decision |")
 lines.append("|---|------|-----|------------|-----|----------|----------|")
@@ -753,7 +753,7 @@ cmd_run() {
     return 0
   fi
 
-  # Build page bundle for MiniMax
+  # Build page bundle for the text worker
   local page_bundle
   page_bundle=$(build_page_bundle)
 
@@ -776,14 +776,14 @@ cmd_run() {
     exit 1
   fi
 
-  # Call MiniMax
-  log_info "Calling MiniMax M2.7..."
+  # Call the text worker
+  log_info "Calling Kimi K2.7 Code..."
   local start_ms end_ms duration_ms
   start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
   local response
   if ! response=$(printf '%s' "$input_json" | "$SCRIPT_DIR/minimax-weave.sh"); then
-    notify_failure "weave: MiniMax call failed"
-    append_metrics "$page_count" 0 0 0 "$input_bytes" "minimax_api_error" "$run_id"
+    notify_failure "weave: ${K2B_TEXT_WORKER_NAME} call failed"
+    append_metrics "$page_count" 0 0 0 "$input_bytes" "$K2B_TEXT_WORKER_ERROR_KEY" "$run_id"
     exit 1
   fi
   end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
@@ -793,7 +793,7 @@ cmd_run() {
   if ! validate_response_schema "$response"; then
     mkdir -p "$(dirname "$ERRORS_FILE")"
     printf '=== %s run=%s ===\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$run_id" "$response" >> "$ERRORS_FILE"
-    notify_failure "weave: MiniMax returned invalid JSON schema. See $ERRORS_FILE"
+    notify_failure "weave: ${K2B_TEXT_WORKER_NAME} returned invalid JSON schema. See $ERRORS_FILE"
     append_metrics "$page_count" 0 0 "$duration_ms" "$input_bytes" "schema_violation" "$run_id"
     exit 1
   fi

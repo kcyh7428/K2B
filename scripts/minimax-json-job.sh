@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Generic JSON-job wrapper (Kimi-backed by default via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi; "minimax" in the name is historical)
 # Factors the shared plumbing out of minimax-research-extract / minimax-compile / minimax-lint-deep.
-# Caller builds a prompt + user input; this wrapper calls MiniMax, strips fences,
-# validates JSON strictly, logs the invocation, and prints the validated JSON on stdout.
+# Caller builds a prompt + user input; this wrapper calls the active K2B text
+# worker, strips fences, validates JSON strictly, logs the invocation, and
+# prints the validated JSON on stdout.
 #
 # Usage:
 #   minimax-json-job.sh [flags]
@@ -11,7 +12,7 @@
 #   --prompt <path>         System prompt file. Mutually exclusive with --prompt-stdin.
 #   --prompt-stdin          Read system prompt from stdin (for dynamic prompts).
 #   --input <path>          User content file. Use '-' for stdin, but not both with --prompt-stdin.
-#   --model <id>            MiniMax model id (default: MiniMax-M2.7)
+#   --model <id>            Rollback model id when K2B_LLM_PROVIDER=minimax (default: MiniMax-M2.7)
 #   --max-tokens <N>        Max completion tokens (default: 4000)
 #   --temperature <F>       Temperature (default: 0.2)
 #   --job-name <label>      Required. Logged in minimax-jobs.jsonl.
@@ -24,8 +25,8 @@
 # This avoids ambiguity with a single stdin channel.
 #
 # Output:
-#   stdout: the validated JSON returned by MiniMax (fences stripped)
-#   stderr: one-line progress markers ([minimax] calling API..., etc.) + any errors
+#   stdout: the validated JSON returned by the active text worker (fences stripped)
+#   stderr: one-line progress markers ([text-worker] calling API..., etc.) + any errors
 #
 # Exit codes:
 #   0   success
@@ -39,9 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/minimax-common.sh"
 
 # --- Defaults ---
-# Rollback-path model only: the kimi branch in minimax_common.py forces kimi-for-coding
-# regardless of this value. This default applies solely when K2B_LLM_PROVIDER=minimax.
-MODEL="MiniMax-M2.7"
+MODEL="$K2B_LLM_MODEL"
 MAX_TOKENS=4000
 TEMPERATURE=0.2
 ROLE_NAME="caller"
@@ -129,8 +128,8 @@ if [[ $input_bytes -eq 0 || -z "${user_content//[[:space:]]/}" ]]; then
   exit 2
 fi
 
-# --- Call MiniMax ---
-echo "[minimax] calling ${MODEL} (input ${input_bytes}B, max ${MAX_TOKENS} tokens)..." >&2
+# --- Call text worker ---
+echo "[text-worker] calling ${MODEL} (input ${input_bytes}B, max ${MAX_TOKENS} tokens)..." >&2
 
 request_body=$(jq -n \
   --arg model "$MODEL" \
@@ -156,21 +155,21 @@ if ! response=$(mm_api POST /v1/text/chatcompletion_v2 "$request_body"); then
   end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
   duration_ms=$((end_ms - start_ms))
   log_job_invocation "$JOB_NAME" "$PROMPT_VERSION" "$MODEL" "$input_bytes" 0 "api_error" "$duration_ms"
-  echo "[minimax] API call failed after ${duration_ms}ms" >&2
+  echo "[text-worker] API call failed after ${duration_ms}ms" >&2
   exit 1
 fi
 
 end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
 duration_ms=$((end_ms - start_ms))
 
-echo "[minimax] got response in ${duration_ms}ms, parsing..." >&2
+echo "[text-worker] got response in ${duration_ms}ms, parsing..." >&2
 
 # --- Extract content ---
 content=$(echo "$response" | jq -r '.choices[0].message.content // empty')
 
 if [[ -z "$content" ]]; then
   log_job_invocation "$JOB_NAME" "$PROMPT_VERSION" "$MODEL" "$input_bytes" 0 "empty_response" "$duration_ms"
-  echo "[minimax] empty response content" >&2
+  echo "[text-worker] empty response content" >&2
   echo "$response" >&2
   exit 1
 fi
@@ -183,16 +182,16 @@ if [[ "$cleaned" != "$content" ]]; then
 fi
 
 # --- Strict JSON validation (jq -e, not bare jq .) ---
-echo "[minimax] validating JSON (${#cleaned}B)..." >&2
+echo "[text-worker] validating JSON (${#cleaned}B)..." >&2
 jq_err_file=$(mktemp -t k2b-minimax-json-err.XXXXXX)
 trap 'rm -f "$jq_err_file"' EXIT
 
 if ! echo "$cleaned" | jq -e . >/dev/null 2>"$jq_err_file"; then
   log_job_invocation "$JOB_NAME" "$PROMPT_VERSION" "$MODEL" "$input_bytes" "${#cleaned}" "invalid" "$duration_ms"
   jq_err=$(cat "$jq_err_file" 2>/dev/null || true)
-  echo "[minimax] invalid JSON from MiniMax" >&2
+  echo "[text-worker] invalid JSON from ${K2B_TEXT_WORKER_NAME}" >&2
   jq -n \
-    --arg err "Invalid JSON from MiniMax" \
+    --arg err "Invalid JSON from ${K2B_TEXT_WORKER_NAME}" \
     --arg jq_error "$jq_err" \
     --arg raw "$cleaned" \
     '{error: $err, jq_error: $jq_error, raw_response: $raw}' >&2
@@ -202,5 +201,5 @@ fi
 # --- Success: log and emit ---
 output_bytes=${#cleaned}
 log_job_invocation "$JOB_NAME" "$PROMPT_VERSION" "$MODEL" "$input_bytes" "$output_bytes" "$parse_status" "$duration_ms"
-echo "[minimax] ok (${parse_status}, ${output_bytes}B output)" >&2
+echo "[text-worker] ok (${parse_status}, ${output_bytes}B output)" >&2
 printf '%s\n' "$cleaned"

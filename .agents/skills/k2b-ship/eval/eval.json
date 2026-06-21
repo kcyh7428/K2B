@@ -1,6 +1,6 @@
 {
   "skill": "k2b-ship",
-  "runner": "none (scenario markdown only; read by a human or MiniMax M2.7 when behavioral regression is suspected)",
+  "runner": "none (scenario markdown only; read by a human or Kimi K2.7 Code when behavioral regression is suspected)",
   "cases": [
     {
       "name": "auto-promote-3x",

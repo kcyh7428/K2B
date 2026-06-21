@@ -1,6 +1,6 @@
 ---
 name: k2b-weave
-description: Background cross-link weaver -- runs Kimi K2.6 three times a week to find missing links between wiki pages and drops proposals into the review queue. Use when Keith says /weave, "run weave", "find missing links", "propose cross-links", or when the scheduled cron task fires on Mac Mini.
+description: Background cross-link weaver -- runs Kimi K2.7 Code three times a week to find missing links between wiki pages and drops proposals into the review queue. Use when Keith says /weave, "run weave", "find missing links", "propose cross-links", or when the scheduled cron task fires on Mac Mini.
 triggers:
   - /weave
   - weave run
@@ -18,7 +18,7 @@ Weaves the wiki graph tighter over time by finding semantically related pages th
 
 **The problem:** `/lint` passively detects orphans and weakly-connected pages but never creates the missing links. Keith wants the wiki to grow *tighter* as it grows -- more edges between related pages, without manually adding every `[[wikilink]]`.
 
-**The solution:** Three times a week, Kimi K2.6 reads the whole in-scope wiki and returns up to 10 candidate cross-link pairs, ranked by utility. Every proposal lands in a digest note under `review/`. Keith approves during `/review`. Approved pairs become `related:` frontmatter entries on the FROM page (single-sided -- Obsidian backlinks show the reverse). Nothing is ever auto-applied in v0.
+**The solution:** Three times a week, Kimi K2.7 Code reads the whole in-scope wiki and returns up to 10 candidate cross-link pairs, ranked by utility. Every proposal lands in a digest note under `review/`. Keith approves during `/review`. Approved pairs become `related:` frontmatter entries on the FROM page (single-sided -- Obsidian backlinks show the reverse). Nothing is ever auto-applied in v0.
 
 **Why Kimi, not Opus:** ~30-50x cheaper. Same pattern as `k2b-compile` and `k2b-observer`. Cost: ~$1/week total at current vault scale.
 
@@ -48,7 +48,7 @@ This enables weave to gradually earn autonomy. First 10+ proposals are always ma
 | Path | Role |
 |---|---|
 | `~/Projects/K2B/scripts/k2b-weave.sh` | Orchestrator script (called by all commands) |
-| `~/Projects/K2B/scripts/minimax-weave.sh` | Kimi K2.6 API wrapper with strict JSON schema validation |
+| `~/Projects/K2B/scripts/minimax-weave.sh` | Kimi K2.7 Code API wrapper with strict JSON schema validation |
 | `~/Projects/K2B-Vault/wiki/context/crosslink-ledger.jsonl` | Proposal memory (applied/rejected/pending/deferred) |
 | `~/Projects/K2B-Vault/wiki/context/weave-metrics.jsonl` | Per-run statistics |
 | `~/Projects/K2B-Vault/wiki/context/weave-errors.log` | Quarantine for malformed Kimi responses |
@@ -90,7 +90,7 @@ This enables weave to gradually earn autonomy. First 10+ proposals are always ma
 
 5. **Pre-flight token estimate** -- rough token count of bundled prompt (bytes/4). If over `MAX_TOKENS_BUDGET` (set in `scripts/k2b-weave.sh`, currently 170K est-tokens -- a reservation under Kimi's 256K window that leaves ~86K for output + reasoning, which the bytes/4 input estimate does not measure), abort with notification and exit 1. This is the graceful "full-body single-prompt has reached its ceiling" gate -- the durable scaling fix is [[feature_weave-embedding-prefilter]]. The budget's single home is the code constant; do not hardcode the number elsewhere.
 
-6. **Call Kimi** via `scripts/minimax-weave.sh`. Script builds the prompt, calls Kimi K2.6 at `/v1/text/chatcompletion_v2`, validates response against strict JSON schema, returns JSON or exits non-zero.
+6. **Call Kimi** via `scripts/minimax-weave.sh`. Script builds the prompt, calls K2B's Kimi K2.7 Code text path via `minimax-common.sh`, validates response against strict JSON schema, returns JSON or exits non-zero.
 
 7. **Validate response** -- strict JSON schema: array of `{from_path, to_path, from_slug, to_slug, confidence, rationale, evidence_span}`. Reject unknown fields. On schema failure: append raw response to `weave-errors.log`, release lock, exit 1, send notification.
 

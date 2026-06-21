@@ -17,7 +17,7 @@ The Mac Mini runs the always-on services. The vault syncs through Syncthing. Cod
 
 - **Codex**: primary local coding agent and default desktop commander for K2B work.
 - **Claude Code**: supported compatibility surface. `CLAUDE.md` and `.claude/skills` remain live, but they no longer define the main mental model.
-- **Kimi K2.6**: primary text worker for background analysis, compile, lint deep, research extraction, weave, observer, and non-Codex review. Historical `scripts/minimax-*.sh` names are preserved only for backward compatibility and route to Kimi by default through `K2B_LLM_PROVIDER=kimi`.
+- **Kimi K2.7 Code**: primary text worker for background analysis, compile, lint deep, research extraction, weave, observer, and non-Codex review. Historical `scripts/minimax-*.sh` names are preserved only for backward compatibility and route to Kimi by default through `K2B_LLM_PROVIDER=kimi`.
 - **MiniMax**: subscription dead since 2026-05-27. Never set `K2B_LLM_PROVIDER=minimax`, and do not create new scripts or callers with `minimax-*` names. Treat existing `minimax-*` filenames as compatibility wrappers, not live MiniMax guidance.
 - **GPTsAPI/Groq**: media, VLM/OCR, TTS, STT, and Telegram voice transcription paths.
 - **NotebookLM/Gemini**: deep multi-source synthesis through the `notebooklm` skill.
@@ -194,7 +194,7 @@ Every commit needs adversarial review.
 - If the builder is unknown, mixed, or not represented by the named families, choose one independent reviewer and use `--builder-family other --primary <codex|minimax> --no-fallback`; record why that reviewer is independent.
 - Same-family fallback does not count as official independent review.
 
-The reviewer key `minimax` is historical; current K2B routes that path to Kimi K2.6 by default through `K2B_LLM_PROVIDER=kimi`.
+The reviewer key `minimax` is historical; current K2B routes that path to Kimi K2.7 Code by default through `K2B_LLM_PROVIDER=kimi`.
 Omitting `--builder-family` is for ad-hoc reviews only, not official `/ship` gates.
 `/ship` must not guess the builder. Codex desktop sessions must set `BUILDER_FAMILY=openai`; Claude, Kimi, and mixed-builder sessions must set their actual family before `/ship`.
 
