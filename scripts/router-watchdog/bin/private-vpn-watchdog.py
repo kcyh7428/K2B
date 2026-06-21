@@ -591,7 +591,14 @@ def trace_tailscale_netcheck() -> dict[str, Any]:
     tailscale_bin = find_tailscale_bin()
     if not tailscale_bin:
         return {"enabled": True, "available": False, "ok": False, "error": "tailscale binary not found"}
-    result = run_command([tailscale_bin, "netcheck", "--json"], bounded_env_int("K2B_PRIVATE_VPN_TAILSCALE_TIMEOUT", 4, 2, 30))
+    timeout = bounded_env_int("K2B_PRIVATE_VPN_TAILSCALE_TIMEOUT", 4, 2, 30)
+    result = run_command([tailscale_bin, "netcheck", "--format", "json"], timeout)
+    if (
+        result["ok"] is False
+        and "flag provided but not defined" in result.get("stderr", "")
+        and "--format" in result.get("stderr", "")
+    ):
+        result = run_command([tailscale_bin, "netcheck", "--json"], timeout)
     payload: dict[str, Any] = {}
     if result["stdout"]:
         try:
@@ -729,11 +736,15 @@ def trace_router() -> dict[str, Any]:
         "date; uptime; "
         "(ip route 2>/dev/null || route -n 2>/dev/null || true); "
         "(ifconfig eth0 2>/dev/null || true); "
-        "(ifconfig br0 2>/dev/null || true); "
+        "(ifconfig br-lan 2>/dev/null || ifconfig br0 2>/dev/null || true); "
         "(cat /etc/resolv.conf 2>/dev/null || true); "
+        "(uci get dhcp.@dnsmasq[0].localuse 2>/dev/null || true); "
         f"(ping -c 2 -W 1 {upstream_gateway} 2>&1 || true); "
         "(ping -c 2 -W 1 1.1.1.1 2>&1 || true); "
         "(nslookup www.gstatic.com 2>&1 || true); "
+        "(nslookup controlplane.tailscale.com 2>&1 || true); "
+        "(tailscale status 2>/dev/null || true); "
+        "(logread 2>/dev/null | tail -n 120 || true); "
         "tail -n 120 /tmp/syslog.log 2>/dev/null || true; "
         "tail -n 120 /tmp/clash_run.log 2>/dev/null || true",
     )
