@@ -261,6 +261,13 @@ echo "=== router-watchdog-private-vpn.test.sh ==="
   grep -q 'logread 2>/dev/null | tail -n 120' "$d/expensive-commands.log" || fail "router SSH trace should capture live router logs"
   grep -q '^tailscale status --json$' "$d/tailscale-commands.log" || fail "incident trace should run Tailscale status"
   grep -q '^tailscale netcheck --format json$' "$d/tailscale-commands.log" || fail "incident trace should run Tailscale netcheck in JSON mode"
+  python3 - "$d/expensive-commands.log" <<'PY' || fail "router SSH trace should gather logs and Tailscale state before slow probes"
+import sys
+log = open(sys.argv[1], encoding="utf-8").read()
+ssh_line = next(line for line in log.splitlines() if line.startswith("ssh "))
+assert ssh_line.index("tailscale status 2>/dev/null") < ssh_line.index("ping -c 2 -W 1 192.168.1.1"), ssh_line
+assert ssh_line.index("logread 2>/dev/null | tail -n 120") < ssh_line.index("ping -c 2 -W 1 192.168.1.1"), ssh_line
+PY
 
   incident="$(find "$d/incidents" -type f -name '*private-vpn.json' | head -1)"
   [[ -n "$incident" ]] || fail "incident trace should be written on second failure"

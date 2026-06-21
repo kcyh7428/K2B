@@ -737,16 +737,16 @@ def trace_router() -> dict[str, Any]:
         "(ip route 2>/dev/null || route -n 2>/dev/null || true); "
         "(ifconfig eth0 2>/dev/null || true); "
         "(ifconfig br-lan 2>/dev/null || ifconfig br0 2>/dev/null || true); "
+        "(tailscale status 2>/dev/null || true); "
+        "(logread 2>/dev/null | tail -n 120 || true); "
+        "tail -n 120 /tmp/syslog.log 2>/dev/null || true; "
+        "tail -n 120 /tmp/clash_run.log 2>/dev/null || true; "
         "(cat /etc/resolv.conf 2>/dev/null || true); "
         "(uci get dhcp.@dnsmasq[0].localuse 2>/dev/null || true); "
         f"(ping -c 2 -W 1 {upstream_gateway} 2>&1 || true); "
         "(ping -c 2 -W 1 1.1.1.1 2>&1 || true); "
         "(nslookup www.gstatic.com 2>&1 || true); "
-        "(nslookup controlplane.tailscale.com 2>&1 || true); "
-        "(tailscale status 2>/dev/null || true); "
-        "(logread 2>/dev/null | tail -n 120 || true); "
-        "tail -n 120 /tmp/syslog.log 2>/dev/null || true; "
-        "tail -n 120 /tmp/clash_run.log 2>/dev/null || true",
+        "(nslookup controlplane.tailscale.com 2>&1 || true)",
     )
     result = run_command(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", f"StrictHostKeyChecking={strict_host_key_checking}", target, command],
