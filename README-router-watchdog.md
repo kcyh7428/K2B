@@ -12,7 +12,7 @@ TELEGRAM_BOT_TOKEN=<token>
 KEITH_CHAT_ID=8394008217
 K2B_NETWORK_ALERT_CHAT_ID=-1003966532428
 K2B_NETWORK_ALERT_THREAD_ID=6
-MIHOMO_API_BASE=http://192.168.50.1:9990
+MIHOMO_API_BASE=http://192.168.9.1:9090
 MIHOMO_API_SECRET=<secret>
 MIHOMO_OPENAI_GROUP=🤖 OpenAI
 K2B_PRIVATE_VPN_ROUTE_GROUP=🎯 总模式
@@ -28,7 +28,10 @@ K2B_PRIVATE_VPN_ALERT_RECOVERY_MAX_AGE_HOURS=168
 K2B_PRIVATE_VPN_AWS_PROFILE=k2b-aws-signhubdev-hk
 K2B_PRIVATE_VPN_AWS_REGION=ap-east-1
 K2B_PRIVATE_VPN_AWS_INSTANCE=Ubuntu-1
-K2B_PRIVATE_VPN_ROUTER_SSH_TARGET=router
+K2B_PRIVATE_VPN_ROUTER_SSH_TARGET=root@192.168.9.1
+K2B_PRIVATE_VPN_ROUTER_SSH_STRICT_HOST_KEY_CHECKING=yes
+K2B_PRIVATE_VPN_ROUTER_LAN_IP=192.168.9.1
+K2B_PRIVATE_VPN_UPSTREAM_GATEWAY=192.168.1.1
 K2B_PRIVATE_VPN_HK_SSH_TARGET=ubuntu@<hk-server-ip>
 # Optional: if not using ssh-agent, this must be a non-symlink key under ~/.ssh with 0600 or stricter permissions.
 # K2B_PRIVATE_VPN_HK_SSH_KEY=~/.ssh/<key>
@@ -37,6 +40,16 @@ chmod 600 ~/.k2b-router-watchdog.env
 
 bash ~/Projects/K2B/scripts/router-watchdog/install.sh
 ```
+
+With the ASUS now in AP mode, point the watchdog at the R5C router (`192.168.9.1`) for both the Mihomo API and router SSH trace. Do not point `K2B_PRIVATE_VPN_ROUTER_SSH_TARGET` at the ASUS AP.
+
+Before the first watchdog install on a new Mac Mini, seed the router host key once so strict checking can stay enabled:
+
+```bash
+ssh root@192.168.9.1 true
+```
+
+If the router host key is intentionally rotated later, refresh the pinned `known_hosts` entry before re-running the watchdog.
 
 The installer copies the source snapshot from `scripts/router-watchdog/bin/` into:
 

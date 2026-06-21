@@ -164,7 +164,7 @@ EOF
 #!/usr/bin/env bash
 host="${@: -1}"
 case "$host" in
-  192.168.50.1)
+  192.168.9.1)
     printf '64 bytes from %s: icmp_seq=0 ttl=64 time=2.4 ms\n' "$host"
     exit 0
     ;;
@@ -217,7 +217,7 @@ run_watchdog() {
   K2B_PRIVATE_VPN_INCIDENT_KEEP="${K2B_PRIVATE_VPN_INCIDENT_KEEP:-50}" \
   K2B_PRIVATE_VPN_INCIDENT_MAX_AGE_DAYS="${K2B_PRIVATE_VPN_INCIDENT_MAX_AGE_DAYS:-30}" \
   K2B_PRIVATE_VPN_HK_SSH_TARGET="ubuntu@127.0.0.1" \
-  K2B_PRIVATE_VPN_ROUTER_LAN_IP="192.168.50.1" \
+  K2B_PRIVATE_VPN_ROUTER_LAN_IP="192.168.9.1" \
   K2B_PRIVATE_VPN_UPSTREAM_GATEWAY="192.168.1.1" \
   K2B_PRIVATE_VPN_TCP_TARGETS="$tcp_targets" \
   K2B_PRIVATE_VPN_PING_BIN="$d/fakebin/ping" \
@@ -255,6 +255,7 @@ echo "=== router-watchdog-private-vpn.test.sh ==="
   grep -q "route is using TW fallback" "$d/alerts.jsonl" || fail "failure alert should mention TW fallback"
   grep -q '^aws ' "$d/expensive-commands.log" || fail "second HK failure should run AWS trace"
   grep -q '^ssh ' "$d/expensive-commands.log" || fail "second HK failure should run SSH trace"
+  grep -q 'StrictHostKeyChecking=yes' "$d/expensive-commands.log" || fail "router SSH trace should require a pinned host key by default"
   grep -q '^tailscale status --json$' "$d/tailscale-commands.log" || fail "incident trace should run Tailscale status"
   grep -q '^tailscale netcheck --json$' "$d/tailscale-commands.log" || fail "incident trace should run Tailscale netcheck"
 
@@ -619,6 +620,72 @@ EOF
     fail "private VPN digest should not lead with DoggyGo/subscription recommendation"
   fi
   echo "  PASS: private VPN daily digest"
+}
+
+{
+  d="$TMPROOT/timeout-expired-bytes"
+  mkdir -p "$d"
+  python3 - "$WATCHDOG" <<'PY' || fail "run_command should redact real TimeoutExpired output safely"
+import importlib.util
+import sys
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("private_vpn_watchdog", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+result = module.run_command(
+    [
+        sys.executable,
+        "-u",
+        "-c",
+        "import sys,time; sys.stdout.write('token=abc123 192.168.9.1 timed out\\n'); sys.stdout.flush(); sys.stderr.write('secret=xyz789 192.168.9.1 timed out\\n'); sys.stderr.flush(); time.sleep(5)",
+    ],
+    1,
+)
+
+assert result["ok"] is False, result
+assert result["returncode"] is None, result
+assert isinstance(result["stdout"], str), result
+assert isinstance(result["stderr"], str), result
+assert "[redacted]" in result["stdout"], result
+assert "[redacted]" in result["stderr"], result
+assert "[redacted-ip]" in result["stdout"], result
+assert "[redacted-ip]" in result["stderr"], result
+assert "command timed out" in result["stderr"], result
+PY
+  echo "  PASS: TimeoutExpired byte output is redacted safely"
+}
+
+{
+  d="$TMPROOT/resolved-key-redaction"
+  mkdir -p "$d"
+  python3 - "$WATCHDOG" <<'PY' || fail "redact_text should hide resolved HK SSH key paths"
+import importlib.util
+import os
+import tempfile
+from pathlib import Path
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("private_vpn_watchdog", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+resolved = "/Users/example/.ssh/k2b-hk"
+original = module.usable_ssh_key_path
+module.usable_ssh_key_path = lambda _raw: resolved
+os.environ["K2B_PRIVATE_VPN_HK_SSH_KEY"] = "~/.ssh/k2b-hk"
+try:
+    redacted = module.redact_text(f"identity file {resolved} failed to load")
+finally:
+    module.usable_ssh_key_path = original
+    os.environ.pop("K2B_PRIVATE_VPN_HK_SSH_KEY", None)
+
+assert resolved not in redacted, redacted
+assert "[redacted]" in redacted, redacted
+PY
+  echo "  PASS: resolved HK SSH key paths are redacted"
 }
 
 echo "router-watchdog-private-vpn.test.sh: all tests passed"

@@ -225,9 +225,19 @@ def usable_ssh_target(target: str) -> bool:
     return not any(char.isspace() or ord(char) < 32 for char in target)
 
 
-def redact_text(value: str) -> str:
+def textify(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def redact_text(value: str | bytes | None) -> str:
+    value = textify(value)
     hk_target = os.environ.get("K2B_PRIVATE_VPN_HK_SSH_TARGET", "")
     router_target = os.environ.get("K2B_PRIVATE_VPN_ROUTER_SSH_TARGET", "")
+    hk_key = os.environ.get("K2B_PRIVATE_VPN_HK_SSH_KEY", "")
     secrets = [
         os.environ.get("MIHOMO_API_SECRET", ""),
         os.environ.get("TELEGRAM_BOT_TOKEN", ""),
@@ -236,7 +246,8 @@ def redact_text(value: str) -> str:
         os.environ.get("K2B_PRIVATE_VPN_HK_TRACE_COMMAND", ""),
         hk_target,
         router_target,
-        safe_expanduser(os.environ.get("K2B_PRIVATE_VPN_HK_SSH_KEY", "")),
+        safe_expanduser(hk_key),
+        usable_ssh_key_path(hk_key) or "",
     ]
     secrets.extend(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", hk_target))
     secrets.extend(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", router_target))
@@ -254,7 +265,7 @@ def redact_text(value: str) -> str:
     return out
 
 
-def bounded(value: str, limit: int = 12000) -> str:
+def bounded(value: str | bytes | None, limit: int = 12000) -> str:
     value = redact_text(value)
     if len(value) <= limit:
         return value
@@ -465,7 +476,7 @@ def run_command(command: list[str], timeout: int) -> dict[str, Any]:
             "ok": False,
             "returncode": None,
             "stdout": bounded(exc.stdout or ""),
-            "stderr": bounded((exc.stderr or "") + "\ncommand timed out"),
+            "stderr": bounded(textify(exc.stderr) + "\ncommand timed out"),
         }
 
 
@@ -610,7 +621,7 @@ def edge_diagnostics(include_netcheck: bool = False) -> dict[str, Any]:
     if not env_bool("K2B_PRIVATE_VPN_EDGE_TRACE", True):
         return {"enabled": False}
     tailscale_status_every_tick = env_bool("K2B_PRIVATE_VPN_TAILSCALE_STATUS_EVERY_TICK", False)
-    router_lan = os.environ.get("K2B_PRIVATE_VPN_ROUTER_LAN_IP", "192.168.50.1")
+    router_lan = os.environ.get("K2B_PRIVATE_VPN_ROUTER_LAN_IP", "192.168.9.1")
     upstream = os.environ.get("K2B_PRIVATE_VPN_UPSTREAM_GATEWAY", "192.168.1.1")
     edge = {
         "enabled": True,
@@ -642,7 +653,7 @@ def evidence_hint(classification_value: str, edge: dict[str, Any]) -> str:
     upstream = pings.get("upstream_gateway") if isinstance(pings.get("upstream_gateway"), dict) else {}
     netcheck = edge.get("tailscale_netcheck") if isinstance(edge.get("tailscale_netcheck"), dict) else {}
     if router_lan.get("ok") is False:
-        return "mac_mini_to_asus_lan_suspect"
+        return "mac_mini_to_router_lan_suspect"
     if upstream.get("ok") is False:
         return "upstream_modem_gateway_suspect"
     if classification_value == "hk_only_down":
@@ -650,7 +661,7 @@ def evidence_hint(classification_value: str, edge: dict[str, Any]) -> str:
     if classification_value == "all_private_udp_down" and (netcheck.get("udp") is False or any_tcp_ok(edge)):
         return "udp_nat_mapping_or_isp_modem_suspect"
     if classification_value == "router_mihomo_down":
-        return "asus_mihomo_api_or_lan_suspect"
+        return "router_mihomo_api_or_lan_suspect"
     return "insufficient_edge_evidence"
 
 
@@ -658,9 +669,9 @@ def evidence_text(hint: str) -> str:
     return {
         "primary_path_specific": "primary path specific",
         "udp_nat_mapping_or_isp_modem_suspect": "UDP/NAT path suspect",
-        "mac_mini_to_asus_lan_suspect": "Mac Mini to ASUS LAN suspect",
+        "mac_mini_to_router_lan_suspect": "Mac Mini to router LAN suspect",
         "upstream_modem_gateway_suspect": "upstream modem gateway suspect",
-        "asus_mihomo_api_or_lan_suspect": "ASUS Mihomo API or LAN suspect",
+        "router_mihomo_api_or_lan_suspect": "router Mihomo API or LAN suspect",
         "insufficient_edge_evidence": "insufficient edge evidence",
     }.get(hint, hint)
 
@@ -703,7 +714,8 @@ def trace_aws() -> dict[str, Any]:
 
 
 def trace_router() -> dict[str, Any]:
-    target = os.environ.get("K2B_PRIVATE_VPN_ROUTER_SSH_TARGET", "router")
+    target = os.environ.get("K2B_PRIVATE_VPN_ROUTER_SSH_TARGET", "root@192.168.9.1")
+    strict_host_key_checking = os.environ.get("K2B_PRIVATE_VPN_ROUTER_SSH_STRICT_HOST_KEY_CHECKING", "yes")
     if not usable_ssh_target(target):
         return {
             "target": "[invalid]",
@@ -726,7 +738,7 @@ def trace_router() -> dict[str, Any]:
         "tail -n 120 /tmp/clash_run.log 2>/dev/null || true",
     )
     result = run_command(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, command],
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", f"StrictHostKeyChecking={strict_host_key_checking}", target, command],
         bounded_env_int("K2B_PRIVATE_VPN_TRACE_TIMEOUT", 15, 5, 60),
     )
     return {
@@ -1200,7 +1212,7 @@ def main() -> int:
     recovery_threshold = int(os.environ.get("K2B_PRIVATE_VPN_RECOVERY_THRESHOLD", "5"))
 
     client = MihomoClient(
-        os.environ.get("MIHOMO_API_BASE", "http://192.168.50.1:9990"),
+        os.environ.get("MIHOMO_API_BASE", "http://192.168.9.1:9090"),
         os.environ.get("MIHOMO_API_SECRET", ""),
         bounded_env_float("K2B_PRIVATE_VPN_MIHOMO_TIMEOUT", 8.0, 1.0, 15.0),
     )
