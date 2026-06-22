@@ -13,6 +13,7 @@ PLISTS=(
   com.k2b.router-node-score.plist
   com.k2b.router-leaf-optimizer.plist
   com.k2b.router-digest.plist
+  com.k2b.router-r5c-autorecovery.plist
 )
 
 APP_DIR="${K2B_ROUTER_WATCHDOG_APP_DIR:-$HOME/Library/Application Support/k2b-router-watchdog}"
