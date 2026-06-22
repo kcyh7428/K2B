@@ -23,7 +23,7 @@ load_watchdog_env() {
       fi
     fi
     case "$key" in
-      MIHOMO_*|K2B_R5C_AUTORECOVERY_STATE_FILE|K2B_R5C_AUTORECOVERY_LOG|K2B_R5C_AUTORECOVERY_EVIDENCE_DIR|K2B_R5C_AUTORECOVERY_SENTINEL|K2B_R5C_AUTORECOVERY_R5C_LAN_IP|K2B_R5C_AUTORECOVERY_MIHOMO_API_BASE|K2B_R5C_AUTORECOVERY_ASUS_HOST|K2B_R5C_AUTORECOVERY_ASUS_SSH_TARGET|K2B_R5C_AUTORECOVERY_ASUS_SSH_KEY|K2B_R5C_AUTORECOVERY_THRESHOLD|K2B_R5C_AUTORECOVERY_COOLDOWN_MINUTES|K2B_R5C_AUTORECOVERY_PING_TIMEOUT_MS|K2B_R5C_AUTORECOVERY_HTTP_TIMEOUT_S|K2B_R5C_AUTORECOVERY_SSH_TIMEOUT_S|K2B_R5C_AUTORECOVERY_SSH_STRICT_HOST_KEY_CHECKING)
+      MIHOMO_*|K2B_NETWORK_ALERT_CHAT_ID|K2B_NETWORK_ALERT_THREAD_ID|K2B_R5C_AUTORECOVERY_STATE_FILE|K2B_R5C_AUTORECOVERY_LOG|K2B_R5C_AUTORECOVERY_EVIDENCE_DIR|K2B_R5C_AUTORECOVERY_ALERTS_LOG|K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD|K2B_R5C_AUTORECOVERY_SENTINEL|K2B_R5C_AUTORECOVERY_R5C_LAN_IP|K2B_R5C_AUTORECOVERY_MIHOMO_API_BASE|K2B_R5C_AUTORECOVERY_ASUS_HOST|K2B_R5C_AUTORECOVERY_ASUS_SSH_TARGET|K2B_R5C_AUTORECOVERY_ASUS_SSH_KEY|K2B_R5C_AUTORECOVERY_THRESHOLD|K2B_R5C_AUTORECOVERY_COOLDOWN_MINUTES|K2B_R5C_AUTORECOVERY_PING_TIMEOUT_MS|K2B_R5C_AUTORECOVERY_HTTP_TIMEOUT_S|K2B_R5C_AUTORECOVERY_SSH_TIMEOUT_S|K2B_R5C_AUTORECOVERY_SSH_STRICT_HOST_KEY_CHECKING)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -45,6 +45,37 @@ if [[ "${K2B_R5C_AUTORECOVERY_WRAPPER_TEST_MODE:-0}" != "1" ]]; then
 fi
 
 mkdir -p "$APP_DIR" "$LOG_DIR"
+
+if [[ -z "${K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD:-}" && -x "$SCRIPT_DIR/send-alert.sh" ]]; then
+  K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD="$SCRIPT_DIR/send-alert.sh"
+  export K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD
+elif [[ -z "${K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD:-}" ]]; then
+  echo "WARN: R5C Telegram alerts disabled; send-alert.sh is not executable at $SCRIPT_DIR/send-alert.sh" >&2
+  alerting_disabled_log="${K2B_R5C_AUTORECOVERY_ALERTS_LOG:-$LOG_DIR/r5c-autorecovery-alerts.jsonl}"
+  if ! python3 - "$alerting_disabled_log" "$SCRIPT_DIR/send-alert.sh" <<'PY'
+import datetime as dt
+import json
+import os
+import sys
+
+path, send_alert_path = sys.argv[1:3]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+payload = {
+    "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "type": "alerting_disabled",
+    "check": "r5c_autorecovery",
+    "status": "disabled",
+    "message": f"R5C Telegram alerts disabled; send-alert.sh is not executable at {send_alert_path}",
+}
+with open(path, "a", encoding="utf-8") as f:
+    f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+PY
+  then
+    mkdir -p "$(dirname "$alerting_disabled_log")" 2>/dev/null || true
+    printf '%s R5C Telegram alerts disabled; failed to write structured alerting_disabled marker for %s\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$SCRIPT_DIR/send-alert.sh" > "${alerting_disabled_log}.fallback.marker" 2>/dev/null || true
+  fi
+fi
 
 env \
   K2B_ROUTER_WATCHDOG_APP_DIR="$APP_DIR" \

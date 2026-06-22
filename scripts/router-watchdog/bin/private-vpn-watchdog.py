@@ -515,7 +515,7 @@ def is_ip_literal(host: str) -> bool:
     try:
         ipaddress.ip_address(host)
         return True
-    except ValueError:
+    except (TypeError, ValueError):
         return False
 
 
@@ -1118,8 +1118,11 @@ def has_unresolved_degraded_alert(alerts_file: str, now: dt.datetime) -> bool:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") not in {"private_vpn_degraded", "private_vpn_recovery"}:
+            if event.get("type") not in {"private_vpn_degraded", "private_vpn_recovery", "private_vpn_recovery_suppressed_by_r5c"}:
                 continue
+            # A suppressed recovery marker is intentionally terminal: R5C owns
+            # the user-facing incident narrative, so private VPN should not
+            # keep waiting to emit its own recovery alert.
             try:
                 alerted_at = dt.datetime.fromisoformat(str(event.get("timestamp", "")).replace("Z", "+00:00"))
             except ValueError:
@@ -1178,11 +1181,64 @@ def latest_private_alert_type(alerts_file: str) -> str | None:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(event, dict) and event.get("type") in {"private_vpn_degraded", "private_vpn_recovery"}:
+            if isinstance(event, dict) and event.get("type") in {
+                "private_vpn_degraded",
+                "private_vpn_recovery",
+                "private_vpn_recovery_suppressed_by_r5c",
+            }:
                 return str(event.get("type"))
     except OSError:
         return None
     return None
+
+
+def parse_utc_time(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def r5c_incident_active(state_file: str) -> bool:
+    state = read_json(state_file)
+    return bool(state.get("r5c_incident_open"))
+
+
+def r5c_recently_cleared(state_file: str, now: dt.datetime) -> bool:
+    state = read_json(state_file)
+    cleared_at = state.get("r5c_last_cleared_at")
+    if not cleared_at:
+        return False
+    cleared = parse_utc_time(cleared_at)
+    if cleared is None:
+        return False
+    grace_seconds = bounded_env_int("K2B_PRIVATE_VPN_R5C_CLEAR_GRACE_SECONDS", 600, 0, 3600)
+    return now.astimezone(dt.timezone.utc) - cleared <= dt.timedelta(seconds=grace_seconds)
+
+
+def r5c_ownership_expired(state: dict[str, Any], now: dt.datetime) -> bool:
+    if not state.get("r5c_owned_outage"):
+        return False
+    started = parse_utc_time(state.get("r5c_owned_started_at"))
+    if started is None:
+        return True
+    max_seconds = bounded_env_int("K2B_PRIVATE_VPN_R5C_OWNERSHIP_MAX_SECONDS", 1800, 60, 7200)
+    return now.astimezone(dt.timezone.utc) - started > dt.timedelta(seconds=max_seconds)
+
+
+def suppress_private_recovery_for_r5c(alerts_file: str, now: dt.datetime) -> None:
+    append_jsonl(alerts_file, {
+        "timestamp": isoformat(now),
+        "type": "private_vpn_recovery_suppressed_by_r5c",
+        "check": "private_vpn",
+        "classification": "ok",
+        "message": "Private VPN recovery folded into the active R5C autorecovery incident.",
+    })
 
 
 def main() -> int:
@@ -1193,6 +1249,13 @@ def main() -> int:
     parser.add_argument("--alerts-file", default=os.path.expanduser("~/Library/Logs/k2b-router-watchdog/private-vpn-alerts.jsonl"))
     parser.add_argument("--lock-file", default=None)
     parser.add_argument("--send-alert-cmd", default="")
+    parser.add_argument(
+        "--r5c-state-file",
+        default=os.environ.get(
+            "K2B_R5C_AUTORECOVERY_STATE_FILE",
+            os.path.expanduser("~/Library/Application Support/k2b-router-watchdog/r5c-autorecovery-state.json"),
+        ),
+    )
     parser.add_argument("--now", default=None)
     args = parser.parse_args()
     lock_file = args.lock_file or str(Path(args.state_file).with_name("private-vpn-watchdog.lock"))
@@ -1235,6 +1298,12 @@ def main() -> int:
     state.setdefault("status", "ok")
     state.setdefault("incident_alerted", False)
     state.setdefault("recovery_alerted", False)
+    state.setdefault("r5c_owned_outage", False)
+    state.setdefault("private_alerted_in_outage", False)
+    r5c_active = r5c_incident_active(args.r5c_state_file)
+    r5c_recent_clear = r5c_recently_cleared(args.r5c_state_file, now)
+    r5c_ownership_expired_now = r5c_ownership_expired(state, now)
+    suppress_by_r5c_now = (r5c_active or r5c_recent_clear) and not r5c_ownership_expired_now
 
     cheap = cheap_check(client, route_group, private_group, primary, failover, emergency)
     edge = edge_diagnostics(include_netcheck=False)
@@ -1258,71 +1327,113 @@ def main() -> int:
             state["primary_recovery_count"] = 0
         state["primary_fail_count"] = 0
         if cheap.get("api_ok") is True and previous_alerted and state["primary_recovery_count"] >= recovery_threshold and not state.get("recovery_alerted"):
-            message = recovery_message(state["primary_recovery_count"], cheap.get("chain", []), checks, primary, failover, emergency)
-            alert_event = {
-                "timestamp": isoformat(now),
-                "type": "private_vpn_recovery",
-                "check": "private_vpn",
-                "classification": "ok",
-                "message": message,
-            }
+            suppressed_by_r5c = bool((state.get("r5c_owned_outage") or r5c_active or r5c_recent_clear) and not r5c_ownership_expired_now)
+            if suppressed_by_r5c:
+                alert_event = None
+                suppress_private_recovery_for_r5c(args.alerts_file, now)
+                state["r5c_owned_outage"] = False
+                state.pop("r5c_owned_started_at", None)
+            else:
+                message = recovery_message(state["primary_recovery_count"], cheap.get("chain", []), checks, primary, failover, emergency)
+                alert_event = {
+                    "timestamp": isoformat(now),
+                    "type": "private_vpn_recovery",
+                    "check": "private_vpn",
+                    "classification": "ok",
+                    "message": message,
+                }
             state["incident_alerted"] = False
             state["recovery_alerted"] = True
             state["status"] = "ok"
+            state["private_alerted_in_outage"] = False
         elif previous_fail_count > 0 and not previous_alerted:
             state["status"] = "ok"
             state["incident_alerted"] = False
             state["recovery_alerted"] = False
+            state["r5c_owned_outage"] = False
+            state.pop("r5c_owned_started_at", None)
+            state["private_alerted_in_outage"] = False
         elif previous_alerted:
             state["status"] = "recovering"
         else:
             state["status"] = "ok"
             state["incident_alerted"] = False
             state["recovery_alerted"] = False
+            state["r5c_owned_outage"] = False
+            state.pop("r5c_owned_started_at", None)
+            state["private_alerted_in_outage"] = False
     else:
+        if state.get("r5c_owned_outage") and (r5c_ownership_expired_now or not suppress_by_r5c_now) and not state.get("private_alerted_in_outage"):
+            state["r5c_owned_outage"] = False
+            state.pop("r5c_owned_started_at", None)
+            state["incident_alerted"] = False
+            state["recovery_alerted"] = False
         previous_alerted = bool(state.get("incident_alerted")) or has_unresolved_degraded_alert(args.alerts_file, now)
         if int(state.get("primary_fail_count", 0)) == 0:
             state["outage_started_at"] = isoformat(now)
             state["recovery_alerted"] = False
+            state["private_alerted_in_outage"] = False
+            state["r5c_owned_outage"] = False
+            state.pop("r5c_owned_started_at", None)
         state["primary_fail_count"] = int(state.get("primary_fail_count", 0)) + 1
         state["primary_recovery_count"] = 0
         state["status"] = "degraded"
+        if suppress_by_r5c_now:
+            state["r5c_owned_outage"] = True
+            state.setdefault("r5c_owned_started_at", isoformat(now))
         if state["primary_fail_count"] >= fail_threshold and not state.get("incident_alerted") and not previous_alerted:
-            trace_path, aws, server, _router, final_classification, hint = write_incident(
-                args.incident_dir,
-                now,
-                preliminary,
-                cheap,
-                checks,
-                copy.deepcopy(state),
-                edge,
-            )
-            prune_incidents(args.incident_dir, protect_path=trace_path)
-            message = failure_message(
-                state["primary_fail_count"],
-                cheap.get("chain", []),
-                checks,
-                primary,
-                failover,
-                emergency,
-                final_classification,
-                aws,
-                server,
-                hint,
-                trace_path,
-            )
-            alert_event = {
-                "timestamp": isoformat(now),
-                "type": "private_vpn_degraded",
-                "check": "private_vpn",
-                "classification": final_classification,
-                "trace": trace_path,
-                "message": message,
-            }
             state["incident_alerted"] = True
             state["recovery_alerted"] = False
-            state["last_incident_path"] = trace_path
-            state["last_classification"] = final_classification
+            if suppress_by_r5c_now:
+                state["r5c_owned_outage"] = True
+                state.setdefault("r5c_owned_started_at", isoformat(now))
+                trace_path, aws, server, _router, final_classification, hint = write_incident(
+                    args.incident_dir,
+                    now,
+                    preliminary,
+                    cheap,
+                    checks,
+                    copy.deepcopy(state),
+                    edge,
+                )
+                prune_incidents(args.incident_dir, protect_path=trace_path)
+                state["last_incident_path"] = trace_path
+                state["last_classification"] = final_classification
+            else:
+                trace_path, aws, server, _router, final_classification, hint = write_incident(
+                    args.incident_dir,
+                    now,
+                    preliminary,
+                    cheap,
+                    checks,
+                    copy.deepcopy(state),
+                    edge,
+                )
+                prune_incidents(args.incident_dir, protect_path=trace_path)
+                message = failure_message(
+                    state["primary_fail_count"],
+                    cheap.get("chain", []),
+                    checks,
+                    primary,
+                    failover,
+                    emergency,
+                    final_classification,
+                    aws,
+                    server,
+                    hint,
+                    trace_path,
+                )
+                alert_event = {
+                    "timestamp": isoformat(now),
+                    "type": "private_vpn_degraded",
+                    "check": "private_vpn",
+                    "classification": final_classification,
+                    "trace": trace_path,
+                    "message": message,
+                }
+                state["last_incident_path"] = trace_path
+                state["last_classification"] = final_classification
+                state["private_alerted_in_outage"] = True
 
     health_row = {
         "timestamp": isoformat(now),
@@ -1336,6 +1447,8 @@ def main() -> int:
     }
     if state.get("primary_fail_count", 0):
         health_row["outage_started_at"] = state.get("outage_started_at") or isoformat(now)
+    if state.get("r5c_owned_outage"):
+        health_row["r5c_owned_outage"] = True
     if trace_path:
         health_row["trace"] = trace_path
         health_row["aws_state"] = aws.get("state", "unknown")

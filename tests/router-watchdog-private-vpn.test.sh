@@ -222,6 +222,7 @@ run_watchdog() {
   K2B_PRIVATE_VPN_TCP_TARGETS="$tcp_targets" \
   K2B_PRIVATE_VPN_PING_BIN="$d/fakebin/ping" \
   K2B_PRIVATE_VPN_TAILSCALE_BIN="$d/fakebin/tailscale" \
+  K2B_R5C_AUTORECOVERY_STATE_FILE="${K2B_TEST_R5C_STATE_FILE:-$d/r5c-state.json}" \
   K2B_FAKE_TAILSCALE_LOG="$d/tailscale-commands.log" \
   python3 "$WATCHDOG" \
     --state-file "$d/state.json" \
@@ -359,6 +360,163 @@ PY
   degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl")"
   [[ "$degraded_count" == "1" ]] || fail "state reset during outage should not duplicate degraded alert, got $degraded_count"
   echo "  PASS: state reset during outage does not duplicate degraded alert"
+}
+
+{
+  d="$TMPROOT/r5c-owned-outage"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  start_mihomo "$d" hk_fail_tw_ok
+  fail_base="http://127.0.0.1:$(cat "$d/port")"
+
+  run_watchdog "$d" "2026-06-22T04:22:40Z" "$fail_base"
+  run_watchdog "$d" "2026-06-22T04:24:19Z" "$fail_base"
+  degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl")"
+  [[ "$degraded_count" == "1" ]] || fail "fixture should start with one private degraded alert, got $degraded_count"
+
+  cat > "$d/r5c-state.json" <<'EOF'
+{"r5c_incident_open":true,"r5c_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_alert_type":"r5c_hard_down_suspected"}
+EOF
+  run_watchdog "$d" "2026-06-22T04:38:18Z" "$fail_base"
+  run_watchdog "$d" "2026-06-22T04:39:19Z" "$fail_base"
+  degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl")"
+  [[ "$degraded_count" == "1" ]] || fail "R5C-owned outage should not emit another private degraded alert, got $degraded_count"
+  python3 - "$d/state.json" <<'PY' || fail "private state should remember R5C-owned outage"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_owned_outage") is True, state
+PY
+
+  cat > "$d/r5c-state.json" <<'EOF'
+{"r5c_incident_open":false,"r5c_last_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_cleared_at":"2026-06-22T04:56:38Z","r5c_last_alert_type":"r5c_autorecovery_recovered"}
+EOF
+  start_mihomo "$d" all_ok
+  ok_base="http://127.0.0.1:$(cat "$d/port")"
+  run_watchdog "$d" "2026-06-22T04:56:38Z" "$ok_base"
+  run_watchdog "$d" "2026-06-22T04:57:39Z" "$ok_base"
+  run_watchdog "$d" "2026-06-22T04:58:40Z" "$ok_base"
+  run_watchdog "$d" "2026-06-22T04:59:41Z" "$ok_base"
+  run_watchdog "$d" "2026-06-22T05:00:42Z" "$ok_base"
+  run_watchdog "$d" "2026-06-22T05:01:43Z" "$ok_base"
+  recovery_count="$(grep -c '"type":"private_vpn_recovery"' "$d/alerts.jsonl" || true)"
+  [[ "$recovery_count" == "0" ]] || fail "R5C-owned outage should suppress private recovery alert, got $recovery_count"
+  suppressed_count="$(grep -c '"type":"private_vpn_recovery_suppressed_by_r5c"' "$d/alerts.jsonl" || true)"
+  [[ "$suppressed_count" == "1" ]] || fail "R5C-owned outage should write one suppressed recovery marker, got $suppressed_count"
+  python3 - "$d/state.json" <<'PY' || fail "private state should clear R5C ownership after suppressed recovery"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_owned_outage") is False, state
+assert state.get("status") == "ok", state
+PY
+
+  echo "  PASS: R5C-owned outage suppresses private degraded duplicates and recovery"
+}
+
+{
+  d="$TMPROOT/r5c-cleared-private-still-down"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  start_mihomo "$d" hk_fail_tw_ok
+  fail_base="http://127.0.0.1:$(cat "$d/port")"
+
+  cat > "$d/r5c-state.json" <<'EOF'
+{"r5c_incident_open":true,"r5c_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_alert_type":"r5c_hard_down_suspected"}
+EOF
+  K2B_PRIVATE_VPN_R5C_CLEAR_GRACE_SECONDS=60 run_watchdog "$d" "2026-06-22T04:38:18Z" "$fail_base"
+  K2B_PRIVATE_VPN_R5C_CLEAR_GRACE_SECONDS=60 run_watchdog "$d" "2026-06-22T04:39:19Z" "$fail_base"
+  degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl" 2>/dev/null || echo 0)"
+  [[ "$degraded_count" == "0" ]] || fail "active R5C incident should suppress initial private degraded alert, got $degraded_count"
+  incident="$(find "$d/incidents" -type f -name '*private-vpn.json' | head -1)"
+  [[ -n "$incident" ]] || fail "R5C-suppressed private degraded state should still write an incident trace"
+  python3 - "$d/private-vpn-health.jsonl" "$d/state.json" "$incident" <<'PY' || fail "suppressed private degraded trace should be linked from health and state"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+state = json.load(open(sys.argv[2], encoding="utf-8"))
+incident = json.load(open(sys.argv[3], encoding="utf-8"))
+assert rows[-1].get("r5c_owned_outage") is True, rows[-1]
+assert rows[-1].get("trace") == sys.argv[3], rows[-1]
+assert state.get("last_incident_path") == sys.argv[3], state
+assert incident["classification"] == "hk_only_down", incident
+PY
+
+  cat > "$d/r5c-state.json" <<'EOF'
+{"r5c_incident_open":false,"r5c_last_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_cleared_at":"2026-06-22T04:40:00Z","r5c_last_alert_type":"r5c_autorecovery_recovered"}
+EOF
+  K2B_PRIVATE_VPN_R5C_CLEAR_GRACE_SECONDS=60 run_watchdog "$d" "2026-06-22T04:42:30Z" "$fail_base"
+  degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl" 2>/dev/null || echo 0)"
+  [[ "$degraded_count" == "1" ]] || fail "private VPN still down after R5C grace should emit private degraded alert, got $degraded_count"
+
+  echo "  PASS: private degraded alert resumes after R5C ownership grace expires"
+}
+
+{
+  d="$TMPROOT/r5c-stale-ownership-expires"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  start_mihomo "$d" hk_fail_tw_ok
+  fail_base="http://127.0.0.1:$(cat "$d/port")"
+
+  cat > "$d/r5c-state.json" <<'EOF'
+{"r5c_incident_open":true,"r5c_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_alert_type":"r5c_hard_down_suspected"}
+EOF
+  K2B_PRIVATE_VPN_R5C_OWNERSHIP_MAX_SECONDS=60 run_watchdog "$d" "2026-06-22T04:38:18Z" "$fail_base"
+  K2B_PRIVATE_VPN_R5C_OWNERSHIP_MAX_SECONDS=60 run_watchdog "$d" "2026-06-22T04:40:19Z" "$fail_base"
+  degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl" 2>/dev/null || echo 0)"
+  [[ "$degraded_count" == "1" ]] || fail "stale R5C ownership should expire and emit private degraded alert, got $degraded_count"
+  python3 - "$d/state.json" <<'PY' || fail "expired R5C ownership should clear ownership before private alert"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_owned_outage") is False, state
+assert state.get("private_alerted_in_outage") is True, state
+PY
+
+  echo "  PASS: stale R5C ownership expires instead of suppressing indefinitely"
+}
+
+{
+  d="$TMPROOT/r5c-missing-owned-start-expires"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  start_mihomo "$d" hk_fail_tw_ok
+  fail_base="http://127.0.0.1:$(cat "$d/port")"
+  cat > "$d/state.json" <<'EOF'
+{"primary_fail_count":2,"primary_recovery_count":0,"status":"degraded","incident_alerted":false,"recovery_alerted":false,"r5c_owned_outage":true,"private_alerted_in_outage":false,"outage_started_at":"2026-06-22T04:43:00Z"}
+EOF
+  cat > "$d/r5c-state.json" <<'EOF'
+{"r5c_incident_open":false}
+EOF
+
+  K2B_PRIVATE_VPN_R5C_OWNERSHIP_MAX_SECONDS=1800 run_watchdog "$d" "2026-06-22T04:44:00Z" "$fail_base"
+  degraded_count="$(grep -c '"type":"private_vpn_degraded"' "$d/alerts.jsonl" 2>/dev/null || echo 0)"
+  [[ "$degraded_count" == "1" ]] || fail "missing r5c_owned_started_at should expire ownership and emit private degraded alert, got $degraded_count"
+  python3 - "$d/state.json" <<'PY' || fail "missing r5c_owned_started_at should not keep ownership pinned"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_owned_outage") is False, state
+assert "r5c_owned_started_at" not in state, state
+PY
+
+  echo "  PASS: missing R5C ownership start expires immediately"
+}
+
+{
+  d="$TMPROOT/suppressed-recovery-terminal-type"
+  mkdir -p "$d"
+  cat > "$d/alerts.jsonl" <<'EOF'
+{"timestamp":"2026-06-22T04:56:38Z","type":"private_vpn_recovery_suppressed_by_r5c","check":"private_vpn"}
+EOF
+  python3 - "$WATCHDOG" "$d/alerts.jsonl" <<'PY' || fail "suppressed recovery marker should be a terminal private alert type"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("private_vpn_watchdog", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+assert module.latest_private_alert_type(sys.argv[2]) == "private_vpn_recovery_suppressed_by_r5c"
+PY
+
+  echo "  PASS: suppressed recovery marker is a terminal private alert type"
 }
 
 {

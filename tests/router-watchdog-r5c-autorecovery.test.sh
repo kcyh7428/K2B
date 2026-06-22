@@ -84,7 +84,22 @@ if [[ "\${K2B_FAKE_ASUS_SSH_OK:-1}" == "1" ]]; then
 fi
 exit 255
 EOF
-  chmod +x "$d/fakebin/ping" "$d/fakebin/curl" "$d/fakebin/ssh"
+  cat > "$d/fakebin/send-alert.sh" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "--event-json" ]]; then
+  if [[ "\${2:-}" == "-" ]]; then
+    cat >> "$d/sent-alerts.jsonl"
+    printf '\\n' >> "$d/sent-alerts.jsonl"
+  else
+    cat "\${2:-}" >> "$d/sent-alerts.jsonl"
+    printf '\\n' >> "$d/sent-alerts.jsonl"
+  fi
+else
+  printf '%s\\n' "\$*" >> "$d/sent-alerts.txt"
+fi
+exit 0
+EOF
+  chmod +x "$d/fakebin/ping" "$d/fakebin/curl" "$d/fakebin/ssh" "$d/fakebin/send-alert.sh"
 }
 
 run_recovery() {
@@ -103,6 +118,8 @@ run_recovery() {
   K2B_R5C_AUTORECOVERY_STATE_FILE="$d/state.json" \
   K2B_R5C_AUTORECOVERY_LOG="$d/recovery.jsonl" \
   K2B_R5C_AUTORECOVERY_EVIDENCE_DIR="$d/evidence" \
+  K2B_R5C_AUTORECOVERY_ALERTS_LOG="$d/r5c-alerts.jsonl" \
+  K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD="$d/fakebin/send-alert.sh" \
   K2B_R5C_AUTORECOVERY_SENTINEL="$d/sentinel" \
   K2B_R5C_AUTORECOVERY_R5C_LAN_IP="192.168.9.1" \
   K2B_R5C_AUTORECOVERY_MIHOMO_API_BASE="http://192.168.9.1:9090" \
@@ -214,7 +231,177 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: sentinel absence prevents ASUS reboot and writes dry-run decision.
+# Test 3: R5C alerts are unified around first hiccup, fire, and clear.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/unified-alerts"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  write_health_rows "$d"
+  touch "$d/sentinel"
+
+  run_recovery "$d" "2026-06-22T04:38:18Z"
+  run_recovery "$d" "2026-06-22T04:39:19Z"
+  run_recovery "$d" "2026-06-22T04:40:27Z"
+  run_recovery "$d" "2026-06-22T04:41:28Z"
+  K2B_FAKE_R5C_PING_OK=1 K2B_FAKE_R5C_HTTP_OK=1 \
+  run_recovery "$d" "2026-06-22T04:56:38Z"
+
+  run_recovery "$d" "2026-06-22T06:13:53Z"
+  K2B_FAKE_R5C_PING_OK=1 K2B_FAKE_R5C_HTTP_OK=1 \
+  run_recovery "$d" "2026-06-22T06:16:18Z"
+
+  python3 - "$d/r5c-alerts.jsonl" "$d/sent-alerts.jsonl" <<'PY' || fail "R5C unified alert sequence did not match expected 24h shape"
+import json
+import sys
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+alerts = load(sys.argv[1])
+sent = load(sys.argv[2])
+types = [item.get("type") for item in alerts]
+assert types.count("r5c_hard_down_suspected") == 2, types
+assert types.count("r5c_autorecovery_fired") == 1, types
+assert types.count("r5c_autorecovery_recovered") == 1, types
+assert types.count("r5c_autorecovery_cleared") == 1, types
+assert "12:38 HKT" in alerts[0]["message"], alerts[0]["message"]
+assert "1/3" in alerts[0]["message"], alerts[0]["message"]
+assert "12:40 HKT" in next(a["message"] for a in alerts if a.get("type") == "r5c_autorecovery_fired")
+assert len(sent) == len(alerts), (len(sent), len(alerts))
+PY
+
+  echo "  PASS: R5C unified alert sequence covers first hiccup, fire, recover, and clear"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4: Telegram delivery failure is durable state, not a hidden no-op.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/alert-delivery-failure"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  write_health_rows "$d"
+  touch "$d/sentinel"
+  cat > "$d/fakebin/send-alert.sh" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "simulated telegram failure" >&2
+exit 9
+EOF
+  chmod +x "$d/fakebin/send-alert.sh"
+
+  run_recovery "$d" "2026-06-22T07:13:53Z"
+
+  [[ -s "$d/r5c-alerts.jsonl" ]] || fail "local R5C alert log should still be written when Telegram send fails"
+  python3 - "$d/state.json" <<'PY' || fail "R5C state should persist alert delivery failure"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_alert_delivery_failures") == 1, state
+assert "simulated telegram failure" in state.get("r5c_last_alert_delivery_error", ""), state
+PY
+
+  cat > "$d/fakebin/send-alert.sh" <<EOF
+#!/usr/bin/env bash
+cat >> "$d/sent-alerts.jsonl"
+printf '\\n' >> "$d/sent-alerts.jsonl"
+exit 0
+EOF
+  chmod +x "$d/fakebin/send-alert.sh"
+  run_recovery "$d" "2026-06-22T07:14:53Z"
+  run_recovery "$d" "2026-06-22T07:15:53Z"
+  python3 - "$d/state.json" <<'PY' || fail "successful R5C alert delivery should clear stale delivery failure"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_alert_delivery_failures") == 0, state
+assert "r5c_last_alert_delivery_error" not in state, state
+PY
+
+  echo "  PASS: R5C alert delivery failure is persisted"
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: Telegram delivery failure count is capped.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/alert-delivery-failure-cap"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  write_health_rows "$d"
+  touch "$d/sentinel"
+  printf '%s\n' '{"consecutive_hard_down":0,"r5c_alert_delivery_failures":100}' > "$d/state.json"
+  cat > "$d/fakebin/send-alert.sh" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "simulated telegram failure" >&2
+exit 9
+EOF
+  chmod +x "$d/fakebin/send-alert.sh"
+
+  run_recovery "$d" "2026-06-22T07:20:53Z"
+
+  python3 - "$d/state.json" <<'PY' || fail "R5C alert delivery failure count should be capped"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_alert_delivery_failures") == 100, state
+assert "simulated telegram failure" in state.get("r5c_last_alert_delivery_error", ""), state
+PY
+
+  echo "  PASS: R5C alert delivery failure count is capped"
+}
+
+# ---------------------------------------------------------------------------
+# Test 6: stale Telegram delivery failure clears before a new alert attempt.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/alert-delivery-stale-before-new-failure"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  write_health_rows "$d"
+  touch "$d/sentinel"
+  printf '%s\n' '{"consecutive_hard_down":0,"r5c_alert_delivery_failures":42,"r5c_last_alert_delivery_failed_at":"2026-06-20T07:00:00Z","r5c_last_alert_delivery_error":"old failure"}' > "$d/state.json"
+  cat > "$d/fakebin/send-alert.sh" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "new telegram failure" >&2
+exit 9
+EOF
+  chmod +x "$d/fakebin/send-alert.sh"
+
+  run_recovery "$d" "2026-06-22T07:25:53Z"
+
+  python3 - "$d/state.json" <<'PY' || fail "stale R5C alert delivery failure should clear before counting new failure"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state.get("r5c_alert_delivery_failures") == 1, state
+assert "new telegram failure" in state.get("r5c_last_alert_delivery_error", ""), state
+PY
+
+  echo "  PASS: stale R5C alert delivery failure clears before new alert attempt"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: suspected alert is deduped if incident-open state is lost.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/suspected-dedupe-state-loss"
+  mkdir -p "$d"
+  write_fake_commands "$d"
+  write_health_rows "$d"
+  touch "$d/sentinel"
+  printf '%s\n' '{"consecutive_hard_down":0,"r5c_last_alert_type":"r5c_hard_down_suspected","r5c_last_alert_at":"2026-06-22T07:29:00Z"}' > "$d/state.json"
+
+  run_recovery "$d" "2026-06-22T07:30:00Z"
+
+  suspected_count="$(grep -c '"type":"r5c_hard_down_suspected"' "$d/r5c-alerts.jsonl" 2>/dev/null || echo 0)"
+  [[ "$suspected_count" == "0" ]] || fail "recent suspected alert should not be duplicated after incident-open state loss, got $suspected_count"
+
+  echo "  PASS: recent R5C suspected alert is deduped after state loss"
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: sentinel absence prevents ASUS reboot and writes dry-run decision.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/sentinel-missing"
@@ -238,7 +425,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: cooldown prevents a second reboot in the same incident window.
+# Test 5: cooldown prevents a second reboot in the same incident window.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/cooldown"
@@ -264,7 +451,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: ASUS unreachable means alert/log only, no blind reboot attempt.
+# Test 6: ASUS unreachable means alert/log only, no blind reboot attempt.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/asus-unreachable"
@@ -290,7 +477,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: blank configured ASUS SSH key blocks without default-key fallback.
+# Test 7: blank configured ASUS SSH key blocks without default-key fallback.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/asus-key-blank"
@@ -313,7 +500,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: unusable configured ASUS SSH key blocks without default-key fallback.
+# Test 8: unusable configured ASUS SSH key blocks without default-key fallback.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/asus-key-unusable"
@@ -337,7 +524,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: untrusted probe binaries cannot manufacture hard-down.
+# Test 9: untrusted probe binaries cannot manufacture hard-down.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/probe-bin-untrusted"
@@ -363,7 +550,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 9: untrusted SSH binary blocks without invoking the fake executable.
+# Test 10: untrusted SSH binary blocks without invoking the fake executable.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/ssh-bin-untrusted"
@@ -386,7 +573,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 10: failed reboot command still starts cooldown and clears streak.
+# Test 11: failed reboot command still starts cooldown and clears streak.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/reboot-failed-cooldown"
@@ -429,7 +616,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 11: evidence is written before the reboot command is attempted.
+# Test 12: evidence is written before the reboot command is attempted.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/evidence-first"
@@ -466,7 +653,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 12: final confirmation blocks if R5C recovers before reboot.
+# Test 13: final confirmation blocks if R5C recovers before reboot.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/final-confirmation"
@@ -498,7 +685,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 13: ASUS final-confirmation failure consumes the threshold window.
+# Test 14: ASUS final-confirmation failure consumes the threshold window.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/final-confirmation-asus-lost"
@@ -540,7 +727,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 14: timeout probe output is decoded and logged instead of crashing.
+# Test 15: timeout probe output is decoded and logged instead of crashing.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/timeout-output"
@@ -565,7 +752,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 15: wrapper scrubs inherited fake executable overrides in normal mode.
+# Test 16: wrapper scrubs inherited fake executable overrides in normal mode.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/wrapper-scrub"
@@ -615,7 +802,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 16: wrapper loads R5C env overrides from the watchdog env file.
+# Test 17: wrapper loads R5C env overrides from the watchdog env file.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/wrapper-env"
@@ -676,7 +863,52 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 17: launchd plist cadence and installer fleet membership.
+# Test 18: missing send-alert writes disabled alert state to the R5C alert log.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/wrapper-alerting-disabled"
+  mkdir -p "$d/staged-bin"
+  write_fake_commands "$d"
+  write_health_rows "$d"
+  touch "$d/sentinel"
+  cp "$SRC_DIR/bin/r5c-autorecovery.sh" "$d/staged-bin/"
+  cp "$SRC_DIR/bin/r5c-autorecovery.py" "$d/staged-bin/"
+  chmod +x "$d/staged-bin/r5c-autorecovery.sh"
+  cat > "$d/watchdog.env" <<EOF
+MIHOMO_API_BASE=http://192.168.9.1:9090
+MIHOMO_API_SECRET=test-secret
+K2B_R5C_AUTORECOVERY_STATE_FILE=$d/state.json
+K2B_R5C_AUTORECOVERY_LOG=$d/recovery.jsonl
+K2B_R5C_AUTORECOVERY_ALERTS_LOG=$d/r5c-alerts.jsonl
+K2B_R5C_AUTORECOVERY_EVIDENCE_DIR=$d/evidence
+K2B_R5C_AUTORECOVERY_SENTINEL=$d/sentinel
+K2B_R5C_AUTORECOVERY_PING_BIN=$d/fakebin/ping
+K2B_R5C_AUTORECOVERY_CURL_BIN=$d/fakebin/curl
+K2B_R5C_AUTORECOVERY_SSH_BIN=$d/fakebin/ssh
+K2B_R5C_AUTORECOVERY_ASUS_SSH_KEY=$d/fakekey
+K2B_R5C_AUTORECOVERY_THRESHOLD=3
+K2B_R5C_AUTORECOVERY_COOLDOWN_MINUTES=30
+EOF
+
+  PATH="$d/fakebin:$PATH" \
+  K2B_R5C_AUTORECOVERY_WRAPPER_TEST_MODE=1 \
+  K2B_R5C_AUTORECOVERY_TEST_MODE=1 \
+  K2B_R5C_AUTORECOVERY_TEST_ALLOW_ANY_SSH_KEY=1 \
+  K2B_R5C_AUTORECOVERY_TEST_ALLOW_FAKE_PROBE_BINS=1 \
+  K2B_R5C_AUTORECOVERY_TEST_ALLOW_FAKE_SSH_BIN=1 \
+  K2B_ROUTER_WATCHDOG_APP_DIR="$d/app" \
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$d/logs" \
+  K2B_ROUTER_WATCHDOG_ENV_FILE="$d/watchdog.env" \
+  bash "$d/staged-bin/r5c-autorecovery.sh" --now "2026-06-22T10:46:00Z" 2>"$d/wrapper.err"
+
+  grep -q '"type":"alerting_disabled"' "$d/r5c-alerts.jsonl" || fail "missing send-alert should write alerting_disabled to R5C alert log"
+  ! grep -q '"action":"alerting_disabled"' "$d/recovery.jsonl" || fail "alerting_disabled should not be written to the R5C decision log"
+
+  echo "  PASS: missing send-alert writes alerting_disabled to R5C alert log"
+}
+
+# ---------------------------------------------------------------------------
+# Test 19: launchd plist cadence and installer fleet membership.
 # ---------------------------------------------------------------------------
 {
   python3 - "$R5C_PLIST" "$R5C_EXPECTED_INTERVAL" <<'PY' || fail "R5C autorecovery launchd cadence incorrect"
@@ -744,7 +976,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 18: install rollback removes the new plist when launchctl bootstrap fails.
+# Test 20: install rollback removes the new plist when launchctl bootstrap fails.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/install-rollback"

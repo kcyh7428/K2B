@@ -23,6 +23,22 @@ def isoformat(value: dt.datetime) -> str:
     return value.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def parse_state_time(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def hkt_time(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone(dt.timedelta(hours=8))).strftime("%H:%M HKT")
+
+
 def json_dumps(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -112,6 +128,31 @@ def append_jsonl(path: str, payload: dict[str, Any]) -> None:
         f.write(json_dumps(payload) + "\n")
         f.flush()
         os.fsync(f.fileno())
+
+
+def emit_alert(config: Config, event: dict[str, Any]) -> dict[str, Any]:
+    event = dict(event)
+    append_jsonl(config.alerts_file, event)
+    result: dict[str, Any] = {"attempted": False, "ok": None, "error": None}
+    if not config.send_alert_cmd:
+        return result
+    result["attempted"] = True
+    try:
+        completed = subprocess.run(
+            [config.send_alert_cmd, "--event-json", "-"],
+            input=json_dumps(event),
+            text=True,
+            timeout=20,
+            capture_output=True,
+            check=False,
+        )
+        result["ok"] = completed.returncode == 0
+        if completed.returncode != 0:
+            result["error"] = (completed.stderr or completed.stdout or f"rc={completed.returncode}")[:1000]
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        result["ok"] = False
+        result["error"] = str(exc)[:1000]
+    return result
 
 
 def redact_command(command: list[str]) -> list[str]:
@@ -393,6 +434,8 @@ class Config:
         self.state_file = safe_expanduser(os.environ.get("K2B_R5C_AUTORECOVERY_STATE_FILE", f"{app_dir}/r5c-autorecovery-state.json"))
         self.log_file = safe_expanduser(os.environ.get("K2B_R5C_AUTORECOVERY_LOG", f"{log_dir}/r5c-autorecovery.jsonl"))
         self.evidence_dir = safe_expanduser(os.environ.get("K2B_R5C_AUTORECOVERY_EVIDENCE_DIR", f"{log_dir}/r5c-autorecovery"))
+        self.alerts_file = safe_expanduser(os.environ.get("K2B_R5C_AUTORECOVERY_ALERTS_LOG", f"{log_dir}/r5c-autorecovery-alerts.jsonl"))
+        self.send_alert_cmd = safe_expanduser(os.environ.get("K2B_R5C_AUTORECOVERY_SEND_ALERT_CMD", ""))
         self.sentinel = safe_expanduser(os.environ.get("K2B_R5C_AUTORECOVERY_SENTINEL", "~/.k2b-r5c-autorecovery-enabled"))
         self.threshold = self._int("K2B_R5C_AUTORECOVERY_THRESHOLD", 3, 1, 10)
         self.cooldown_minutes = self._int("K2B_R5C_AUTORECOVERY_COOLDOWN_MINUTES", 30, 5, 1440)
@@ -409,6 +452,7 @@ class Config:
         self.ssh_timeout_s = self._int("K2B_R5C_AUTORECOVERY_SSH_TIMEOUT_S", 8, 2, 30)
         self.strict_host_key = os.environ.get("K2B_R5C_AUTORECOVERY_SSH_STRICT_HOST_KEY_CHECKING", "yes")
         self.mihomo_secret = os.environ.get("MIHOMO_API_SECRET", "")
+        self.alert_failure_stale_hours = self._int("K2B_R5C_AUTORECOVERY_ALERT_FAILURE_STALE_HOURS", 24, 1, 720)
 
     def _int(self, name: str, default: int, minimum: int, maximum: int) -> int:
         try:
@@ -479,6 +523,113 @@ def decide(
     return "reboot_attempted", context
 
 
+def alert_base(now: dt.datetime, event_type: str, message: str, context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "timestamp": isoformat(now),
+        "type": event_type,
+        "check": "r5c_autorecovery",
+        "consecutive_hard_down": context.get("consecutive_hard_down"),
+        "threshold": context.get("threshold"),
+        "message": message,
+    }
+
+
+def sync_r5c_alert_state(
+    config: Config,
+    state: dict[str, Any],
+    action: str,
+    context: dict[str, Any],
+    probes: dict[str, Any],
+    now: dt.datetime,
+    final_probes: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    active_probes = final_probes or probes
+    hard_down = probes_show_hard_down(active_probes)
+    events: list[dict[str, Any]] = []
+
+    def queue(event_type: str, message: str) -> None:
+        event = alert_base(now, event_type, message, context)
+        events.append(event)
+        state["r5c_last_alert_type"] = event_type
+        state["r5c_last_alert_at"] = isoformat(now)
+
+    def recently_alerted(event_type: str, within_minutes: int = 30) -> bool:
+        if state.get("r5c_last_alert_type") != event_type:
+            return False
+        alerted_at = parse_state_time(state.get("r5c_last_alert_at"))
+        if alerted_at is None:
+            return False
+        return now.astimezone(dt.timezone.utc) - alerted_at <= dt.timedelta(minutes=within_minutes)
+
+    if hard_down:
+        if not state.get("r5c_incident_open"):
+            state["r5c_incident_open"] = True
+            state["r5c_incident_started_at"] = isoformat(now)
+            state["r5c_reboot_attempted_in_incident"] = False
+            state["r5c_fire_alerted"] = False
+            state["r5c_blocked_alerted_action"] = None
+            count = context.get("consecutive_hard_down")
+            threshold = context.get("threshold")
+            if not recently_alerted("r5c_hard_down_suspected"):
+                queue(
+                    "r5c_hard_down_suspected",
+                    "\n".join(
+                        [
+                            f"K2B R5C autorecovery: hard-down suspected ({count}/{threshold}) at {hkt_time(now)}",
+                            "R5C LAN, router HTTP, and Mihomo API are all failing.",
+                            "No ASUS reboot yet.",
+                        ]
+                    ),
+                )
+
+        if action in {"reboot_attempted", "reboot_failed"} and not state.get("r5c_fire_alerted"):
+            state["r5c_reboot_attempted_in_incident"] = True
+            state["r5c_fire_alerted"] = True
+            status = "ASUS reboot command was attempted."
+            if action == "reboot_failed":
+                status = "ASUS reboot command was attempted but failed; cooldown is still active."
+            queue(
+                "r5c_autorecovery_fired",
+                "\n".join(
+                    [
+                        f"K2B R5C autorecovery: firing ASUS power-cycle at {hkt_time(now)} ({context.get('consecutive_hard_down')}/{context.get('threshold')})",
+                        status,
+                    ]
+                ),
+            )
+        elif action in {"blocked_sentinel_missing", "blocked_asus_unreachable", "blocked_final_confirmation_failed"}:
+            if state.get("r5c_blocked_alerted_action") != action:
+                state["r5c_blocked_alerted_action"] = action
+                queue(
+                    "r5c_autorecovery_blocked",
+                    "\n".join(
+                        [
+                            f"K2B R5C autorecovery: blocked at {hkt_time(now)} ({action})",
+                            "No ASUS reboot was attempted.",
+                        ]
+                    ),
+                )
+        return events
+
+    if state.get("r5c_incident_open"):
+        started = state.get("r5c_incident_started_at")
+        attempted = bool(state.get("r5c_reboot_attempted_in_incident"))
+        event_type = "r5c_autorecovery_recovered" if attempted else "r5c_autorecovery_cleared"
+        title = "recovered after ASUS power-cycle attempt" if attempted else "cleared before reboot"
+        details = [f"K2B R5C autorecovery: {title} at {hkt_time(now)}"]
+        if started:
+            details.append(f"Incident started: {started}")
+        queue(event_type, "\n".join(details))
+        state["r5c_incident_open"] = False
+        if started:
+            state["r5c_last_incident_started_at"] = started
+        state["r5c_last_cleared_at"] = isoformat(now)
+        state["r5c_reboot_attempted_in_incident"] = False
+        state["r5c_fire_alerted"] = False
+        state["r5c_blocked_alerted_action"] = None
+    return events
+
+
 def write_evidence(
     config: Config,
     state: dict[str, Any],
@@ -514,6 +665,26 @@ def write_evidence(
     path = str(Path(config.evidence_dir) / filename)
     atomic_write_json(path, payload)
     return path
+
+
+def alert_delivery_failures(state: dict[str, Any]) -> int:
+    try:
+        return int(state.get("r5c_alert_delivery_failures", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def clear_stale_alert_delivery_failure(config: Config, state: dict[str, Any], now: dt.datetime) -> None:
+    if alert_delivery_failures(state) <= 0:
+        return
+    failed_at = parse_state_time(state.get("r5c_last_alert_delivery_failed_at"))
+    if failed_at is None:
+        return
+    if now.astimezone(dt.timezone.utc) - failed_at <= dt.timedelta(hours=config.alert_failure_stale_hours):
+        return
+    state["r5c_alert_delivery_failures"] = 0
+    state.pop("r5c_last_alert_delivery_error", None)
+    state.pop("r5c_last_alert_delivery_failed_at", None)
 
 
 def main() -> int:
@@ -589,6 +760,20 @@ def main() -> int:
     elif action == "no_action" and context["consecutive_hard_down"] > 0:
         evidence_path = write_evidence(config, state, probes, now, "no_action_threshold_building", planned_command)
 
+    clear_stale_alert_delivery_failure(config, state, now)
+    alert_events = sync_r5c_alert_state(config, state, action, context, probes, now, final_probes)
+    alert_results = []
+    for event in alert_events:
+        result = emit_alert(config, event)
+        if result.get("ok") is False:
+            state["r5c_alert_delivery_failures"] = min(alert_delivery_failures(state) + 1, 100)
+            state["r5c_last_alert_delivery_error"] = result.get("error") or "unknown delivery failure"
+            state["r5c_last_alert_delivery_failed_at"] = isoformat(now)
+        elif result.get("ok") is True:
+            state["r5c_alert_delivery_failures"] = 0
+            state.pop("r5c_last_alert_delivery_error", None)
+            state.pop("r5c_last_alert_delivery_failed_at", None)
+        alert_results.append({"type": event.get("type"), **result})
     log_row = {
         "timestamp": isoformat(now),
         "action": action,
@@ -619,6 +804,8 @@ def main() -> int:
             }
             for name, result in final_probes.items()
         }
+    if alert_results:
+        log_row["alerts"] = alert_results
 
     append_jsonl(config.log_file, log_row)
     atomic_write_json(config.state_file, state)

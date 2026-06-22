@@ -336,19 +336,23 @@ State, logs, and evidence live outside the repo:
 ```text
 ~/Library/Application Support/k2b-router-watchdog/r5c-autorecovery-state.json
 ~/Library/Logs/k2b-router-watchdog/r5c-autorecovery.jsonl
+~/Library/Logs/k2b-router-watchdog/r5c-autorecovery-alerts.jsonl
 ~/Library/Logs/k2b-router-watchdog/r5c-autorecovery/
+~/Library/Logs/k2b-router-watchdog/partition-suppressions.jsonl
 ```
 
 ### Telegram alerting
 
-The helper writes structured JSONL decision rows and evidence files first. Telegram alerting for fired, blocked, or recovery events is follow-up work; until then, inspect `r5c-autorecovery.jsonl` and the evidence directory.
+The helper writes structured JSONL decision rows and evidence files first, then appends R5C alert events to `r5c-autorecovery-alerts.jsonl` and sends them through the installed `send-alert.sh` when available. Alert delivery failure does not block logging, evidence capture, cooldown state, or the ASUS reboot decision. Delivery failures are also counted in the R5C state file; a later successful delivery clears the stale error fields. If `send-alert.sh` is missing or not executable, the wrapper writes an `alerting_disabled` row to `r5c-autorecovery-alerts.jsonl`.
 
 ## Alert Rules
 
-- First failure: log only.
-- Second failure: log only.
-- Third consecutive failure: Telegram alert via direct `curl` to `api.telegram.org`.
-- Re-alerts use `BACKOFF_SCHEDULE`, default `30m,2h,6h,24h`.
-- Recovery after an alerted outage sends one recovery alert.
+- First hard-down sample: one `r5c_hard_down_suspected` alert, no ASUS reboot yet.
+- Second hard-down sample: log/evidence only.
+- Third consecutive hard-down sample: one `r5c_autorecovery_fired` alert and an ASUS reboot attempt when the sentinel, ASUS SSH, and final confirmation gates pass.
+- If the threshold is reached but the sentinel, ASUS SSH, or final confirmation gate blocks action, one `r5c_autorecovery_blocked` alert is emitted for that blocking action.
+- Recovery after an R5C-owned incident sends one R5C summary alert: `r5c_autorecovery_recovered` if an ASUS reboot was attempted, otherwise `r5c_autorecovery_cleared`.
+- While an R5C incident owns the outage, private-VPN degraded/recovery alerts are folded into the R5C narrative. Completed network-partition recoveries that overlap a closed R5C incident are suppressed; open or malformed R5C state fails open so the Mini does not silently drop the only partition-recovery signal. General watchdog per-check alerts keep their existing thresholds; the current unification is scoped to the alert streams that overlapped in the 2026-06-22 incident.
+- Suppressed network-partition recoveries are written to `partition-suppressions.jsonl` with both the partition window and R5C incident window, so the queue drain remains auditable without sending another Telegram message.
 - A full network partition queues one "was offline, recovered now" alert after Telegram becomes reachable again.
 - If `K2B_NETWORK_ALERT_CHAT_ID` is set, alerts go only to that chat/topic, not the main K2B chat.

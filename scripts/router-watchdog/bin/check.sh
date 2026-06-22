@@ -8,6 +8,7 @@ ENV_FILE="${K2B_ROUTER_WATCHDOG_ENV_FILE:-$HOME/.k2b-router-watchdog.env}"
 STATE_FILE="${K2B_ROUTER_WATCHDOG_STATE_FILE:-$APP_DIR/state.json}"
 HEALTH_LOG="${K2B_ROUTER_WATCHDOG_HEALTH_LOG:-$LOG_DIR/health.jsonl}"
 QUEUE_FILE="${K2B_ROUTER_WATCHDOG_PARTITION_QUEUE:-$APP_DIR/pending-partition-events.jsonl}"
+PARTITION_SUPPRESSION_LOG="${K2B_ROUTER_WATCHDOG_PARTITION_SUPPRESSION_LOG:-$LOG_DIR/partition-suppressions.jsonl}"
 NODE_SCORE_LOG="${K2B_ROUTER_WATCHDOG_NODE_SCORE_LOG:-$LOG_DIR/node-score.jsonl}"
 AUTO_SWITCH_LOG="${K2B_ROUTER_WATCHDOG_AUTO_SWITCH_LOG:-$LOG_DIR/auto-switch.jsonl}"
 AUTO_SWITCH_SENTINEL="${K2B_ROUTER_AUTOSWITCH_SENTINEL:-$HOME/.k2b-router-autoswitch-enabled}"
@@ -138,7 +139,9 @@ python3 "${state_args[@]}"
 python3 "$SCRIPT_DIR/partition-queue.py" apply \
   --queue-file "$QUEUE_FILE" \
   --actions-file "$partition_actions" \
-  --alerts-file "$alerts_file"
+  --alerts-file "$alerts_file" \
+  --r5c-state-file "${K2B_R5C_AUTORECOVERY_STATE_FILE:-$APP_DIR/r5c-autorecovery-state.json}" \
+  --suppression-log "$PARTITION_SUPPRESSION_LOG"
 
 python3 "$SCRIPT_DIR/auto-switch.py" \
   --results-file "$results_file" \

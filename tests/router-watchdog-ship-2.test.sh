@@ -439,4 +439,141 @@ PY
   echo "  PASS: MED-5b drain-vs-append race preserves both events"
 }
 
+# ---------------------------------------------------------------------------
+# Test MED-5c: R5C-owned outage suppresses duplicate partition recovery.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/partition-r5c-owned"
+  mkdir -p "$d"
+  queue="$d/pending-partition-events.jsonl"
+  alerts="$d/alerts.jsonl"
+  suppressions="$d/partition-suppressions.jsonl"
+  r5c_state="$d/r5c-state.json"
+
+  printf '%s\n' '{"type":"network_partition_started","start":"2026-06-22T04:42:47Z","detected_at":"2026-06-22T04:42:47Z"}' > "$queue"
+  cat > "$d/actions-drain.jsonl" <<'EOF'
+{"type":"drain_partition","end":"2026-06-22T06:15:15Z"}
+EOF
+  cat > "$r5c_state" <<'EOF'
+{"r5c_incident_open":false,"r5c_last_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_cleared_at":"2026-06-22T06:16:18Z","r5c_last_alert_type":"r5c_autorecovery_recovered"}
+EOF
+
+  python3 "$PARTITION_QUEUE" apply \
+    --queue-file "$queue" \
+    --actions-file "$d/actions-drain.jsonl" \
+    --alerts-file "$alerts" \
+    --r5c-state-file "$r5c_state" \
+    --suppression-log "$suppressions"
+
+  [[ ! -s "$alerts" ]] || fail "R5C-owned partition should not emit duplicate network_partition_recovered alert"
+  [[ ! -s "$queue" ]] || fail "suppressed R5C-owned partition should still drain queue"
+  python3 - "$suppressions" <<'PY' || fail "R5C-owned partition suppression should leave an audit marker"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert rows[-1]["type"] == "network_partition_recovery_suppressed_by_r5c", rows
+assert rows[-1]["partition_start"] == "2026-06-22T04:42:47Z", rows[-1]
+assert rows[-1]["partition_end"] == "2026-06-22T06:15:15Z", rows[-1]
+assert rows[-1]["r5c_started_at"] == "2026-06-22T04:38:18Z", rows[-1]
+assert rows[-1]["r5c_cleared_at"] == "2026-06-22T06:16:18Z", rows[-1]
+PY
+  echo "  PASS: R5C-owned partition recovery is suppressed"
+}
+
+{
+  d="$TMPROOT/partition-r5c-boundary-touch"
+  mkdir -p "$d"
+  queue="$d/pending-partition-events.jsonl"
+  alerts="$d/alerts.jsonl"
+  r5c_state="$d/r5c-state.json"
+
+  printf '%s\n' '{"type":"network_partition_started","start":"2026-06-22T06:16:18Z","detected_at":"2026-06-22T06:16:18Z"}' > "$queue"
+  cat > "$d/actions-drain.jsonl" <<'EOF'
+{"type":"drain_partition","end":"2026-06-22T06:16:18Z"}
+EOF
+  cat > "$r5c_state" <<'EOF'
+{"r5c_incident_open":false,"r5c_last_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_cleared_at":"2026-06-22T06:16:18Z","r5c_last_alert_type":"r5c_autorecovery_recovered"}
+EOF
+
+  python3 "$PARTITION_QUEUE" apply \
+    --queue-file "$queue" \
+    --actions-file "$d/actions-drain.jsonl" \
+    --alerts-file "$alerts" \
+    --r5c-state-file "$r5c_state"
+
+  grep -q '"type":"network_partition_recovered"' "$alerts" || fail "boundary-touching R5C and partition windows should not suppress recovery"
+  [[ ! -s "$queue" ]] || fail "boundary-touching R5C partition should still drain queue"
+  echo "  PASS: boundary-touching R5C and partition windows do not suppress"
+}
+
+{
+  d="$TMPROOT/partition-r5c-open-malformed"
+  mkdir -p "$d"
+  queue="$d/pending-partition-events.jsonl"
+  alerts="$d/alerts.jsonl"
+  r5c_state="$d/r5c-state.json"
+
+  printf '%s\n' '{"type":"network_partition_started","start":"2026-06-22T04:42:47Z","detected_at":"2026-06-22T04:42:47Z"}' > "$queue"
+  cat > "$d/actions-drain.jsonl" <<'EOF'
+{"type":"drain_partition","end":"2026-06-22T06:15:15Z"}
+EOF
+  cat > "$r5c_state" <<'EOF'
+{"r5c_incident_open":true,"r5c_incident_started_at":"not-a-time"}
+EOF
+
+  python3 "$PARTITION_QUEUE" apply \
+    --queue-file "$queue" \
+    --actions-file "$d/actions-drain.jsonl" \
+    --alerts-file "$alerts" \
+    --r5c-state-file "$r5c_state"
+
+  grep -q '"type":"network_partition_recovered"' "$alerts" || fail "malformed open R5C incident state should not suppress partition recovery"
+  [[ ! -s "$queue" ]] || fail "malformed open R5C incident state should still drain queue"
+  echo "  PASS: malformed open R5C state does not suppress partition recovery"
+}
+
+{
+  d="$TMPROOT/partition-r5c-open-no-clear"
+  mkdir -p "$d"
+  queue="$d/pending-partition-events.jsonl"
+  alerts="$d/alerts.jsonl"
+  r5c_state="$d/r5c-state.json"
+
+  printf '%s\n' '{"type":"network_partition_started","start":"2026-06-22T04:42:47Z","detected_at":"2026-06-22T04:42:47Z"}' > "$queue"
+  cat > "$d/actions-drain.jsonl" <<'EOF'
+{"type":"drain_partition","end":"2026-06-22T06:15:15Z"}
+EOF
+  cat > "$r5c_state" <<'EOF'
+{"r5c_incident_open":true,"r5c_incident_started_at":"2026-06-22T04:38:18Z","r5c_last_alert_type":"r5c_hard_down_suspected"}
+EOF
+
+  python3 "$PARTITION_QUEUE" apply \
+    --queue-file "$queue" \
+    --actions-file "$d/actions-drain.jsonl" \
+    --alerts-file "$alerts" \
+    --r5c-state-file "$r5c_state"
+
+  grep -q '"type":"network_partition_recovered"' "$alerts" || fail "open R5C state without a clear timestamp should not suppress partition recovery"
+  [[ ! -s "$queue" ]] || fail "open R5C state without a clear timestamp should still drain queue"
+  echo "  PASS: open R5C state without clear time does not suppress partition recovery"
+}
+
+{
+  python3 - "$PARTITION_QUEUE" <<'PY' || fail "partition timestamps must require explicit timezone"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("partition_queue", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+try:
+    module.parse_ts("2026-06-22T04:38:18")
+except ValueError:
+    pass
+else:
+    raise SystemExit("parse_ts accepted timezone-less timestamp")
+PY
+  echo "  PASS: partition timestamp parser rejects timezone-less input"
+}
+
 echo "router-watchdog-ship-2.test.sh: all tests passed"
