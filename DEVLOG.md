@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-06-23 -- Router watchdog proxy mutation lanes retired
+
+**Commit:** `594f1b8` fix(router-watchdog): retire proxy mutation lanes
+
+**What shipped:** The old Auto Switch and Leaf Optimizer paths are now permanent retired audit stubs. They no longer contain Mihomo selector mutation code, no longer accept the legacy `K2B_ROUTER_MUTATION_RETIRED_ALLOW=1` bypass, and no longer have a launchd job or profile file in the installed router-watchdog snapshot.
+
+**Deploy:** `scripts/deploy-to-mini.sh auto` synced scripts, launchd, and the runbook to the Mac Mini and ran `scripts/router-watchdog/install.sh`. The Mini installer removed `com.k2b.router-leaf-optimizer.plist` and reported `changed; installed to /Users/fastshower/Library/Application Support/k2b-router-watchdog`. Live Mini verification showed `~/.k2b-router-leafopt-enabled` absent, `~/.k2b-router-autoswitch-enabled` absent, the retired plist absent, `leaf-optimizer-profiles.json` absent, launchd `com.k2b.router-leaf-optimizer` unloaded, and the installed Auto Switch / Leaf Optimizer files containing the retired no-mutation stub messages.
+
+**Review:** Built by Kimi in the isolated `codex/router-mutation-retire` worktree. Official independent Codex review found no actionable bugs in `.code-reviews/2026-06-22T17-08-42Z_67d02c.log` after earlier installer rollback findings were fixed.
+
+**Verification:** `python3 -m py_compile $(find scripts/router-watchdog/bin -maxdepth 1 -name '*.py' -print)`; `bash -n` for router-watchdog scripts and tests; `bash tests/router-watchdog.test.sh`; `bash tests/router-watchdog-phase234.test.sh`; `bash tests/router-watchdog-leaf-optimizer.test.sh`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog-ship-2.test.sh`; `bash tests/router-watchdog-r5c-autorecovery.test.sh`; `bash tests/deploy-to-mini.test.sh`; `git diff --check`; targeted `rg` for live proxy mutation paths.
+
+**Feature status change:** `feature_r5c-recovery-via-asus-power-cycle` stays `in-progress`. This removes stale ASUS Mihomo/DoggyGo-era mutation lanes from the live watchdog, but the R5C MVP still requires the first real or supervised hard-down trigger proof.
+
+**Follow-ups:** Watch the first real/supervised R5C autorecovery trigger. No follow-up remains for Auto Switch or Leaf Optimizer; they should stay retired unless the router topology changes again.
+
+---
 ## 2026-06-22 -- R5C autorecovery helper live-enabled on Mini
 
 **Commit:** `5c994a1` feat: add R5C autorecovery watchdog
