@@ -5,23 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SOURCE_BIN="$SCRIPT_DIR/bin"
 SOURCE_LAUNCHD="$REPO_ROOT/launchd"
-PROFILE_FILE="$SOURCE_BIN/leaf-optimizer-profiles.json"
 PLISTS=(
   com.k2b.router-watchdog.plist
   com.k2b.router-private-vpn-watchdog.plist
   com.k2b.router-daily-rollup.plist
   com.k2b.router-node-score.plist
-  com.k2b.router-leaf-optimizer.plist
   com.k2b.router-digest.plist
   com.k2b.router-r5c-autorecovery.plist
 )
+RETIRED_PLISTS=(
+  com.k2b.router-leaf-optimizer.plist
+)
+# Backup snapshot includes only active plists; retired plists are removed,
+# never restored.
+BACKUP_PLISTS=("${PLISTS[@]}")
 
 APP_DIR="${K2B_ROUTER_WATCHDOG_APP_DIR:-$HOME/Library/Application Support/k2b-router-watchdog}"
 INSTALL_BIN="$APP_DIR/bin"
 LOG_DIR="${K2B_ROUTER_WATCHDOG_LOG_DIR:-$HOME/Library/Logs/k2b-router-watchdog}"
 LAUNCH_AGENTS_DIR="${K2B_ROUTER_WATCHDOG_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 ENV_FILE="${K2B_ROUTER_WATCHDOG_ENV_FILE:-$HOME/.k2b-router-watchdog.env}"
-LEAFOPT_SENTINEL="${K2B_ROUTER_LEAFOPT_SENTINEL:-$HOME/.k2b-router-leafopt-enabled}"
 MANIFEST="$APP_DIR/install-manifest.sha256"
 INSTALL_LOG="$LOG_DIR/install.log"
 SKIP_LAUNCHCTL="${K2B_ROUTER_WATCHDOG_SKIP_LAUNCHCTL:-0}"
@@ -46,7 +49,7 @@ load_watchdog_env() {
     key="${key#export }"
     key="${key//[[:space:]]/}"
     case "$key" in
-      TELEGRAM_BOT_TOKEN|KEITH_CHAT_ID|MIHOMO_*|K2B_LEAF_OPTIMIZER_*|K2B_PRIVATE_VPN_*)
+      TELEGRAM_BOT_TOKEN|KEITH_CHAT_ID|MIHOMO_*|K2B_PRIVATE_VPN_*)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -74,28 +77,6 @@ sha_manifest() {
     done
     true
   )
-}
-
-required_profile_envs() {
-  python3 - "$PROFILE_FILE" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as f:
-    payload = json.load(f)
-profiles = payload.get("profiles") or {}
-if isinstance(profiles, list):
-    iterable = profiles
-else:
-    iterable = profiles.values()
-required = sorted({
-    profile.get("group_env_var", "MIHOMO_OPENAI_GROUP")
-    for profile in iterable
-    if isinstance(profile, dict) and profile.get("enabled")
-})
-for name in required:
-    print(name)
-PY
 }
 
 validate_optional_ssh_target() {
@@ -148,9 +129,50 @@ warn_missing_private_env() {
   log "WARNING: env file is missing $name; private VPN incident traces will use ${fallback}"
 }
 
+remove_retired_plists() {
+  local uid="$1" plist dest label attempt
+  for plist in "${RETIRED_PLISTS[@]}"; do
+    dest="$LAUNCH_AGENTS_DIR/$plist"
+    label="${plist%.plist}"
+    if [[ "$SKIP_LAUNCHCTL" != "1" ]]; then
+      # Boot out by path when the plist file still exists, then boot out by
+      # label in case the file is already gone but launchd still has the job.
+      if [[ -f "$dest" ]]; then
+        launchctl bootout "gui/$uid" "$dest" >/dev/null 2>&1 || true
+      fi
+      launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+      for attempt in 1 2 3 4 5; do
+        if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 1
+      done
+      if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+        launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+        for attempt in 1 2 3 4 5; do
+          if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+      fi
+      if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+        fail "retired launchd job $label is still loaded after bootout; refusing to remove plist"
+      fi
+    fi
+    if [[ -f "$dest" ]]; then
+      rm -f "$dest"
+      log "retired launchd job removed: $plist"
+    fi
+  done
+}
+
+remove_retired_state() {
+  rm -f "$APP_DIR/leaf-optimizer-state.json"
+}
+
 [[ -d "$SOURCE_BIN" ]] || fail "missing source bin dir: $SOURCE_BIN"
 [[ -d "$SOURCE_LAUNCHD" ]] || fail "missing launchd dir: $SOURCE_LAUNCHD"
-[[ -f "$PROFILE_FILE" ]] || fail "missing leaf optimizer profile file: $PROFILE_FILE"
 [[ -f "$ENV_FILE" ]] || fail "env file missing: $ENV_FILE"
 
 mode="$(stat_mode "$ENV_FILE")"
@@ -163,10 +185,6 @@ load_watchdog_env
 : "${MIHOMO_API_BASE:?env file is missing MIHOMO_API_BASE}"
 : "${MIHOMO_API_SECRET:?env file is missing MIHOMO_API_SECRET}"
 : "${MIHOMO_OPENAI_GROUP:?env file is missing MIHOMO_OPENAI_GROUP}"
-while IFS= read -r required_env; do
-  [[ -z "$required_env" ]] && continue
-  : "${!required_env:?env file is missing $required_env}"
-done < <(required_profile_envs)
 validate_optional_ssh_target K2B_PRIVATE_VPN_ROUTER_SSH_TARGET
 validate_optional_ssh_target K2B_PRIVATE_VPN_HK_SSH_TARGET
 validate_optional_ssh_key K2B_PRIVATE_VPN_HK_SSH_KEY
@@ -174,11 +192,6 @@ warn_missing_private_env K2B_PRIVATE_VPN_HK_SSH_TARGET "server trace=unknown"
 warn_missing_private_env K2B_PRIVATE_VPN_AWS_PROFILE "default k2b-aws-signhubdev-hk"
 warn_missing_private_env K2B_PRIVATE_VPN_AWS_REGION "default ap-east-1"
 warn_missing_private_env K2B_PRIVATE_VPN_AWS_INSTANCE "default Ubuntu-1"
-
-if [[ -e "$LEAFOPT_SENTINEL" ]]; then
-  log "WARNING: $LEAFOPT_SENTINEL exists; router leaf optimizer will be allowed to mutate manual selectors after install"
-  log "WARNING: remove it before install if you have not inspected optimize-leaves.sh --dry-run output"
-fi
 
 # Mac Mini has no `.git` directory (deleted 2026-05-07; see L-2026-05-07-001).
 # Source-of-truth for code is MacBook + GitHub; Mini receives files via rsync
@@ -220,6 +233,7 @@ else
 fi
 
 mkdir -p "$INSTALL_BIN" "$LOG_DIR" "$LAUNCH_AGENTS_DIR"
+uid="$(id -u)"
 
 # === HIGH-3: transactional install backup ===
 # Snapshot the current installed state (bin tree + each plist file) BEFORE
@@ -241,13 +255,14 @@ if [[ -d "$INSTALL_BIN" ]]; then
     fi
   fi
 fi
-for plist in "${PLISTS[@]}"; do
+for plist in "${BACKUP_PLISTS[@]}"; do
   if [[ -f "$LAUNCH_AGENTS_DIR/$plist" ]]; then
     if ! cp -a "$LAUNCH_AGENTS_DIR/$plist" "$INSTALL_BACKUP_DIR/plists/$plist"; then
       fail "could not snapshot $LAUNCH_AGENTS_DIR/$plist -- refusing to install (rollback would be unsafe)"
     fi
   fi
 done
+remove_retired_plists "$uid"
 
 ROLLBACK_HAD_DEGRADATION=false
 
@@ -280,7 +295,10 @@ rollback_install() {
     fi
   fi
 
-  # Restore each plist file (or remove it if it was new this install).
+  # Restore each active plist file (or remove it if it was new this install).
+  # Retired LaunchAgents are intentionally never restored: cleanup already
+  # removed them, and a failed install must not reintroduce retired mutation
+  # lanes into the LaunchAgents directory.
   for plist in "${PLISTS[@]}"; do
     bak="$INSTALL_BACKUP_DIR/plists/$plist"
     dest="$LAUNCH_AGENTS_DIR/$plist"
@@ -296,11 +314,12 @@ rollback_install() {
     fi
   done
 
-  # Best-effort re-bootstrap of the restored fleet. Each plist is bootout'd
-  # (tolerating "not loaded") and re-bootstrapped from its restored backup.
-  # Failures here are logged but do not abort the rollback -- rollback is
-  # already a degraded path; the goal is to leave launchd consistent with
-  # the on-disk plist files we just restored.
+  # Best-effort re-bootstrap of the restored active fleet. Retired plists are
+  # never restored to disk; old mutation lanes stay retired.
+  # Each active plist is bootout'd (tolerating "not loaded") and re-bootstrapped
+  # from its restored backup. Failures here are logged but do not abort the
+  # rollback -- rollback is already a degraded path; the goal is to leave
+  # launchd consistent with the on-disk plist files we just restored.
   for plist in "${PLISTS[@]}"; do
     dest="$LAUNCH_AGENTS_DIR/$plist"
     [[ -f "$dest" ]] || continue
@@ -328,7 +347,9 @@ before_manifest="$(
   } | LC_ALL=C sort
 )"
 
-rsync -a --checksum --delete "$SOURCE_BIN/" "$INSTALL_BIN/"
+rsync -a --checksum --delete --delete-excluded \
+  --exclude 'leaf-optimizer-profiles.json' \
+  "$SOURCE_BIN/" "$INSTALL_BIN/"
 find "$INSTALL_BIN" -type f \( -name '*.sh' -o -name '*.py' \) -exec chmod +x {} +
 
 for plist in "${PLISTS[@]}"; do
@@ -408,7 +429,6 @@ if [[ "$SKIP_LAUNCHCTL" != "1" ]]; then
   # optimizer mid-decision) when /sync runs with no router-watchdog deltas.
   # Pre-2026-05-07 the bootout/bootstrap loop ran unconditionally on every
   # install.
-  uid="$(id -u)"
   needs_launchctl=false
   if [[ "$change_note" != "no changes" ]]; then
     needs_launchctl=true
@@ -477,5 +497,7 @@ else
     K2B_ROUTER_WATCHDOG_ENV_FILE="$ENV_FILE" \
     bash "$INSTALL_BIN/check.sh" --dry-run >/dev/null
 fi
+
+remove_retired_state
 
 log "$change_note; installed to $APP_DIR"

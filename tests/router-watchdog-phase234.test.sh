@@ -154,22 +154,16 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: Phase 4 does not mutate Mihomo when the sentinel is absent.
+# Test 3: Phase 4 (auto-switch) is retired and never mutates Mihomo.
 # ---------------------------------------------------------------------------
 {
-  d="$TMPROOT/autoswitch-disabled"
+  d="$TMPROOT/autoswitch-retired"
   mkdir -p "$d"
-  cat > "$d/results.json" <<'EOF'
-[{"name":"chatgpt_https","ok":false,"alertable":true,"latency_ms":10,"severity":"fail","message":"HTTP 000","details":{}},{"name":"openai_node","ok":true,"alertable":false,"latency_ms":10,"severity":"ok","message":"OpenAI selected node: bad-node","details":{"openai_group_selection":"♻️ 手动切换5","selected_node":"bad-node","selector_chain":["🤖 OpenAI","♻️ 手动切换5","bad-node"]}}]
-EOF
-  cat > "$d/state.json" <<'EOF'
-{"chatgpt_https":{"status":"fail","consecutive_fails":3,"since":"2026-05-03T00:00:00Z","last_alert_at":"2026-05-03T00:20:00Z","alert_count_in_outage":1}}
-EOF
-  cat > "$d/node-score.jsonl" <<'EOF'
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换1","resolved_leaf":"good-node","success_rate":1.0,"score":0.98,"quarantined":false}
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换5","resolved_leaf":"bad-node","success_rate":0.0,"score":0.0,"quarantined":true,"quarantine_until":"2026-05-04T00:00:00Z"}
-EOF
+  test_home="$d/home"
+  mkdir -p "$test_home"
 
+  set +e
+  HOME="$test_home" \
   MIHOMO_API_BASE="http://127.0.0.1:9" \
   MIHOMO_API_SECRET="test-secret" \
   MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
@@ -179,10 +173,14 @@ EOF
     --score-log "$d/node-score.jsonl" \
     --decision-log "$d/auto-switch.jsonl" \
     --sentinel "$d/missing-sentinel" \
-    --now "2026-05-03T00:30:00Z"
-
-  grep -q '"enabled":false' "$d/auto-switch.jsonl" || fail "disabled auto-switch should log enabled=false"
-  echo "  PASS: Phase 4 sentinel absent prevents mutation"
+    --now "2026-05-03T00:30:00Z" >"$d/out" 2>"$d/err"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || fail "retired auto-switch.py should exit 0, got $rc"
+  grep -qi "is retired and performed no mutation" "$d/err" || fail "retired auto-switch.py should explain retirement"
+  [[ -s "$test_home/Library/Logs/k2b-router-watchdog/retired-mutations.jsonl" ]] || fail "retired auto-switch.py should leave an audit log"
+  [[ ! -e "$d/auto-switch.jsonl" ]] || fail "retired auto-switch.py should not write a decision log"
+  echo "  PASS: Phase 4 auto-switch is retired and performs no mutation"
 }
 
 # ---------------------------------------------------------------------------
@@ -295,236 +293,21 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: Phase 4 refreshes scores on a live failure trigger and switches to a
-# clearly better manual selector even when the current selector is not yet
-# quarantined.
+# Test 5: Phase 4 stays retired even when all historical enablement is present.
 # ---------------------------------------------------------------------------
 {
-  d="$TMPROOT/autoswitch-refresh"
+  d="$TMPROOT/autoswitch-stays-retired"
   mkdir -p "$d"
-  port_file="$d/port"
-  request_log="$d/requests.jsonl"
-  python3 -u - "$port_file" "$request_log" <<'PY' &
-import json
-import sys
-import urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-port_file, request_log = sys.argv[1], sys.argv[2]
-group = "🤖 OpenAI"
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-
-    def write_json(self, status, body):
-        payload = json.dumps(body, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def do_PUT(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = urllib.parse.unquote(parsed.path)
-        body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
-        with open(request_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"method": "PUT", "path": path, "body": body}, ensure_ascii=False) + "\n")
-        if path == f"/proxies/{group}":
-            self.write_json(204, {})
-        else:
-            self.write_json(404, {"message": "wrong endpoint"})
-
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-with open(port_file, "w", encoding="utf-8") as f:
-    f.write(str(server.server_port))
-server.serve_forever()
-PY
-  server_pid=$!
-  SERVER_PIDS+=("$server_pid")
-  for _ in {1..50}; do [[ -s "$port_file" ]] && break; sleep 0.1; done
-  [[ -s "$port_file" ]] || fail "fake Mihomo refresh auto-switch server did not start"
+  test_home="$d/home"
+  mkdir -p "$test_home"
   touch "$d/sentinel"
-  cat > "$d/results.json" <<'EOF'
-[{"name":"chatgpt_https","ok":false,"alertable":true,"latency_ms":10,"severity":"fail","message":"HTTP 000","details":{}},{"name":"chatgpt_ws","ok":false,"alertable":true,"latency_ms":10,"severity":"fail","message":"HTTP 000","details":{}},{"name":"claude_https","ok":false,"alertable":true,"latency_ms":10,"severity":"fail","message":"HTTP 000","details":{}},{"name":"openai_node","ok":true,"alertable":false,"latency_ms":10,"severity":"ok","message":"OpenAI selected node: slow-node","details":{"openai_group_selection":"♻️ 手动切换","selected_node":"slow-node","selector_chain":["🤖 OpenAI","♻️ 手动切换","slow-node"]}}]
-EOF
-  cat > "$d/state.json" <<'EOF'
-{"chatgpt_https":{"status":"fail","consecutive_fails":3,"since":"2026-05-03T00:00:00Z","last_alert_at":"2026-05-03T00:20:00Z","alert_count_in_outage":1},"chatgpt_ws":{"status":"fail","consecutive_fails":3,"since":"2026-05-03T00:00:00Z","last_alert_at":"2026-05-03T00:20:00Z","alert_count_in_outage":1},"claude_https":{"status":"fail","consecutive_fails":3,"since":"2026-05-03T00:00:00Z","last_alert_at":"2026-05-03T00:20:00Z","alert_count_in_outage":1}}
-EOF
-  cat > "$d/node-score.jsonl" <<'EOF'
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换","resolved_leaf":"slow-node","success_rate":1.0,"score":0.91,"quarantined":false}
-EOF
-  cat > "$d/refresh-score.sh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' refreshed > "$d/refresh-called"
-cat >> "$d/node-score.jsonl" <<'JSON'
-{"timestamp":"2026-05-03T00:30:00Z","candidate":"♻️ 手动切换","resolved_leaf":"slow-node","success_rate":1.0,"score":0.84,"quarantined":false}
-{"timestamp":"2026-05-03T00:30:00Z","candidate":"♻️ 手动切换2","resolved_leaf":"better-node","success_rate":1.0,"score":0.96,"quarantined":false}
-JSON
-EOF
-  chmod +x "$d/refresh-score.sh"
 
-  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$port_file")" \
-  MIHOMO_API_SECRET="test-secret" \
-  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
-  python3 "$AUTOSWITCH" \
-    --results-file "$d/results.json" \
-    --state-file "$d/state.json" \
-    --score-log "$d/node-score.jsonl" \
-    --decision-log "$d/auto-switch.jsonl" \
-    --alerts-file "$d/alerts.jsonl" \
-    --sentinel "$d/sentinel" \
-    --score-command "$d/refresh-score.sh" \
-    --now "2026-05-03T00:30:00Z"
-
-  python3 - "$request_log" "$d/auto-switch.jsonl" "$d/alerts.jsonl" "$d/refresh-called" <<'PY' || fail "auto-switch should refresh scores and switch to clearly better live candidate"
-import json
-import sys
-
-assert open(sys.argv[4], encoding="utf-8").read().strip() == "refreshed"
-requests = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
-assert len(requests) == 1
-assert requests[0]["path"] == "/proxies/🤖 OpenAI"
-assert json.loads(requests[0]["body"]) == {"name": "♻️ 手动切换2"}
-decision = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()][-1]
-assert decision["switched"] is True
-assert decision["reason"] == "switched"
-assert decision["score_refresh"] == "ok"
-assert decision["from_candidate"] == "♻️ 手动切换"
-assert decision["to_candidate"] == "♻️ 手动切换2"
-assert decision["score_delta"] >= 0.05
-alert = [json.loads(line) for line in open(sys.argv[3], encoding="utf-8") if line.strip()][-1]
-assert alert["type"] == "auto_switch"
-assert "♻️ 手动切换2" in alert["message"]
-PY
-  stop_servers
-  echo "  PASS: Phase 4 refreshes scores and switches to better live candidate"
-}
-
-# ---------------------------------------------------------------------------
-# Test 6: Phase 4, when explicitly enabled, performs exactly one scoped PUT to
-# the OpenAI group and emits an alert event.
-# ---------------------------------------------------------------------------
-{
-  d="$TMPROOT/autoswitch-enabled"
-  mkdir -p "$d"
-  port_file="$d/port"
-  request_log="$d/requests.jsonl"
-  python3 -u - "$port_file" "$request_log" <<'PY' &
-import json
-import sys
-import urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-port_file, request_log = sys.argv[1], sys.argv[2]
-group = "🤖 OpenAI"
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-
-    def write_json(self, status, body):
-        payload = json.dumps(body, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def do_PUT(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = urllib.parse.unquote(parsed.path)
-        body = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode()
-        with open(request_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"method": "PUT", "path": path, "body": body}, ensure_ascii=False) + "\n")
-        if path == f"/proxies/{group}":
-            self.write_json(204, {})
-        else:
-            self.write_json(404, {"message": "wrong endpoint"})
-
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-with open(port_file, "w", encoding="utf-8") as f:
-    f.write(str(server.server_port))
-server.serve_forever()
-PY
-  server_pid=$!
-  SERVER_PIDS+=("$server_pid")
-  for _ in {1..50}; do [[ -s "$port_file" ]] && break; sleep 0.1; done
-  [[ -s "$port_file" ]] || fail "fake Mihomo auto-switch server did not start"
-  touch "$d/sentinel"
-  cat > "$d/results.json" <<'EOF'
-[{"name":"chatgpt_https","ok":false,"alertable":true,"latency_ms":10,"severity":"fail","message":"HTTP 000","details":{}},{"name":"openai_node","ok":true,"alertable":false,"latency_ms":10,"severity":"ok","message":"OpenAI selected node: bad-node","details":{"openai_group_selection":"♻️ 手动切换5","selected_node":"bad-node","selector_chain":["🤖 OpenAI","♻️ 手动切换5","bad-node"]}}]
-EOF
-  cat > "$d/state.json" <<'EOF'
-{"chatgpt_https":{"status":"fail","consecutive_fails":3,"since":"2026-05-03T00:00:00Z","last_alert_at":"2026-05-03T00:20:00Z","alert_count_in_outage":1}}
-EOF
-  cat > "$d/node-score.jsonl" <<'EOF'
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换1","resolved_leaf":"good-node","success_rate":1.0,"score":0.98,"quarantined":false}
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换5","resolved_leaf":"bad-node","success_rate":0.0,"score":0.0,"quarantined":true,"quarantine_until":"2026-05-04T00:00:00Z"}
-EOF
-
-  MIHOMO_API_BASE="http://127.0.0.1:$(cat "$port_file")" \
-  MIHOMO_API_SECRET="test-secret" \
-  MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
-  python3 "$AUTOSWITCH" \
-    --results-file "$d/results.json" \
-    --state-file "$d/state.json" \
-    --score-log "$d/node-score.jsonl" \
-    --decision-log "$d/auto-switch.jsonl" \
-    --alerts-file "$d/alerts.jsonl" \
-    --sentinel "$d/sentinel" \
-    --now "2026-05-03T00:30:00Z"
-
-  python3 - "$request_log" "$d/auto-switch.jsonl" "$d/alerts.jsonl" <<'PY' || fail "auto-switch should perform one scoped PUT and emit alert"
-import json
-import sys
-
-requests = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
-assert len(requests) == 1
-assert requests[0]["method"] == "PUT"
-assert requests[0]["path"] == "/proxies/🤖 OpenAI"
-assert json.loads(requests[0]["body"]) == {"name": "♻️ 手动切换1"}
-decision = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()][-1]
-assert decision["enabled"] is True
-assert decision["switched"] is True
-assert decision["from_candidate"] == "♻️ 手动切换5"
-assert decision["to_candidate"] == "♻️ 手动切换1"
-alert = [json.loads(line) for line in open(sys.argv[3], encoding="utf-8") if line.strip()][-1]
-assert alert["type"] == "auto_switch"
-assert "♻️ 手动切换1" in alert["message"]
-PY
-  stop_servers
-  echo "  PASS: Phase 4 scoped auto-switch when sentinel enabled"
-}
-
-# Test 7 (Codex finding 2 regression): a Mihomo PUT failure during auto-switch
-# must NOT propagate as an exception that aborts check.sh's `set -e` pipeline
-# before pending watchdog alerts get drained. auto-switch.py must catch the
-# exception, log a `put_exception_*` decision + an `auto_switch_blocked` alert,
-# and return 0.
-{
-  d="$(mktemp -d)"
-  TMP_DIRS+=("$d")
-  touch "$d/sentinel"
-  cat > "$d/results.json" <<'EOF'
-[{"name":"chatgpt_https","ok":false,"alertable":true,"latency_ms":10,"severity":"fail","message":"HTTP 000","details":{}},{"name":"openai_node","ok":true,"alertable":false,"latency_ms":10,"severity":"ok","message":"OpenAI selected node: bad-node","details":{"openai_group_selection":"♻️ 手动切换5","selected_node":"bad-node","selector_chain":["🤖 OpenAI","♻️ 手动切换5","bad-node"]}}]
-EOF
-  cat > "$d/state.json" <<'EOF'
-{"chatgpt_https":{"status":"fail","consecutive_fails":3,"since":"2026-05-03T00:00:00Z","last_alert_at":"2026-05-03T00:20:00Z","alert_count_in_outage":1}}
-EOF
-  cat > "$d/node-score.jsonl" <<'EOF'
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换1","resolved_leaf":"good-node","success_rate":1.0,"score":0.98,"quarantined":false}
-{"timestamp":"2026-05-03T00:00:00Z","candidate":"♻️ 手动切换5","resolved_leaf":"bad-node","success_rate":0.0,"score":0.0,"quarantined":true,"quarantine_until":"2026-05-04T00:00:00Z"}
-EOF
-
-  # Point the script at a port that nothing is listening on. The PUT will
-  # raise (ConnectionRefusedError or URLError) and the script must catch it.
   set +e
+  HOME="$test_home" \
   MIHOMO_API_BASE="http://127.0.0.1:1" \
   MIHOMO_API_SECRET="test-secret" \
   MIHOMO_OPENAI_GROUP="🤖 OpenAI" \
+  K2B_ROUTER_MUTATION_RETIRED_ALLOW=1 \
   python3 "$AUTOSWITCH" \
     --results-file "$d/results.json" \
     --state-file "$d/state.json" \
@@ -532,26 +315,15 @@ EOF
     --decision-log "$d/auto-switch.jsonl" \
     --alerts-file "$d/alerts.jsonl" \
     --sentinel "$d/sentinel" \
-    --now "2026-05-03T00:30:00Z"
+    --now "2026-05-03T00:30:00Z" >"$d/out" 2>"$d/err"
   rc=$?
   set -e
-  [[ "$rc" -eq 0 ]] || fail "auto-switch.py must return 0 on PUT failure, got $rc"
-
-  python3 - "$d/auto-switch.jsonl" "$d/alerts.jsonl" <<'PY' || fail "auto-switch PUT failure should log blocked decision + blocked alert"
-import json
-import sys
-
-decision = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()][-1]
-assert decision["switched"] is False, f"switched should be False, got {decision.get('switched')}"
-assert decision["http_status"] == 0, f"http_status should be 0 on exception, got {decision.get('http_status')}"
-assert decision["reason"].startswith("put_exception_"), \
-    f"reason should be put_exception_*, got {decision.get('reason')}"
-
-alerts = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()]
-assert any(a.get("type") == "auto_switch_blocked" for a in alerts), \
-    "alerts file must contain at least one auto_switch_blocked entry"
-PY
-  echo "  PASS: Phase 4 PUT failure does not abort check.sh alert drain (Codex finding 2 regression)"
+  [[ "$rc" -eq 0 ]] || fail "retired auto-switch.py should exit 0 even with legacy enablement, got $rc"
+  grep -qi "is retired and performed no mutation" "$d/err" || fail "retired auto-switch.py should explain retirement even with legacy enablement"
+  [[ -s "$test_home/Library/Logs/k2b-router-watchdog/retired-mutations.jsonl" ]] || fail "retired auto-switch.py should leave an audit log"
+  [[ ! -e "$d/auto-switch.jsonl" ]] || fail "retired auto-switch.py should not write a decision log"
+  [[ ! -e "$d/alerts.jsonl" ]] || fail "retired auto-switch.py should not write an alerts file"
+  echo "  PASS: Phase 4 stays retired regardless of legacy enablement"
 }
 
 echo "router-watchdog-phase234.test.sh: all tests passed"

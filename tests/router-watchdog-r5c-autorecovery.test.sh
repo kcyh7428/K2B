@@ -954,6 +954,9 @@ EOF
 
   cat > "$d/fakebin/launchctl" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "print" ]]; then
+  exit 1
+fi
 exit 0
 EOF
   chmod +x "$d/fakebin/launchctl"
@@ -1005,17 +1008,25 @@ EOF
   cp -a "$REPO_ROOT/launchd" "$install_src/launchd"
   printf 'new-bin-version' > "$install_src/scripts/router-watchdog/bin/marker.txt"
 
+  # Seed the existing active plist files (so we have "prior" active plists to
+  # roll back to).
   for plist in com.k2b.router-watchdog.plist com.k2b.router-daily-rollup.plist \
-               com.k2b.router-node-score.plist com.k2b.router-leaf-optimizer.plist \
+               com.k2b.router-node-score.plist \
                com.k2b.router-private-vpn-watchdog.plist \
                com.k2b.router-digest.plist \
                com.k2b.router-r5c-autorecovery.plist; do
     printf 'OLD-%s\n' "$plist" > "$d/launch-agents/$plist"
   done
+  # Also stage a stale retired plist; install must remove it and rollback must
+  # not restore it.
+  printf 'OLD-com.k2b.router-leaf-optimizer.plist\n' > "$d/launch-agents/com.k2b.router-leaf-optimizer.plist"
 
   counter_file="$d/bootstrap-count"
   cat > "$d/fakebin/launchctl" <<EOF
 #!/usr/bin/env bash
+if [[ "\${1:-}" == "print" ]]; then
+  exit 1
+fi
 if [[ "\${1:-}" == "bootstrap" ]]; then
   count=0
   [[ -f "$counter_file" ]] && count="\$(<"$counter_file")"
@@ -1045,13 +1056,16 @@ EOF
   actual="$(<"$app_dir/bin/marker.txt")"
   [[ "$actual" == "old-bin-version" ]] || fail "rollback test: bin was not restored"
   for plist in com.k2b.router-watchdog.plist com.k2b.router-daily-rollup.plist \
-               com.k2b.router-node-score.plist com.k2b.router-leaf-optimizer.plist \
+               com.k2b.router-node-score.plist \
                com.k2b.router-private-vpn-watchdog.plist \
                com.k2b.router-digest.plist \
                com.k2b.router-r5c-autorecovery.plist; do
     actual_plist="$(<"$d/launch-agents/$plist")"
     [[ "$actual_plist" == "OLD-$plist" ]] || fail "rollback test: $plist was not restored"
   done
+  if [[ -f "$d/launch-agents/com.k2b.router-leaf-optimizer.plist" ]]; then
+    fail "rollback test: retired leaf-optimizer plist must be removed and stay absent"
+  fi
   [[ ! -f "$manifest_file" ]] || fail "rollback test: MANIFEST should not exist after rollback"
 
   echo "  PASS: installer rollback restores R5C autorecovery fleet files"

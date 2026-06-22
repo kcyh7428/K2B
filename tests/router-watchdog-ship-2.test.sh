@@ -117,17 +117,26 @@ EOF
   printf 'new-bin-version' > "$install_src/scripts/router-watchdog/bin/marker.txt"
   cp -a "$REPO_ROOT/launchd" "$install_src/launchd"
 
-  # Seed the existing plist files (so we have "prior" plists to roll back to).
+  # Seed the existing active plist files (so we have "prior" active plists to
+  # roll back to).
   for plist in com.k2b.router-watchdog.plist com.k2b.router-daily-rollup.plist \
-               com.k2b.router-node-score.plist com.k2b.router-leaf-optimizer.plist \
+               com.k2b.router-node-score.plist \
                com.k2b.router-private-vpn-watchdog.plist \
                com.k2b.router-digest.plist; do
     printf 'OLD-%s\n' "$plist" > "$d/launch-agents/$plist"
   done
+  # Also stage a stale retired plist; install must remove it and rollback must
+  # not restore it.
+  printf 'OLD-com.k2b.router-leaf-optimizer.plist\n' > "$d/launch-agents/com.k2b.router-leaf-optimizer.plist"
 
   # Stub launchctl: succeed for the first 2 bootstrap calls, fail on the 3rd.
+  # Print returns non-zero so remove_retired_plists sees the retired job as
+  # not loaded and is allowed to delete its stale plist.
   cat > "$d/fakebin/launchctl" <<EOF
 #!/usr/bin/env bash
+if [[ "\${1:-}" == "print" ]]; then
+  exit 1
+fi
 counter_file="$d/bootstrap-count"
 if [[ "\${1:-}" == "bootstrap" ]]; then
   count=0
@@ -169,15 +178,20 @@ EOF
     fail "HIGH-3: install bin was not rolled back (marker.txt='$actual', expected 'old-bin-version')"
   fi
 
-  # Each plist must be restored to its OLD-* content.
+  # Each active plist must be restored to its OLD-* content.
   for plist in com.k2b.router-watchdog.plist com.k2b.router-daily-rollup.plist \
-               com.k2b.router-node-score.plist com.k2b.router-leaf-optimizer.plist \
+               com.k2b.router-node-score.plist \
                com.k2b.router-private-vpn-watchdog.plist \
                com.k2b.router-digest.plist; do
     actual_plist="$(<"$d/launch-agents/$plist")"
     expected_plist="OLD-$plist"
     [[ "$actual_plist" == "$expected_plist" ]] || fail "HIGH-3: plist $plist was not rolled back (got '$actual_plist', expected '$expected_plist')"
   done
+
+  # The stale retired plist must be removed and not restored by rollback.
+  if [[ -f "$d/launch-agents/com.k2b.router-leaf-optimizer.plist" ]]; then
+    fail "HIGH-3: retired leaf-optimizer plist must be removed and stay absent after rollback"
+  fi
 
   # MANIFEST must NOT be advanced.
   if [[ -f "$manifest_file" ]]; then
@@ -222,6 +236,9 @@ EOF
 
   cat > "$d/fakebin/launchctl" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "print" ]]; then
+  exit 1
+fi
 exit 0
 EOF
   chmod +x "$d/fakebin/launchctl"

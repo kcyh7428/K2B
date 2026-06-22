@@ -9,9 +9,6 @@ STATE_FILE="${K2B_ROUTER_WATCHDOG_STATE_FILE:-$APP_DIR/state.json}"
 HEALTH_LOG="${K2B_ROUTER_WATCHDOG_HEALTH_LOG:-$LOG_DIR/health.jsonl}"
 QUEUE_FILE="${K2B_ROUTER_WATCHDOG_PARTITION_QUEUE:-$APP_DIR/pending-partition-events.jsonl}"
 PARTITION_SUPPRESSION_LOG="${K2B_ROUTER_WATCHDOG_PARTITION_SUPPRESSION_LOG:-$LOG_DIR/partition-suppressions.jsonl}"
-NODE_SCORE_LOG="${K2B_ROUTER_WATCHDOG_NODE_SCORE_LOG:-$LOG_DIR/node-score.jsonl}"
-AUTO_SWITCH_LOG="${K2B_ROUTER_WATCHDOG_AUTO_SWITCH_LOG:-$LOG_DIR/auto-switch.jsonl}"
-AUTO_SWITCH_SENTINEL="${K2B_ROUTER_AUTOSWITCH_SENTINEL:-$HOME/.k2b-router-autoswitch-enabled}"
 BACKOFF_SCHEDULE="${BACKOFF_SCHEDULE:-30m,2h,6h,24h}"
 DRY_RUN=false
 
@@ -143,16 +140,6 @@ python3 "$SCRIPT_DIR/partition-queue.py" apply \
   --r5c-state-file "${K2B_R5C_AUTORECOVERY_STATE_FILE:-$APP_DIR/r5c-autorecovery-state.json}" \
   --suppression-log "$PARTITION_SUPPRESSION_LOG"
 
-python3 "$SCRIPT_DIR/auto-switch.py" \
-  --results-file "$results_file" \
-  --state-file "$STATE_FILE" \
-  --score-log "$NODE_SCORE_LOG" \
-  --decision-log "$AUTO_SWITCH_LOG" \
-  --alerts-file "$alerts_file" \
-  --sentinel "$AUTO_SWITCH_SENTINEL" \
-  --score-command "$SCRIPT_DIR/score-nodes.sh" \
-  --now "$timestamp"
-
 if [[ -s "$alerts_file" ]]; then
   confirm_file="$tmpdir/confirm.jsonl"
   confirm_failures_log="${K2B_ROUTER_WATCHDOG_CONFIRM_FAILURES_LOG:-$LOG_DIR/confirm-failures.jsonl}"
@@ -160,8 +147,8 @@ if [[ -s "$alerts_file" ]]; then
     [[ -n "$alert" ]] || continue
     if printf '%s\n' "$alert" | "$SCRIPT_DIR/send-alert.sh" --event-json -; then
       # Delivery confirmed: advance per-check alert counters via state-machine.py
-      # --confirm-delivered. Non-per-check alert types (auto-switch, partition,
-      # digest) are no-ops in apply_confirmed and pass through harmlessly.
+      # --confirm-delivered. Non-per-check alert types (partition, digest) are
+      # no-ops in apply_confirmed and pass through harmlessly.
       # Defers per the 2026-05-18 silent-drop fix: state was previously mutated
       # at alert-generation time, so failed deliveries left state advanced
       # without Keith ever seeing the alert.

@@ -680,7 +680,7 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: install validates enabled leaf-optimizer profile env keys only.
+# Test 8: install ignores retired leaf-optimizer profile env keys.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/install-profile-env"
@@ -692,21 +692,9 @@ EOF
   mkdir -p "$repo/scripts" "$repo/launchd"
   cp -R "$SRC_DIR" "$repo/scripts/router-watchdog"
   cp -R "$REPO_ROOT/launchd/." "$repo/launchd/"
-  python3 - "$repo/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-data = json.load(open(path, encoding="utf-8"))
-data["profiles"]["general"] = {
-    "enabled": True,
-    "group_env_var": "MIHOMO_GENERAL_GROUP",
-    "selector_regex": "^♻️ 手动切换",
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-    f.write("\n")
-PY
+  cat > "$repo/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'JSON'
+{"profiles":{"general":{"enabled":true,"group_env_var":"MIHOMO_GENERAL_GROUP","selector_regex":"^♻️ 手动切换"}}}
+JSON
   cat > "$env_file" <<'EOF'
 TELEGRAM_BOT_TOKEN=test-token
 KEITH_CHAT_ID=8394008217
@@ -715,6 +703,11 @@ MIHOMO_API_SECRET=test-secret
 MIHOMO_OPENAI_GROUP=🤖 OpenAI
 EOF
   chmod 600 "$env_file"
+  mkdir -p "$agents"
+  printf 'STALE-LEAF-OPTIMIZER\n' > "$agents/com.k2b.router-leaf-optimizer.plist"
+  mkdir -p "$app"
+  printf 'stale-state\n' > "$app/leaf-optimizer-state.json"
+  printf 'retired-lock\n' > "$app/mihomo-mutation.lock"
   git -C "$repo" init -q
   git -C "$repo" add .
   git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm init
@@ -728,31 +721,155 @@ EOF
   bash "$repo/scripts/router-watchdog/install.sh" > "$d/install.out" 2> "$d/install.err"
   rc=$?
   set -e
-  [[ "$rc" -ne 0 ]] || fail "enabled profile missing env should fail install"
-  grep -q "MIHOMO_GENERAL_GROUP" "$d/install.err" || fail "missing profile env should be named"
+  [[ "$rc" -eq 0 ]] || { cat "$d/install.err" >&2; fail "retired profile env should not block install"; }
+  [[ ! -f "$agents/com.k2b.router-leaf-optimizer.plist" ]] || fail "retired leaf optimizer plist should not be installed"
+  [[ ! -f "$app/bin/leaf-optimizer-profiles.json" ]] || fail "retired leaf optimizer profile file should not be installed"
+  [[ ! -f "$app/leaf-optimizer-state.json" ]] || fail "retired leaf optimizer state should be removed"
+  [[ -f "$app/mihomo-mutation.lock" ]] || fail "retired lock file should be left in place"
 
-  python3 - "$repo/scripts/router-watchdog/bin/leaf-optimizer-profiles.json" <<'PY'
-import json
-import sys
+  echo "  PASS: install ignores retired leaf optimizer profile env"
+}
 
-path = sys.argv[1]
-data = json.load(open(path, encoding="utf-8"))
-data["profiles"]["general"]["enabled"] = False
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-    f.write("\n")
-PY
+# ---------------------------------------------------------------------------
+# Test 8b: installer refuses to delete a retired leaf-optimizer plist while
+# launchd still reports the job loaded. Deleting the file while the job stays
+# loaded would strand the retired mutation lane in launchd.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/install-retired-loaded"
+  repo="$d/repo"
+  app="$d/app"
+  logs="$d/logs"
+  agents="$d/LaunchAgents"
+  env_file="$d/watchdog.env"
+  mkdir -p "$repo/scripts" "$repo/launchd" "$d/fakebin"
+  cp -R "$SRC_DIR" "$repo/scripts/router-watchdog"
+  cp -R "$REPO_ROOT/launchd/." "$repo/launchd/"
+  cat > "$env_file" <<'EOF'
+TELEGRAM_BOT_TOKEN=test-token
+KEITH_CHAT_ID=8394008217
+MIHOMO_API_BASE=http://192.168.9.1:9090
+MIHOMO_API_SECRET=test-secret
+MIHOMO_OPENAI_GROUP=🤖 OpenAI
+EOF
+  chmod 600 "$env_file"
+  mkdir -p "$agents"
+  printf 'STALE-RETIRED\n' > "$agents/com.k2b.router-leaf-optimizer.plist"
+  git -C "$repo" init -q
   git -C "$repo" add .
-  git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm disable-general-profile
+  git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm init
 
+  uid="$(id -u)"
+  cat > "$d/fakebin/launchctl" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "print" && "\${2:-}" == *"com.k2b.router-leaf-optimizer"* ]]; then
+  # Simulate launchd still reporting the retired job as loaded.
+  exit 0
+fi
+# Any other service is reported as not loaded.
+if [[ "\${1:-}" == "print" ]]; then
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "$d/fakebin/launchctl"
+
+  set +e
+  PATH="$d/fakebin:$PATH" \
   K2B_ROUTER_WATCHDOG_APP_DIR="$app" \
   K2B_ROUTER_WATCHDOG_LOG_DIR="$logs" \
   K2B_ROUTER_WATCHDOG_LAUNCH_AGENTS_DIR="$agents" \
   K2B_ROUTER_WATCHDOG_ENV_FILE="$env_file" \
-  K2B_ROUTER_WATCHDOG_SKIP_LAUNCHCTL=1 \
-  bash "$repo/scripts/router-watchdog/install.sh" >/dev/null
+  bash "$repo/scripts/router-watchdog/install.sh" > "$d/install.out" 2> "$d/install.err"
+  rc=$?
+  set -e
 
-  echo "  PASS: install validates enabled profile env only"
+  [[ "$rc" -ne 0 ]] || fail "install should fail closed when retired leaf-optimizer job stays loaded (rc=$rc)"
+  [[ -f "$agents/com.k2b.router-leaf-optimizer.plist" ]] || fail "retired plist must stay on disk while launchd reports it loaded"
+  grep -qi "still loaded" "$d/install.err" || fail "install should log a visible error about the loaded retired job"
+
+  echo "  PASS: install refuses to remove retired plist while launchd reports it loaded"
+}
+
+# ---------------------------------------------------------------------------
+# Test 8c: installer boots out a retired label even when the plist file is
+# already gone. The retired mutation lane must not be left loaded just because
+# the stale plist was deleted earlier.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/install-retired-missing-plist"
+  repo="$d/repo"
+  app="$d/app"
+  logs="$d/logs"
+  agents="$d/LaunchAgents"
+  env_file="$d/watchdog.env"
+  mkdir -p "$repo/scripts" "$repo/launchd" "$d/fakebin"
+  cp -R "$SRC_DIR" "$repo/scripts/router-watchdog"
+  cp -R "$REPO_ROOT/launchd/." "$repo/launchd/"
+  cat > "$env_file" <<'EOF'
+TELEGRAM_BOT_TOKEN=test-token
+KEITH_CHAT_ID=8394008217
+MIHOMO_API_BASE=http://192.168.9.1:9090
+MIHOMO_API_SECRET=test-secret
+MIHOMO_OPENAI_GROUP=🤖 OpenAI
+EOF
+  chmod 600 "$env_file"
+  mkdir -p "$agents"
+  # The retired plist is intentionally absent, but fake launchctl reports the
+  # job as loaded.
+  loaded_file="$d/loaded-labels"
+  bootouts_file="$d/bootouts"
+  printf '%s\n' "com.k2b.router-leaf-optimizer" > "$loaded_file"
+  cat > "$d/fakebin/launchctl" <<EOF
+#!/usr/bin/env bash
+loaded_file="$loaded_file"
+bootouts_file="$bootouts_file"
+case "\${1:-}" in
+  print)
+    target="\${2:-}"
+    label="\${target##*/}"
+    if grep -qx "\$label" "\$loaded_file" 2>/dev/null; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  bootout)
+    target="\${3:-}"
+    [[ -n "\$target" ]] || target="\${2:-}"
+    label="\${target##*/}"
+    printf '%s\n' "\$label" >> "\$bootouts_file"
+    if [[ -f "\$loaded_file" ]]; then
+      if grep -vx "\$label" "\$loaded_file" > "\$loaded_file.tmp"; then
+        mv "\$loaded_file.tmp" "\$loaded_file"
+      else
+        rm -f "\$loaded_file"
+      fi
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$d/fakebin/launchctl"
+  git -C "$repo" init -q
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm init
+
+  set +e
+  PATH="$d/fakebin:$PATH" \
+  K2B_ROUTER_WATCHDOG_APP_DIR="$app" \
+  K2B_ROUTER_WATCHDOG_LOG_DIR="$logs" \
+  K2B_ROUTER_WATCHDOG_LAUNCH_AGENTS_DIR="$agents" \
+  K2B_ROUTER_WATCHDOG_ENV_FILE="$env_file" \
+  bash "$repo/scripts/router-watchdog/install.sh" > "$d/install.out" 2> "$d/install.err"
+  rc=$?
+  set -e
+
+  [[ "$rc" -eq 0 ]] || fail "install should succeed after booting out a loaded retired label whose plist is missing (rc=$rc)"
+  [[ ! -f "$agents/com.k2b.router-leaf-optimizer.plist" ]] || fail "retired plist should not be created when it was already missing"
+  grep -qx "com.k2b.router-leaf-optimizer" "$bootouts_file" || fail "installer should boot out the retired label even when the plist file is absent"
+
+  echo "  PASS: install boots out retired label when plist file is already gone"
 }
 
 # ---------------------------------------------------------------------------
@@ -782,15 +899,120 @@ for dirpath, dirs, files in os.walk(root):
 
 if forbidden:
     raise SystemExit(f"forbidden mutation verbs in {forbidden}")
-allowed_putters = ["bin/auto-switch.py", "bin/optimize-leaves.py"]
-if sorted(set(put_hits)) != allowed_putters:
-    raise SystemExit(f"PUT must appear only in {allowed_putters}, got {sorted(set(put_hits))}")
+if put_hits:
+    raise SystemExit(f"PUT must not appear in any router-watchdog source, got {sorted(set(put_hits))}")
 PY
   echo "  PASS: router mutation paths are scope locked"
 }
 
 # ---------------------------------------------------------------------------
-# Test 9: rollup writes a complete context page atomically.
+# Test 9: retired proxy mutation lanes are not wired into live watchdog paths.
+# ---------------------------------------------------------------------------
+{
+  python3 - "$SRC_DIR" "$REPO_ROOT/launchd" <<'PY' || fail "retired proxy mutation lanes must not be live wired"
+import os
+import sys
+
+import re
+
+src_dir, launchd_dir = sys.argv[1:3]
+check_sh = open(os.path.join(src_dir, "bin", "check.sh"), encoding="utf-8").read()
+install_sh = open(os.path.join(src_dir, "install.sh"), encoding="utf-8").read()
+retired_files = {
+    "auto-switch.py",
+    "optimize-leaves.py",
+    "optimize-leaves.sh",
+    "leaf-optimizer-profiles.json",
+}
+for dirpath, _, files in os.walk(os.path.join(src_dir, "bin")):
+    for name in files:
+        if name in retired_files or name.endswith(".pyc"):
+            continue
+        path = os.path.join(dirpath, name)
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        for token in ("auto-switch.py", "optimize-leaves", "leaf-optimizer", ".k2b-router-autoswitch-enabled", ".k2b-router-leafopt-enabled"):
+            if token in text:
+                raise SystemExit(f"retired token {token!r} still referenced by live bin file {os.path.relpath(path, src_dir)}")
+for name in os.listdir(launchd_dir):
+    path = os.path.join(launchd_dir, name)
+    if not os.path.isfile(path):
+        continue
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    for token in ("optimize-leaves", "leaf-optimizer", "auto-switch"):
+        if token in text:
+            raise SystemExit(f"retired token {token!r} still referenced by launchd plist {name}")
+
+if "auto-switch.py" in check_sh:
+    raise SystemExit("check.sh must not invoke auto-switch.py after R5C/private-VPN cutover")
+if ".k2b-router-autoswitch-enabled" in check_sh:
+    raise SystemExit("check.sh must not carry the retired auto-switch sentinel")
+if os.path.exists(os.path.join(launchd_dir, "com.k2b.router-leaf-optimizer.plist")):
+    raise SystemExit("retired leaf optimizer plist must not remain in launchd/")
+# Only the active PLISTS block is live fleet membership. BACKUP_PLISTS must
+# not include retired plists; rollback must never restore retired mutation lanes.
+plists_match = re.search(r"\nPLISTS=\((.*?)\)", install_sh, re.DOTALL)
+if not plists_match:
+    raise SystemExit("install.sh must declare an active PLISTS array")
+active_plists = plists_match.group(1)
+if "com.k2b.router-leaf-optimizer.plist" in active_plists:
+    raise SystemExit("install.sh active PLISTS must not include the retired leaf optimizer LaunchAgent")
+if "RETIRED_PLISTS=" not in install_sh:
+    raise SystemExit("install.sh must declare RETIRED_PLISTS")
+PY
+  echo "  PASS: retired proxy mutation lanes are not live wired"
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: retired proxy mutation scripts are permanent audit stubs.
+# ---------------------------------------------------------------------------
+{
+  d="$TMPROOT/retired-mutation-guards"
+  mkdir -p "$d"
+  test_home="$d/home"
+  mkdir -p "$test_home"
+  set +e
+  HOME="$test_home" python3 "$SRC_DIR/bin/auto-switch.py" >"$d/auto.out" 2>"$d/auto.err"
+  auto_rc=$?
+  HOME="$test_home" python3 "$SRC_DIR/bin/optimize-leaves.py" >"$d/leaf-py.out" 2>"$d/leaf-py.err"
+  leaf_py_rc=$?
+  HOME="$test_home" bash "$SRC_DIR/bin/optimize-leaves.sh" --dry-run >"$d/leaf.out" 2>"$d/leaf.err"
+  leaf_rc=$?
+  set -e
+  [[ "$auto_rc" -eq 0 ]] || fail "retired auto-switch.py should no-op successfully, got $auto_rc"
+  [[ "$leaf_py_rc" -eq 0 ]] || fail "retired optimize-leaves.py should no-op successfully, got $leaf_py_rc"
+  [[ "$leaf_rc" -eq 0 ]] || fail "retired optimize-leaves.sh should no-op successfully, got $leaf_rc"
+  grep -qi "is retired and performed no mutation" "$d/auto.err" || fail "auto-switch.py retired guard should explain retirement"
+  grep -qi "is retired and performed no mutation" "$d/leaf-py.err" || fail "optimize-leaves.py retired guard should explain retirement"
+  grep -qi "is retired and performed no mutation" "$d/leaf.err" || fail "optimize-leaves.sh retired guard should explain retirement"
+  [[ -s "$test_home/Library/Logs/k2b-router-watchdog/retired-mutations.jsonl" ]] || fail "retired guards should leave an audit log"
+  audit_log="$test_home/Library/Logs/k2b-router-watchdog/retired-mutations.jsonl"
+  printf 'old audit row\n' > "$audit_log"
+  HOME="$test_home" K2B_ROUTER_RETIRED_AUDIT_MAX_BYTES=1 python3 "$SRC_DIR/bin/auto-switch.py" >"$d/auto-rotate.out" 2>"$d/auto-rotate.err"
+  [[ -f "$audit_log.1" ]] || fail "retired mutation audit log should rotate when capped"
+  grep -q '"script":"auto-switch.py"' "$audit_log" || fail "retired mutation audit log should record after rotation"
+  set +e
+  HOME="$test_home" K2B_ROUTER_RETIRED_AUDIT_LOG="$d" python3 "$SRC_DIR/bin/auto-switch.py" >"$d/auto-audit-fail.out" 2>"$d/auto-audit-fail.err"
+  auto_audit_fail_rc=$?
+  HOME="$test_home" K2B_ROUTER_RETIRED_AUDIT_LOG="$d" bash "$SRC_DIR/bin/optimize-leaves.sh" >"$d/leaf-audit-fail.out" 2>"$d/leaf-audit-fail.err"
+  leaf_audit_fail_rc=$?
+  set -e
+  [[ "$auto_audit_fail_rc" -eq 2 ]] || fail "auto-switch.py should return 2 when retired audit logging fails, got $auto_audit_fail_rc"
+  [[ "$leaf_audit_fail_rc" -eq 2 ]] || fail "optimize-leaves.sh should return 2 when retired audit logging fails, got $leaf_audit_fail_rc"
+  grep -q "failed to write retired mutation audit log" "$d/auto-audit-fail.err" || fail "auto-switch.py audit failure should warn"
+  grep -q "failed to write retired mutation audit log" "$d/leaf-audit-fail.err" || fail "optimize-leaves.sh audit failure should warn"
+
+  # No environment variable or CLI flag can reactivate mutation logic.
+  set +e
+  HOME="$test_home" K2B_ROUTER_MUTATION_RETIRED_ALLOW=1 python3 "$SRC_DIR/bin/auto-switch.py" >"$d/auto-bypass.out" 2>"$d/auto-bypass.err"
+  bypass_rc=$?
+  set -e
+  [[ "$bypass_rc" -eq 0 ]] || fail "retired auto-switch.py must stay retired even with legacy allow env, got $bypass_rc"
+  grep -qi "is retired and performed no mutation" "$d/auto-bypass.err" || fail "retired auto-switch.py must still explain retirement when legacy allow env is set"
+  echo "  PASS: historical proxy mutation scripts are permanent retired stubs"
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: rollup writes a complete context page atomically.
 # ---------------------------------------------------------------------------
 {
   d="$TMPROOT/rollup"
