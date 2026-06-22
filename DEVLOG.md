@@ -4520,3 +4520,35 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Feature status change:** none (`--no-feature`; Codex workflow policy hardening).
 
 **Key decisions:** this is a hard Codex-facing contract, not a memory-only preference. Clear delivery wording finishes the ship path; ambiguous, exploratory, blocked, or explicitly uncommitted work does not get silently shipped.
+
+## 2026-06-21 -- router outage trace hardening
+
+**Commit:** `491d1eb` fix: harden router outage incident traces
+
+**What shipped:** Hardened the private VPN watchdog after the live R5C outage investigation. The tracer now prefers `tailscale netcheck --format json` with a fallback to legacy `--json`, and the router SSH incident bundle now captures dnsmasq `localuse`, Tailscale control-plane DNS, `tailscale status`, and recent `logread` output so the next outage preserves router-side evidence before a reboot wipes it.
+
+**Review:** builder-family=`openai`, Tier 3 override. Official Kimi diff review failed with a provider-side high-risk rejection in `.code-reviews/2026-06-21T14-19-43Z_9ef307.log`. Claude CLI override attempts timed out, so Keith explicitly overrode the blocked review path and the ship proceeded after local verification.
+
+**Verification:** `python3 -m py_compile scripts/router-watchdog/bin/private-vpn-watchdog.py`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog.test.sh`; `git diff --check --cached`
+
+**Feature status change:** none (`--no-feature`; router infrastructure hardening).
+
+**Follow-ups:** root cause is still narrowed, not proven. Next incident should preserve the richer router trace before reboot so we can distinguish DNS/control-plane collapse from a broader Mihomo or uplink failure.
+
+**Key decisions:** keep the fix in the watchdog trace layer instead of guessing at a durable router config change from post-reboot residue.
+
+## 2026-06-22 -- R5C unified autorecovery alerts
+
+**Commit:** `cd5fd80` feat: unify R5C autorecovery alerts
+
+**What shipped:** R5C autorecovery now has a unified alert narrative: first hard-down sample sends a first-hiccup alert, threshold 3 sends fired or blocked, and recovery sends recovered or cleared. Private-VPN duplicates are folded into the R5C incident while still writing incident evidence, and completed overlapping partition recoveries are suppressed with a durable `partition-suppressions.jsonl` audit row instead of another Telegram message.
+
+**Review:** builder-family=`openai`, Tier 3 override. Kimi review produced useful fixes across `.code-reviews/2026-06-22T14-30-27Z_6a47dc.log`, `.code-reviews/2026-06-22T14-36-03Z_efe1c5.log`, and `.code-reviews/2026-06-22T14-41-21Z_4427f2.log`, including stale R5C ownership expiry, terminal suppressed-recovery markers, strict partition overlap, stale alert-delivery cleanup, suspected-alert dedupe, and partition suppression audit rows. Remaining Kimi preference to suppress open or malformed R5C partition state was explicitly rejected because that would silently drop the only partition recovery signal; Keith instructed the ship to proceed.
+
+**Verification:** `python3 -m py_compile scripts/router-watchdog/bin/r5c-autorecovery.py scripts/router-watchdog/bin/private-vpn-watchdog.py scripts/router-watchdog/bin/partition-queue.py`; `bash -n scripts/router-watchdog/bin/r5c-autorecovery.sh scripts/router-watchdog/bin/check.sh tests/router-watchdog-r5c-autorecovery.test.sh tests/router-watchdog-private-vpn.test.sh tests/router-watchdog-ship-2.test.sh`; `bash tests/router-watchdog-r5c-autorecovery.test.sh`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog-ship-2.test.sh`; `bash tests/router-watchdog.test.sh`; `bash tests/router-watchdog-phase234.test.sh`; `git diff --check`.
+
+**Feature status change:** `feature_r5c-recovery-via-asus-power-cycle` remains `in-progress`; code is shipped and synced, but the MVP still requires the first real or supervised R5C hard-down trigger proving first-hiccup alert, evidence snapshot, exactly one ASUS reboot at 3/3, cooldown refusal, recovery within 10 minutes, and unified recovery/clear alert.
+
+**Follow-ups:** run the supervised/live MVP gate before marking the feature shipped. Watch `r5c-autorecovery-alerts.jsonl`, `r5c-autorecovery.jsonl`, and `partition-suppressions.jsonl` during the first real incident.
+
+**Key decisions:** keep open or malformed R5C partition state fail-open for alert visibility; only suppress completed overlapping partition recoveries with an audit marker. Use local JSONL alert append before Telegram send so delivery failure cannot block evidence capture or the ASUS reboot decision.
