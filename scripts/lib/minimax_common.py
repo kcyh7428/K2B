@@ -98,7 +98,7 @@ def load_kimi_api_key() -> str:
             return match.group(1)
     raise MinimaxError(
         "KIMI_API_KEY not set and not found in ~/.zshrc. "
-        "Export it or set K2B_LLM_PROVIDER=minimax to fall back."
+        "Export it and keep K2B_LLM_PROVIDER=kimi."
     )
 
 
@@ -116,9 +116,9 @@ def chat_completion(
     """POST a chat-completion request and return the parsed JSON response.
 
     Routes to Kimi K2.7 when K2B_LLM_PROVIDER=kimi (default as of 2026-04-25,
-    since MiniMax text models are returning status_code 2061 "plan not
-    supported"). Falls back to MiniMax chatcompletion_v2 when
-    K2B_LLM_PROVIDER=minimax.
+    since MiniMax text models are no longer live). The
+    K2B_LLM_PROVIDER=minimax branch remains only as historical provider
+    plumbing until a future explicit provider ship re-enables it.
 
     Kimi responses are translated into the MiniMax chatcompletion_v2 envelope
     shape (choices[0].message.content / usage.{prompt,completion,total}_tokens

@@ -16,11 +16,10 @@
 #   --scope plan --plan plans/2026-04-19_my-plan.md         # plan + files it references
 #   --scope files --files a.py,b.py                         # explicit list, no git context
 #
-# Provider routing lives in scripts/lib/minimax_common.py: K2B_LLM_PROVIDER
-# (default kimi) -> Kimi K2.7 Code at api.kimi.com/coding. Set
-# K2B_LLM_PROVIDER=minimax to route to the legacy MiniMax fallback at
-# MINIMAX_API_HOST (default https://api.minimaxi.com; subscription dead since
-# 2026-05-27).
+# Provider routing lives in scripts/lib/minimax_common.py. This reviewer uses
+# K2B_LLM_PROVIDER=kimi (the default) -> Kimi K2.7 Code at api.kimi.com/coding.
+# K2B_LLM_PROVIDER=minimax is deprecated and rejected below because the MiniMax
+# subscription has been dead since 2026-05-27.
 
 set -euo pipefail
 
@@ -51,9 +50,9 @@ Scopes:
   --scope files --files a.py,b.py                         # explicit list, no git context
 
 Environment:
-  - K2B_LLM_PROVIDER=kimi|minimax (default: kimi)
+  - K2B_LLM_PROVIDER=kimi (default: kimi)
   - K2B_LLM_MODEL (defaults per provider)
-  - KIMI_API_KEY / MINIMAX_API_KEY as required by provider
+  - KIMI_API_KEY
 USAGE
   exit 0
 fi

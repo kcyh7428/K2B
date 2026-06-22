@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared utilities for MiniMax API scripts
-# Sourced by all minimax-*.sh scripts
+# Shared utilities for Kimi text-worker scripts with historical minimax-* names.
+# Sourced by all minimax-*.sh compatibility scripts.
 #
 # ============================================================================
 # IMPORTANT: MiniMax subscription EXPIRED on or before 2026-05-27.
@@ -13,8 +13,9 @@
 #
 # We keep the MiniMax branch code intact, not delete it, because:
 # 1. The provider abstraction is useful if a future text provider plugs in.
-# 2. Re-activating MiniMax, if Keith subscribes again, needs no code change.
-# 3. Deletion of dead-but-quiescent text code is a separate cleanup ship.
+# 2. Removing dead-but-quiescent text code is a separate cleanup ship.
+# 3. Any future MiniMax reactivation must be an explicit provider ship, not a
+#    quiet K2B_LLM_PROVIDER=minimax env flip.
 #
 # Spec: wiki/concepts/Shipped/feature_vlm-gptsapi-migration.md
 # ============================================================================
@@ -55,17 +56,21 @@ if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) && -f "$HOME/.zshr
   set -euo pipefail
 fi
 
-MINIMAX_API_KEY="${MINIMAX_API_KEY:?Set MINIMAX_API_KEY in your environment}"
+K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
+if [[ "$K2B_LLM_PROVIDER" == "minimax" ]]; then
+  echo "ERROR: K2B_LLM_PROVIDER=minimax is deprecated and disabled (MiniMax subscription expired)." >&2
+  echo "       Set K2B_LLM_PROVIDER=kimi." >&2
+  return 1 2>/dev/null || exit 1
+fi
 MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
 
-# --- LLM text-provider switch (Kimi K2.7 primary, MiniMax fallback) ---
+# --- LLM text-provider switch (Kimi K2.7 primary, legacy MiniMax branch inert) ---
 # 2026-04-25: MiniMax Plus plan started returning status_code 2061 "your current
 # token plan not support model" for every text model (M2.7, M2.5, abab6.5, etc.).
 # Kimi K2.7 via the /coding/v1 Anthropic-compatible endpoint is the new primary.
 # Kimi is text-only. GPTsAPI owns image, VLM/OCR, TTS, and STT in K2B now.
-# To roll back to MiniMax for text when MiniMax releases a supported model, export
-# K2B_LLM_PROVIDER=minimax (no other changes needed).
-K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
+# Do not set K2B_LLM_PROVIDER=minimax in live K2B. The branch remains only for
+# historical compatibility until a future provider ship deliberately re-enables it.
 KIMI_API_HOST="${KIMI_API_HOST:-https://api.kimi.com/coding}"
 KIMI_DEFAULT_MODEL="${KIMI_DEFAULT_MODEL:-kimi-k2.7-code}"
 # Convenience exposed to callers: use this instead of hardcoding model ids.
@@ -86,7 +91,7 @@ export K2B_TEXT_WORKER_NAME K2B_TEXT_WORKER_ERROR_KEY
 if [[ "$K2B_LLM_PROVIDER" == "kimi" && -z "${KIMI_API_KEY:-}" ]]; then
   echo "ERROR: KIMI_API_KEY is not set." >&2
   echo "       Add to ~/.zshrc: export KIMI_API_KEY=\"sk-kimi-...\"" >&2
-  echo "       Or export K2B_LLM_PROVIDER=minimax to fall back." >&2
+  echo "       Keep K2B_LLM_PROVIDER=kimi; MiniMax fallback is disabled." >&2
   return 1 2>/dev/null || exit 1
 fi
 

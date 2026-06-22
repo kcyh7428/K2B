@@ -167,12 +167,12 @@ Before tier detection, identify who built the diff. This is mandatory for offici
 
 | Builder family | Examples | Required official review path |
 |---|---|---|
-| `openai` | Codex, OpenAI Agents, OpenAI Responses | Kimi only: `--builder-family openai --primary minimax --no-fallback` |
+| `openai` | Codex, OpenAI Agents, OpenAI Responses | Kimi only: `--builder-family openai --primary kimi --no-fallback` |
 | `kimi` | Kimi K2.7 Code worker edits | Codex only: `--builder-family kimi --primary codex --no-fallback` |
 | `anthropic` | Claude Code, Claude Agent SDK | Codex or Kimi are both independent |
 | `other` | Human, shell-only, unknown or mixed tool | Choose one independent reviewer, pass `--builder-family other --no-fallback`, and record why |
 
-The reviewer key `minimax` is historical. In current K2B, that path routes to Kimi K2.7 Code by default through `K2B_LLM_PROVIDER=kimi`.
+Use reviewer key `kimi` for the live Kimi K2.7 reviewer. The key `minimax` remains a deprecated compatibility alias only; do not use it in new ship instructions. The review runner invokes `scripts/kimi-review.sh`; it no longer falls back to `scripts/minimax-review.sh`.
 
 Set:
 
@@ -188,7 +188,7 @@ RUNNER_AUDIT_ARGS=()
 
 case "$BUILDER_FAMILY" in
   openai)
-    RUNNER_PRIMARY=minimax
+    RUNNER_PRIMARY=kimi
     RUNNER_EXTRA_ARGS=(--no-fallback)
     ;;
   kimi)
@@ -201,7 +201,7 @@ case "$BUILDER_FAMILY" in
     ;;
   other)
     if [ -z "${OTHER_REVIEWER_PRIMARY:-}" ]; then
-      echo "[FATAL] builder-family=other requires OTHER_REVIEWER_PRIMARY=codex|minimax and a recorded independence reason." >&2
+      echo "[FATAL] builder-family=other requires OTHER_REVIEWER_PRIMARY=codex|kimi and a recorded independence reason." >&2
       exit 3
     fi
     if [ -z "${OTHER_REVIEWER_REASON:-}" ]; then
@@ -209,9 +209,9 @@ case "$BUILDER_FAMILY" in
       exit 3
     fi
     case "$OTHER_REVIEWER_PRIMARY" in
-      codex|minimax) RUNNER_PRIMARY="$OTHER_REVIEWER_PRIMARY" ;;
+      codex|kimi) RUNNER_PRIMARY="$OTHER_REVIEWER_PRIMARY" ;;
       *)
-        echo "[FATAL] invalid OTHER_REVIEWER_PRIMARY=$OTHER_REVIEWER_PRIMARY (expected codex|minimax)" >&2
+        echo "[FATAL] invalid OTHER_REVIEWER_PRIMARY=$OTHER_REVIEWER_PRIMARY (expected codex|kimi)" >&2
         exit 3
         ;;
     esac
@@ -224,7 +224,7 @@ case "$BUILDER_FAMILY" in
   anthropic)
     RUNNER_PRIMARY=codex
     if [ -n "${SKIP_CODEX:-}" ]; then
-      RUNNER_PRIMARY=minimax
+      RUNNER_PRIMARY=kimi
       RUNNER_EXTRA_ARGS=(--no-fallback)
     fi
     ;;
@@ -417,8 +417,8 @@ if [ "$TIER" = "1" ]; then
 fi
 
 if [ "$TIER" = "1" ] && [ "$BUILDER_FAMILY" = "openai" ]; then
-  if [ "$RUNNER_PRIMARY" != "minimax" ]; then
-    echo "[FATAL] internal error: Tier 1 direct Kimi path requires RUNNER_PRIMARY=minimax, got $RUNNER_PRIMARY" >&2
+  if [ "$RUNNER_PRIMARY" != "kimi" ]; then
+    echo "[FATAL] internal error: Tier 1 direct Kimi path requires RUNNER_PRIMARY=kimi, got $RUNNER_PRIMARY" >&2
     exit 3
   fi
 
@@ -673,7 +673,7 @@ K2B uses an independent second-model reviewer to catch blind spots the builder c
 
 **Checkpoint 1: Plan Review.** Before implementing any new feature, skill, or significant refactor, after the plan is written but before code is touched:
 
-- **OpenAI-built plans**: use Kimi only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family openai --primary minimax --no-fallback --wait`.
+- **OpenAI-built plans**: use Kimi only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family openai --primary kimi --no-fallback --wait`.
 - **Kimi-built plans**: use Codex only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family kimi --primary codex --no-fallback --wait`.
 - **Claude/other-built plans**: Codex can review while available: `scripts/review.sh plan --plan <repo-relative-path> --builder-family anthropic --primary codex --wait`.
 - **Bare Kimi fallback caveat**: Kimi CANNOT see files outside the git working tree, and plan files may live outside a repo. A bare `scripts/kimi-review.sh` invocation gathers context from `git status` / `git diff` only, so pass `--scope plan --plan <path>` through `scripts/review.sh` when possible. If not possible, use one of these workarounds:

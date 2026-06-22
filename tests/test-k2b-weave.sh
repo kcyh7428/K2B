@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-k2b-weave.sh -- integration test harness for k2b-weave
 #
-# Runs against tests/fixtures/weave-vault/ with a mocked MiniMax response.
+# Runs against tests/fixtures/weave-vault/ with a mocked Kimi response.
 # Covers: dry-run, run, digest creation, apply, idempotence, ledger exclusion,
 # concurrency lock, stale lock reclaim, JSONL tearing recovery, rename race.
 #
@@ -132,8 +132,8 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "from_slug": "project_alpha",
     "to_slug": "reference_minimax",
     "confidence": 0.92,
-    "rationale": "Project Alpha uses the MiniMax API as its text model",
-    "evidence_span": "uses the MiniMax API for text generation"
+    "rationale": "Project Alpha uses the text worker API as its text model",
+    "evidence_span": "uses the text worker API for text generation"
   },
   {
     "from_path": "wiki/projects/project_alpha.md",
@@ -176,8 +176,8 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "from_slug": "project_alpha",
     "to_slug": "reference_minimax",
     "confidence": 0.92,
-    "rationale": "Project Alpha uses the MiniMax API as its text model",
-    "evidence_span": "uses the MiniMax API for text generation"
+    "rationale": "Project Alpha uses the text worker API as its text model",
+    "evidence_span": "uses the text worker API for text generation"
   },
   {
     "from_path": "wiki/projects/project_alpha.md",
@@ -230,8 +230,8 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "from_slug": "project_alpha",
     "to_slug": "reference_minimax",
     "confidence": 0.92,
-    "rationale": "uses MiniMax",
-    "evidence_span": "uses the MiniMax API for text generation"
+    "rationale": "uses the text worker API",
+    "evidence_span": "uses the text worker API for text generation"
   },
   {
     "from_path": "wiki/projects/project_alpha.md",
@@ -284,8 +284,8 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "from_slug": "project_alpha",
     "to_slug": "reference_minimax",
     "confidence": 0.92,
-    "rationale": "uses MiniMax",
-    "evidence_span": "uses the MiniMax API for text generation"
+    "rationale": "uses the text worker API",
+    "evidence_span": "uses the text worker API for text generation"
   }
 ]
 JSON
@@ -307,24 +307,24 @@ PY
 "$REPO_DIR/scripts/k2b-weave.sh" apply "$digest_file" >/dev/null 2>&1
 
 # Second run -- same mock response, but the pair is now in ledger as "applied".
-# The weaver should exclude it from MiniMax input.
-# We verify by checking that the exclusion set passed to MiniMax contains the pair.
+# The weaver should exclude it from text worker input.
+# We verify by checking that the exclusion set passed to the text worker contains the pair.
 # Since our mock ignores input, we instead verify the ledger has NOT grown.
 ledger_before=$(wc -l < "$SANDBOX/wiki/context/crosslink-ledger.jsonl")
 # Also: since project_alpha now has the link, wikilink exclusion should catch it too.
 # Run again. Mock returns the same pair. Our system should either:
-#   (a) skip at MiniMax input-building phase (exclude set)
+#   (a) skip at text worker input-building phase (exclude set)
 #   (b) still produce the proposal (mock ignores exclude) but then filter duplicates
 # We test (a) indirectly by checking no new pending rows landed.
 sleep 1  # ensure different run_id
 "$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
 pending_after=$(grep -c '"status":"pending"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" || echo 0)
 # After a second run where the mock returns an already-applied pair, we should see:
-# - Either no digest (because exclusion made the MiniMax input skip it)
+# - Either no digest (because exclusion made the text worker input skip it)
 # - Or a digest but the pair is filtered during verify/score (duplicate detection)
 # Since the mock doesn't respect exclude set, and we don't filter mock responses against
-# the ledger post-MiniMax, we'd currently re-propose. That's acceptable for the mock
-# case -- in real use, MiniMax would honor the exclude instruction.
+# the ledger post-text-worker, we'd currently re-propose. That's acceptable for the mock
+# case -- in real use, the text worker would honor the exclude instruction.
 # For the test we just verify the applied row is still there and hasn't been overwritten.
 applied_after=$(grep -c '"status":"applied"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" || echo 0)
 assert_equal "applied row preserved after second run" "1" "$applied_after"
@@ -366,7 +366,7 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "to_slug": "person_bob",
     "confidence": 0.55,
     "rationale": "tenuous link",
-    "evidence_span": "MiniMax API"
+    "evidence_span": "text worker API"
   }
 ]
 JSON
@@ -509,8 +509,8 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "from_slug": "project_alpha",
     "to_slug": "reference_minimax",
     "confidence": 0.9,
-    "rationale": "uses MiniMax",
-    "evidence_span": "uses the MiniMax API for text generation"
+    "rationale": "uses the text worker API",
+    "evidence_span": "uses the text worker API for text generation"
   }
 ]
 JSON
@@ -637,7 +637,7 @@ cat > "$MOCK_DIR/response.json" <<'JSON'
     "from_slug": "project_alpha",
     "to_slug": "reference_minimax",
     "confidence": 0.92,
-    "rationale": "uses MiniMax",
+    "rationale": "uses the text worker API",
     "evidence_span": "[[reference_minimax|How MiniMax Powers Recruiting]]"
   },
   {

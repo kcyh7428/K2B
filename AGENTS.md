@@ -188,13 +188,13 @@ The Mac Mini has no project `.git` history. Anything runtime-visible on the Mini
 
 Every commit needs adversarial review.
 
-- If Codex, OpenAI Agents, or OpenAI Responses built the diff, use Kimi-backed review only: `scripts/review.sh ... --builder-family openai --primary minimax --no-fallback --wait`.
+- If Codex, OpenAI Agents, or OpenAI Responses built the diff, use Kimi review only: `scripts/review.sh ... --builder-family openai --primary kimi --no-fallback --wait`.
 - If Kimi built the diff, use Codex only and do not fall back to Kimi: `scripts/review.sh ... --builder-family kimi --primary codex --no-fallback --wait`.
 - If Claude Code built the diff, use `scripts/review.sh ... --builder-family anthropic --primary codex --wait`; fallback to Kimi is allowed because both reviewers are independent of Claude.
-- If the builder is unknown, mixed, or not represented by the named families, choose one independent reviewer and use `--builder-family other --primary <codex|minimax> --no-fallback`; record why that reviewer is independent.
+- If the builder is unknown, mixed, or not represented by the named families, choose one independent reviewer and use `--builder-family other --primary <codex|kimi> --no-fallback`; record why that reviewer is independent.
 - Same-family fallback does not count as official independent review.
 
-The reviewer key `minimax` is historical; current K2B routes that path to Kimi K2.7 Code by default through `K2B_LLM_PROVIDER=kimi`.
+Use reviewer key `kimi` for the live Kimi K2.7 reviewer. The key `minimax` remains a deprecated compatibility alias only and should not appear in recommended commands. The review runner invokes `scripts/kimi-review.sh`; it no longer falls back to `scripts/minimax-review.sh`.
 Omitting `--builder-family` is for ad-hoc reviews only, not official `/ship` gates.
 `/ship` must not guess the builder. Codex desktop sessions must set `BUILDER_FAMILY=openai`; Claude, Kimi, and mixed-builder sessions must set their actual family before `/ship`.
 

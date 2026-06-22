@@ -46,7 +46,7 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
             "exit 0",
         ]
         rc = rr.run_one_reviewer(
-            "minimax",
+            "kimi",
             cmd,
             "test_job",
             self.log_path,
@@ -68,7 +68,7 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
             "exit 0",
         ]
         rc = rr.run_one_reviewer(
-            "minimax",
+            "kimi",
             cmd,
             "test_job",
             self.log_path,
@@ -93,7 +93,7 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
         cmd = rr.build_kimi_cmd("diff", ["a.py"], None, "")
         self.assertEqual(Path(cmd[0]), scripts_dir / "kimi-review.sh")
 
-    def test_build_kimi_cmd_falls_back_to_historical_alias(self) -> None:
+    def test_build_kimi_cmd_does_not_fall_back_to_historical_alias(self) -> None:
         scripts_dir = self.tmp / "scripts"
         scripts_dir.mkdir()
         (scripts_dir / "minimax-review.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
@@ -102,7 +102,7 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
         rr.REPO_ROOT = self.tmp
 
         cmd = rr.build_kimi_cmd("diff", ["a.py"], None, "")
-        self.assertEqual(Path(cmd[0]), scripts_dir / "minimax-review.sh")
+        self.assertIsNone(cmd)
 
 
 if __name__ == "__main__":

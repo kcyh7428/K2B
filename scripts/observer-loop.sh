@@ -41,7 +41,7 @@ ACTIVE_HOURS_START=7         # 7am HKT
 ACTIVE_HOURS_END=23          # 11pm HKT
 SLEEP_INTERVAL=300           # Check every 5 minutes
 TAIL_COUNT=200               # Last N observations to analyze
-MODEL="MiniMax-M2.7"        # MiniMax model (upgraded from M2.5 2026-04-08)
+MODEL="${K2B_LLM_MODEL:-kimi-k2.7-code}"  # Kimi text worker model label
 
 # --- Helpers ---
 
@@ -232,10 +232,10 @@ Analyze these observations and return your findings as JSON."
       temperature: 0.3
     }')
 
-  log "Calling MiniMax API ($MODEL)..."
+  log "Calling Kimi text worker ($MODEL)..."
   local response
   response=$(mm_api POST /v1/text/chatcompletion_v2 "$request_body" 2>&1) || {
-    log "ERROR: MiniMax API call failed: $response"
+    log "ERROR: Kimi text worker call failed: $response"
     rm -rf "$LOCKFILE"
     return 1
   }
@@ -244,7 +244,7 @@ Analyze these observations and return your findings as JSON."
   local content
   content=$(echo "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
   if [ -z "$content" ]; then
-    log "ERROR: Empty response from MiniMax API"
+    log "ERROR: Empty response from Kimi text worker"
     log "Raw response: $(echo "$response" | head -c 500)"
     rm -rf "$LOCKFILE"
     return 1

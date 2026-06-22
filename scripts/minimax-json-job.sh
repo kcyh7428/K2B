@@ -12,7 +12,7 @@
 #   --prompt <path>         System prompt file. Mutually exclusive with --prompt-stdin.
 #   --prompt-stdin          Read system prompt from stdin (for dynamic prompts).
 #   --input <path>          User content file. Use '-' for stdin, but not both with --prompt-stdin.
-#   --model <id>            Rollback model id when K2B_LLM_PROVIDER=minimax (default: MiniMax-M2.7)
+#   --model <id>            Text model id label (default: active Kimi model via K2B_LLM_MODEL)
 #   --max-tokens <N>        Max completion tokens (default: 4000)
 #   --temperature <F>       Temperature (default: 0.2)
 #   --job-name <label>      Required. Logged in minimax-jobs.jsonl.

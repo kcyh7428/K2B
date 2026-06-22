@@ -598,13 +598,21 @@ def main() -> int:
         help="Comma-separated list of paths (required when --scope diff or files)",
     )
     # Default model tracks the active provider: Kimi's kimi-k2.7-code when
-    # K2B_LLM_PROVIDER=kimi (current default), MiniMax-M2.7 on MiniMax
-    # rollback. Callers can still pass --model to override.
+    # K2B_LLM_PROVIDER=kimi (current default). MiniMax is not a live rollback
+    # path; callers can still pass --model to override Kimi model variants.
     provider = os.environ.get("K2B_LLM_PROVIDER", "kimi").lower()
     if provider not in {"kimi", "minimax"}:
         print(
             f"[minimax-review] unsupported provider: {provider!r}; "
-            "expected 'kimi' or 'minimax'.",
+            "expected 'kimi'.",
+            file=sys.stderr,
+        )
+        return 1
+    if provider == "minimax":
+        print(
+            "[minimax-review] K2B_LLM_PROVIDER=minimax is deprecated and "
+            "disabled (MiniMax subscription expired). Set "
+            "K2B_LLM_PROVIDER=kimi.",
             file=sys.stderr,
         )
         return 1
@@ -617,13 +625,6 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-    else:
-        print(
-            "[minimax-review] K2B_LLM_PROVIDER=minimax is deprecated; "
-            "MiniMax subscription is inactive.",
-            file=sys.stderr,
-        )
-        _default_model = os.environ.get("K2B_LLM_MODEL", "MiniMax-M2.7")
     parser.add_argument(
         "--model",
         default=_default_model,

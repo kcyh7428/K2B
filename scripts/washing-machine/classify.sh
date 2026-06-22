@@ -89,7 +89,7 @@ trap 'rm -f "$TMP_INPUT"' EXIT
   --input "$TMP_INPUT" \
   --job-name washing-machine-classify \
   --prompt-version "classifier-v1.0" \
-  --model MiniMax-M2.7 \
+  --model "${K2B_LLM_MODEL:-kimi-k2.7-code}" \
   --max-tokens 1200 \
   --temperature 0.1 \
   --system-name "K2B Washing Machine" \

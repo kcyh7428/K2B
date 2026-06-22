@@ -3,7 +3,7 @@
 #
 # Guarantees the reviewer can never hang the ship:
 #   * deadline: hard SIGTERM at --deadline seconds (default 360 = 6 min)
-#   * fallback: if Codex fails/times out, auto-runs MiniMax on same scope
+#   * fallback: if Codex fails/times out, auto-runs Kimi on same scope
 #   * visibility: watchdog injects HEARTBEAT / HEARTBEAT_STALE / WEDGE_SUSPECTED
 #     lines into the unified log every few seconds, so `scripts/review-poll.sh`
 #     always shows fresh activity even during pure-inference phases.
@@ -18,7 +18,7 @@
 #   scripts/review.sh files --files a.py,b.py --focus "regex safety"
 #
 # Common flags:
-#   --primary codex|minimax   default: codex for ad-hoc reviews; required with --builder-family
+#   --primary codex|kimi      default: codex for ad-hoc reviews; required with --builder-family
 #   --builder-family openai|anthropic|kimi|other
 #                              enforce the builder/reviewer family matrix
 #   --skip-codex REASON       audit + enforce that Codex is not used

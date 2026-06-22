@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Kimi-backed knowledge compilation (routes via minimax-common.sh -> K2B_LLM_PROVIDER, default kimi).
-# The "minimax" in the name is historical; the worker is Kimi K2.7 Code unless K2B_LLM_PROVIDER=minimax.
+# The "minimax" in the name is historical; the live worker is Kimi K2.7 Code.
 # Reads a raw source + wiki context, returns structured JSON for Opus to apply
 #
 # Usage: minimax-compile.sh <raw-source-path>

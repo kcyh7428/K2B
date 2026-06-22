@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # tests/review-runner.test.sh
-# Tests for scripts/lib/review_runner.py (Codex+MiniMax fallback review runner).
+# Tests for scripts/lib/review_runner.py (Codex+Kimi fallback review runner).
 #
 # Architecture: each test builds a fresh temp git repo with:
 #   - a dirty file (to satisfy the classifier's "something changed" requirement)
-#   - a fake scripts/minimax-review.sh shim (inside the temp REPO_ROOT)
+#   - a fake scripts/kimi-review.sh shim (inside the temp REPO_ROOT)
 #   - a fake codex plugin tree with a fake codex-companion.mjs (real .mjs)
 # then invokes the real runner at its actual K2B location.
 #
@@ -48,13 +48,13 @@ mktmp() {
   echo "$d"
 }
 
-# Seed a fresh git repo with a dirty file, a fake minimax shim, and a fake
+# Seed a fresh git repo with a dirty file, a fake Kimi shim, and a fake
 # codex plugin. $1 = behavior for codex ("approve"|"hang"|"empty"|"error"),
-# $2 = behavior for minimax ("approve"|"error"|"notfound").
+# $2 = behavior for kimi ("approve"|"error"|"notfound").
 seed_repo() {
   local d="$1"
   local codex_behavior="$2"
-  local minimax_behavior="$3"
+  local kimi_behavior="$3"
 
   cd "$d"
   git init -q
@@ -69,29 +69,28 @@ seed_repo() {
 /plugins/
 EOF
 
-  # Seed scripts dir + minimax shim (or leave scripts/minimax-review.sh
-  # missing if behavior=notfound). The runner builds an absolute path to
-  # scripts/minimax-review.sh via REPO_ROOT; the shim must exist at that
-  # path, and the dir must be tracked by git so the EISDIR guard doesn't
-  # flag it.
+  # Seed scripts dir + Kimi shim (or leave scripts/kimi-review.sh missing if
+  # behavior=notfound). The runner builds an absolute path to
+  # scripts/kimi-review.sh via REPO_ROOT; the shim must exist at that path,
+  # and the dir must be tracked by git so the EISDIR guard doesn't flag it.
   mkdir -p scripts
-  case "$minimax_behavior" in
+  case "$kimi_behavior" in
     approve)
-      cat > scripts/minimax-review.sh <<'EOF'
+      cat > scripts/kimi-review.sh <<'EOF'
 #!/usr/bin/env bash
-echo "# MiniMax MiniMax-M2.7 review -- APPROVE"
+echo "# kimi-k2.7-code review -- APPROVE"
 echo '{"verdict": "approve"}'
 exit 0
 EOF
-      chmod +x scripts/minimax-review.sh
+      chmod +x scripts/kimi-review.sh
       ;;
     error)
-      cat > scripts/minimax-review.sh <<'EOF'
+      cat > scripts/kimi-review.sh <<'EOF'
 #!/usr/bin/env bash
-echo "minimax error" >&2
+echo "kimi error" >&2
 exit 1
 EOF
-      chmod +x scripts/minimax-review.sh
+      chmod +x scripts/kimi-review.sh
       ;;
     notfound)
       # Deliberately do NOT create the shim; add placeholder so scripts/
@@ -99,6 +98,14 @@ EOF
       echo "placeholder" > scripts/.placeholder
       ;;
   esac
+  if [ "$kimi_behavior" != "notfound" ]; then
+    cat > scripts/minimax-review.sh <<'EOF'
+#!/usr/bin/env bash
+echo "deprecated minimax alias should not be selected when scripts/kimi-review.sh exists" >&2
+exit 1
+EOF
+    chmod +x scripts/minimax-review.sh
+  fi
 
   # Commit the baseline so scripts/ and .gitignore are tracked. Only
   # target.py will be dirty when the runner scans.
@@ -201,9 +208,9 @@ except Exception as e:
   pass "$t"
 }
 
-# ---------- Test 2: Codex hang falls back to MiniMax ----------
-test_codex_hang_falls_back_to_minimax() {
-  local t="test_codex_hang_falls_back_to_minimax"
+# ---------- Test 2: Codex hang falls back to Kimi ----------
+test_codex_hang_falls_back_to_kimi() {
+  local t="test_codex_hang_falls_back_to_kimi"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" hang approve)"
 
@@ -246,7 +253,7 @@ print(d.get('fallback_used'))
     return
   fi
 
-  local attempts_codex attempts_minimax
+  local attempts_codex attempts_kimi
   attempts_codex=$(python3 -c "
 import json
 d=json.loads(open('$state_path').read())
@@ -254,19 +261,19 @@ att=d.get('reviewer_attempts', [])
 for a in att:
     if a.get('reviewer')=='codex': print(a.get('result')); break
 ")
-  attempts_minimax=$(python3 -c "
+  attempts_kimi=$(python3 -c "
 import json
 d=json.loads(open('$state_path').read())
 att=d.get('reviewer_attempts', [])
 for a in att:
-    if a.get('reviewer')=='minimax': print(a.get('result')); break
+    if a.get('reviewer')=='kimi': print(a.get('result')); break
 ")
   if [ "$attempts_codex" != "timed_out" ]; then
     fail "$t" "expected codex result=timed_out, got $attempts_codex"
     return
   fi
-  if [ "$attempts_minimax" != "ok" ]; then
-    fail "$t" "expected minimax result=ok, got $attempts_minimax"
+  if [ "$attempts_kimi" != "ok" ]; then
+    fail "$t" "expected kimi result=ok, got $attempts_kimi"
     return
   fi
 
@@ -297,7 +304,7 @@ test_both_fail_returns_exit_2() {
 test_deadline_kill_after_n_seconds() {
   local t="test_deadline_kill_after_n_seconds"
   local d; d="$(mktmp)"
-  # Use notfound for minimax so fallback itself fails fast (avoids 10s grace blur).
+  # Use notfound for Kimi so fallback itself fails fast (avoids 10s grace blur).
   local plugin; plugin="$(seed_repo "$d" hang notfound)"
 
   cd "$d"
@@ -312,7 +319,7 @@ test_deadline_kill_after_n_seconds() {
 
   # Runner should kill codex at deadline=2s, grace 10s = total <= 15s with fallback attempt
   if [ "$elapsed" -gt 30 ]; then
-    fail "$t" "runner took ${elapsed}s, expected <=30s (deadline 2s + 10s grace + minimax spawn fail)"
+    fail "$t" "runner took ${elapsed}s, expected <=30s (deadline 2s + 10s grace + kimi spawn fail)"
     return
   fi
 
@@ -346,7 +353,7 @@ test_quality_gate_no_verdict_forces_fallback() {
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    fail "$t" "expected rc=0 after MiniMax fallback approved, got rc=$rc. out=$out"
+    fail "$t" "expected rc=0 after Kimi fallback approved, got rc=$rc. out=$out"
     return
   fi
 
@@ -395,7 +402,7 @@ test_codex_unavailable_reason_eisdir() {
   local rc=$?
 
   if [ "$rc" -ne 0 ]; then
-    fail "$t" "expected rc=0 (MiniMax approves), got rc=$rc. out=$out"
+    fail "$t" "expected rc=0 (Kimi approves), got rc=$rc. out=$out"
     return
   fi
 
@@ -436,10 +443,10 @@ for a in att:
 
 # ---------- Test 7: plan scope runs Codex as PRIMARY (regression fix 2026-05-31) ----------
 # Codex reviews the plan file via the `task` subcommand (read-only sandbox,
-# --prompt-file). The old code hard-skipped plan scope to MiniMax claiming
+# --prompt-file). The old code hard-skipped plan scope to Kimi claiming
 # codex-companion.mjs needs a --path flag it "dropped" -- but no companion
 # version ever had --path, and `task` does not need it. Codex is primary again;
-# MiniMax stays the fallback (see test 7b).
+# Kimi stays the fallback (see test 7b).
 test_plan_scope_runs_codex_primary() {
   local t="test_plan_scope_runs_codex_primary"
   local d; d="$(mktmp)"
@@ -523,14 +530,14 @@ print(d.get('fallback_used'))
   pass "$t"
 }
 
-# ---------- Test 7b: plan scope falls back to MiniMax when Codex fails ----------
+# ---------- Test 7b: plan scope falls back to Kimi when Codex fails ----------
 # Also proves the fallback actually receives plan SCOPE + the plan PATH (not a
 # bare working-tree review): the shim below exits non-zero unless argv carries
 # `--scope plan` and `--plan plans/tiny.md`, so a passing test guarantees Kimi
 # reviews the plan file. (Without this argv guard the fake shim ignored argv and
 # the regression guarantee was untested -- Codex plan-review P1 #4.)
-test_plan_scope_codex_fails_falls_back_to_minimax() {
-  local t="test_plan_scope_codex_fails_falls_back_to_minimax"
+test_plan_scope_codex_fails_falls_back_to_kimi() {
+  local t="test_plan_scope_codex_fails_falls_back_to_kimi"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" error approve)"
 
@@ -544,7 +551,7 @@ Placeholder for plan-scope fallback test.
 EOF
 
   # Replace the standard shim with one that ASSERTS plan scope + plan path.
-  cat > "$d/scripts/minimax-review.sh" <<'EOF'
+  cat > "$d/scripts/kimi-review.sh" <<'EOF'
 #!/usr/bin/env bash
 args="$*"
 case "$args" in
@@ -553,11 +560,11 @@ case "$args" in
     echo "FALLBACK-ARGV-MISSING-PLAN-SCOPE: $args" >&2
     exit 1 ;;
 esac
-echo "# MiniMax MiniMax-M2.7 review -- APPROVE"
+echo "# kimi-k2.7-code review -- APPROVE"
 echo '{"verdict":"approve"}'
 exit 0
 EOF
-  chmod +x "$d/scripts/minimax-review.sh"
+  chmod +x "$d/scripts/kimi-review.sh"
 
   local out
   out=$(python3 "$RUNNER" plan --plan plans/tiny.md --wait \
@@ -565,7 +572,7 @@ EOF
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    fail "$t" "expected rc=0 after MiniMax fallback, got rc=$rc. out=$out"
+    fail "$t" "expected rc=0 after Kimi fallback, got rc=$rc. out=$out"
     return
   fi
 
@@ -591,16 +598,16 @@ import json
 d=json.loads(open('$state_path').read())
 print(d.get('fallback_used'))
 ")
-  if [ "$reviewers" != "codex,minimax" ]; then
-    fail "$t" "expected attempts codex,minimax, got $reviewers. state=$(cat "$state_path")"
+  if [ "$reviewers" != "codex,kimi" ]; then
+    fail "$t" "expected attempts codex,kimi, got $reviewers. state=$(cat "$state_path")"
     return
   fi
   if [ "$fallback_used" != "True" ]; then
     fail "$t" "expected fallback_used True, got $fallback_used"
     return
   fi
-  if ! grep -q "# MiniMax" "$log_path"; then
-    fail "$t" "expected MiniMax fallback output in log. log=$(cat "$log_path")"
+  if ! grep -q "# kimi-k2.7-code review" "$log_path"; then
+    fail "$t" "expected Kimi fallback output in log. log=$(cat "$log_path")"
     return
   fi
   pass "$t"
@@ -674,27 +681,27 @@ print(data.get("log_path", ""))
   pass "$t"
 }
 
-# ---------- Test A3: parent MINIMAX_API_KEY is inherited, not overwritten ----------
-test_minimax_key_inherited_from_parent_env() {
-  local t="test_minimax_key_inherited_from_parent_env"
+# ---------- Test A3: parent KIMI_API_KEY is inherited, not overwritten ----------
+test_kimi_key_inherited_from_parent_env() {
+  local t="test_kimi_key_inherited_from_parent_env"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
-  # Replace the standard minimax shim with one that ECHOES the env var value
+  # Replace the standard Kimi shim with one that ECHOES the env var value
   # into its own stdout so we can verify inheritance.
-  cat > "$d/scripts/minimax-review.sh" <<'EOF'
+  cat > "$d/scripts/kimi-review.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "# MiniMax MiniMax-M2.7 review -- APPROVE"
-echo "KEY-ECHO: [${MINIMAX_API_KEY:-UNSET}]"
+echo "# kimi-k2.7-code review -- APPROVE"
+echo "KEY-ECHO: [${KIMI_API_KEY:-UNSET}]"
 exit 0
 EOF
-  chmod +x "$d/scripts/minimax-review.sh"
+  chmod +x "$d/scripts/kimi-review.sh"
 
   cd "$d"
   local out
-  out=$(MINIMAX_API_KEY="inherited-sentinel-xyz" python3 "$RUNNER" diff \
+  out=$(KIMI_API_KEY="inherited-sentinel-xyz" python3 "$RUNNER" diff \
       --files target.py --wait --codex-plugin "$plugin" \
-      --primary minimax --focus "test" 2>&1)
+      --primary kimi --focus "test" 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
     fail "$t" "rc=$rc, out=$out"
@@ -718,16 +725,16 @@ print(data.get("log_path", ""))
   pass "$t"
 }
 
-# ---------- Test 10: primary MiniMax diff requires explicit files ----------
-test_primary_minimax_diff_requires_files_before_fallback() {
-  local t="test_primary_minimax_diff_requires_files_before_fallback"
+# ---------- Test 10: primary Kimi diff requires explicit files ----------
+test_primary_kimi_diff_requires_files_before_fallback() {
+  local t="test_primary_kimi_diff_requires_files_before_fallback"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --wait \
-      --codex-plugin "$plugin" --primary minimax \
+      --codex-plugin "$plugin" --primary kimi \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -740,7 +747,7 @@ test_primary_minimax_diff_requires_files_before_fallback() {
     return
   fi
   if echo "$out" | grep -q "# Codex Review"; then
-    fail "$t" "Codex fallback ran despite invalid MiniMax diff args. out=$out"
+    fail "$t" "Codex fallback ran despite invalid Kimi diff args. out=$out"
     return
   fi
   # Stronger negative check: prove no reviewer process spawned at all by
@@ -764,7 +771,7 @@ test_no_fallback_stops_after_primary_failure() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --codex-plugin "$plugin" --primary kimi --no-fallback \
       --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -791,15 +798,15 @@ else:
   fi
   state_path="${log_path%.log}.json"
 
-  # Strongest signal first: state file proves only minimax attempted.
+  # Strongest signal first: state file proves only Kimi attempted.
   local reviewers
   reviewers=$(python3 -c "
 import json
 d=json.loads(open('$state_path').read())
 print(','.join(a.get('reviewer','') for a in d.get('reviewer_attempts', [])))
 ")
-  if [ "$reviewers" != "minimax" ]; then
-    fail "$t" "expected only minimax attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+  if [ "$reviewers" != "kimi" ]; then
+    fail "$t" "expected only kimi attempt, got reviewers=$reviewers state=$(cat "$state_path")"
     return
   fi
   # Negative SPAWN check: log must NOT contain any spawn for codex.
@@ -836,7 +843,7 @@ test_openai_builder_rejects_codex_primary() {
     fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
     return
   fi
-  if ! echo "$out" | grep -q "builder-family openai requires --primary minimax --no-fallback"; then
+  if ! echo "$out" | grep -q "builder-family openai requires --primary kimi --no-fallback"; then
     fail "$t" "expected openai matrix error, got: $out"
     return
   fi
@@ -851,15 +858,15 @@ test_openai_builder_rejects_codex_primary() {
 }
 
 # ---------- Test 13: OpenAI-built diffs route to Kimi with no Codex fallback ----------
-test_openai_builder_accepts_minimax_no_fallback() {
-  local t="test_openai_builder_accepts_minimax_no_fallback"
+test_openai_builder_accepts_kimi_no_fallback() {
+  local t="test_openai_builder_accepts_kimi_no_fallback"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --codex-plugin "$plugin" --primary kimi --no-fallback \
       --builder-family openai --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -895,8 +902,8 @@ import json
 d=json.loads(open('$state_path').read())
 print(d.get('builder_family'))
 ")
-  if [ "$reviewers" != "minimax" ]; then
-    fail "$t" "expected only minimax attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+  if [ "$reviewers" != "kimi" ]; then
+    fail "$t" "expected only kimi attempt, got reviewers=$reviewers state=$(cat "$state_path")"
     return
   fi
   if [ "$builder_family" != "openai" ]; then
@@ -915,15 +922,15 @@ print(d.get('builder_family'))
 }
 
 # ---------- Test 14: Kimi-built diffs cannot use Kimi reviewer ----------
-test_kimi_builder_rejects_minimax_primary() {
-  local t="test_kimi_builder_rejects_minimax_primary"
+test_kimi_builder_rejects_kimi_primary() {
+  local t="test_kimi_builder_rejects_kimi_primary"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --codex-plugin "$plugin" --primary kimi --no-fallback \
       --builder-family kimi --focus "test" 2>&1)
   local rc=$?
 
@@ -991,7 +998,7 @@ print(d.get('builder_family'))
     fail "$t" "expected builder_family=kimi, got $builder_family"
     return
   fi
-  if grep -q "REVIEWER_START reviewer=minimax" "$log_path"; then
+  if grep -q "REVIEWER_START reviewer=kimi" "$log_path"; then
     fail "$t" "Kimi reviewer appeared despite Kimi builder no-fallback matrix. log=$(cat "$log_path")"
     return
   fi
@@ -1148,7 +1155,7 @@ test_skip_codex_requires_no_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax \
+      --codex-plugin "$plugin" --primary kimi \
       --builder-family anthropic --skip-codex "codex unavailable" \
       --focus "test" 2>&1)
   local rc=$?
@@ -1173,7 +1180,7 @@ test_skip_codex_records_reason() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax --no-fallback \
+      --codex-plugin "$plugin" --primary kimi --no-fallback \
       --builder-family anthropic --skip-codex "codex unavailable" \
       --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1208,8 +1215,8 @@ print(d.get('skip_codex'))
 }
 
 # ---------- Test 23: direct Kimi reviewer rejects Kimi-built diffs ----------
-test_direct_minimax_rejects_kimi_builder() {
-  local t="test_direct_minimax_rejects_kimi_builder"
+test_direct_kimi_reviewer_rejects_kimi_builder() {
+  local t="test_direct_kimi_reviewer_rejects_kimi_builder"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
@@ -1231,8 +1238,8 @@ test_direct_minimax_rejects_kimi_builder() {
 }
 
 # ---------- Test 24: direct Kimi reviewer requires no-fallback for OpenAI-built diffs ----------
-test_direct_minimax_openai_requires_no_fallback() {
-  local t="test_direct_minimax_openai_requires_no_fallback"
+test_direct_kimi_reviewer_openai_requires_no_fallback() {
+  local t="test_direct_kimi_reviewer_openai_requires_no_fallback"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
@@ -1254,8 +1261,8 @@ test_direct_minimax_openai_requires_no_fallback() {
 }
 
 # ---------- Test 25: direct Kimi reviewer requires reason for other builder ----------
-test_direct_minimax_other_requires_reason() {
-  local t="test_direct_minimax_other_requires_reason"
+test_direct_kimi_reviewer_other_requires_reason() {
+  local t="test_direct_kimi_reviewer_other_requires_reason"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
@@ -1329,15 +1336,15 @@ print(d.get('builder_family'))
 }
 
 # ---------- Test 27: Anthropic-built diffs may use Kimi ----------
-test_anthropic_builder_accepts_minimax() {
-  local t="test_anthropic_builder_accepts_minimax"
+test_anthropic_builder_accepts_kimi() {
+  local t="test_anthropic_builder_accepts_kimi"
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax \
+      --codex-plugin "$plugin" --primary kimi \
       --builder-family anthropic --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1369,8 +1376,8 @@ import json
 d=json.loads(open('$state_path').read())
 print(d.get('builder_family'))
 ")
-  if [ "$reviewers" != "minimax" ]; then
-    fail "$t" "expected only minimax attempt, got reviewers=$reviewers state=$(cat "$state_path")"
+  if [ "$reviewers" != "kimi" ]; then
+    fail "$t" "expected only kimi attempt, got reviewers=$reviewers state=$(cat "$state_path")"
     return
   fi
   if [ "$builder_family" != "anthropic" ]; then
@@ -1395,7 +1402,7 @@ test_anthropic_builder_allows_fallback() {
   local rc=$?
 
   if [ "$rc" -ne 0 ]; then
-    fail "$t" "expected rc=0 after minimax fallback, got rc=$rc. out=$out"
+    fail "$t" "expected rc=0 after Kimi fallback, got rc=$rc. out=$out"
     return
   fi
 
@@ -1421,8 +1428,8 @@ import json
 d=json.loads(open('$state_path').read())
 print(d.get('fallback_used'))
 ")
-  if [ "$reviewers" != "codex,minimax" ]; then
-    fail "$t" "expected attempts codex,minimax, got reviewers=$reviewers state=$(cat "$state_path")"
+  if [ "$reviewers" != "codex,kimi" ]; then
+    fail "$t" "expected attempts codex,kimi, got reviewers=$reviewers state=$(cat "$state_path")"
     return
   fi
   if [ "$fallback_used" != "True" ]; then
@@ -1459,21 +1466,21 @@ test_watchdog_injects_heartbeat() {
   local d; d="$(mktmp)"
   local plugin; plugin="$(seed_repo "$d" approve approve)"
 
-  # Slow the minimax shim so the heartbeat thread runs at least once
-  cat > "$d/scripts/minimax-review.sh" <<'EOF'
+  # Slow the Kimi shim so the heartbeat thread runs at least once
+  cat > "$d/scripts/kimi-review.sh" <<'EOF'
 #!/usr/bin/env bash
 sleep 2
-echo "# MiniMax MiniMax-M2.7 review -- APPROVE"
+echo "# kimi-k2.7-code review -- APPROVE"
 echo '{"verdict":"approve"}'
 exit 0
 EOF
-  chmod +x "$d/scripts/minimax-review.sh"
+  chmod +x "$d/scripts/kimi-review.sh"
 
   cd "$d"
   local out
-  # Use --primary minimax to skip Codex
+  # Use --primary kimi to skip Codex
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary minimax \
+      --codex-plugin "$plugin" --primary kimi \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -1506,21 +1513,21 @@ echo "Runner: $RUNNER"
 echo
 
 test_primary_codex_approves
-test_codex_hang_falls_back_to_minimax
+test_codex_hang_falls_back_to_kimi
 test_both_fail_returns_exit_2
 test_deadline_kill_after_n_seconds
 test_quality_gate_no_verdict_forces_fallback
 test_codex_unavailable_reason_eisdir
 test_plan_scope_runs_codex_primary
-test_plan_scope_codex_fails_falls_back_to_minimax
+test_plan_scope_codex_fails_falls_back_to_kimi
 test_plan_scope_isolates_codex_state
 test_watchdog_injects_heartbeat
-test_minimax_key_inherited_from_parent_env
-test_primary_minimax_diff_requires_files_before_fallback
+test_kimi_key_inherited_from_parent_env
+test_primary_kimi_diff_requires_files_before_fallback
 test_no_fallback_stops_after_primary_failure
 test_openai_builder_rejects_codex_primary
-test_openai_builder_accepts_minimax_no_fallback
-test_kimi_builder_rejects_minimax_primary
+test_openai_builder_accepts_kimi_no_fallback
+test_kimi_builder_rejects_kimi_primary
 test_kimi_builder_accepts_codex_no_fallback
 test_other_builder_requires_no_fallback
 test_other_builder_requires_explicit_primary
@@ -1529,11 +1536,11 @@ test_other_builder_accepts_reason
 test_skip_codex_rejects_codex_primary
 test_skip_codex_requires_no_fallback
 test_skip_codex_records_reason
-test_direct_minimax_rejects_kimi_builder
-test_direct_minimax_openai_requires_no_fallback
-test_direct_minimax_other_requires_reason
+test_direct_kimi_reviewer_rejects_kimi_builder
+test_direct_kimi_reviewer_openai_requires_no_fallback
+test_direct_kimi_reviewer_other_requires_reason
 test_anthropic_builder_accepts_codex
-test_anthropic_builder_accepts_minimax
+test_anthropic_builder_accepts_kimi
 test_anthropic_builder_allows_fallback
 test_poll_unknown_job_returns_1
 

@@ -136,20 +136,20 @@ print('fts5 query ok')
 
 pass "SQLite FTS5 works with $WASHING_MACHINE_PYTHON"
 
-# --- Step 4: MiniMax chat smoke via minimax-json-job.sh ---
-step_header 4 "MiniMax chat smoke (minimax-json-job.sh)"
+# --- Step 4: Kimi chat smoke via minimax-json-job.sh ---
+step_header 4 "Kimi chat smoke (minimax-json-job.sh)"
 
-if [[ -z "${MINIMAX_API_KEY:-}" ]]; then
+if [[ -z "${KIMI_API_KEY:-}" ]]; then
   if [[ -f "$HOME/.zshrc" ]]; then
-    set +u
+    set +eu
     # shellcheck disable=SC1091
     source "$HOME/.zshrc" >/dev/null 2>&1 || true
-    set -u
+    set -euo pipefail
   fi
 fi
 
-if [[ -z "${MINIMAX_API_KEY:-}" ]]; then
-  fail "MINIMAX_API_KEY not set in environment. Check ~/.zshrc."
+if [[ -z "${KIMI_API_KEY:-}" ]]; then
+  fail "KIMI_API_KEY not set in environment. Check ~/.zshrc."
   exit 4
 fi
 
@@ -165,19 +165,19 @@ if [[ ! -x "$MINIMAX_JOB" ]]; then
   exit 4
 fi
 
-info "Calling MiniMax-M2.7 via $MINIMAX_JOB (timeout 30s, wrapper: ${TIMEOUT_CMD:-<none>})"
+info "Calling Kimi via $MINIMAX_JOB (timeout 30s, wrapper: ${TIMEOUT_CMD:-<none>})"
 STDERR_FILE=$(mktemp)
 set +e
 RESP=$(echo "hello" | run_with_timeout 30 "$MINIMAX_JOB" \
   --prompt "$TEST_PROMPT" \
   --input - \
   --job-name preflight-smoke \
-  --model MiniMax-M2.7 2>"$STDERR_FILE")
+  --model "${K2B_LLM_MODEL:-kimi-k2.7-code}" 2>"$STDERR_FILE")
 RC=$?
 set -e
 
 if [[ $RC -ne 0 ]]; then
-  fail "MiniMax chat smoke failed (rc=$RC)"
+  fail "Kimi chat smoke failed (rc=$RC)"
   fail "stderr: $(cat "$STDERR_FILE")"
   rm -f "$STDERR_FILE"
   exit 4
@@ -185,11 +185,11 @@ fi
 rm -f "$STDERR_FILE"
 
 if ! echo "$RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
-  fail "MiniMax response not the expected {\"ok\": true}. Got: $RESP"
+  fail "Kimi response not the expected {\"ok\": true}. Got: $RESP"
   exit 4
 fi
 
-pass "MiniMax-M2.7 chat reachable; returned valid JSON within timeout"
+pass "Kimi chat reachable; returned valid JSON within timeout"
 
 # --- Step 5: GPTsAPI VLM smoke ---
 step_header 5 "GPTsAPI VLM smoke (gptsapi-vlm.sh)"

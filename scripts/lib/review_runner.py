@@ -6,12 +6,9 @@ Three guarantees:
      10s later if the child still hasn't exited.
   2. Fallback: if the primary reviewer (Codex by default) exits non-zero
      or hits the deadline, automatically retry on the secondary reviewer
-     (the `minimax`-keyed reviewer, which is Kimi K2.7-backed by default via
-     scripts/lib/minimax_common.py -- the "minimax" key name is historical and
-     retained because it is load-bearing in the fallback-selection logic and
-     tests) for the same scope. If both fail, exit code 2. Callers that
-     need a specific reviewer for model-family separation can disable this
-     with --no-fallback.
+     (Kimi K2.7 via scripts/kimi-review.sh) for the same scope. If both fail,
+     exit code 2. Callers that need a specific reviewer for model-family
+     separation can disable this with --no-fallback.
   3. Visibility: a watchdog thread injects synthetic HEARTBEAT lines into
      the unified log every --heartbeat-interval seconds (default 5s)
      regardless of vendor-side activity, and escalates to HEARTBEAT_STALE
@@ -19,8 +16,8 @@ Three guarantees:
      what makes `scripts/review-poll.sh` always show *something* new, so
      Claude can never mistake "in final inference" for "wedged".
 
-Nothing in this file calls the Bash tool; Codex and the Kimi-backed reviewer
-(scripts/kimi-review.sh, or the historical scripts/minimax-review.sh shim) are spawned
+Nothing in this file calls the Bash tool; Codex and the Kimi reviewer
+(scripts/kimi-review.sh) are spawned
 via subprocess.Popen, so the .claude PreToolUse guard hook does not block
 them -- the hook only fires on direct user-invoked Bash calls.
 
@@ -28,10 +25,10 @@ K2B-specific adaptations vs K2Bi reference (2026-04-21 port):
   A2: spawn_child uses process_group=0 (Python 3.11+) instead of
       preexec_fn=os.setsid, to avoid DeprecationWarning on Python 3.12+
       (and 3.14 on Mac Mini) without changing semantics.
-  A3: spawn_child proactively injects MINIMAX_API_KEY into extra_env when
+  A3: spawn_child proactively injects KIMI_API_KEY into extra_env when
       it can be loaded, as defense-in-depth for pm2-launched ships on Mini
       that don't inherit a zsh session. Falls back silently if no key is
-      available (Codex-only paths shouldn't fail just because MiniMax can't
+      available (Codex-only paths shouldn't fail just because Kimi can't
       be configured).
 """
 
@@ -50,18 +47,15 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# A3: resilient import of load_api_key. Same directory as this file. If the
-# import fails (e.g. someone deletes minimax_common.py), the runner still
+# A3: resilient import of load_kimi_api_key. Same directory as this file. If
+# the import fails (e.g. someone deletes minimax_common.py), the runner still
 # functions for Codex-only ships.
 _LIB_DIR = Path(__file__).resolve().parent
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 try:
-    from minimax_common import MinimaxError, load_api_key, load_kimi_api_key  # type: ignore
+    from minimax_common import load_kimi_api_key  # type: ignore
 except Exception:
-    MinimaxError = RuntimeError  # type: ignore
-    def load_api_key() -> str:  # type: ignore
-        raise RuntimeError("minimax_common not importable")
     def load_kimi_api_key() -> str:  # type: ignore
         raise RuntimeError("minimax_common not importable")
 
@@ -82,6 +76,8 @@ HEARTBEAT_STALE_AFTER_S = 30
 WEDGE_SUSPECTED_AFTER_S = 120
 KILL_GRACE_S = 10
 DEFAULT_RECONNECT_STALL_S = 45
+PRIMARY_REVIEWERS = {"codex", "kimi"}
+DEPRECATED_PRIMARY_ALIASES = {"minimax": "kimi"}
 
 _RECONNECT_RE = re.compile(
     r"^(?:\[codex\]\s+)?Codex error:\s+Reconnecting\.\.\.\s+(\d+)\s*/\s*(\d+)\s*$"
@@ -180,21 +176,21 @@ def codex_unavailable_reason(scope: str, repo_root: Path,
         # subcommand (read-only sandbox), NOT the dirty-tree walk, so the
         # EISDIR hazard below does not apply. Codex is the PRIMARY reviewer
         # for plans (regression fix 2026-05-31): the old code hard-skipped
-        # plan scope to MiniMax claiming codex-companion.mjs needs a --path
+        # plan scope to Kimi claiming codex-companion.mjs needs a --path
         # flag it "dropped", but no companion version ever exposed --path and
         # `task` does not need one. The only precondition is that the plan
-        # file actually exists; if not, fall back to MiniMax with a clear
+        # file actually exists; if not, fall back to Kimi with a clear
         # reason rather than asking Codex to read a missing file.
         if not plan:
             return "plan scope requires --plan"
         plan_path = plan if os.path.isabs(plan) else str(repo_root / plan)
         if not os.path.isfile(plan_path):
-            return f"plan file not found at {plan}; routing to MiniMax"
+            return f"plan file not found at {plan}; routing to Kimi"
         return None
     hazard = _working_tree_eisdir_hazard(repo_root)
     if hazard is not None:
         return (f"codex --scope working-tree would EISDIR on '{hazard}'; "
-                f"routing to MiniMax until the path is removed or committed")
+                f"routing to Kimi until the path is removed or committed")
     return None
 
 
@@ -301,7 +297,7 @@ def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
     """Return argv for Codex companion, or None when Codex can't handle scope.
 
     Skip conditions are centralized in codex_unavailable_reason(); if that
-    returns a string the wrapper logs the reason and falls back to MiniMax.
+    returns a string the wrapper logs the reason and falls back to Kimi.
 
     Constraints documented in the K2Bi reference (confirmed against
     codex-companion.mjs --help 2026-04-19, re-confirmed 2026-05-31):
@@ -324,11 +320,11 @@ def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
       "working-tree"   -> adversarial-review --wait --scope working-tree [focus]
       "files"          -> adversarial-review --wait --scope working-tree [focus]
                           (Codex loses the subset; callers wanting subset
-                          fidelity should use --primary minimax.)
+                          fidelity should use --primary kimi.)
       "plan"           -> task --prompt-file <prompt with embedded plan snapshot>
                           (read-only; the plan content is snapshotted into the
                           prompt and fenced as untrusted data; Codex may also
-                          read referenced files for grounding. MiniMax stays the
+                          read referenced files for grounding. Kimi stays the
                           fallback if Codex fails.)
 
     Resume hygiene (PARTIAL -- documented residual): `task` persists an
@@ -370,10 +366,11 @@ def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
 
 
 def build_kimi_cmd(scope: str, files: list[str] | None, plan: str | None,
-                   focus: str) -> list[str]:
-    preferred = REPO_ROOT / "scripts" / "kimi-review.sh"
-    fallback = REPO_ROOT / "scripts" / "minimax-review.sh"
-    script = str(preferred if preferred.is_file() else fallback)
+                   focus: str) -> list[str] | None:
+    script_path = REPO_ROOT / "scripts" / "kimi-review.sh"
+    if not script_path.is_file():
+        return None
+    script = str(script_path)
     cmd = [script, "--scope", scope]
     if files:
         cmd += ["--files", ",".join(files)]
@@ -390,14 +387,19 @@ def spawn_child(cmd: list[str], logf, extra_env: dict | None = None
     if extra_env:
         env.update(extra_env)
     env["CLAUDE_PLUGIN_ROOT"] = str(CODEX_PLUGIN_DEFAULT)
-    # Harden provider/key preconditions before spawn for MiniMax/Kimi reviewer
+    # Harden provider/key preconditions before spawn for Kimi reviewer
     # launches only. Codex review paths intentionally do not need these keys.
     if cmd and cmd[0].endswith(("kimi-review.sh", "minimax-review.sh")):
         provider = env.get("K2B_LLM_PROVIDER", "kimi").lower()
         if provider not in {"kimi", "minimax"}:
             raise RuntimeError(
                 f"unsupported K2B_LLM_PROVIDER={provider!r}; expected "
-                "'kimi' or 'minimax'"
+                "'kimi'"
+            )
+        if provider == "minimax":
+            raise RuntimeError(
+                "K2B_LLM_PROVIDER=minimax is deprecated and disabled "
+                "(MiniMax subscription expired); set K2B_LLM_PROVIDER=kimi"
             )
         if provider == "kimi":
             if "KIMI_API_KEY" not in env:
@@ -405,14 +407,6 @@ def spawn_child(cmd: list[str], logf, extra_env: dict | None = None
                     env["KIMI_API_KEY"] = load_kimi_api_key()
                 except Exception as exc:
                     raise RuntimeError(f"KIMI_API_KEY missing: {type(exc).__name__}: {exc}")
-        elif provider == "minimax":
-            if "MINIMAX_API_KEY" not in env:
-                try:
-                    env["MINIMAX_API_KEY"] = load_api_key()
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"MINIMAX_API_KEY missing: {type(exc).__name__}: {exc}"
-                    )
     log_line(logf, f"[{utc_now_iso()}] SPAWN argv={cmd!r}")
     # A2 note: process_group=0 (Python 3.11+) replaces preexec_fn=os.setsid
     # from the K2Bi reference. Subtle semantic deviation: os.setsid creates
@@ -739,7 +733,7 @@ def run_one_reviewer(
             except OSError:
                 log_text = ""
             verdict_markers = (
-                "# Codex Review", "# MiniMax", "# kimi-k2.7-code review",
+                "# Codex Review", "# kimi-k2.7-code review",
                 "# kimi-for-coding review",
                 "APPROVE", "NEEDS-ATTENTION",
                 '"verdict"', "Review output captured",
@@ -761,7 +755,7 @@ def run_one_reviewer(
 def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                        state_path: Path, state: dict) -> int:
     primary = args.primary
-    secondary = "minimax" if primary == "codex" else "codex"
+    secondary = "kimi" if primary == "codex" else "codex"
     reviewers = [primary] if args.no_fallback else [primary, secondary]
     files = ([p.strip() for p in args.files.split(",") if p.strip()]
              if args.files else None)
@@ -781,7 +775,10 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                     args.scope, REPO_ROOT, Path(args.codex_plugin), args.plan
                 ) or "codex plugin/script not found"
             else:
-                reason = "minimax command not buildable"
+                reason = (
+                    "kimi-review.sh not found; the review runner no longer "
+                    "falls back to minimax-review.sh"
+                )
             state["reviewer_attempts"].append(
                 {"reviewer": reviewer, "result": "unavailable",
                  "reason": reason})
@@ -870,8 +867,8 @@ def review_matrix_error(builder_family: str | None, primary: str | None,
             f"builder-family {builder_family} requires explicit --primary "
             "(ad-hoc default reviewer selection is not allowed for official flows)"
         )
-    if primary not in {"codex", "minimax"}:
-        return f"invalid primary={primary} (expected codex|minimax)"
+    if primary not in PRIMARY_REVIEWERS:
+        return f"invalid primary={primary} (expected codex|kimi)"
     if skip_codex:
         if primary == "codex":
             return "--skip-codex conflicts with --primary codex"
@@ -886,11 +883,11 @@ def review_matrix_error(builder_family: str | None, primary: str | None,
                 "the fallback reviewer"
             )
     if builder_family == "openai":
-        if primary != "minimax" or not no_fallback:
+        if primary != "kimi" or not no_fallback:
             return (
                 "builder-family openai requires "
-                "--primary minimax --no-fallback "
-                "(Codex/OpenAI-built diffs need Kimi-backed review only)"
+                "--primary kimi --no-fallback "
+                "(Codex/OpenAI-built diffs need Kimi review only)"
             )
     elif builder_family == "kimi":
         if primary != "codex" or not no_fallback:
@@ -944,6 +941,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
         "reviewer_current": state.get("reviewer_current"),
         "reviewer_attempts": state.get("reviewer_attempts", []),
         "primary_used": state.get("primary_used"),
+        "primary_alias_requested": state.get("primary_alias_requested"),
         "builder_family": state.get("builder_family"),
         "skip_codex": state.get("skip_codex"),
         "other_reviewer_reason": state.get("other_reviewer_reason"),
@@ -970,6 +968,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # status enum may be "running" | "completed" | "primary_failed" | "both_failed".
         "schema_version": 2,
         "job_id": job, "scope": args.scope, "primary_requested": args.primary,
+        "primary_alias_requested": args.primary_alias_requested,
         "builder_family": args.builder_family,
         "skip_codex": args.skip_codex,
         "other_reviewer_reason": args.other_reviewer_reason,
@@ -985,6 +984,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path.write_text(
         f"[{utc_now_iso()}] JOB_START job={job} scope={args.scope} "
         f"primary={args.primary} builder_family={args.builder_family or 'unspecified'} "
+        f"primary_alias={args.primary_alias_requested or 'none'} "
         f"skip_codex={args.skip_codex or 'no'} "
         f"other_reviewer_reason={args.other_reviewer_reason or 'none'} "
         f"deadline={args.deadline}s "
@@ -1030,14 +1030,16 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="Unified code-review runner (Codex + MiniMax fallback)."
+        description="Unified code-review runner (Codex + Kimi fallback)."
     )
     p.add_argument("scope", nargs="?",
                    choices=["diff", "working-tree", "files", "plan"],
                    default="diff")
-    p.add_argument("--primary", choices=["codex", "minimax"], default=None,
+    p.add_argument("--primary", metavar="codex|kimi", default=None,
                    help=("Reviewer to run first. Defaults to codex only when "
-                         "--builder-family is omitted for ad-hoc reviews."))
+                         "--builder-family is omitted for ad-hoc reviews. "
+                         "Use kimi for Kimi K2.7; minimax is accepted only "
+                         "as a deprecated alias for kimi."))
     p.add_argument("--builder-family",
                    choices=["openai", "anthropic", "kimi", "other"],
                    default=None,
@@ -1078,6 +1080,24 @@ def main() -> int:
     args = p.parse_args()
     if args.poll:
         return cmd_poll(args)
+    args.primary_alias_requested = None
+    if args.primary is not None:
+        requested_primary = args.primary.strip().lower()
+        if requested_primary in DEPRECATED_PRIMARY_ALIASES:
+            args.primary_alias_requested = requested_primary
+            args.primary = DEPRECATED_PRIMARY_ALIASES[requested_primary]
+            print(
+                "review_runner.py: warning: --primary minimax is a deprecated "
+                "alias for --primary kimi; MiniMax is not live.",
+                file=sys.stderr,
+            )
+        elif requested_primary in PRIMARY_REVIEWERS:
+            args.primary = requested_primary
+        else:
+            p.error(
+                f"invalid primary={args.primary} (expected codex|kimi; "
+                "deprecated alias minimax maps to kimi)"
+            )
     if args.scope in {"diff", "files"} and not args.files:
         p.error(
             f"{args.scope} scope requires --files; use working-tree for a "

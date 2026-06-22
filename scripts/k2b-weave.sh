@@ -138,7 +138,7 @@ recover_ledger() {
   fi
 }
 
-# Return JSON array of {from, to} pair keys that should be excluded from MiniMax proposals,
+# Return JSON array of {from, to} pair keys that should be excluded from text worker proposals,
 # based on ledger state (applied, pending, deferred, permanently-rejected, or rejected within TTL).
 get_ledger_exclusions() {
   if [[ ! -f "$LEDGER_FILE" ]]; then
@@ -273,7 +273,7 @@ build_page_bundle() {
 
 # --- Response validation ---
 
-# Validate MiniMax response against the strict schema.
+# Validate Kimi response against the strict schema.
 # Accepts JSON on stdin. Returns 0 if valid, 1 otherwise.
 validate_response_schema() {
   local response="$1"
@@ -781,7 +781,13 @@ cmd_run() {
   local start_ms end_ms duration_ms
   start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
   local response
-  if ! response=$(printf '%s' "$input_json" | "$SCRIPT_DIR/minimax-weave.sh"); then
+  local weave_worker="$SCRIPT_DIR/minimax-weave.sh"
+  if [[ ! -x "$weave_worker" ]]; then
+    notify_failure "weave: missing minimax-weave.sh compatibility wrapper for Kimi"
+    append_metrics "$page_count" 0 0 0 "$input_bytes" "worker_wrapper_missing" "$run_id"
+    exit 1
+  fi
+  if ! response=$(printf '%s' "$input_json" | "$weave_worker"); then
     notify_failure "weave: ${K2B_TEXT_WORKER_NAME} call failed"
     append_metrics "$page_count" 0 0 0 "$input_bytes" "$K2B_TEXT_WORKER_ERROR_KEY" "$run_id"
     exit 1

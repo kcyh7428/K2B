@@ -10,7 +10,7 @@
 #   elapsed_s              wall-clock seconds since review started
 #   last_activity_s_ago    seconds since the vendor log last grew
 #   deadline_remaining_s   seconds until hard deadline
-#   reviewer_current       codex|minimax (current attempt)
+#   reviewer_current       codex|kimi (current attempt)
 #   reviewer_attempts      per-attempt exit code + result
 #   fallback_used          true if secondary reviewer ran
 #   exit_code              final exit code (null while running)
