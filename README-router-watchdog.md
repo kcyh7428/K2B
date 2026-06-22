@@ -62,6 +62,7 @@ launchd runs that installed copy. Runtime state and logs live outside the repo:
 ```text
 ~/Library/Application Support/k2b-router-watchdog/state.json
 ~/Library/Application Support/k2b-router-watchdog/private-vpn-state.json
+~/Library/Application Support/k2b-router-watchdog/r5c-autorecovery-state.json
 ~/Library/Application Support/k2b-router-watchdog/pending-partition-events.jsonl
 ~/Library/Application Support/k2b-router-watchdog/node-top3.json
 ~/Library/Logs/k2b-router-watchdog/health.jsonl
@@ -72,6 +73,8 @@ launchd runs that installed copy. Runtime state and logs live outside the repo:
 ~/Library/Logs/k2b-router-watchdog/leaf-optimizer.jsonl
 ~/Library/Logs/k2b-router-watchdog/auto-switch.jsonl
 ~/Library/Logs/k2b-router-watchdog/incidents/
+~/Library/Logs/k2b-router-watchdog/r5c-autorecovery.jsonl
+~/Library/Logs/k2b-router-watchdog/r5c-autorecovery/
 ~/Library/Logs/k2b-router-watchdog/install.log
 ```
 
@@ -88,6 +91,7 @@ launchctl print gui/$(id -u)/com.k2b.router-daily-rollup
 launchctl print gui/$(id -u)/com.k2b.router-node-score
 launchctl print gui/$(id -u)/com.k2b.router-leaf-optimizer
 launchctl print gui/$(id -u)/com.k2b.router-digest
+launchctl print gui/$(id -u)/com.k2b.router-r5c-autorecovery
 ```
 
 Run one dry tick:
@@ -137,6 +141,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-daily-rollu
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-node-score.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-leaf-optimizer.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-digest.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-r5c-autorecovery.plist
 ```
 
 Start it again:
@@ -148,6 +153,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-daily-rol
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-node-score.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-leaf-optimizer.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-digest.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.k2b.router-r5c-autorecovery.plist
 ```
 
 ## Private VPN Watchdog
@@ -269,6 +275,73 @@ Use `K2B_LEAF_OPTIMIZER_CANDIDATE_REGEX` only if selector discovery needs to cha
 `optimize-leaves.sh` parses `MIHOMO_*` and `K2B_LEAF_OPTIMIZER_*` keys from the watchdog env file without sourcing it. It accepts `KEY=value`, `export KEY=value`, and matching outer quotes, so the existing unquoted `MIHOMO_OPENAI_GROUP=🤖 OpenAI` format remains valid.
 
 To add a future optimizer profile, add a disabled profile to `leaf-optimizer-profiles.json`, set its `group_env_var`, `selector_regex`, targets, sentinel/state/log paths, HK policy, and any `exclude_leaf_regex`; add the matching `MIHOMO_*_GROUP` key to `~/.k2b-router-watchdog.env`; run `install.sh`; then inspect `optimize-leaves.sh --profile <name> --dry-run`. Only enable the profile and consider a sentinel after that dry-run proves it owns a manual-selector parent group. Direct leaf groups such as current `Ⓜ️ 延迟最低` are explicit no-ops because they do not contain `♻️ 手动切换*` children.
+
+## R5C Auto-Recovery
+
+`com.k2b.router-r5c-autorecovery` runs every 60 seconds from the Mac Mini. It is intentionally separate from the 10-minute general health cadence and the private VPN watchdog. It attempts to recover the house network when the R5C is truly hard down by rebooting the ASUS AP, which power-cycles the R5C.
+
+Live recovery is **disabled** unless this sentinel file exists:
+
+```text
+~/.k2b-r5c-autorecovery-enabled
+```
+
+Enable (only after a supervised live dry-run):
+
+```bash
+touch ~/.k2b-r5c-autorecovery-enabled
+```
+
+Disable:
+
+```bash
+rm -f ~/.k2b-r5c-autorecovery-enabled
+```
+
+Run one dry tick:
+
+```bash
+bash "$HOME/Library/Application Support/k2b-router-watchdog/bin/r5c-autorecovery.sh"
+```
+
+### Fire contract
+
+The helper may attempt an ASUS reboot only when all are true:
+
+1. Three consecutive 60-second checks observe R5C LAN reachability down, cheap router HTTP down, and Mihomo API down.
+2. ASUS management path (`admin@192.168.9.2`) is reachable.
+3. The live sentinel exists.
+4. No cooldown is active.
+5. Evidence has been written successfully.
+6. A final pre-fire confirmation still sees R5C down and ASUS reachable.
+
+It does **not** fire on `all_private_udp_down`, `hk_only_down`, or `wan_or_wifi_flap` when R5C LAN is still reachable.
+
+### Configuration
+
+Operational values can be overridden with environment variables:
+
+- `K2B_R5C_AUTORECOVERY_R5C_LAN_IP` default `192.168.9.1`
+- `K2B_R5C_AUTORECOVERY_MIHOMO_API_BASE` default from `MIHOMO_API_BASE` or `http://192.168.9.1:9090`
+- `K2B_R5C_AUTORECOVERY_ASUS_HOST` default `192.168.9.2`
+- `K2B_R5C_AUTORECOVERY_ASUS_SSH_TARGET` default `admin@192.168.9.2`
+- `K2B_R5C_AUTORECOVERY_ASUS_SSH_KEY` default `~/.ssh/router_id_ed25519`; blank, missing, or unsafe keys fail closed. The helper invokes ASUS SSH with this validated key only.
+- `K2B_R5C_AUTORECOVERY_THRESHOLD` default `3`
+- `K2B_R5C_AUTORECOVERY_COOLDOWN_MINUTES` default `30`
+
+Probe execution is pinned to trusted `/sbin/ping` and `/usr/bin/curl`; ASUS SSH execution is pinned to trusted `/usr/bin/ssh`. The runtime env file cannot replace these executables.
+
+State, logs, and evidence live outside the repo:
+
+```text
+~/Library/Application Support/k2b-router-watchdog/r5c-autorecovery-state.json
+~/Library/Logs/k2b-router-watchdog/r5c-autorecovery.jsonl
+~/Library/Logs/k2b-router-watchdog/r5c-autorecovery/
+```
+
+### Telegram alerting
+
+The helper writes structured JSONL decision rows and evidence files first. Telegram alerting for fired, blocked, or recovery events is follow-up work; until then, inspect `r5c-autorecovery.jsonl` and the evidence directory.
 
 ## Alert Rules
 

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.k2b.router-r5c-autorecovery</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__APP_DIR__/bin/r5c-autorecovery.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <!-- Keep throttle aligned with StartInterval: this is the dedicated 60-second
+       R5C hard-down recovery cadence. Threshold and cooldown inside the helper
+       prevent reboot loops; the cheap probes must keep running once per minute. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+    <key>K2B_ROUTER_WATCHDOG_APP_DIR</key>
+    <string>__APP_DIR__</string>
+    <key>K2B_ROUTER_WATCHDOG_LOG_DIR</key>
+    <string>__LOG_DIR__</string>
+    <key>K2B_ROUTER_WATCHDOG_ENV_FILE</key>
+    <string>__ENV_FILE__</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/launchd-r5c-autorecovery.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/launchd-r5c-autorecovery.err.log</string>
+</dict>
+</plist>
