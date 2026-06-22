@@ -2,6 +2,25 @@
 
 
 ---
+## 2026-06-22 -- R5C autorecovery helper live-enabled on Mini
+
+**Commit:** `5c994a1` feat: add R5C autorecovery watchdog
+
+**What shipped:** Added the Mini-side R5C autorecovery helper, launchd job, installer integration, runbook coverage, and regression tests. The helper runs every 60 seconds, requires three consecutive hard-down samples, confirms ASUS reachability, writes evidence before any reboot attempt, performs a final pre-fire confirmation, and enforces cooldown after any reboot attempt. Live mutation is gated by `~/.k2b-r5c-autorecovery-enabled`.
+
+**Deploy:** `/sync scripts` deployed the helper to the Mac Mini and ran `scripts/router-watchdog/install.sh`. The Mini now has `com.k2b.router-r5c-autorecovery` loaded. ASUS SSH key and `known_hosts` were seeded on the Mini; strict non-reboot SSH to `admin@192.168.9.2` returned `asus_ok`. The live sentinel is present. A manual healthy tick at `2026-06-22T12:07:52Z` logged `threshold=3`, `consecutive_hard_down=0`, `sentinel_exists=true`, `asus_reachable=true`, and `no_action`.
+
+**Review:** Built by Kimi via agent handoff. Official independent Codex review approved in `.code-reviews/2026-06-22T11-48-31Z_4096a3.log` after the safety hardening rounds.
+
+**Verification:** `bash tests/router-watchdog-r5c-autorecovery.test.sh`; `bash tests/router-watchdog-private-vpn.test.sh`; `bash tests/router-watchdog-ship-2.test.sh`; `bash tests/router-watchdog.test.sh`; `python3 -m py_compile scripts/router-watchdog/bin/r5c-autorecovery.py`; `bash -n scripts/router-watchdog/bin/r5c-autorecovery.sh tests/router-watchdog-r5c-autorecovery.test.sh`; `plutil -lint launchd/com.k2b.router-r5c-autorecovery.plist`; `git diff --check`; Mini launchd/install/sentinel/manual-tick verification above.
+
+**Feature status change:** `feature_r5c-recovery-via-asus-power-cycle` moved `next` -> `in-progress`, not `shipped`. The code is live-enabled, but the MVP gate still requires a first real or supervised hard-down trigger proving evidence capture, exactly one ASUS reboot attempt, cooldown refusal, and R5C recovery.
+
+**Follow-ups:** Add Telegram recovery-event alerts if Keith wants unattended visibility beyond JSONL/evidence logs. Watch the first trigger in `~/Library/Logs/k2b-router-watchdog/r5c-autorecovery.jsonl` and the matching evidence directory before closing the feature.
+
+**Key decisions:** Threshold is 3 consecutive 60-second hard-down samples. No forced ASUS reboot was run in this closeout because Keith already tested the ASUS power-cycle behavior and asked not to wait on that proof again.
+
+---
 ## 2026-06-21 -- Plate freshness audit Mini follow-up
 
 **Commit:** `85f5bdf` fix(plate): make freshness audit Mini-aware
