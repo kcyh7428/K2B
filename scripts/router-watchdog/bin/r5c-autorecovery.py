@@ -615,8 +615,15 @@ def sync_r5c_alert_state(
         started = state.get("r5c_incident_started_at")
         attempted = bool(state.get("r5c_reboot_attempted_in_incident"))
         event_type = "r5c_autorecovery_recovered" if attempted else "r5c_autorecovery_cleared"
-        title = "recovered after ASUS power-cycle attempt" if attempted else "cleared before reboot"
-        details = [f"K2B R5C autorecovery: {title} at {hkt_time(now)}"]
+        if attempted:
+            details = [
+                f"K2B: the R5C went down, so I rebooted the ASUS to power-cycle it. Back online at {hkt_time(now)}.",
+                "This was the automatic recovery working. No action needed from you.",
+            ]
+        else:
+            details = [
+                f"K2B: the R5C had a brief hiccup and recovered on its own at {hkt_time(now)}. No reboot was needed.",
+            ]
         if started:
             details.append(f"Incident started: {started}")
         queue(event_type, "\n".join(details))

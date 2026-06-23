@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 
 EXTERNAL_PARTITION_CHECKS = {"chatgpt_https", "chatgpt_ws", "claude_https", "telegram_api"}
-WARNING_ONLY_CHECKS = {"openai_node", "tailscale_direct"}
+WARNING_ONLY_CHECKS = {"openai_node", "tailscale_direct", "chatgpt_https", "chatgpt_ws", "claude_https", "telegram_api"}
 
 
 def parse_ts(value: str) -> datetime:

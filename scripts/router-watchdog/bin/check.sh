@@ -74,7 +74,6 @@ names = [
     "claude_https",
     "telegram_api",
     "tailscale_direct",
-    "syncthing_process",
     "pm2_daemon",
     "pm2_services",
 ]
@@ -100,7 +99,7 @@ elif [[ "${K2B_ROUTER_WATCHDOG_DRY_RUN_SKIP_CHECKS:-}" == "1" ]]; then
   write_ok_results
 else
   : > "$result_lines"
-  for check in router.sh mihomo.sh openai.sh claude.sh telegram.sh tailscale.sh syncthing.sh pm2.sh; do
+  for check in router.sh mihomo.sh openai.sh claude.sh telegram.sh tailscale.sh pm2.sh; do
     bash "$SCRIPT_DIR/checks/$check" >> "$result_lines"
   done
   python3 - "$result_lines" "$results_file" <<'PY'

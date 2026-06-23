@@ -269,6 +269,8 @@ assert types.count("r5c_autorecovery_cleared") == 1, types
 assert "12:38 HKT" in alerts[0]["message"], alerts[0]["message"]
 assert "1/3" in alerts[0]["message"], alerts[0]["message"]
 assert "12:40 HKT" in next(a["message"] for a in alerts if a.get("type") == "r5c_autorecovery_fired")
+recovered_msg = next(a["message"] for a in alerts if a.get("type") == "r5c_autorecovery_recovered")
+assert "rebooted the ASUS" in recovered_msg, recovered_msg
 assert len(sent) == len(alerts), (len(sent), len(alerts))
 PY
 
