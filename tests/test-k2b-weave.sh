@@ -709,6 +709,522 @@ fi
 cleanup_sandbox
 
 # =======================================================================
+# Auto-apply helpers
+# =======================================================================
+# Seed the sandbox policy ledger so the executable autonomy gate opens.
+enable_auto_apply() {
+  mkdir -p "$SANDBOX/wiki/context"
+  cat > "$SANDBOX/wiki/context/policy-ledger.jsonl" <<'JSON'
+{"type":"autonomy","scope":"k2b-weave","action":"crosslink_apply","rule":"auto-apply high-confidence crosslinks","approved":12,"rejected":0,"auto_eligible":true,"graduation_threshold":10,"max_rejection_rate":0.05,"risk":"low"}
+JSON
+}
+
+# =======================================================================
+# Test 14: auto-apply ON -- high-confidence pair applied directly, no digest
+# =======================================================================
+echo "Test 14: auto-apply high-confidence (no digest, link added)"
+setup_sandbox
+enable_auto_apply
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/reference/reference_minimax.md",
+    "from_slug": "project_alpha",
+    "to_slug": "reference_minimax",
+    "confidence": 0.92,
+    "rationale": "uses the text worker API",
+    "evidence_span": "uses the text worker API for text generation"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || { fail "auto-apply run exited non-zero"; }
+assert_contains "auto-apply added reference_minimax link" "$SANDBOX/wiki/projects/project_alpha.md" "[[reference_minimax]]"
+no_digest=$(find "$SANDBOX/review" -name 'crosslinks_*.md' -type f | head -1)
+assert_equal "no digest written under auto-apply" "" "$no_digest"
+applied_rows=$(grep -c '"status":"applied"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || echo 0)
+assert_equal "ledger has 1 applied row" "1" "$applied_rows"
+assert_file_missing "lock released after auto-apply" "$SANDBOX/wiki/.weave.lock"
+cleanup_sandbox
+
+# =======================================================================
+# Test 15: auto-apply ON -- below-threshold pair held, not applied
+# =======================================================================
+echo "Test 15: auto-apply below threshold (held-low-confidence)"
+setup_sandbox
+enable_auto_apply
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/insights/insight_ai-automation.md",
+    "from_slug": "project_alpha",
+    "to_slug": "insight_ai-automation",
+    "confidence": 0.71,
+    "rationale": "weak automation link",
+    "evidence_span": "recruiting pipeline automation tool"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || { fail "auto-apply (held) run exited non-zero"; }
+assert_not_contains "below-threshold pair NOT linked" "$SANDBOX/wiki/projects/project_alpha.md" "[[insight_ai-automation]]"
+held_digest=$(find "$SANDBOX/review" -name 'crosslinks_*.md' -type f | head -1)
+assert_equal "no digest for held pair" "" "$held_digest"
+held_rows=$(grep -c '"status":"held-low-confidence"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || echo 0)
+assert_equal "ledger has 1 held-low-confidence row" "1" "$held_rows"
+cleanup_sandbox
+
+# =======================================================================
+# Test 16: auto-apply ON -- previously rejected pair re-proposed is dropped (R1)
+# =======================================================================
+echo "Test 16: auto-apply drops excluded (rejected) pair"
+setup_sandbox
+enable_auto_apply
+# Pre-seed the ledger with a rejected row for the pair (within TTL).
+mkdir -p "$SANDBOX/wiki/context"
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat > "$SANDBOX/wiki/context/crosslink-ledger.jsonl" <<JSON
+{"date":"2026-06-29","run_id":"seed","from_path":"wiki/projects/project_alpha.md","to_path":"wiki/people/person_bob.md","from_slug":"project_alpha","to_slug":"person_bob","tier":"MEDIUM","confidence":0.55,"rationale":"x","evidence_span":"x","status":"rejected","retry_count":0,"rejected_at":"$now_iso"}
+JSON
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/people/person_bob.md",
+    "from_slug": "project_alpha",
+    "to_slug": "person_bob",
+    "confidence": 0.95,
+    "rationale": "re-proposed at high confidence",
+    "evidence_span": "text worker API"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || { fail "auto-apply (excluded) run exited non-zero"; }
+assert_not_contains "excluded rejected pair NOT applied" "$SANDBOX/wiki/projects/project_alpha.md" "[[person_bob]]"
+applied_bob=$(grep -c '"to_slug":"person_bob".*"status":"applied"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || true)
+assert_equal "no applied row for excluded pair" "0" "$applied_bob"
+cleanup_sandbox
+
+# =======================================================================
+# Test 17: cmd_apply hard-fail preserves digest + exits non-zero (Codex high finding)
+# =======================================================================
+echo "Test 17: apply hard-fail preserves digest"
+setup_sandbox
+# A FROM page with NO frontmatter makes k2b-weave-add-related.py return rc 1 (hard error).
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter here\njust body text\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+# Build a minimal digest by hand with one checked row for the broken FROM page.
+mkdir -p "$SANDBOX/review"
+digest_file="$SANDBOX/review/crosslinks_manual.md"
+cat > "$digest_file" <<'MD'
+---
+type: crosslink-digest
+run-id: manualrun
+review-action: pending
+---
+# Cross-link proposals
+
+| # | From | To | Confidence | Why | Evidence | Decision |
+|---|------|-----|------------|-----|----------|----------|
+| 1 | project_nofm | reference_minimax | 0.90 | x | x | check |
+
+## Utility scores
+
+| # | From | To | Score | Orphan-reduce | Cross-cat | High-conf |
+|---|------|-----|-------|---------------|-----------|-----------|
+| 1 | project_nofm | reference_minimax | 3 | - | - | - |
+MD
+# Seed a pending ledger row for the pair (legacy apply path expects pending rows).
+cat > "$SANDBOX/wiki/context/crosslink-ledger.jsonl" <<'JSON'
+{"date":"2026-06-29","run_id":"manualrun","from_path":"wiki/projects/project_nofm.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_nofm","to_slug":"reference_minimax","tier":"MEDIUM","confidence":0.90,"rationale":"x","evidence_span":"x","status":"pending","retry_count":0,"rejected_at":null}
+JSON
+set +e
+"$REPO_DIR/scripts/k2b-weave.sh" apply "$digest_file" >/dev/null 2>&1
+apply_rc=$?
+set -e
+if [[ "$apply_rc" -ne 0 ]]; then
+  pass "apply exits non-zero when a checked row hard-fails"
+else
+  fail "apply should exit non-zero on hard failure (got rc=0)"
+fi
+assert_file_exists "digest preserved after hard-fail" "$digest_file"
+failed_rows=$(grep -c '"status":"apply-failed"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || echo 0)
+assert_equal "ledger row marked apply-failed (not applied)" "1" "$failed_rows"
+cleanup_sandbox
+
+# =======================================================================
+# Test 18: auto-apply hard-fail retries then goes permanent after MAX_RETRY (R2)
+# =======================================================================
+echo "Test 18: auto-apply retry exhaustion -> apply-failed-permanent"
+setup_sandbox
+enable_auto_apply
+# Broken FROM page (no frontmatter) -> helper rc 1 every time.
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_nofm.md",
+    "to_path": "wiki/reference/reference_minimax.md",
+    "from_slug": "project_nofm",
+    "to_slug": "reference_minimax",
+    "confidence": 0.95,
+    "rationale": "will hard-fail",
+    "evidence_span": "body"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+# Three consecutive runs. apply-failed is NOT excluded, so the pair re-enters each run.
+for i in 1 2 3; do
+  "$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+  sleep 1
+done
+perm_rows=$(grep -c '"status":"apply-failed-permanent"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || echo 0)
+assert_equal "pair reaches apply-failed-permanent after 3 hard fails" "1" "$perm_rows"
+# Only ONE row per pair (upsert, not append-forever)
+pair_rows=$(grep -c '"to_slug":"reference_minimax"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || echo 0)
+assert_equal "single upserted ledger row for the pair" "1" "$pair_rows"
+cleanup_sandbox
+
+# =======================================================================
+# Test 19: auto-apply recorder failure falls back to a digest (no silent loss)
+# =======================================================================
+echo "Test 19: auto-apply fatal failure -> digest fallback"
+setup_sandbox
+enable_auto_apply
+# Make the ledger path a DIRECTORY so the recorder's atomic write fails -> fatal abort.
+mkdir -p "$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/insights/insight_ai-automation.md",
+    "from_slug": "project_alpha",
+    "to_slug": "insight_ai-automation",
+    "confidence": 0.70,
+    "rationale": "held pair, recorder will fail",
+    "evidence_span": "recruiting pipeline automation tool"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+fallback_digest=$(find "$SANDBOX/review" -name 'crosslinks_*.md' -type f | head -1)
+if [[ -n "$fallback_digest" ]]; then
+  pass "digest fallback written when auto-apply aborts"
+else
+  fail "expected a fallback digest when the recorder fails"
+fi
+cleanup_sandbox
+
+# =======================================================================
+# Test 20: recorder collapses duplicate historical rows into one (Codex finding)
+# =======================================================================
+echo "Test 20: recorder collapses duplicate pair rows"
+setup_sandbox
+LED="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+mkdir -p "$SANDBOX/wiki/context"
+# Two historical rows for the same pair (a stale deferred + an apply-failed retry=2).
+cat > "$LED" <<'JSON'
+{"from_slug":"project_alpha","to_slug":"reference_minimax","status":"deferred","retry_count":0}
+{"from_slug":"project_alpha","to_slug":"reference_minimax","status":"apply-failed","retry_count":2}
+JSON
+final_status=$(python3 "$REPO_DIR/scripts/k2b-weave-record-apply.py" --ledger "$LED" --from project_alpha --to reference_minimax --outcome failed-hard --max-retry 3)
+assert_equal "third hard-fail across history reaches permanent" "apply-failed-permanent" "$final_status"
+row_count=$(grep -c '"to_slug":"reference_minimax"' "$LED" || true)
+assert_equal "duplicate rows collapsed to one" "1" "$row_count"
+cleanup_sandbox
+
+# =======================================================================
+# Test 21: ledger-not-writable preflight aborts BEFORE any apply (clean fallback)
+# =======================================================================
+echo "Test 21: unwritable ledger -> clean digest fallback, no page mutated"
+setup_sandbox
+enable_auto_apply
+# Ledger path as a directory -> preflight fails before any apply.
+mkdir -p "$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_alpha.md",
+    "to_path": "wiki/reference/reference_minimax.md",
+    "from_slug": "project_alpha",
+    "to_slug": "reference_minimax",
+    "confidence": 0.95,
+    "rationale": "high conf but ledger unwritable",
+    "evidence_span": "uses the text worker API for text generation"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+assert_not_contains "no page mutated when ledger unwritable" "$SANDBOX/wiki/projects/project_alpha.md" "[[reference_minimax]]"
+fb=$(find "$SANDBOX/review" -name 'crosslinks_*.md' -type f | head -1)
+if [[ -n "$fb" ]]; then
+  pass "clean digest fallback written (full set, nothing applied)"
+  assert_contains "fallback digest contains the un-applied pair" "$fb" "reference_minimax"
+else
+  fail "expected a fallback digest when ledger is unwritable"
+fi
+cleanup_sandbox
+
+# =======================================================================
+# Test 22: cmd_apply preflight -- unwritable ledger refuses to mutate, preserves digest
+# =======================================================================
+echo "Test 22: apply preflight on unwritable ledger"
+setup_sandbox
+# Ledger path as a directory -> ledger_writable is false.
+mkdir -p "$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+mkdir -p "$SANDBOX/review"
+DF22="$SANDBOX/review/crosslinks_pf.md"
+cat > "$DF22" <<'MD'
+---
+type: crosslink-digest
+run-id: pfrun
+review-action: pending
+---
+# X
+
+| # | From | To | Confidence | Why | Evidence | Decision |
+|---|------|-----|------------|-----|----------|----------|
+| 1 | project_alpha | reference_minimax | 0.90 | x | x | check |
+MD
+set +e
+"$REPO_DIR/scripts/k2b-weave.sh" apply "$DF22" >/dev/null 2>&1
+rc22=$?
+set -e
+if [[ "$rc22" -ne 0 ]]; then
+  pass "apply refuses (non-zero) when ledger unwritable"
+else
+  fail "apply should refuse on unwritable ledger (got rc=0)"
+fi
+assert_not_contains "no page mutated under unwritable-ledger apply" "$SANDBOX/wiki/projects/project_alpha.md" "[[reference_minimax]]"
+assert_file_exists "digest preserved under preflight refusal" "$DF22"
+cleanup_sandbox
+
+# =======================================================================
+# Test 23: cmd_apply retry -- apply-failed row flips to applied (no silent no-op)
+# =======================================================================
+echo "Test 23: apply retry over an apply-failed ledger row"
+setup_sandbox
+# project_gamma starts WITHOUT frontmatter (would hard-fail), recorded apply-failed.
+mkdir -p "$SANDBOX/wiki/projects" "$SANDBOX/review" "$SANDBOX/wiki/context"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_gamma.md"
+LED23="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$LED23" <<'JSON'
+{"date":"2026-06-29","run_id":"r1","from_path":"wiki/projects/project_gamma.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_gamma","to_slug":"reference_minimax","tier":"MEDIUM","confidence":0.90,"rationale":"x","evidence_span":"x","status":"apply-failed","retry_count":1,"rejected_at":null}
+JSON
+DF23="$SANDBOX/review/crosslinks_retry.md"
+cat > "$DF23" <<'MD'
+---
+type: crosslink-digest
+run-id: r2
+review-action: pending
+---
+# X
+
+| # | From | To | Confidence | Why | Evidence | Decision |
+|---|------|-----|------------|-----|----------|----------|
+| 1 | project_gamma | reference_minimax | 0.90 | x | x | check |
+MD
+# Fix the page so apply can succeed this time.
+printf -- '---\ntype: project\n---\n# Gamma\nbody\n' > "$SANDBOX/wiki/projects/project_gamma.md"
+"$REPO_DIR/scripts/k2b-weave.sh" apply "$DF23" >/dev/null 2>&1 || { fail "retry apply exited non-zero"; }
+assert_contains "retry applied the link" "$SANDBOX/wiki/projects/project_gamma.md" "[[reference_minimax]]"
+applied23=$(grep -c '"status":"applied"' "$LED23" 2>/dev/null || true)
+assert_equal "ledger flips apply-failed -> applied (no silent no-op)" "1" "$applied23"
+stuck23=$(grep -c '"status":"apply-failed"' "$LED23" 2>/dev/null || true)
+assert_equal "no stale apply-failed row left behind" "0" "$stuck23"
+assert_file_missing "digest deleted only after durable applied record" "$DF23"
+cleanup_sandbox
+
+# =======================================================================
+# Test 24: cmd_apply reject with NO matching pending row -> durable upsert (no silent loss)
+# =======================================================================
+echo "Test 24: apply reject with no pending ledger row"
+setup_sandbox
+mkdir -p "$SANDBOX/review" "$SANDBOX/wiki/context"
+# Empty ledger (no pending row for the pair) + a hand-made digest marking 'x'.
+: > "$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+DF24="$SANDBOX/review/crosslinks_rej.md"
+cat > "$DF24" <<'MD'
+---
+type: crosslink-digest
+run-id: rejrun
+review-action: pending
+---
+# X
+
+| # | From | To | Confidence | Why | Evidence | Decision |
+|---|------|-----|------------|-----|----------|----------|
+| 1 | project_alpha | person_bob | 0.50 | x | x | x |
+MD
+"$REPO_DIR/scripts/k2b-weave.sh" apply "$DF24" >/dev/null 2>&1 || { fail "apply (reject) exited non-zero"; }
+rej24=$(grep -c '"status":"rejected"' "$SANDBOX/wiki/context/crosslink-ledger.jsonl" 2>/dev/null || true)
+assert_equal "rejection durably recorded even with no pending row" "1" "$rej24"
+assert_file_missing "digest deleted after durable rejection" "$DF24"
+cleanup_sandbox
+
+# =======================================================================
+# Test 25: deterministic retry -- run1 hard-fails, run2 EMPTY response still retries
+# =======================================================================
+echo "Test 25: retry queue progresses on an empty worker response"
+setup_sandbox
+enable_auto_apply
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+LED25="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+# Run 1: worker proposes the (will-hard-fail) pair.
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_nofm.md",
+    "to_path": "wiki/reference/reference_minimax.md",
+    "from_slug": "project_nofm",
+    "to_slug": "reference_minimax",
+    "confidence": 0.95,
+    "rationale": "will hard-fail",
+    "evidence_span": "body"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+retry1=$(jq -s '[.[]|select(.to_slug=="reference_minimax")][0].retry_count' "$LED25" 2>/dev/null || echo "?")
+assert_equal "run1 records retry_count=1" "1" "$retry1"
+# Run 2: worker returns NOTHING -- retry queue must still re-attempt the failed pair.
+echo '[]' > "$MOCK_DIR/response.json"
+sleep 1
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+retry2=$(jq -s '[.[]|select(.to_slug=="reference_minimax")][0].retry_count' "$LED25" 2>/dev/null || echo "?")
+assert_equal "run2 (empty response) still retries -> retry_count=2" "2" "$retry2"
+cleanup_sandbox
+
+# =======================================================================
+# Test 26: retry not blocked by a stale duplicate (deferred) row for the same pair
+# =======================================================================
+echo "Test 26: retry survives a duplicate deferred ledger row"
+setup_sandbox
+enable_auto_apply
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+LED26="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$LED26" <<'JSON'
+{"from_path":"wiki/projects/project_nofm.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_nofm","to_slug":"reference_minimax","status":"deferred","retry_count":0,"confidence":0.95}
+{"from_path":"wiki/projects/project_nofm.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_nofm","to_slug":"reference_minimax","status":"apply-failed","retry_count":1,"confidence":0.95}
+JSON
+echo '[]' > "$MOCK_DIR/response.json"
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+rc26=$(jq -s '[.[]|select(.to_slug=="reference_minimax")][0].retry_count' "$LED26" 2>/dev/null || echo "?")
+assert_equal "retry fired despite duplicate deferred row (retry_count 1 -> 2)" "2" "$rc26"
+rows26=$(grep -c '"to_slug":"reference_minimax"' "$LED26" 2>/dev/null || true)
+assert_equal "duplicate rows collapsed to one on retry" "1" "$rows26"
+cleanup_sandbox
+
+# =======================================================================
+# Test 27: a below-threshold apply-failed pair is retried, NOT held
+# =======================================================================
+echo "Test 27: below-threshold retry pair is retried, not held"
+setup_sandbox
+enable_auto_apply
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+LED27="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$LED27" <<'JSON'
+{"from_path":"wiki/projects/project_nofm.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_nofm","to_slug":"reference_minimax","status":"apply-failed","retry_count":1,"confidence":0.10}
+JSON
+echo '[]' > "$MOCK_DIR/response.json"
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+held27=$(grep -c '"status":"held-low-confidence"' "$LED27" 2>/dev/null || true)
+assert_equal "below-threshold retry NOT converted to held" "0" "$held27"
+rc27=$(jq -s '[.[]|select(.to_slug=="reference_minimax")][0].retry_count' "$LED27" 2>/dev/null || echo "?")
+assert_equal "below-threshold retry still incremented (1 -> 2)" "2" "$rc27"
+cleanup_sandbox
+
+# =======================================================================
+# Test 28: apply-failed pair RE-PROPOSED below threshold is retried, not held
+# =======================================================================
+echo "Test 28: below-threshold re-proposal of an apply-failed pair still retries"
+setup_sandbox
+enable_auto_apply
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+LED28="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$LED28" <<'JSON'
+{"from_path":"wiki/projects/project_nofm.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_nofm","to_slug":"reference_minimax","status":"apply-failed","retry_count":1,"confidence":0.95}
+JSON
+# Worker RE-PROPOSES the same pair but BELOW threshold (0.40 < 0.80).
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[
+  {
+    "from_path": "wiki/projects/project_nofm.md",
+    "to_path": "wiki/reference/reference_minimax.md",
+    "from_slug": "project_nofm",
+    "to_slug": "reference_minimax",
+    "confidence": 0.40,
+    "rationale": "re-proposed below threshold",
+    "evidence_span": "body"
+  }
+]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+held28=$(grep -c '"status":"held-low-confidence"' "$LED28" 2>/dev/null || true)
+assert_equal "below-threshold re-proposal NOT converted to held" "0" "$held28"
+rc28=$(jq -s '[.[]|select(.to_slug=="reference_minimax")][0].retry_count' "$LED28" 2>/dev/null || echo "?")
+assert_equal "apply-failed retry advanced (1 -> 2) despite below-threshold re-proposal" "2" "$rc28"
+cleanup_sandbox
+
+# =======================================================================
+# Test 29: retry queue advances even when the worker run FAILS (schema violation)
+# =======================================================================
+echo "Test 29: apply-failed retries despite a failed worker run"
+setup_sandbox
+enable_auto_apply
+mkdir -p "$SANDBOX/wiki/projects"
+printf 'no frontmatter\nbody\n' > "$SANDBOX/wiki/projects/project_nofm.md"
+LED29="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+cat > "$LED29" <<'JSON'
+{"from_path":"wiki/projects/project_nofm.md","to_path":"wiki/reference/reference_minimax.md","from_slug":"project_nofm","to_slug":"reference_minimax","status":"apply-failed","retry_count":1,"confidence":0.95}
+JSON
+# Worker returns a schema-violating payload -> cmd_run aborts AFTER the early retry queue.
+cat > "$MOCK_DIR/response.json" <<'JSON'
+[ { "garbage": true, "no_required_fields": 1 } ]
+JSON
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+rc29=$(jq -s '[.[]|select(.to_slug=="reference_minimax")][0].retry_count' "$LED29" 2>/dev/null || echo "?")
+assert_equal "retry advanced (1 -> 2) despite worker schema failure" "2" "$rc29"
+cleanup_sandbox
+
+# =======================================================================
+# Test 30: retry whose TO page is gone records stale, never a broken link
+# =======================================================================
+echo "Test 30: retry with a missing TO page -> stale, no broken link"
+setup_sandbox
+enable_auto_apply
+LED30="$SANDBOX/wiki/context/crosslink-ledger.jsonl"
+# project_alpha exists (fixture); the TO page reference_gone does NOT exist.
+cat > "$LED30" <<'JSON'
+{"from_path":"wiki/projects/project_alpha.md","to_path":"wiki/reference/reference_gone.md","from_slug":"project_alpha","to_slug":"reference_gone","status":"apply-failed","retry_count":1,"confidence":0.95}
+JSON
+echo '[]' > "$MOCK_DIR/response.json"
+export K2B_WEAVE_MOCK_RESPONSE="$MOCK_DIR/response.json"
+"$REPO_DIR/scripts/k2b-weave.sh" run >/dev/null 2>&1 || true
+assert_not_contains "no broken link added for missing TO page" "$SANDBOX/wiki/projects/project_alpha.md" "[[reference_gone]]"
+stale30=$(grep -c '"status":"stale-renamed"' "$LED30" 2>/dev/null || true)
+assert_equal "missing-TO retry recorded as stale-renamed (not applied)" "1" "$stale30"
+applied30=$(grep -c '"status":"applied"' "$LED30" 2>/dev/null || true)
+assert_equal "missing-TO retry NOT marked applied" "0" "$applied30"
+cleanup_sandbox
+
+# =======================================================================
 # Summary
 # =======================================================================
 echo

@@ -47,6 +47,14 @@ readonly REJECTION_TTL_DAYS=30
 readonly MAX_RETRY_COUNT=3
 readonly SCOPE_FOLDERS=(people projects insights reference work concepts)
 
+# --- Auto-apply config ---
+# Effective gate = WEAVE_AUTO_APPLY=true (env kill-switch) AND the policy ledger's
+# k2b-weave/crosslink_apply autonomy entry has auto_eligible=true. Either disables it.
+# When the gate is closed, cmd_run falls back to the legacy digest+review path.
+WEAVE_AUTO_APPLY="${WEAVE_AUTO_APPLY:-true}"
+WEAVE_AUTO_APPLY_THRESHOLD="${WEAVE_AUTO_APPLY_THRESHOLD:-0.80}"
+readonly POLICY_LEDGER_FILE="$K2B_VAULT/wiki/context/policy-ledger.jsonl"
+
 # --- Logging ---
 
 log_info()  { echo "[weave] $*" >&2; }
@@ -155,6 +163,8 @@ get_ledger_exclusions() {
         or .status == "pending"
         or .status == "deferred"
         or .status == "permanently-rejected"
+        or .status == "held-low-confidence"
+        or .status == "apply-failed-permanent"
         or (
           .status == "rejected"
           and (
@@ -510,52 +520,11 @@ append_proposals_to_ledger() {
   ')
 }
 
-# Mark a pair as rejected in the ledger (or increment retry_count if already there).
-# Args: from_slug, to_slug
-mark_ledger_rejected() {
-  local from_slug="$1"
-  local to_slug="$2"
-  local now
-  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  _update_ledger_pair "$from_slug" "$to_slug" "$(jq -cn --arg now "$now" --argjson maxr "$MAX_RETRY_COUNT" '{status: "rejected", rejected_at: $now, _increment_retry: true, _max_retry: $maxr}')"
-}
-
-mark_ledger_applied() {
-  local from_slug="$1"
-  local to_slug="$2"
-  _update_ledger_pair "$from_slug" "$to_slug" '{"status": "applied"}'
-}
-
-mark_ledger_deferred() {
-  local from_slug="$1"
-  local to_slug="$2"
-  _update_ledger_pair "$from_slug" "$to_slug" '{"status": "deferred"}'
-}
-
-mark_ledger_stale_renamed() {
-  local from_slug="$1"
-  local to_slug="$2"
-  _update_ledger_pair "$from_slug" "$to_slug" '{"status": "stale-renamed"}'
-}
-
-_update_ledger_pair() {
-  local from_slug="$1"
-  local to_slug="$2"
-  local patch="$3"
-  [[ -f "$LEDGER_FILE" ]] || return 0
-  local tmp="${LEDGER_FILE}.upd.$$"
-  jq -c --arg from "$from_slug" --arg to "$to_slug" --argjson patch "$patch" '
-    if .from_slug == $from and .to_slug == $to and .status == "pending" then
-      . + $patch
-      | (if ($patch._increment_retry // false) then
-          .retry_count = ((.retry_count // 0) + 1)
-          | (if .retry_count >= ($patch._max_retry // 3) then .status = "permanently-rejected" else . end)
-        else . end)
-      | del(._increment_retry, ._max_retry)
-    else . end
-  ' "$LEDGER_FILE" > "$tmp"
-  mv -f "$tmp" "$LEDGER_FILE"
-}
+# NOTE: ledger status transitions (applied/stale/rejected/deferred/held/apply-failed)
+# now all go through the single-writer upsert recorder scripts/k2b-weave-record-apply.py
+# (called via record_apply_outcome). The former mark_ledger_* / _update_ledger_pair
+# helpers only mutated `pending` rows and reported success on no-match, which silently
+# discarded decisions on retry/drifted/hand-made digests -- removed (Codex review).
 
 # --- Metrics and log ---
 
@@ -700,19 +669,36 @@ PY
 # --- Apply: apply a single approved proposal to a page ---
 
 # Delegates to Python helper for safe YAML frontmatter editing.
-# Returns 0 on success, 2 if the FROM page cannot be found (stale-renamed), 1 on error.
+# Exit codes (distinct so the retryable concurrency signal survives -- the helper
+# returns 2 for an mtime race, which must NOT be collapsed into a hard error):
+#   0  applied (or already present -- idempotent)
+#   2  stale -- FROM or TO page not found
+#   3  concurrency-retry (helper mtime race; retry next run, no retry budget spent)
+#   1  hard error (missing frontmatter, write failure, etc.)
 apply_one_proposal() {
   local from_slug="$1"
   local to_slug="$2"
-  local from_path
+  local from_path to_path
   from_path=$(find_page_by_slug "$from_slug" || true)
   if [[ -z "$from_path" || ! -f "$from_path" ]]; then
     return 2
   fi
-  if ! python3 "$SCRIPT_DIR/k2b-weave-add-related.py" "$from_path" "$to_slug"; then
-    return 1
+  # Verify the TO page still exists too. The retry queue replays old ledger rows, and a
+  # TO page renamed/deleted since the original failure would otherwise get a broken
+  # `related: [[to_slug]]` link recorded as applied (Codex review). Treat as stale.
+  to_path=$(find_page_by_slug "$to_slug" || true)
+  if [[ -z "$to_path" || ! -f "$to_path" ]]; then
+    return 2
   fi
-  return 0
+  # Capture the helper rc WITHOUT toggling the global `set -e` (toggling it inside a
+  # function leaks the option to the caller and makes `return 1` abort the script).
+  local hrc=0
+  python3 "$SCRIPT_DIR/k2b-weave-add-related.py" "$from_path" "$to_slug" || hrc=$?
+  case "$hrc" in
+    0) return 0 ;;
+    2) return 3 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Find the absolute path for a slug across the in-scope wiki folders.
@@ -729,6 +715,286 @@ find_page_by_slug() {
   return 1
 }
 
+# --- Auto-apply gate + helpers ---
+
+# True (0) iff the env kill-switch is on AND the policy ledger grants autonomy for
+# k2b-weave/crosslink_apply. Makes the previously documentation-only policy gate
+# executable, so a hands-off cron run honors it.
+auto_apply_enabled() {
+  [[ "$WEAVE_AUTO_APPLY" == "true" ]] || return 1
+  [[ -f "$POLICY_LEDGER_FILE" ]] || return 1
+  local eligible
+  eligible=$(jq -s -r '
+    map(select(.type == "autonomy" and .scope == "k2b-weave" and .action == "crosslink_apply"))
+    | (.[-1].auto_eligible // false) | tostring
+  ' "$POLICY_LEDGER_FILE" 2>/dev/null || echo false)
+  [[ "$eligible" == "true" ]]
+}
+
+# Drop proposals whose {from,to} pair is already excluded by ledger state
+# (applied/pending/deferred/held/permanently-rejected/rejected-in-TTL) or by an
+# existing wikilink. Enforced AFTER the worker returns so a re-proposed pair can
+# never override a prior decision under auto-apply (Codex plan-review finding R1).
+# Prints filtered proposals JSON on stdout.
+filter_excluded_proposals() {
+  local scored="$1"
+  local ledger_excl wikilink_excl combined
+  ledger_excl=$(get_ledger_exclusions)
+  wikilink_excl=$(build_wikilink_exclusions)
+  combined=$(jq -n --argjson a "$ledger_excl" --argjson b "$wikilink_excl" '$a + $b | unique')
+  # Collision-proof key: a JSON-encoded [from,to] array (no fragile separator byte).
+  jq -n --argjson scored "$scored" --argjson excl "$combined" '
+    def pkey(f; t): ([(f | ascii_downcase), (t | ascii_downcase)] | @json);
+    ($excl | map({ key: pkey(.from; .to), value: true }) | from_entries) as $exmap
+    | $scored
+    | map(select(($exmap[pkey(.from_slug; .to_slug)] // false) | not))
+  '
+}
+
+# Emit the open retry queue as a proposals array: ledger rows still in `apply-failed`
+# (non-permanent). These are deterministically retried each run regardless of whether
+# Kimi re-proposes them, so a one-off apply failure always progresses toward
+# apply-failed-permanent + alert instead of stalling forever (Codex review finding).
+load_retry_pairs() {
+  [[ -f "$LEDGER_FILE" ]] || { echo "[]"; return; }
+  jq -s '[ .[]
+    | select(.status == "apply-failed")
+    | { from_path: (.from_path // ""), to_path: (.to_path // ""),
+        from_slug, to_slug, confidence: (.confidence // 1),
+        rationale: (.rationale // ""), evidence_span: (.evidence_span // "") } ]' "$LEDGER_FILE"
+}
+
+# Record one apply outcome for a pair via the python upsert recorder. Echoes the
+# final ledger status (e.g. "applied", "held-low-confidence", "apply-failed-permanent").
+# Args: from_slug to_slug outcome [run_id from_path to_path confidence rationale evidence]
+record_apply_outcome() {
+  local from_slug="$1" to_slug="$2" outcome="$3"
+  local run_id="${4:-}" from_path="${5:-}" to_path="${6:-}" confidence="${7:-0}" rationale="${8:-}" evidence="${9:-}"
+  python3 "$SCRIPT_DIR/k2b-weave-record-apply.py" \
+    --ledger "$LEDGER_FILE" \
+    --from "$from_slug" --to "$to_slug" \
+    --outcome "$outcome" --max-retry "$MAX_RETRY_COUNT" \
+    --run-id "$run_id" --date "$(date +%Y-%m-%d)" \
+    --from-path "$from_path" --to-path "$to_path" \
+    --confidence "$confidence" --rationale "$rationale" --evidence "$evidence"
+}
+
+# Auto-apply the top-N proposals directly (no digest, no human gate). Mutates the
+# ledger with final per-pair statuses. Prints a "applied=N held=M stale=K failed=J permanent=P"
+# summary line on stdout for the caller to log.
+# Sets the global AUTO_APPLY_SUMMARY and returns 0 on success, non-zero on a FATAL
+# error (filter failure or a record-write failure on an applied/held pair) so the
+# caller can fall back to writing a digest instead of logging a false success.
+# NOT run through command substitution -- $(...) clears errexit and would mask a
+# mid-function failure (Codex review finding).
+# True (0) iff the ledger can be written: parent dir is a writable directory AND the
+# ledger is either absent or a writable regular file. Probed BEFORE any page mutation
+# so an unwritable ledger aborts cleanly (no partial apply) instead of mutating pages
+# and then losing the durable retry/audit row (Codex review finding).
+ledger_writable() {
+  local dir
+  dir=$(dirname "$LEDGER_FILE")
+  [[ -d "$dir" && -w "$dir" ]] || return 1
+  if [[ -e "$LEDGER_FILE" ]]; then
+    [[ -f "$LEDGER_FILE" && -w "$LEDGER_FILE" ]] || return 1
+  fi
+  return 0
+}
+
+# Deterministically re-attempt every open apply-failed pair, INDEPENDENT of the text
+# worker. Runs early in cmd_run (before the Kimi call) so a degraded worker -- token
+# overflow, missing wrapper, API failure, invalid schema -- can never stall the retry
+# queue. Best-effort: record failures are non-fatal (the apply-failed row persists and
+# is retried next run; apply_one_proposal is idempotent). Each call advances a stuck
+# pair's retry_count by exactly one, so it reaches apply-failed-permanent + alert in
+# bounded time regardless of Kimi's health. No threshold, no exclusion filter.
+process_retry_queue() {
+  local run_id="$1"
+  ledger_writable || { log_error "retry-queue: ledger not writable -- skipping retries this run"; return 0; }
+  local retry_only n_retry
+  retry_only=$(load_retry_pairs | jq 'unique_by([(.from_slug | ascii_downcase), (.to_slug | ascii_downcase)])')
+  n_retry=$(echo "$retry_only" | jq 'length')
+  (( n_retry == 0 )) && return 0
+  log_info "Retry queue: re-attempting $n_retry open apply-failed pair(s)"
+  local r_row r_from r_to r_fp r_tp r_conf r_rat r_ev r_rc r_final
+  while IFS= read -r r_row; do
+    [[ -z "$r_row" ]] && continue
+    r_from=$(echo "$r_row" | jq -r '.from_slug')
+    r_to=$(echo "$r_row" | jq -r '.to_slug')
+    r_fp=$(echo "$r_row" | jq -r '.from_path // ""')
+    r_tp=$(echo "$r_row" | jq -r '.to_path // ""')
+    r_conf=$(echo "$r_row" | jq -r '.confidence // 1')
+    r_rat=$(echo "$r_row" | jq -r '.rationale // ""')
+    r_ev=$(echo "$r_row" | jq -r '.evidence_span // ""')
+    r_rc=0
+    apply_one_proposal "$r_from" "$r_to" || r_rc=$?
+    case "$r_rc" in
+      0)
+        record_apply_outcome "$r_from" "$r_to" "applied" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev" >/dev/null \
+          || { log_error "retry: applied $r_from -> $r_to but FAILED to record (self-heals next run)"; notify_failure "weave retry: applied $r_from -> $r_to but ledger record failed"; }
+        ;;
+      2)
+        record_apply_outcome "$r_from" "$r_to" "stale" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev" >/dev/null \
+          || log_error "retry: failed to record stale $r_from -> $r_to"
+        ;;
+      3)
+        record_apply_outcome "$r_from" "$r_to" "failed-concurrency" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev" >/dev/null \
+          || log_error "retry: failed to record concurrency $r_from -> $r_to"
+        ;;
+      *)
+        r_final=$(record_apply_outcome "$r_from" "$r_to" "failed-hard" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev") \
+          || log_error "retry: failed to record hard-fail $r_from -> $r_to"
+        if [[ "$r_final" == "apply-failed-permanent" ]]; then
+          notify_failure "weave: $r_from -> $r_to hard-failed $MAX_RETRY_COUNT times; marked apply-failed-permanent"
+        fi
+        ;;
+    esac
+  done < <(echo "$retry_only" | jq -c '.[]')
+  return 0
+}
+
+# auto_apply_proposals sets two globals and returns 0 on success, non-zero on a fatal
+# abort. On abort, AUTO_APPLY_REMAINING holds the proposals that were NOT applied (so
+# the caller writes a digest of exactly those -- never re-queuing an already-applied
+# pair). NOT run through command substitution -- $(...) clears errexit (Codex finding).
+AUTO_APPLY_SUMMARY=""
+AUTO_APPLY_REMAINING="[]"
+auto_apply_proposals() {
+  local scored="$1" run_id="$2"
+  AUTO_APPLY_SUMMARY=""
+  AUTO_APPLY_REMAINING="$scored"   # default fallback set = everything, until we apply
+
+  # Preflight: if the ledger is unwritable, abort before mutating any page. The full
+  # scored set then falls back to a digest cleanly (nothing was applied).
+  if ! ledger_writable; then
+    log_error "auto-apply: ledger not writable ($LEDGER_FILE) -- aborting before any apply"
+    return 1
+  fi
+
+  # Open apply-failed pairs are retried deterministically in a SEPARATE loop after the
+  # new-proposal pass (below), bypassing the confidence threshold and the exclusion
+  # filter -- they are already-approved high-confidence pairs that failed to apply, so
+  # they must progress to apply-failed-permanent, never be held or dropped.
+  local retry_pairs
+  retry_pairs=$(load_retry_pairs)
+
+  local filtered before after dropped
+  # Fatal if the exclusion filter fails -- applying an unfiltered set could override
+  # a prior rejected/deferred/held decision.
+  if ! filtered=$(filter_excluded_proposals "$scored"); then
+    log_error "auto-apply: exclusion filter failed -- aborting auto-apply"
+    return 1
+  fi
+  before=$(echo "$scored" | jq 'length')
+  after=$(echo "$filtered" | jq 'length')
+  dropped=$(( before - after ))
+  (( dropped > 0 )) && log_info "Dropped $dropped already-excluded pair(s) before auto-apply"
+
+  # Pull apply-failed (retry) pairs OUT of the new-proposal set. apply-failed is not
+  # excluded by get_ledger_exclusions, so a below-threshold re-proposal of an open
+  # apply-failed pair would otherwise survive the filter and be rewritten as
+  # held-low-confidence -- stalling the retry counter and the permanent alert. Retry
+  # pairs are owned exclusively by the retry loop (no threshold, no held path).
+  local filtered_new
+  filtered_new=$(jq -n --argjson f "$filtered" --argjson r "$retry_pairs" '
+    def pkey: ([(.from_slug | ascii_downcase), (.to_slug | ascii_downcase)] | @json);
+    ([ $r[] | { key: pkey, value: true } ] | from_entries) as $rk
+    | [ $f[] | select(($rk[pkey] // false) | not) ]
+  ')
+  AUTO_APPLY_REMAINING="$filtered_new"   # excluded + retry pairs are not digest-fallback material
+
+  local applied=0 held=0 stale=0 failed=0 permanent=0 idx=0
+  local row from_slug to_slug from_path to_path conf rationale evidence rc final
+  while IFS= read -r row; do
+    [[ -z "$row" ]] && continue
+    from_slug=$(echo "$row" | jq -r '.from_slug')
+    to_slug=$(echo "$row" | jq -r '.to_slug')
+    from_path=$(echo "$row" | jq -r '.from_path // ""')
+    to_path=$(echo "$row" | jq -r '.to_path // ""')
+    conf=$(echo "$row" | jq -r '.confidence // 0')
+    rationale=$(echo "$row" | jq -r '.rationale // ""')
+    evidence=$(echo "$row" | jq -r '.evidence_span // ""')
+
+    # Below-threshold: record held-low-confidence, never apply. A failed record here
+    # is fatal -- abort with the un-applied remainder (this pair onward).
+    if ! awk -v c="$conf" -v t="$WEAVE_AUTO_APPLY_THRESHOLD" 'BEGIN { exit !(c >= t) }'; then
+      if ! record_apply_outcome "$from_slug" "$to_slug" "held" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
+        log_error "auto-apply: failed to record held pair $from_slug -> $to_slug -- aborting"
+        AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
+        return 1
+      fi
+      held=$(( held + 1 ))
+      idx=$(( idx + 1 ))
+      continue
+    fi
+
+    rc=0
+    apply_one_proposal "$from_slug" "$to_slug" || rc=$?
+    case "$rc" in
+      0)
+        # The link is now in place. If the audit row cannot be written, do NOT report
+        # a clean success: alert and abort. The fallback remainder starts AFTER this
+        # already-applied pair (idx+1) so we never re-queue an applied link; the page
+        # mutation is durable and wikilink-exclusion will keep it from re-proposing.
+        if ! record_apply_outcome "$from_slug" "$to_slug" "applied" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
+          log_error "auto-apply: applied $from_slug -> $to_slug but FAILED to record ledger row -- aborting"
+          notify_failure "weave: applied $from_slug -> $to_slug but could not write the ledger audit row (run $run_id)"
+          # INCLUDE the current pair (idx:) in the fallback. The link is on the page but
+          # has no audit row; the idempotent apply on the fallback digest will record
+          # `applied` on retry. Excluding it (idx+1) would leave a permanent audit gap
+          # because wikilink-exclusion drops the now-linked pair on future runs.
+          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
+          return 1
+        fi
+        applied=$(( applied + 1 ))
+        ;;
+      2)
+        # FROM page not found -- nothing mutated. Record is retry-irrelevant but still
+        # part of the audit trail; a failure here is fatal (abort with remainder).
+        if ! record_apply_outcome "$from_slug" "$to_slug" "stale" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
+          log_error "auto-apply: failed to record stale $from_slug -> $to_slug -- aborting"
+          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
+          return 1
+        fi
+        stale=$(( stale + 1 ))
+        log_info "Stale-renamed: $from_slug -> $to_slug (FROM page not found)"
+        ;;
+      3)
+        # Concurrency race -- page not mutated. The retry depends on this ledger row,
+        # so a failed record is fatal.
+        if ! record_apply_outcome "$from_slug" "$to_slug" "failed-concurrency" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
+          log_error "auto-apply: failed to record concurrency $from_slug -> $to_slug -- aborting"
+          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
+          return 1
+        fi
+        failed=$(( failed + 1 ))
+        log_info "Concurrency retry deferred to next run: $from_slug -> $to_slug"
+        ;;
+      *)
+        # Hard failure -- page not mutated. The retry counter and the permanent-failure
+        # alert DEPEND on this ledger write, so a failed record is fatal.
+        if ! final=$(record_apply_outcome "$from_slug" "$to_slug" "failed-hard" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence"); then
+          log_error "auto-apply: failed to record hard-fail $from_slug -> $to_slug -- aborting"
+          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
+          return 1
+        fi
+        failed=$(( failed + 1 ))
+        if [[ "$final" == "apply-failed-permanent" ]]; then
+          permanent=$(( permanent + 1 ))
+          notify_failure "weave: $from_slug -> $to_slug hard-failed $MAX_RETRY_COUNT times; marked apply-failed-permanent"
+        fi
+        log_error "auto-apply failed for $from_slug -> $to_slug (rc=$rc, status=$final)"
+        ;;
+    esac
+    idx=$(( idx + 1 ))
+  done < <(echo "$filtered_new" | jq -c '.[]')
+
+  AUTO_APPLY_REMAINING="[]"   # full success -- nothing to fall back
+  AUTO_APPLY_SUMMARY=$(printf 'applied=%d held=%d stale=%d failed=%d permanent=%d dropped=%d' \
+    "$applied" "$held" "$stale" "$failed" "$permanent" "$dropped")
+  return 0
+}
+
 # --- Commands ---
 
 cmd_run() {
@@ -738,6 +1004,14 @@ cmd_run() {
 
   local run_id
   run_id=$(date +%Y%m%d-%H%M)
+
+  # Retry the open apply-failed queue FIRST, before any Kimi-dependent work. This runs
+  # every real (non-dry) auto-apply run regardless of whether the worker later succeeds,
+  # so a degraded Kimi/token/schema condition can never stall a stuck pair's progress
+  # toward apply-failed-permanent.
+  if [[ "$is_dry_run" != "true" ]] && auto_apply_enabled; then
+    process_retry_queue "$run_id"
+  fi
 
   log_info "Scanning in-scope pages..."
   local pages_list
@@ -816,6 +1090,7 @@ cmd_run() {
   log_info "Verified $verified_count/$(echo "$response" | jq 'length') proposals"
 
   if (( verified_count == 0 )); then
+    # Retry queue already ran at the top of cmd_run, so a clean worker run is a true no-op.
     log_info "Clean run -- no verified proposals"
     append_metrics "$page_count" "$(echo "$response" | jq 'length')" 0 "$duration_ms" "$input_bytes" "" "$run_id"
     append_log_line "[weave] $run_id -- clean run, no proposals"
@@ -832,32 +1107,71 @@ cmd_run() {
   local top_count
   top_count=$(echo "$scored" | jq 'length')
 
+  # Proposals that the legacy digest path writes. Default = everything; on an
+  # auto-apply fallback this is narrowed to only the un-applied remainder.
+  local digest_proposals="$scored"
+
   if [[ "$is_dry_run" == "true" ]]; then
     log_info "DRY RUN -- would write $top_count proposals:"
     echo "$scored" | jq -r '.[] | "  [\(.utility_score // 0)] \(.from_slug) -> \(.to_slug) (conf=\(.confidence)) -- \(.rationale)"'
     return 0
   fi
 
-  # Write digest (atomic)
+  # --- Auto-apply path (gated): apply directly, no digest, no human review ---
+  # Called WITHOUT command substitution so a mid-function failure propagates; on a
+  # fatal failure we fall through to the digest path so nothing is silently lost.
+  if auto_apply_enabled; then
+    log_info "Auto-apply enabled (policy ledger grants k2b-weave/crosslink_apply autonomy)"
+    if auto_apply_proposals "$scored" "$run_id"; then
+      local summary="$AUTO_APPLY_SUMMARY"
+      local n_applied
+      n_applied=$(echo "$summary" | grep -oE 'applied=[0-9]+' | cut -d= -f2)
+
+      append_metrics "$page_count" "$(echo "$response" | jq 'length')" "$top_count" "$duration_ms" "$input_bytes" "" "$run_id"
+      append_log_line "[weave] $run_id -- auto-apply ($summary)"
+
+      mkdir -p "$K2B_VAULT/wiki/context"
+      printf '%s\tk2b-weave\t%s\tweave run: %s proposals, %s applied (auto)\n' "$(date +%Y-%m-%d)" "$(echo $RANDOM | md5sum 2>/dev/null | head -c 8 || echo $RANDOM)" "$top_count" "${n_applied:-0}" >> "$K2B_VAULT/wiki/context/skill-usage-log.tsv" 2>/dev/null || true
+
+      log_info "Done (auto-apply). $summary"
+      return 0
+    fi
+    log_error "auto-apply aborted mid-run -- falling back to digest so proposals are not lost"
+    notify_failure "weave: auto-apply aborted for run $run_id; wrote review digest as fallback"
+    # Only the un-applied remainder goes to the fallback digest -- never re-queue an
+    # already-applied pair.
+    digest_proposals="$AUTO_APPLY_REMAINING"
+    # fall through to the digest path below
+  fi
+
+  # --- Legacy digest path: write a review digest and wait for Keith ---
+  local digest_count
+  digest_count=$(echo "$digest_proposals" | jq 'length' 2>/dev/null || echo 0)
+  if (( digest_count == 0 )); then
+    log_info "No proposals to write to a digest (nothing pending after auto-apply)."
+    append_metrics "$page_count" "$(echo "$response" | jq 'length')" "$top_count" "$duration_ms" "$input_bytes" "" "$run_id"
+    append_log_line "[weave] $run_id -- auto-apply fallback, no remainder to digest"
+    return 0
+  fi
   local today_short
   today_short=$(date +%Y-%m-%d_%H%M)
   local digest_path="$REVIEW_DIR/crosslinks_${today_short}.md"
   mkdir -p "$REVIEW_DIR"
-  write_digest "$digest_path" "$run_id" "$scored"
+  write_digest "$digest_path" "$run_id" "$digest_proposals"
   log_info "Wrote digest: $digest_path"
 
   # Log proposals to ledger
-  append_proposals_to_ledger "$scored" "$run_id"
+  append_proposals_to_ledger "$digest_proposals" "$run_id"
 
   # Metrics and log
   append_metrics "$page_count" "$(echo "$response" | jq 'length')" "$top_count" "$duration_ms" "$input_bytes" "" "$run_id"
-  append_log_line "[weave] $run_id -- $top_count proposals in review/$(basename "$digest_path")"
+  append_log_line "[weave] $run_id -- $digest_count proposals in review/$(basename "$digest_path")"
 
   # Skill usage log
   mkdir -p "$K2B_VAULT/wiki/context"
-  printf '%s\tk2b-weave\t%s\tweave run: %s proposals, 0 applied\n' "$(date +%Y-%m-%d)" "$(echo $RANDOM | md5sum 2>/dev/null | head -c 8 || echo $RANDOM)" "$top_count" >> "$K2B_VAULT/wiki/context/skill-usage-log.tsv" 2>/dev/null || true
+  printf '%s\tk2b-weave\t%s\tweave run: %s proposals, 0 applied\n' "$(date +%Y-%m-%d)" "$(echo $RANDOM | md5sum 2>/dev/null | head -c 8 || echo $RANDOM)" "$digest_count" >> "$K2B_VAULT/wiki/context/skill-usage-log.tsv" 2>/dev/null || true
 
-  log_info "Done. $top_count proposals in $(basename "$digest_path")"
+  log_info "Done. $digest_count proposals in $(basename "$digest_path")"
 }
 
 cmd_apply() {
@@ -869,7 +1183,15 @@ cmd_apply() {
   acquire_lock
   recover_ledger
 
-  local applied=0 rejected=0 deferred=0 stale=0
+  # Preflight: never mutate a page if the ledger cannot record the outcome. Otherwise a
+  # checked row could be applied while its ledger marker silently no-ops, and the digest
+  # would then be deleted -- a page change with no durable record (Codex review finding).
+  if ! ledger_writable; then
+    log_error "apply: ledger not writable ($LEDGER_FILE) -- refusing to apply; digest preserved"
+    return 1
+  fi
+
+  local applied=0 rejected=0 deferred=0 stale=0 failed=0
 
   local decisions
   decisions=$(parse_decision_table "$digest_file")
@@ -879,7 +1201,7 @@ cmd_apply() {
     return 0
   fi
 
-  local from_slug to_slug decision rc
+  local from_slug to_slug decision rc final
   while IFS=$'\t' read -r from_slug to_slug decision; do
     case "$decision" in
       check)
@@ -889,40 +1211,84 @@ cmd_apply() {
         set -e
         case "$rc" in
           0)
-            mark_ledger_applied "$from_slug" "$to_slug"
-            applied=$(( applied + 1 ))
+            # Route through the upsert recorder, NOT mark_ledger_applied: that helper
+            # only updates a `pending` row and reports success even on no-match, so an
+            # apply-failed retry row (or a drifted/hand-made digest) would apply the link,
+            # leave the ledger stale, and still delete the digest. The recorder updates
+            # any-status row (or appends one), so a durable applied row always exists.
+            if record_apply_outcome "$from_slug" "$to_slug" "applied" "" "" "" "0" "" "" >/dev/null; then
+              applied=$(( applied + 1 ))
+            else
+              log_error "apply: applied $from_slug -> $to_slug but FAILED to record -- preserving digest"
+              failed=$(( failed + 1 ))
+            fi
             ;;
           2)
-            mark_ledger_stale_renamed "$from_slug" "$to_slug"
-            stale=$(( stale + 1 ))
+            if record_apply_outcome "$from_slug" "$to_slug" "stale" "" "" "" "0" "" "" >/dev/null; then
+              stale=$(( stale + 1 ))
+            else
+              log_error "apply: failed to record stale $from_slug -> $to_slug -- preserving digest"
+              failed=$(( failed + 1 ))
+            fi
             log_info "Stale-renamed: $from_slug -> $to_slug (FROM page not found)"
             ;;
+          3)
+            # Concurrency race: retryable, not a hard failure. Mark apply-failed
+            # (non-suppressed) so a later run retries; preserve the digest.
+            record_apply_outcome "$from_slug" "$to_slug" "failed-concurrency" "" "" "" "0" "" "" >/dev/null
+            failed=$(( failed + 1 ))
+            log_info "Concurrency retry: $from_slug -> $to_slug (will retry)"
+            ;;
           *)
-            log_error "apply failed for $from_slug -> $to_slug (rc=$rc)"
+            # Hard failure: record (with retry accumulation) instead of leaving the
+            # row pending, and count it so the digest is preserved below.
+            final=$(record_apply_outcome "$from_slug" "$to_slug" "failed-hard" "" "" "" "0" "" "")
+            failed=$(( failed + 1 ))
+            log_error "apply failed for $from_slug -> $to_slug (rc=$rc, status=$final)"
             ;;
         esac
         ;;
       x)
-        mark_ledger_rejected "$from_slug" "$to_slug"
-        rejected=$(( rejected + 1 ))
+        # Upsert recorder (not mark_ledger_rejected) so a missing/non-pending row does
+        # not silently no-op and discard a human rejection while deleting the digest.
+        if record_apply_outcome "$from_slug" "$to_slug" "rejected" "" "" "" "0" "" "" >/dev/null; then
+          rejected=$(( rejected + 1 ))
+        else
+          log_error "apply: failed to record rejection $from_slug -> $to_slug -- preserving digest"
+          failed=$(( failed + 1 ))
+        fi
         ;;
       defer|"")
-        mark_ledger_deferred "$from_slug" "$to_slug"
-        deferred=$(( deferred + 1 ))
+        if record_apply_outcome "$from_slug" "$to_slug" "deferred" "" "" "" "0" "" "" >/dev/null; then
+          deferred=$(( deferred + 1 ))
+        else
+          log_error "apply: failed to record defer $from_slug -> $to_slug -- preserving digest"
+          failed=$(( failed + 1 ))
+        fi
         ;;
       *)
         log_info "Unknown decision '$decision' for $from_slug -> $to_slug, treating as defer"
-        mark_ledger_deferred "$from_slug" "$to_slug"
-        deferred=$(( deferred + 1 ))
+        if record_apply_outcome "$from_slug" "$to_slug" "deferred" "" "" "" "0" "" "" >/dev/null; then
+          deferred=$(( deferred + 1 ))
+        else
+          log_error "apply: failed to record defer $from_slug -> $to_slug -- preserving digest"
+          failed=$(( failed + 1 ))
+        fi
         ;;
     esac
   done <<< "$decisions"
 
-  # Delete digest
-  rm -f "$digest_file"
+  append_log_line "[weave-apply] $(basename "$digest_file") -- $applied applied, $rejected rejected, $deferred deferred, $stale stale-renamed, $failed failed"
+  log_info "Applied $applied, rejected $rejected, deferred $deferred, stale $stale, failed $failed"
 
-  append_log_line "[weave-apply] $(basename "$digest_file") -- $applied applied, $rejected rejected, $deferred deferred, $stale stale-renamed"
-  log_info "Applied $applied, rejected $rejected, deferred $deferred, stale $stale"
+  # PRESERVE the digest and exit non-zero if any checked row failed, so the approved
+  # decision record is never lost on a transient error (Codex finding: digest must
+  # not be deleted unconditionally). Only delete on a clean pass.
+  if (( failed > 0 )); then
+    log_error "$failed checked row(s) failed -- preserving digest $digest_file for retry"
+    return 1
+  fi
+  rm -f "$digest_file"
 }
 
 cmd_status() {

@@ -18,23 +18,27 @@ Weaves the wiki graph tighter over time by finding semantically related pages th
 
 **The problem:** `/lint` passively detects orphans and weakly-connected pages but never creates the missing links. Keith wants the wiki to grow *tighter* as it grows -- more edges between related pages, without manually adding every `[[wikilink]]`.
 
-**The solution:** Three times a week, Kimi K2.7 Code reads the whole in-scope wiki and returns up to 10 candidate cross-link pairs, ranked by utility. Every proposal lands in a digest note under `review/`. Keith approves during `/review`. Approved pairs become `related:` frontmatter entries on the FROM page (single-sided -- Obsidian backlinks show the reverse). Nothing is ever auto-applied in v0.
+**The solution:** Three times a week, Kimi K2.7 Code reads the whole in-scope wiki and returns up to 10 candidate cross-link pairs, ranked by utility. Pairs at or above the confidence threshold are **auto-applied** -- the `[[backlink]]` is added to the FROM page's `related:` frontmatter field (single-sided -- Obsidian backlinks show the reverse) with no human gate. Below-threshold pairs are recorded silently and never queued. This is gated by the policy ledger (below); when the gate is closed, weave falls back to the legacy `review/` digest path that waits for Keith's `/review`.
+
+**Why auto-apply:** a proposal only ever adds one `related:` link (additive, reversible, low stakes). Waiting on a human gate Keith never passed left 31 high-confidence links unapplied for a month (cleared 2026-06-29). Keith authorized hands-off operation 2026-06-29.
 
 **Why Kimi, not Opus:** ~30-50x cheaper. Same pattern as `k2b-compile` and `k2b-observer`. Cost: ~$1/week total at current vault scale.
 
-## Policy Ledger Check (MANDATORY -- runs before every weave apply)
+## Auto-apply gate (EXECUTABLE -- enforced in `cmd_run`, not just documented)
 
-Before applying any crosslink, check the policy ledger:
+`scripts/k2b-weave.sh` reads the policy ledger at runtime and auto-applies ONLY when the gate is open. The cron calls `k2b-weave.sh run` directly, so this check is real code, not an agent instruction.
 
-1. **Read** `wiki/context/policy-ledger.jsonl`
-2. **Filter** entries where `scope` is `k2b-weave` or `*` (global)
-3. **For `crosslink_apply` autonomy entry**: check if `auto_eligible` is true
-   - If true AND proposal risk is low (both pages exist, single-sided related: addition): auto-apply without asking Keith
-   - If false: require Keith's approval via review/ digest (current behavior)
-4. **After each apply batch**: update the ledger entry's `approved`/`rejected` counts
-5. **Graduation check**: when `approved >= graduation_threshold` AND `rejected / (approved + rejected) < max_rejection_rate`, propose auto-eligibility to Keith. If Keith confirms, update `auto_eligible: true` in the ledger.
+**Effective gate = `WEAVE_AUTO_APPLY=true` (env kill-switch, default true) AND the policy-ledger `k2b-weave`/`crosslink_apply` autonomy entry has `auto_eligible: true`.** Either one false -> legacy digest path.
 
-This enables weave to gradually earn autonomy. First 10+ proposals are always manual. After proving reliability, Keith can unlock auto-apply for low-risk crosslinks.
+1. **Read** `wiki/context/policy-ledger.jsonl`; take the last `type:autonomy, scope:k2b-weave, action:crosslink_apply` entry.
+2. **`auto_eligible: true`** -> auto-apply this run. **false / absent** -> write a `review/` digest and wait (legacy).
+3. **Confidence threshold** `WEAVE_AUTO_APPLY_THRESHOLD` (default `0.80`): pairs `>= threshold` apply; pairs `< threshold` are recorded `held-low-confidence` in the ledger and suppressed from future re-proposal (no churn, no queue).
+4. **Post-worker exclusion enforcement**: before applying, `cmd_run` recomputes ledger + wikilink exclusions and drops any pair already `applied/pending/deferred/held/permanently-rejected/rejected-in-TTL` or already linked -- so a re-proposed pair can never override a prior decision.
+5. **Failure durability**: a hard apply failure records `apply-failed` (NOT suppressed, so it retries next run); after `MAX_RETRY_COUNT` (3) hard fails it becomes `apply-failed-permanent` (suppressed) and fires a `notify_failure` alert. A concurrency race records `apply-failed` without spending a retry. The manual `apply <digest>` path preserves the digest and exits non-zero if any checked row fails (never deletes an approved digest on a transient error).
+
+**To pause auto-apply:** set `WEAVE_AUTO_APPLY=false` for a run, or flip the policy-ledger entry's `auto_eligible` back to `false`.
+
+**Ledger statuses:** `applied`, `held-low-confidence`, `apply-failed`, `apply-failed-permanent`, `stale-renamed`, plus the legacy-path `pending`/`deferred`/`rejected`/`permanently-rejected`.
 
 ## Commands
 
@@ -49,7 +53,9 @@ This enables weave to gradually earn autonomy. First 10+ proposals are always ma
 |---|---|
 | `~/Projects/K2B/scripts/k2b-weave.sh` | Orchestrator script (called by all commands) |
 | `~/Projects/K2B/scripts/minimax-weave.sh` | Kimi K2.7 Code API wrapper with strict JSON schema validation |
-| `~/Projects/K2B-Vault/wiki/context/crosslink-ledger.jsonl` | Proposal memory (applied/rejected/pending/deferred) |
+| `~/Projects/K2B/scripts/k2b-weave-record-apply.py` | Pair-level ledger upsert recorder (auto-apply outcomes + retry accumulation) |
+| `~/Projects/K2B-Vault/wiki/context/crosslink-ledger.jsonl` | Proposal memory (applied/held-low-confidence/apply-failed/apply-failed-permanent/stale-renamed; legacy pending/deferred/rejected) |
+| `~/Projects/K2B-Vault/wiki/context/policy-ledger.jsonl` | Auto-apply autonomy gate (`crosslink_apply` `auto_eligible`) read by `cmd_run` |
 | `~/Projects/K2B-Vault/wiki/context/weave-metrics.jsonl` | Per-run statistics |
 | `~/Projects/K2B-Vault/wiki/context/weave-errors.log` | Quarantine for malformed Kimi responses |
 | `~/Projects/K2B-Vault/wiki/.weave.lock` | Concurrency guard (PID + timestamp, 30-min TTL) |
