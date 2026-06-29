@@ -4569,3 +4569,21 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** run the supervised/live MVP gate before marking the feature shipped. Watch `r5c-autorecovery-alerts.jsonl`, `r5c-autorecovery.jsonl`, and `partition-suppressions.jsonl` during the first real incident.
 
 **Key decisions:** keep open or malformed R5C partition state fail-open for alert visibility; only suppress completed overlapping partition recoveries with an audit marker. Use local JSONL alert append before Telegram send so delivery failure cannot block evidence capture or the ASUS reboot decision.
+
+## 2026-06-29 -- weave auto-apply (remove the human review gate)
+
+**Commit:** `7f06402` feat(weave): auto-apply high-confidence crosslinks, hands-off
+
+**What you will notice:** weave now adds the high-confidence `[[related]]` links by itself on its 3x/week run. The cross-link digests that piled up in `review/` (31 links sat unapplied for a month) stop appearing. You no longer mark check/x/defer for crosslinks. Low-confidence pairs are recorded silently, never queued.
+
+**What shipped:** `cmd_run` auto-applies proposals at or above `WEAVE_AUTO_APPLY_THRESHOLD` (0.80), gated by an executable policy-ledger check -- `k2b-weave`/`crosslink_apply` `auto_eligible` is now read by the script at runtime (it was documentation-only, so the hands-off cron ignored it). Below-threshold pairs land as `held-low-confidence` (suppressed). A deterministic apply-failed retry queue runs early in `cmd_run`, independent of the Kimi call, so a one-off apply failure progresses to `apply-failed-permanent` + alert in bounded time even if Kimi is degraded or never re-proposes the pair. New single-writer ledger recorder `scripts/k2b-weave-record-apply.py` does a pair-level upsert with retry accumulation and duplicate-row collapse. Apply path hardened: ledger-writability preflight before any page mutation, TO-page existence check (no broken `related:` links), distinct concurrency-retry exit code, digest preserved + non-zero exit on failure, and an accurate unprocessed-remainder digest fallback. Policy ledger flipped to `auto_eligible:true` with Keith's 2026-06-29 authorization recorded.
+
+**Review:** builder-family=`anthropic`. Checkpoint 1 (plan) Codex NEEDS-ATTENTION `12d5e3`, 3 findings incorporated. Checkpoint 2 (pre-commit) Codex, 11 rounds via `scripts/review.sh --builder-family anthropic --primary codex` -- each round found a genuine edge in the unattended-write path (set -e leak aborting the apply case, a literal NUL byte in the exclusion key, no-op-success ledger markers losing decisions on retry/drift, non-deterministic Kimi-gated retry, missing TO-page existence check). Final verdict APPROVE, `.code-reviews/2026-06-29T07-08-00Z_10c5bb.log`.
+
+**Verification:** `bash tests/test-k2b-weave.sh` -- 82/82 green (24 new tests covering the four MVP conditions + every Codex-found edge); `bash -n scripts/k2b-weave.sh`; `python3 -m py_compile`-equivalent parse of the recorder; `bash scripts/verify-skills-parity.sh` ok; `python3 scripts/audit-plate-freshness.py` passed.
+
+**Feature status change:** `feature_weave-auto-apply` new -> `shipped` (built and shipped in one session; moved to `Shipped/`).
+
+**Follow-ups:** Codex round-1 medium -- validate human-edited digest rows against the pending ledger before applying in the manual `cmd_apply` path. Deferred; that path is rarely used now that auto-apply is default. Needs `/sync` to reach the Mini cron.
+
+**Key decisions:** make the policy-ledger autonomy gate executable rather than bypassing it (honors the graduation mechanism); retry pairs owned exclusively by a separate loop that bypasses the confidence threshold and exclusion filter; applied-record failure is fatal-with-remainder so a clean success is never reported when the audit row is missing.
