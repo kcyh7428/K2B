@@ -50,7 +50,10 @@ log() {
 }
 
 cleanup() {
-  rm -f "$LOCKFILE"
+  # LOCKFILE is a directory (mkdir-based lock, see run_analysis). rm -f cannot
+  # remove a directory, so use rm -rf; otherwise a killed run leaves a stale
+  # lock that wedges every future cycle with "Another analysis is running."
+  rm -rf "$LOCKFILE"
   log "Observer loop stopped."
 }
 trap cleanup EXIT
@@ -216,7 +219,13 @@ ${session_summaries:-(no session summaries available)}
 
 Analyze these observations and return your findings as JSON."
 
-  # Call MiniMax API
+  # Call the Kimi text worker via mm_api.
+  # Do NOT set max_completion_tokens here. The old hardcoded 4000 was too small,
+  # so kimi-k2.7-code spent the whole budget reasoning and returned EMPTY content
+  # (finish_reason=max_tokens), which silently froze preference-signals.jsonl.
+  # Omitting it lets the request inherit the central 16384 ceiling in
+  # minimax-common.sh (_mm_api_kimi_text; override with K2B_LLM_MAX_TOKENS).
+  # Verified 2026-07-05: observer-size prompt -> valid JSON, finish=end_turn.
   local request_body
   request_body=$(jq -n \
     --arg model "$MODEL" \
@@ -228,7 +237,6 @@ Analyze these observations and return your findings as JSON."
         { role: "system", name: "K2B Observer", content: $system },
         { role: "user", name: "observer", content: $user }
       ],
-      max_completion_tokens: 4000,
       temperature: 0.3
     }')
 

@@ -2,9 +2,13 @@
 # Check K2B skill usage triggers
 # Called on session start or via /usage check
 
-VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
-LOG="$VAULT/Notes/Context/skill-usage-log.tsv"
-TRIGGERS="$VAULT/Notes/Context/usage-triggers.md"
+# $HOME/Projects/K2B-Vault resolves on both the MacBook (keithmbpm2) and the
+# Mini (fastshower); the old hardcoded keithmbpm2 path made this a silent no-op
+# on the Mini. Files also moved Notes/Context -> wiki/context in the Apr 2026
+# vault migration, so the old dir found nothing on either machine.
+VAULT="${K2B_VAULT:-$HOME/Projects/K2B-Vault}"
+LOG="$VAULT/wiki/context/skill-usage-log.tsv"
+TRIGGERS="$VAULT/wiki/context/usage-triggers.md"
 
 if [ ! -f "$LOG" ] || [ ! -f "$TRIGGERS" ]; then
   exit 0

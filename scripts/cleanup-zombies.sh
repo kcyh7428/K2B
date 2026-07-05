@@ -9,7 +9,9 @@
 set -u
 
 THRESHOLD_MIN=15         # ppid=1 processes younger than this are left alone
-LOG="${HOME}/.claude/projects/-Users-keithmbpm2-Projects-K2B/cleanup-zombies.log"
+# Machine-independent log path; the old -Users-keithmbpm2- slug created a bogus
+# nested dir on the Mini. Override with K2B_ZOMBIE_LOG if needed.
+LOG="${K2B_ZOMBIE_LOG:-$HOME/.claude/cleanup-zombies.log}"
 
 mkdir -p "$(dirname "$LOG")"
 exec >>"$LOG" 2>&1

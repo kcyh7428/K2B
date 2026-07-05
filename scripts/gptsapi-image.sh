@@ -296,7 +296,7 @@ while true; do
   poll_response=$(curl \
     --silent --show-error --fail-with-body \
     --max-time "$GPTSAPI_CURL_TIMEOUT_SECONDS" \
-    --retry 0 \
+    --retry 2 --retry-delay 3 \
     -H "Authorization: Bearer ${GPTSAPI_KEY}" \
     "$poll_url" 2>&1) || {
       emit_error "poll_failed" "$poll_response"

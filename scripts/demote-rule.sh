@@ -16,7 +16,7 @@
 set -euo pipefail
 
 N="${1:?demote-rule: rule number required}"
-ACTIVE="${K2B_ACTIVE_RULES_PATH:-$HOME/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md}"
+ACTIVE="${K2B_ACTIVE_RULES_PATH:-$HOME/Projects/K2B-Vault/System/memory/active_rules.md}"
 LEARNINGS="${K2B_LEARNINGS_PATH:-$HOME/Projects/K2B-Vault/System/memory/self_improve_learnings.md}"
 TS="$(date '+%Y-%m-%d')"
 

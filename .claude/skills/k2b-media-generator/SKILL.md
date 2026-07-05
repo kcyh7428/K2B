@@ -38,6 +38,15 @@ Use the bash wrapper for image generation:
 
 The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
 
+Loading `GPTSAPI_KEY` (agent / CLI runs). The wrapper reads `GPTSAPI_KEY` from its environment and does not source any `.env` itself. The k2b-remote bot injects it via `process.env`, so `/media image` works through Telegram. An agent or terminal session is a non-interactive shell that does NOT source `~/.zshrc`, so the key is absent and the script exits `missing_gptsapi_key`. Before calling any `gptsapi-*` script from an agent/CLI session, load it first:
+
+```
+if [ -z "${GPTSAPI_KEY:-}" ]; then set -a; . "$HOME/Projects/K2B/k2b-remote/.env" 2>/dev/null; set +a; fi
+```
+
+`[ -n "${GPTSAPI_KEY:-}" ] || { echo "GPTSAPI_KEY not in k2b-remote/.env"; exit 1; }`
+Never echo the key. Same preamble for `gptsapi-speech.sh`, `gptsapi-transcribe.sh`, `gptsapi-vlm.sh`.
+
 **Image-to-image edit: GPTsAPI direct endpoint (experimental)**
 When Keith wants to transform, restyle, preserve, or improve an existing image, use this user-provided GPTsAPI image-edit endpoint shape as a reference until a maintained wrapper exists. This path is not equivalent to `/media image`: no K2B wrapper, polling, automatic asset save, Telegram delivery, or Obsidian embed handling exists yet.
 
@@ -446,6 +455,6 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 - For batch generation, spread across days rather than burning quota in one session
 - Always print the Obsidian embed path so Keith can paste it into notes
 - API key error guidance, by command:
-  - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard."
+  - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard." For agent/CLI runs the key must be in `k2b-remote/.env`; load it with the preamble in Integration Method (non-interactive shells do not source `~/.zshrc`).
   - `/media video`, `/media music` (MiniMax-only modalities) -- **NON-FUNCTIONAL. MiniMax subscription lapsed 2026-05-27; all calls fail with `status_code 2049`. No alternative provider for video/music is configured. Do NOT tell Keith to set `MINIMAX_API_KEY` for these -- a fresh key will not help while the subscription is dead.**
   - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in `~/Projects/K2B/k2b-remote/.env`."

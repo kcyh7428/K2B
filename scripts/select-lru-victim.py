@@ -37,13 +37,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from importance import importance_score, load_access_counts  # noqa: E402
 
+# Canonical Syncthing-synced home, resolves on both machines. The old
+# .claude/projects/-Users-keithmbpm2- slug was MacBook-only and made LRU
+# victim selection exit 2 on the Mini.
 DEFAULT_ACTIVE_RULES = (
-    Path.home()
-    / ".claude"
-    / "projects"
-    / "-Users-keithmbpm2-Projects-K2B"
-    / "memory"
-    / "active_rules.md"
+    Path.home() / "Projects" / "K2B-Vault" / "System" / "memory" / "active_rules.md"
 )
 
 

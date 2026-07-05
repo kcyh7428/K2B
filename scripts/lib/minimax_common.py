@@ -36,6 +36,31 @@ KIMI_API_HOST = os.environ.get("KIMI_API_HOST", "https://api.kimi.com/coding")
 KIMI_MESSAGES_PATH = "/v1/messages"
 KIMI_DEFAULT_MODEL = os.environ.get("KIMI_DEFAULT_MODEL", "kimi-k2.7-code")
 
+# Default output ceiling for text completions. 4096 was too small for the
+# large background jobs (observer / weave / compile / lint): kimi-k2.7-code
+# spends the whole budget reasoning and returns EMPTY content with
+# finish_reason=max_tokens. Verified 2026-07-04 on a real observer-size
+# prompt: at 4096 -> content_len=0 (finish=max_tokens); at 16384 -> full
+# answer (finish=end_turn, ~13k output tokens). Raising a ceiling is free for
+# small calls (they still stop at end_turn early) and rescues the big ones.
+# Override with K2B_LLM_MAX_TOKENS.
+def _env_positive_int(name: str, default: int) -> int:
+    """Parse a positive-int env override, falling back to `default` on unset,
+    empty, or non-numeric values. Must NEVER raise at import time: a bad
+    K2B_LLM_MAX_TOKENS (e.g. "16k", "16,384", "") would otherwise crash every
+    module that imports this one, not just the caller that set it."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        return default
+    return val if val > 0 else default
+
+
+DEFAULT_MAX_TOKENS = _env_positive_int("K2B_LLM_MAX_TOKENS", 16384)
+
 # Transient server-side HTTP statuses worth retrying. 529 = "overloaded"
 # (MiniMax congestion peak), 502/503/504 = upstream gateway hiccups. Anything
 # else at the HTTP level is treated as a real error and surfaces immediately.
@@ -106,7 +131,7 @@ def chat_completion(
     model: str,
     messages: list,
     *,
-    max_tokens: int = 4096,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = 0.2,
     tools: list | None = None,
     tool_choice: str | None = None,

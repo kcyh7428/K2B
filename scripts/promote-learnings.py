@@ -54,14 +54,10 @@ from importance import importance_score, load_access_counts  # noqa: E402
 
 VAULT = Path.home() / "Projects" / "K2B-Vault"
 DEFAULT_LEARNINGS = VAULT / "System" / "memory" / "self_improve_learnings.md"
-DEFAULT_ACTIVE_RULES = (
-    Path.home()
-    / ".claude"
-    / "projects"
-    / "-Users-keithmbpm2-Projects-K2B"
-    / "memory"
-    / "active_rules.md"
-)
+# Canonical Syncthing-synced home, resolves on both machines (matches
+# DEFAULT_LEARNINGS above). The old .claude/projects/-Users-keithmbpm2- slug
+# was MacBook-only and made rule promotion exit 2 on the Mini.
+DEFAULT_ACTIVE_RULES = VAULT / "System" / "memory" / "active_rules.md"
 
 
 def _resolve(env_var, default):

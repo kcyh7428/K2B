@@ -199,10 +199,21 @@ _mm_api_kimi_text() {
   #   - drop `response_format` (Anthropic has no equivalent; system prompts already say "return JSON")
   #   - force model to the configured Kimi model (callers may still carry a MiniMax-* id)
   local kimi_body
-  kimi_body=$(jq -c --arg model "$K2B_LLM_MODEL" '
+  # Fallback output ceiling raised 4096 -> 16384 (env: K2B_LLM_MAX_TOKENS).
+  # At 4096 the large background jobs (observer / weave / compile) burned the
+  # whole budget reasoning and returned EMPTY content (finish_reason=max_tokens);
+  # verified 2026-07-04. Any caller-supplied max_tokens still wins.
+  # Guard: a non-numeric or empty override must fall back to the default, not
+  # reach --argjson (which would fail to parse it and error the whole request
+  # opaquely). Accept only a positive integer.
+  local maxtok="${K2B_LLM_MAX_TOKENS:-16384}"
+  if ! printf '%s' "$maxtok" | grep -qE '^[1-9][0-9]*$'; then
+    maxtok=16384
+  fi
+  kimi_body=$(jq -c --arg model "$K2B_LLM_MODEL" --argjson maxtok "$maxtok" '
     {
       model: $model,
-      max_tokens: (.max_tokens // .max_completion_tokens // 4096),
+      max_tokens: (.max_tokens // .max_completion_tokens // $maxtok),
       messages: [.messages[] | select(.role != "system")]
     }
     + ( if (.messages | map(select(.role=="system")) | length) > 0
