@@ -765,23 +765,29 @@ export function createBot(): Bot {
   return bot
 }
 
-// --- Outbound Telegram helper (used by scheduler.ts) ---
+// --- Outbound Telegram helper (used by scheduler.ts + startup notice) ---
+//
+// Fixes the silent-send-loss class: the old version treated ANY HTTP response
+// as success (no status check), never split messages over Telegram's 4096-char
+// limit, had no HTML-parse fallback, and no timeout -- so a long reply, a
+// table, or a malformed-HTML alert got a 400 and vanished while the caller
+// logged "completed". Now: format -> split -> per-chunk send with a status
+// check, a plain-text retry on an HTML-parse (HTTP 400) failure, and a request
+// timeout. Delivery is best-effort and NON-throwing: an undeliverable chunk is
+// logged loudly as such rather than thrown, because scheduler.ts advances
+// durable task state around this call -- an exception here would skip a
+// scheduled run or drop a result.
 
-export async function sendTelegramMessage(
+function postTelegramMessage(
   chatId: string,
   text: string,
-  threadId?: string | null
+  threadId: string | null | undefined,
+  parseMode: 'HTML' | undefined
 ): Promise<void> {
-  if (!TELEGRAM_BOT_TOKEN) return
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    text: formatForTelegram(text),
-    parse_mode: 'HTML',
-  }
-  if (threadId) {
-    payload.message_thread_id = Number(threadId)
-  }
+  const payload: Record<string, unknown> = { chat_id: chatId, text }
+  if (parseMode) payload.parse_mode = parseMode
+  if (threadId) payload.message_thread_id = Number(threadId)
   const body = JSON.stringify(payload)
 
   return new Promise((resolvePromise, reject) => {
@@ -796,12 +802,64 @@ export async function sendTelegramMessage(
         ...(HTTP_PROXY ? { agent: new HttpsProxyAgent(HTTP_PROXY) } : {}),
       },
       (res) => {
-        res.resume()
-        res.on('end', () => resolvePromise())
+        const parts: Buffer[] = []
+        res.on('data', (d) => parts.push(d as Buffer))
+        res.on('end', () => {
+          const status = res.statusCode ?? 0
+          if (status >= 200 && status < 300) {
+            resolvePromise()
+          } else {
+            const respBody = Buffer.concat(parts).toString('utf8').slice(0, 300)
+            reject(new Error(`Telegram sendMessage HTTP ${status}: ${respBody}`))
+          }
+        })
       }
     )
     req.on('error', reject)
+    req.setTimeout(20000, () => {
+      req.destroy(new Error('Telegram sendMessage timed out after 20s'))
+    })
     req.write(body)
     req.end()
   })
+}
+
+export async function sendTelegramMessage(
+  chatId: string,
+  text: string,
+  threadId?: string | null
+): Promise<void> {
+  if (!TELEGRAM_BOT_TOKEN) return
+  const chunks = splitMessage(formatForTelegram(text))
+  for (const chunk of chunks) {
+    try {
+      await postTelegramMessage(chatId, chunk, threadId, 'HTML')
+    } catch (htmlErr) {
+      // Only an HTTP 400 means Telegram rejected the HTML entities; retrying
+      // that chunk as plain text (tags stripped) rescues a formatting glitch.
+      // Any other failure (timeout, 429, 5xx, proxy) is a transport problem: a
+      // plain-text retry would not help and, on a timeout, could duplicate a
+      // message Telegram already accepted. Log loudly and move on -- never
+      // throw (see contract note above).
+      if (!String(htmlErr).includes('HTTP 400')) {
+        logger.error(
+          { err: String(htmlErr), chatId },
+          'sendTelegramMessage: send failed (transport); message NOT delivered'
+        )
+        continue
+      }
+      logger.warn(
+        { err: String(htmlErr), chatId },
+        'sendTelegramMessage: HTML parse failure, retrying as plain text'
+      )
+      await postTelegramMessage(chatId, chunk.replace(/<[^>]+>/g, ''), threadId, undefined).catch(
+        (plainErr) => {
+          logger.error(
+            { err: String(plainErr), chatId },
+            'sendTelegramMessage: plain-text retry also failed; message NOT delivered'
+          )
+        }
+      )
+    }
+  }
 }
