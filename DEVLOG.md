@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-07-05 -- Revive self-improvement loop (observer + Mini paths)
+
+**Commit:** `6043258` fix: revive self-improvement loop (observer token ceiling + Mini paths)
+
+**What shipped:** The background observer and the rule-promotion pipeline were both silently dead. The observer hardcoded `max_completion_tokens: 4000`, overriding the central 16384 ceiling; kimi-k2.7-code spent that budget reasoning and returned empty content (`finish_reason=max_tokens`), freezing `preference-signals.jsonl` since 2026-06-21. Separately, five self-improvement scripts hardcoded the MacBook (`keithmbpm2`) vault/memory paths, so usage triggers exited silently and rule promotion / LRU / demote exited code 2 on the Mini (`fastshower`). This drops the observer's hardcoded ceiling so it inherits 16384, raises that default in both the bash and Python providers with a positive-int `K2B_LLM_MAX_TOKENS` guard, and rewrites the five scripts to machine-independent paths. Also fixes the observer EXIT-trap lock (`rm -f` -> `rm -rf`; the lock is a mkdir directory), bumps the gptsapi-image poll retry 0 -> 2, and documents GPTSAPI_KEY loading for agent/CLI runs.
+
+**Review:** Diagnosed by the 2026-07-03 Fable session audit (finding #1). Builder = Claude (this-session observer edit + prior uncommitted work). Kimi (matrix-clean independent reviewer) was degraded and timed out twice with zero output; Keith chose Codex. Codex (builder-family anthropic) approved with no material findings (`.code-reviews/2026-07-05T09-02-54Z_9e7fe9.log`).
+
+**Verification:** Observer Kimi call reproduced locally without the hardcoded ceiling -> valid JSON, `finish_reason=end_turn`, 1115 output tokens (vs the 0-byte `max_tokens` failure in production). Live Mini confirmed the pre-fix breakage: `check-usage-triggers.sh` reads an absent path and exits 0 empty; `promote-learnings.py` exits 2 "active_rules.md not found". `bash -n` + `py_compile` clean on all 9 changed scripts.
+
+**Feature status change:** none (`--no-feature` infrastructure repair).
+
+**Follow-ups:** After `/sync`, restart `k2b-observer-loop` on the Mini and confirm the next cycle writes valid JSON + a fresh `preference-signals.jsonl` line. Audit findings #2 (dashboard 0.0.0.0 exposure) and #3 (Telegram long-message truncation) remain open for the next batch.
+
+**Key decisions:** Verified the audit's claims on the live Mini before fixing. The audit's "stale lock" root cause was wrong (no stale lock; the real cause was the token ceiling), and its "bot unauthenticated" finding was overstated (the bot is localhost-bound; the dashboard is the real 0.0.0.0 exposure). Shipped finding #1 only; deferred #2/#3.
+
+---
 ## 2026-07-05 -- K2B digest visibility and OKF audit
 
 **Commit:** `795f98d` feat: revive K2B digest visibility and OKF audit
