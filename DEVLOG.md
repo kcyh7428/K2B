@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-07-05 -- K2B digest visibility and OKF audit
+
+**Commit:** `795f98d` feat: revive K2B digest visibility and OKF audit
+
+**What shipped:** K2B now treats `k2b-vault-writer` as the default desktop capture/update lane, marks stale capture-specific skills as dormant, adds a `/plate` "Needs digestion" queue backed by `scripts/raw-needs-compile.py`, and introduces a read-only `scripts/okf-audit.py` for OKF-style metadata/readiness checks without migrating the vault schema.
+
+**Review:** Built by Codex/OpenAI, so the official independent path was Kimi-only. Kimi produced concrete findings that were fixed with regression coverage across raw compile scanning, `/plate`, review token forwarding, and OKF audit link/frontmatter parsing. Final Kimi approval reruns were unavailable because the provider repeatedly returned empty or unparseable output; Keith explicitly instructed to finish through sync after those findings were fixed and local verification passed.
+
+**Verification:** `python3 -m py_compile scripts/lib/review_runner.py scripts/lib/minimax_review.py scripts/okf-audit.py scripts/raw-needs-compile.py`; `bash tests/raw-needs-compile.test.sh`; `bash tests/okf-audit.test.sh`; `bash tests/k2b-plate.test.sh`; `python3 -m unittest tests.test_review_runner_kimi_headers tests.test_kimi_provider_labels`; `bash scripts/verify-skills-parity.sh`; `git diff --check`; targeted `rg` confirmed no new `capture-answer` skill exists.
+
+**Feature status change:** none (`--no-feature` infrastructure/source-of-truth repair).
+
+**Follow-ups:** Run `scripts/okf-audit.py` first on a safe K2B-system/reference subset before widening it to private/client material. Use `/plate` to normalize the revived raw-to-compile habit before adding more capture surfaces.
+
+**Key decisions:** Borrowed OKF metadata/audit discipline without converting K2B into OKF. Kept this desktop-only first; Telegram runtime behavior is unchanged.
+
+---
 ## 2026-06-23 -- Router watchdog proxy mutation lanes retired
 
 **Commit:** `594f1b8` fix(router-watchdog): retire proxy mutation lanes
