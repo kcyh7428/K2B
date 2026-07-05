@@ -2,6 +2,21 @@
 
 
 ---
+## 2026-07-05 -- Telegram: CJK-aligned tables + reliable long sends
+
+**Commit:** `067b2b3` fix(telegram): CJK-aligned tables + reliable long sends
+
+**What shipped:** Keith could not read tables the bot sent (Chinese columns drifted; wide tables became confusing bullets). Ported NousResearch/hermes-agent's CJK-aware markdown-table rendering into `k2b-remote/src/telegramFormat.ts`: a narrow table now renders as a `wcwidth`-aligned `<pre>` monospace grid (Chinese + English columns line up), and a table too wide for a phone falls back to a vertical `label: value` list. Added a dependency-free grapheme-aware `displayWidth` (`Intl.Segmenter`) covering CJK, BMP emoji (`0x2600-0x27bf`, `0x2b00-0x2bff`), VS16 emoji presentation, ZWJ sequences, and zero-width skin-tone modifiers / combining marks. Also fixed the `sendTelegramMessage` silent-send-loss class (audit C4): split `>4096`, check HTTP status, retry as plain text ONLY on an HTTP 400 parse error, add a 20s timeout, and stay non-throwing so `scheduler.ts` durable-state ordering around the send is unaffected.
+
+**Review:** Codex (builder-family anthropic), 2 passes. 5 findings across the throw contract, plain-text-retry classification, grapheme/BMP-emoji width, and a nested inline-code-in-table sentinel restore bug -- all fixed inline. Kimi (matrix-clean reviewer) still degraded/timing out today, so Codex was used. Logs `.code-reviews/2026-07-05T12-54-54Z_ca09b8.log` + `2026-07-05T13-23-28Z_e2ae5a.log`.
+
+**Verification:** `npm run typecheck` clean; `npm test` 188 passed / 2 skipped (added CJK-alignment, emoji-anchor, inline-code-cell, and grapheme-width tests); `npm run build` clean. Local render of a CJK candidate table showed Chinese + English columns aligned. Deployed to Mini and sent live to Keith's DM (`message_id 2060`, `ok:true`) as end-to-end proof.
+
+**Feature status change:** none (`--no-feature` infrastructure fix).
+
+**Follow-ups:** `k2b-remote/CLAUDE.md` still says any emitted table is "auto-converted to a bullet list" -- now narrow tables align and only wide ones verticalize; minor doc drift to update. Fully-correct emoji width would need a real Unicode width table; current ranges cover Keith's status-anchor usage.
+
+---
 ## 2026-07-05 -- Revive self-improvement loop (observer + Mini paths)
 
 **Commit:** `6043258` fix: revive self-improvement loop (observer token ceiling + Mini paths)
