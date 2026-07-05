@@ -1,9 +1,12 @@
 ---
 name: k2b-meeting-processor
-description: Capture meeting notes -- processes transcripts into structured vault notes with summary, decisions, action items, and insights. Use when Keith says /meeting, provides a transcript, or mentions "meeting", "Fireflies", "meeting notes", or "process this call".
+description: Dormant capture lane for meeting transcripts -- use only when Keith explicitly says /meeting or directly asks to process a meeting transcript. Routine desktop note capture should use k2b-vault-writer instead.
 ---
 
 # K2B Meeting Processor
+
+> [!warning] Dormant lane
+> This skill has no logged live use in the recent K2B usage window. Do not recommend it as a routine capture path. Invoke it only when Keith explicitly asks for `/meeting` or provides a transcript and asks to process it.
 
 ## Vault Path
 

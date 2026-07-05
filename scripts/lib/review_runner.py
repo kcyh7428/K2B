@@ -378,6 +378,14 @@ def build_kimi_cmd(scope: str, files: list[str] | None, plan: str | None,
         cmd += ["--plan", plan]
     if focus:
         cmd += ["--focus", focus]
+    max_tokens = os.environ.get("K2B_LLM_MAX_TOKENS", "").strip()
+    if max_tokens:
+        try:
+            parsed_max_tokens = int(max_tokens)
+        except ValueError:
+            parsed_max_tokens = 0
+        if parsed_max_tokens > 0:
+            cmd += ["--max-tokens", str(parsed_max_tokens)]
     return cmd
 
 

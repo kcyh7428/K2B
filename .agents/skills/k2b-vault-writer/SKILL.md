@@ -1,11 +1,19 @@
 ---
 name: k2b-vault-writer
-description: Create or update notes in the K2B Obsidian vault with correct frontmatter, cross-links, and MOC integration. Use when creating any new note in the vault, or when updating an existing note after progress is made on a project, person, or decision. Also use when another skill (k2b-daily-capture, k2b-meeting-processor, k2b-tldr, k2b-insight-extractor) needs to create or update a linked note.
+description: Default desktop path for creating or updating K2B vault notes with correct frontmatter, cross-links, and MOC integration. Use for "save this", "capture this", "update the vault", and project/person/decision updates unless Keith explicitly invokes a dormant capture lane.
 ---
 
 # K2B Vault Writer
 
 Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
+
+## Desktop Capture Default
+
+Use this skill as the default desktop route for "save this", "capture this", "update K2B", "write this to the vault", and durable project/person/decision updates. Do not create a new capture skill for single-answer synthesis. Decide whether the material belongs directly in `wiki/` or should be saved as a raw source for later `/compile`:
+
+- Stable facts, project status, people context, decisions, and operating rules: update the existing wiki page directly.
+- External research briefings, transcript-like material, or broad session handoffs that need digestion across multiple pages: save to the appropriate `raw/` folder and leave `compiled: false` for `/compile`.
+- If the user explicitly invokes `/meeting`, `/daily`, `/linkedin`, or `/youtube`, use that dormant lane. Otherwise keep desktop capture here.
 
 ## System Reference
 

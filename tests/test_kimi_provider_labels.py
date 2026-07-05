@@ -159,6 +159,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             check=True,
         )
         self.assertIn("Usage: scripts/kimi-review.sh [--help] [flags]", result.stdout)
+        self.assertIn("--max-tokens", result.stdout)
 
     def test_kimi_review_shell_reports_non_git_repo(self) -> None:
         env = os.environ.copy()

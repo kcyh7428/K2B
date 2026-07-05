@@ -9,6 +9,7 @@
 #   scripts/kimi-review.sh --focus "auth path"              # extra focus area
 #   scripts/kimi-review.sh --json                           # raw JSON to stdout
 #   scripts/kimi-review.sh --model kimi-k2.7-code           # override model
+#   scripts/kimi-review.sh --max-tokens 32768               # override output ceiling
 #
 # Scopes (Phase B):
 #   --scope working-tree                                    # default, all dirty files
@@ -42,6 +43,7 @@ Usage:
   scripts/kimi-review.sh --focus "auth path"              # extra focus area
   scripts/kimi-review.sh --json                           # raw JSON to stdout
   scripts/kimi-review.sh --model kimi-k2.7-code           # override model
+  scripts/kimi-review.sh --max-tokens 32768               # override output ceiling
 
 Scopes:
   --scope working-tree                                    # default, all dirty files

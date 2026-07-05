@@ -1,9 +1,12 @@
 ---
 name: k2b-daily-capture
-description: Start or end the day -- compiles today's captures from Telegram, vault, and TLDRs into a structured daily note through multi-turn conversation. Use when Keith says /daily, "today", "start the day", "end of day", "EOD", "what's on today", or anything about daily planning/review.
+description: Dormant daily-note lane -- use only when Keith explicitly says /daily or asks for a start/end-of-day capture. Routine desktop note capture should use k2b-vault-writer instead.
 ---
 
 # K2B Daily Capture
+
+> [!warning] Dormant lane
+> This skill has no logged live use in the recent K2B usage window. Do not recommend it as the default way to save a useful answer or update K2B. Invoke it only when Keith explicitly asks for `/daily`, start-of-day capture, or end-of-day capture.
 
 ## Core Model
 

@@ -1,9 +1,12 @@
 ---
 name: k2b-tldr
-description: Capture a conversation summary -- extracts decisions, action items, insights, and content seeds into a vault note. Use when Keith says /tldr, "summarize this", "capture this", "save this conversation", or wants to save the key points from a session.
+description: Capture a session handoff or broad conversation summary -- extracts decisions, action items, insights, and content seeds into a raw TLDR note. Use when Keith says /tldr, asks for a session handoff, or asks to summarize the whole conversation; use k2b-vault-writer for single-answer capture.
 ---
 
 # K2B TLDR Capture
+
+> [!note] Scope
+> `/tldr` is for session summaries, resumability, and handoffs. It is not the default "save this answer" lane. For a single useful synthesis or a project/person/context update, use `k2b-vault-writer` instead.
 
 ## Vault Path
 

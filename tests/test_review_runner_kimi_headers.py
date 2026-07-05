@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -92,6 +93,27 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
 
         cmd = rr.build_kimi_cmd("diff", ["a.py"], None, "")
         self.assertEqual(Path(cmd[0]), scripts_dir / "kimi-review.sh")
+
+    def test_build_kimi_cmd_passes_positive_max_tokens_override(self) -> None:
+        scripts_dir = self.tmp / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "kimi-review.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        original_root = rr.REPO_ROOT
+        original_max_tokens = os.environ.get("K2B_LLM_MAX_TOKENS")
+        self.addCleanup(lambda: setattr(rr, "REPO_ROOT", original_root))
+        if original_max_tokens is None:
+            self.addCleanup(lambda: os.environ.pop("K2B_LLM_MAX_TOKENS", None))
+        else:
+            self.addCleanup(lambda: os.environ.__setitem__("K2B_LLM_MAX_TOKENS", original_max_tokens))
+        rr.REPO_ROOT = self.tmp
+
+        os.environ["K2B_LLM_MAX_TOKENS"] = "32768"
+        cmd = rr.build_kimi_cmd("diff", ["a.py"], None, "")
+        self.assertEqual(cmd[-2:], ["--max-tokens", "32768"])
+
+        os.environ["K2B_LLM_MAX_TOKENS"] = "32k"
+        cmd = rr.build_kimi_cmd("diff", ["a.py"], None, "")
+        self.assertNotIn("--max-tokens", cmd)
 
     def test_build_kimi_cmd_does_not_fall_back_to_historical_alias(self) -> None:
         scripts_dir = self.tmp / "scripts"

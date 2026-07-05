@@ -1,9 +1,12 @@
 ---
 name: k2b-linkedin
-description: Create LinkedIn posts -- draft, revise, generate images, and publish from vault content. Use when Keith says /linkedin, "draft a LinkedIn post", "post to LinkedIn", "publish on LinkedIn", "write a post about", or wants to check post performance.
+description: Dormant LinkedIn publishing lane -- use only when Keith explicitly says /linkedin or asks to draft, revise, or publish a LinkedIn post. Routine insight capture should use k2b-vault-writer instead.
 ---
 
 # K2B LinkedIn
+
+> [!warning] Dormant lane
+> This skill has no logged live use in the recent K2B usage window. Do not route generic "save this idea" or "capture this insight" requests here. Use it only for explicit LinkedIn drafting, revision, image, publishing, or status work.
 
 Draft LinkedIn posts from Keith's content pipeline, generate post images, and publish via the LinkedIn API.
 

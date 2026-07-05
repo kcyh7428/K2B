@@ -1,9 +1,12 @@
 ---
 name: k2b-youtube-capture
-description: Batch-process YouTube videos saved to K2B category playlists (K2B, K2B Claude, K2B Invest, K2B Recruit, K2B Content, K2B Learn, K2B Screen) into raw/ vault notes with playlist-specific analysis. Use when Keith says /youtube, /youtube <playlist-name>, or wants to turn saved videos into notes. Video discovery from fresh queries runs through `/research videos "<query>"` (NotebookLM), not this skill.
+description: Dormant batch YouTube playlist lane -- use only when Keith explicitly says /youtube or asks to process saved K2B playlists. Fresh video research should use k2b-research; routine desktop capture should use k2b-vault-writer.
 ---
 
 # K2B YouTube Capture (Batch Playlist Processor)
+
+> [!warning] Dormant lane
+> This skill has no logged live use in the recent K2B usage window. Do not use it for one-off YouTube URLs or fresh discovery. Use `k2b-research` for external video research and invoke this only when Keith explicitly asks for `/youtube` playlist processing.
 
 Turn videos Keith saved to a K2B category playlist into `raw/youtube/` vault notes, analyzed with the playlist's specific `prompt_focus`.
 

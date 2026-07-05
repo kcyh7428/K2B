@@ -10,6 +10,9 @@ set -uo pipefail
 VAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
 K2BI="${K2BI_VAULT_PATH:-$HOME/Projects/K2Bi-Vault}"
 MEMORY="${K2B_MEMORY_DIR:-$HOME/Projects/K2B-Vault/System/memory}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${K2B_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
+RAW_NEEDS_COMPILE="${K2B_RAW_NEEDS_COMPILE:-$REPO_ROOT/scripts/raw-needs-compile.py}"
 
 # Set K2B_PLATE_DEBUG=1 to show awk/grep errors that are otherwise suppressed.
 # By default we swallow errors to keep the dashboard clean -- but this hides
@@ -170,6 +173,25 @@ fi
 
 if [[ $has_anything -eq 0 ]]; then
   echo "_(nothing pending; clear plate)_"
+  echo ""
+fi
+
+# --- Section 1d: Needs digestion ---
+
+needs_digestion=""
+if [[ -f "$RAW_NEEDS_COMPILE" ]]; then
+  needs_digestion=$(
+    K2B_VAULT_ROOT="$VAULT" \
+      quiet python3 "$RAW_NEEDS_COMPILE" --format markdown --max 10 --min-age-hours 24 \
+      || true
+  )
+else
+  echo "[warn] Needs digestion helper missing: $RAW_NEEDS_COMPILE" >&2
+fi
+if [[ -n "$needs_digestion" ]]; then
+  echo "## 🧭 Needs digestion"
+  echo ""
+  echo "$needs_digestion"
   echo ""
 fi
 

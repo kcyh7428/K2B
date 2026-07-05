@@ -21,6 +21,18 @@ Reads raw source captures and compiles them into wiki knowledge pages. Based on 
 - `/compile deep` -- deep analysis seeking cross-vault connections
 - Automatically triggered by capture skills after writing to raw/
 
+## Desktop Digest Flow
+
+Use `/compile` to turn raw captures into durable wiki knowledge. The visible queue now starts in `/plate` under `Needs digestion`, which is backed by `scripts/raw-needs-compile.py`.
+
+1. Read `/plate` and identify the `Needs digestion` item Keith wants to process.
+2. Run `/compile <raw-path>` for one source at a time unless Keith explicitly asks for batch mode.
+3. Present a compact plan: 3-5 proposed wiki updates/creates, conflicts, and skipped items.
+4. Apply changes only after Keith approves.
+5. Mark the raw source `compiled: true`, `compiled-date: YYYY-MM-DD`, and `compiled-pages: [...]` after successful wiki updates.
+
+Do not create more raw captures when the real issue is that existing raw captures are pending digestion.
+
 ## Core Concept
 
 **Filing vs compiling:** Filing creates one note and stops. Compiling reads a source, extracts entities/concepts/insights, and ripples updates across 5-15 wiki pages. A single YouTube video might update 3 person pages, 2 project pages, create 1 concept page, and add entries to 2 indexes.

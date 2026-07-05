@@ -32,6 +32,7 @@ Runs `~/Projects/K2B/.claude/skills/k2b-plate/scripts/plate.sh` and shows the ou
 | Pending actions on in-progress features or active projects | `wiki/concepts/feature_*.md` + `wiki/concepts/project_*.md` + `wiki/projects/project_*.md` | frontmatter has `status: in-progress` (feature_*) OR `status: active` (project_*) AND `pending-action:` set |
 | Open reminders | `wiki/context/reminders.md` | lines matching `^- \[open\]` |
 | Recent open handoffs | `raw/sessions/*_handoff_*.md` | frontmatter `status: open`, mtime within last 7 days |
+| Raw sources needing digestion | `scripts/raw-needs-compile.py` over `raw/**/*.md` | `compiled:` missing/false/empty, older than 24h, excluding indexes and sync-conflicts |
 | K2Bi PM current checkpoint | `K2Bi-Vault/wiki/planning/index.md` Resume Card | first `> **K2B PM checkpoint` or `> **K2Bi PM checkpoint` blockquote (parser tolerates the optional "i"; top = most recent) |
 | In Progress lanes | `wiki/concepts/index.md` In Progress table | all rows |
 | Recently shipped | `wiki/concepts/index.md` Shipped table | rows with date within last 7 days |
@@ -58,11 +59,12 @@ The script (`plate.sh`) emits raw markdown. Each section produces zero lines if 
 Sections in fixed order:
 
 1. **⚠ Needs your decision now** -- pending-actions + open reminders + recent open handoffs
-2. **🎩 K2Bi PM current checkpoint** -- raw blockquote extract from Resume Card
-3. **✅ Recently shipped (last 7 days)** -- from concepts/index.md (notes column truncated to 150 chars)
-4. **🚧 In Progress lanes** -- from concepts/index.md
-5. **🧠 Memory flags** -- open R-IDs + recent E-IDs
-6. **📅 Next Up + Backlog top 3** -- from concepts/index.md
+2. **🧭 Needs digestion** -- raw notes that need `/compile`, omitted when empty
+3. **🎩 K2Bi PM current checkpoint** -- raw blockquote extract from Resume Card
+4. **✅ Recently shipped (last 7 days)** -- from concepts/index.md (notes column truncated to 150 chars)
+5. **🚧 In Progress lanes** -- from concepts/index.md
+6. **🧠 Memory flags** -- open R-IDs + recent E-IDs
+7. **📅 Next Up + Backlog top 3** -- from concepts/index.md
 
 ## Rendering convention (the Hybrid -- agent-side display layer)
 
@@ -74,6 +76,7 @@ The agent (Claude Code or Codex) does NOT show the raw script output verbatim by
 |---|---|
 | ⚠ Pending actions | **Full actionable body** -- Keith needs the current gate, remaining action, Close/MVP condition, and "how to" in one glance. In wide renderers this can be verbatim; in narrow panes use the compact rendering rule below. |
 | 🔔 Open reminders | **Full actionable body** -- keep enough context to act, but use the compact rendering rule below in narrow panes. |
+| 🧭 Needs digestion | **Action list** -- preserve raw path and exact `/compile <path>` action. Do not expand source contents in `/plate`; this is a queue pointer, not the digest itself. |
 | 🎩 K2Bi PM checkpoint | **One-paragraph summary** the agent extracts from the multi-paragraph blockquote. Capture: ship state, next concrete action, binding constraints. Skip the numbered conditional triggers + discipline list unless Keith asks. |
 | ✅ Recently shipped | **Title + date + one-line tag** per item. Skip the long Shipped-table notes. |
 | 🚧 In Progress | **3-column markdown table** (feature / updated date / latest status -- what's next). The status column is a one-line distillation of the Ship/Phase column from `concepts/index.md` -- what state the feature is in AND the concrete next move so Keith doesn't have to open each note to remember what it is. Keep each cell under ~120 chars; if the raw status is longer, compress while preserving the next-action signal (e.g. "Ship 2 commits 2+3 pending: --tier override + Codex --cached"). The script (plate.sh) emits the truncated status alongside the slug + date, so the agent just needs to wrap into table cells and compress further if needed. Established 2026-05-27 after Keith asked for at-a-glance status context on every In Progress feature. |
@@ -103,6 +106,7 @@ The agent (Claude Code or Codex) does NOT show the raw script output verbatim by
 - **`*.sync-conflict-*` files are skipped** at every read step. Syncthing can create these on the vault during cross-machine writes.
 - **Class-differentiated reading:** handoffs check status: open from frontmatter; reminders use the `[open]` text marker; pending-actions check that both `status: in-progress` AND `pending-action:` are set.
 - **The script itself is read-only.** `plate.sh` performs zero writes to vault or memory state -- only `echo`/`awk`/`grep`/`sed`/`find`/`cut` (all read operations). The post-task usage logging in the "Usage logging" section below is an *agent-side convention* (Claude appends one line to `skill-usage-log.tsv` after running the skill), consistent with all other K2B skills (k2b-sync, k2b-ship, etc.) and not part of the script's own execution.
+- **Needs digestion helper.** `plate.sh` calls `scripts/raw-needs-compile.py` read-only with `K2B_VAULT_ROOT="$K2B_VAULT_PATH"` and renders only the returned action bullets. The helper owns raw-frontmatter scanning so future `/lint` integration can reuse the same logic.
 - **Defensive frontmatter parsing.** `fm_get_block` caps block output at 50 lines to prevent body-content leakage if a feature note has malformed frontmatter (missing closing `---`, unusual next-key formatting). Legitimate pending-action bodies are < 10 lines; the 50-line cap is belt-and-suspenders.
 - **Debug mode.** Set `K2B_PLATE_DEBUG=1` to surface awk/grep errors that are otherwise suppressed. Use when a known pending item isn't appearing in the output and you need to see the parse errors.
 

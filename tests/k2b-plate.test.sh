@@ -186,6 +186,84 @@ EOF
   echo "PASS: test_recent_shipped_missing_section_falls_back_to_none"
 }
 
+test_needs_digestion_surfaces_uncompiled_raw_sources() {
+  local tmp k2b_vault k2bi_vault out
+  tmp="$(mktmp)"
+  k2b_vault="$tmp/K2B-Vault"
+  k2bi_vault="$tmp/K2Bi-Vault"
+
+  write_minimal_vaults "$k2b_vault" "$k2bi_vault"
+  mkdir -p "$k2b_vault/raw/tldrs"
+  cat > "$k2b_vault/wiki/concepts/index.md" <<'EOF'
+# Wiki Concepts Index
+
+## Shipped
+
+| Page | Shipped | Notes |
+|------|---------|-------|
+
+## In Progress lanes
+
+| Page | Status | Updated |
+|------|--------|---------|
+EOF
+  cat > "$k2b_vault/raw/tldrs/pending.md" <<'EOF'
+---
+tags: [tldr]
+date: 2026-07-01
+type: tldr
+origin: k2b-extract
+compiled: false
+---
+
+# Pending Digest
+EOF
+  python3 - "$k2b_vault/raw/tldrs/pending.md" <<'PY'
+from pathlib import Path
+import os
+import sys
+import time
+
+path = Path(sys.argv[1])
+old = time.time() - 49 * 3600
+os.utime(path, (old, old))
+PY
+
+  out="$(
+    K2B_VAULT_PATH="$k2b_vault" \
+    K2BI_VAULT_PATH="$k2bi_vault" \
+    K2B_MEMORY_DIR="$k2b_vault/System/memory" \
+      bash "$PLATE_SCRIPT"
+  )"
+
+  echo "$out" | grep -q "## 🧭 Needs digestion" || fail "Needs digestion section missing"
+  echo "$out" | grep -q 'raw/tldrs/pending.md' || fail "pending raw source missing from Needs digestion"
+  echo "$out" | grep -q '/compile raw/tldrs/pending.md' || fail "Needs digestion should show compile action"
+
+  cat > "$k2b_vault/raw/tldrs/pending.md" <<'EOF'
+---
+tags: [tldr]
+date: 2026-07-01
+type: tldr
+origin: k2b-extract
+compiled: true
+---
+
+# Pending Digest
+EOF
+  out="$(
+    K2B_VAULT_PATH="$k2b_vault" \
+    K2BI_VAULT_PATH="$k2bi_vault" \
+    K2B_MEMORY_DIR="$k2b_vault/System/memory" \
+      bash "$PLATE_SCRIPT"
+  )"
+  if echo "$out" | grep -q "## 🧭 Needs digestion"; then
+    fail "Needs digestion section should be omitted when no pending raw sources exist"
+  fi
+
+  echo "PASS: test_needs_digestion_surfaces_uncompiled_raw_sources"
+}
+
 test_stale_audit_detects_shipped_feature_named_current_or_next() {
   local tmp k2b_vault k2bi_vault out rc clean_out
   tmp="$(mktmp)"
@@ -439,6 +517,7 @@ test_plate_skill_script_mirrors_stay_identical() {
 test_recent_shipped_reads_inline_and_archived_rows
 test_recent_shipped_empty_section_falls_back_to_none
 test_recent_shipped_missing_section_falls_back_to_none
+test_needs_digestion_surfaces_uncompiled_raw_sources
 test_stale_audit_detects_shipped_feature_named_current_or_next
 test_stale_audit_fails_explicit_missing_k2bi_path
 test_stale_audit_fails_empty_explicit_k2bi_path
