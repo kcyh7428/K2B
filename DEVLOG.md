@@ -2,6 +2,22 @@
 
 
 ---
+## 2026-07-09 -- /ship gains close-the-handoff sweep (step 14 category 6)
+
+**Commit:** `89853de` fix(ship): close-the-handoff sweep as step-14 category 6
+
+**What shipped:** A stale `status: open` on the 2026-06-11 K2Bi engine handoff -- 26 days after that fix actually shipped -- misled a 2026-07-09 operating-model analysis into a false "engine dies ~July 11" deadline. Root cause: no ship workflow closes the handoff a ship resolves, and `/plate` only lists handoffs from the last 7 days, so an old stale-open handoff goes invisible instead of getting closed. Fix: added a 6th mandatory vault-note sweep to `/ship` step 14 -- for any `$HOME/Projects/K2B-Vault/raw/sessions/*_handoff_*.md` or `$HOME/Projects/K2Bi-Vault/proposals/*_handoff_*.md` whose `linked-feature:` matches the shipped feature and whose `status:` is `open`, flip it to `closed` with a dated note. Applied to both the `.claude` and `.agents` (Codex-facing) skill copies; category-6 globs use absolute vault paths; the "What /ship Does NOT Do" allowlist now permits the handoff surfaces.
+
+**Review:** Codex (builder-family anthropic). Kimi (matrix reviewer) hit its network read deadline and the runner fell back to Codex, which is independent for a Claude-built diff. First Codex pass NEEDS-ATTENTION: 1 high (`.agents` mirror was stale -- rule half-applied), 2 medium (ambiguous vault globs; stale boundary allowlist) -- all fixed. Confirming Codex pass: approve, no material findings. Logs `.code-reviews/2026-07-10T06-33-49Z_83c375.log` + `2026-07-10T06-53-55Z_00008e.log`.
+
+**Verification:** `scripts/verify-skills-parity.sh` -> ok (the two SKILL.md copies are byte-identical). Commit + committed-file scope guards confirmed exactly the two skill files landed; `launch.json` and the cockpit plan stayed unstaged.
+
+**Feature status change:** none (`--no-feature`; rule-12 hardening, finding 3.3 from the 2026-07-09 Fable audit).
+
+**Follow-ups:** none. Sibling vault edits from the same audit (provider-doc model id, capture-stack OCR provider, K2Bi handoff close, active_rules + policy-ledger rule-12 text) are Syncthing-synced, not part of this commit.
+
+---
+
 ## 2026-07-05 -- Telegram: CJK-aligned tables + reliable long sends
 
 **Commit:** `067b2b3` fix(telegram): CJK-aligned tables + reliable long sends
