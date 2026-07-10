@@ -1066,7 +1066,7 @@ Fail-open: helper crashes do NOT fail the ship. The summary file is already on d
 
 ### 14. Vault-note sweep (proactive, mandatory)
 
-Per L-2026-03-25-002 (Reinforced 5+, last reinforced 2026-05-30): after a feature ships, the standard workflow (steps 6-9) updates the feature note, index lanes, DEVLOG, and wiki/log -- but it does NOT touch five other vault surfaces that drift stale if not swept. Do NOT wait for Keith to ask "did you update all the related notes." Sweep all five before declaring the ship complete.
+Per L-2026-03-25-002 (Reinforced 5+, last reinforced 2026-05-30): after a feature ships, the standard workflow (steps 6-9) updates the feature note, index lanes, DEVLOG, and wiki/log -- but it does NOT touch six other vault surfaces that drift stale if not swept. Do NOT wait for Keith to ask "did you update all the related notes." Sweep all six before declaring the ship complete.
 
 **Category 5 is code-enforced** -- run the script, do not eyeball it. It flips any open reminder naming the just-shipped feature to `[closed]` and moves it to the `## Closed` section. This was the category skipped on 2026-05-30 (orchestrator Ship 1a `a439d5d`), which let a stale reminder reach `/plate`:
 
@@ -1103,14 +1103,15 @@ fi
 
 If the audit reports stale source notes, `/ship` stops. Update those sources and rerun the audit plus `/plate` before saying the plate is current. Bypass requires an explicit Keith override in the ship record.
 
-**Categories 1-4 stay agent-driven** (they need judgment about what THIS ship resolved):
+**Categories 1-4 and 6 stay agent-driven** (they need judgment about what THIS ship resolved; category 5 is the code-enforced reminder sweep documented above, which is why this list skips from 4 to 6):
 
 1. **Supersession references** -- when shipping vN+1, add a "Superseded by vN+1" note to the predecessor feature note's Updates section.
 2. **R-ID closures** -- in `self_improve_requests.md`, flip any R-ID this ship resolved from `Status: open` to `✅ CLOSED YYYY-MM-DD via [feature]` with a one-line root-cause summary.
 3. **active-motivations Building rebuild** -- run `bash scripts/motivations-helper.sh sync-building` (the Building section is auto-derived from the In Progress + Next Up lanes; never hand-edit it).
 4. **raw/sessions/index.md** -- append a row for the new session-summary file from step 13.5 and bump the Last-updated + Entries count.
+6. **Handoff closure** -- for any `$HOME/Projects/K2B-Vault/raw/sessions/*_handoff_*.md` (K2B) or `$HOME/Projects/K2Bi-Vault/proposals/*_handoff_*.md` (K2Bi) whose `linked-feature:` matches the shipped feature and whose frontmatter `status:` is `open`, flip `status: open` -> `status: closed` and add a dated closed note. A stale open handoff misleads future sessions (verified 2026-07-09: the 2026-06-11 engine handoff stayed open 26 days after its fix shipped and produced a false deadline).
 
-Fail-open: a category-5 script error prints a warning but does NOT fail the ship (the commit already landed). Categories 1-4 are best-effort; if a category has nothing to update, note "category N: nothing to sweep" and move on.
+Fail-open: a category-5 script error prints a warning but does NOT fail the ship (the commit already landed). Categories 1-4 and 6 are best-effort; if a category has nothing to update, note "category N: nothing to sweep" and move on.
 
 ## Error Handling
 
@@ -1126,7 +1127,7 @@ Fail-open: a category-5 script error prints a warning but does NOT fail the ship
 ## What /ship Does NOT Do
 
 - Auto-sync to Mac Mini (Keith must run `/sync` explicitly)
-- Edit vault files other than the feature note, `wiki/concepts/index.md`, `wiki/log.md`, `DEVLOG.md`, the skill-usage-log, `raw/sessions/`, and the Step 14 sweep surfaces (`wiki/context/reminders.md`, `wiki/context/active-motivations.md` via the helper, `raw/sessions/index.md`, and `self_improve_requests.md` R-ID closures in the memory dir)
+- Edit vault files other than the feature note, `wiki/concepts/index.md`, `wiki/log.md`, `DEVLOG.md`, the skill-usage-log, `raw/sessions/`, and the Step 14 sweep surfaces (`wiki/context/reminders.md`, `wiki/context/active-motivations.md` via the helper, `raw/sessions/index.md`, `self_improve_requests.md` R-ID closures in the memory dir, and the category-6 handoff-closure files `$HOME/Projects/K2B-Vault/raw/sessions/*_handoff_*.md` plus `$HOME/Projects/K2Bi-Vault/proposals/*_handoff_*.md`)
 - Overwrite `store/` (production SQLite on Mac Mini)
 - Touch `.env` files
 - Force-push, amend existing commits, rebase, or use any destructive git operation
