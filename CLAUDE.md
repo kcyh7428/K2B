@@ -23,7 +23,8 @@ Execute. Don't explain what you're about to do. Just do it. If you need clarific
 - **Google Workspace CLI** (`gws`) -- Gmail, Calendar, Drive, Sheets, and more via `gws` commands. JSON output, works from bash.
 - MCP servers: Airtable (keith, talentsignals), Fireflies (when connected), MiniMax (image/speech/video/music tools still listed but backend DEAD since 2026-05-27; media now runs on GPTsAPI -- see the MiniMax API note below)
 - **Kimi K2.7 Code** (api.kimi.com/coding) -- primary text provider since 2026-04-25 and current non-Codex reviewer (background observer, compile, lint deep, research extraction, weave, bootstrap, code review). Anthropic Messages API shape, default model id `kimi-k2.7-code`. API key in `KIMI_API_KEY` env var. Routing lives at `scripts/minimax-common.sh` + `scripts/lib/minimax_common.py` via `K2B_LLM_PROVIDER` (default `kimi`); Kimi responses are translated back into the MiniMax `chatcompletion_v2` envelope so historical callers keep working. Single source of truth for which workload uses which provider: [[wiki/context/context_llm-providers]].
-- **MiniMax API** (minimaxi.com) -- subscription DEAD as of 2026-05-27. All MiniMax endpoints return `status_code 2049 invalid api key`. K2B has migrated: VLM/OCR to `scripts/gptsapi-vlm.sh` (`gpt-4o-mini`), image generation to `scripts/gptsapi-image.sh`, TTS to `scripts/gptsapi-speech.sh`, and STT to `scripts/gptsapi-transcribe.sh` with Groq Whisper as fallback. Text scripts named `scripts/minimax-*.sh` are historical compatibility wrappers that route to Kimi by default; `K2B_LLM_PROVIDER=minimax` is deprecated and disabled unless a future provider ship explicitly re-enables it. MiniMax MCP video/music tools may still exist in the agent tool list but K2B has no automated callers and they will fail while the subscription is dead. The legacy `scripts/minimax-speech.sh`, `scripts/minimax-image.sh`, and `scripts/minimax-vlm.sh` are deleted; `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created.
+- **MiniMax API** (minimaxi.com) -- disabled in current K2B routing. Text compatibility wrappers route to Kimi; default media routes to GPTsAPI/Groq; premium image/edit, video, and music route to Higgsfield. Never set `K2B_LLM_PROVIDER=minimax`, create new `minimax-*` callers, recreate deleted MiniMax media wrappers, or use MiniMax as a fallback. Restoration requires an explicit provider ship, not an environment-variable flip.
+- **Higgsfield** (higgsfield.ai) -- premium media generation, Plus plan (credit-based). CLI `@higgsfield/cli` at `~/.npm-global/bin/higgsfield`, OAuth-authenticated (`higgsfield auth login`, per-machine token, no env key). K2B wrapper: `scripts/higgsfield.sh --type image|video|audio --model <m> --prompt "..."`. This is the working path for `/media video` and `/media music` (both dead since MiniMax lapsed) plus premium image / image-edit / Soul character consistency. Routing rubric and model list live in the k2b-media-generator skill body, not here.
 - **`claude-minimaxi`** -- historical wrapper for running Claude Code with MiniMax-M2.7 as the brain instead of Opus. Do not use while the MiniMax subscription is dead; prefer the Kimi worker scripts for cheap text work. Decision rubric: `wiki/context/context_claude-minimaxi-routing.md`. Script at `scripts/claude-minimaxi.sh`, symlinked at `~/.local/bin/claude-minimaxi`.
 - Bash, file system, web search, all standard Claude Code tools
 
@@ -178,7 +179,7 @@ Two scopes, explicit suspension of the default on one of them. Keith wrote the o
 
 ### Create
 - **`/linkedin [subcommand]`** -- Draft, revise, publish LinkedIn posts and generate images
-- **`/media [type] [args]`** -- Generate media via GPTsAPI (image, speech, transcribe) plus any explicitly available specialty video/music path
+- **`/media [type] [args]`** -- Generate media: images/speech/transcribe via GPTsAPI, and image/video/music via Higgsfield (Plus plan). Video and music run on Higgsfield; routing lives in the k2b-media-generator skill
 
 ### Teach K2B
 - **`/learn`** -- Capture a correction, preference, or best practice
@@ -340,7 +341,7 @@ Use reviewer key `kimi` for the live Kimi reviewer in `scripts/review.sh`. The h
 
 ## Session Discipline
 
-At the END of every K2B desktop session, before closing, run **`/ship`**. It is never allowed to end with a bare reminder; the sync obligation must resolve to either "done now" or "entry recorded in the `.pending-sync/` mailbox for later". All mechanics live in the **k2b-ship** skill body. If `/ship` is genuinely unavailable in the current harness, the skill body also documents the manual fallback and its recovery caveats -- do not duplicate them here.
+At the end of every K2B desktop session that modified files, resolve the delivery state. Delivery-command wording authorizes **`/ship`**; a plain implementation request or the natural end of a session does not. Without delivery authorization, report the modified files and verification state as an uncommitted checkpoint. For authorized delivery, the sync obligation must resolve to either "done now" or "entry recorded in the `.pending-sync/` mailbox for later". All mechanics live in the **k2b-ship** skill body. If `/ship` is genuinely unavailable in the current harness, the skill body documents the manual fallback and its recovery caveats.
 
 ## Goal Mode
 

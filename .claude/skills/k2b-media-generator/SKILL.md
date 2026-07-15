@@ -1,19 +1,26 @@
 ---
 name: k2b-media-generator
-description: Generate K2B media assets through GPTsAPI and current fallback paths -- images, image edits, speech (TTS), audio transcription, and high-end editorial presentation decks (HTML to PDF + PPTX). Use when Keith wants an image, an existing image transformed, a voiceover, a transcription, or a stunning / visual-led slide deck or presentation.
+description: Generate K2B media assets through GPTsAPI and Higgsfield -- images, image edits, video, music, speech (TTS), audio transcription, and high-end editorial presentation decks (HTML to PDF + PPTX). Use when Keith wants an image, an existing image transformed, a video, music, a voiceover, a transcription, or a stunning / visual-led slide deck or presentation.
 ---
 
 # K2B Media Generator
 
-Generate images, image edits, speech, audio transcriptions, video, and music. Images and speech default to GPTsAPI (`gpt-image-2`, `tts-1-hd`). Image edits are direct-endpoint only until a maintained wrapper exists. Transcription defaults to GPTsAPI Whisper (`whisper-1`) with Groq Whisper as fallback. MiniMax image fallback was retired on 2026-05-27.
+Generate images, image edits, speech, audio transcriptions, video, and music. Two providers:
+
+- **GPTsAPI** -- default for executive editorial images, typography, diagrams, quote cards, LinkedIn headers, clean business visuals (`gpt-image-2`), plus speech (`tts-1-hd`) and transcription (`whisper-1`, Groq fallback).
+- **Higgsfield** (Plus plan, credit-based) -- premium image models (Nano Banana Pro, GPT Image 2, Flux 2, Grok), **video** (Veo 3.1, Kling 3.0, Seedance 2.0), image-edit / image-to-video, Soul character consistency, product-photoshoot, TTS/music. This is what unblocks `/media video` and `/media music`, both dead since the MiniMax subscription lapsed 2026-05-27.
+
+Provider routing rubric is in the **Provider Routing** section below. MiniMax image fallback was retired 2026-05-27.
 
 ## Commands
 
 - `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2`
 - `/media speech "text" [voice] [model] [slug]` -- Generate TTS audio via GPTsAPI `tts-1-hd`
 - `/media transcribe <audio-file> [language] [slug]` -- Transcribe audio via GPTsAPI Whisper (Chinese/English/50+ languages); Groq Whisper available as fallback
-- `/media video "prompt" [slug]` -- Blocked. Respond that video generation is non-functional because the MiniMax subscription lapsed 2026-05-27; do not call any MiniMax API.
-- `/media music "description" [slug]` -- Blocked. Respond that music generation is non-functional because the MiniMax subscription lapsed 2026-05-27; do not call any MiniMax API.
+- `/media video "prompt" [slug]` -- Generate video via Higgsfield (default `seedance_2_0`; use `veo3_1` or `kling3_0` for premium). **Desktop / agent Claude Code sessions only.** See the **Higgsfield** section. (MiniMax video stays retired -- never call any MiniMax API.)
+- `/media music "description" [slug]` -- Generate music via Higgsfield (`sonilo_music`). **Desktop / agent Claude Code sessions only.** See the **Higgsfield** section. (MiniMax music stays retired.)
+
+> **Surface scope.** The Telegram bot (`k2b-remote/src/mediaCommand.ts`) only parses `/media image` and `/media speech`; a Telegram user who types `/media video` or `/media music` gets "use the MacBook session" and no generation runs. Video and music work today only in a desktop / agent Claude Code session that calls `scripts/higgsfield.sh` directly. Wiring video/music into the Telegram bot (arg parsing + progress + outbox delivery) is a separate, not-yet-built task -- do not tell Keith the Telegram path works for them.
 - `/media for <idea-slug>` -- Auto-generate media for a content idea
 - `/media voices` -- List available voices
 - **Presentation decks** (stunning / editorial) -- not a one-shot command; see the **Presentation Decks** section below for the HTML -> headless Chrome -> PDF + image-PPTX build workflow
@@ -99,6 +106,48 @@ If MCP tools are unavailable, use the bash scripts:
 ./scripts/gptsapi-speech.sh "text" [voice] [model] [slug]
 ./scripts/gptsapi-transcribe.sh <audio-file> [language]
 ```
+
+## Higgsfield
+
+Higgsfield is K2B's premium generation provider and the only working path for **video** and **music**. Keith is on the **Plus plan** (credit-based, ~1096 credits as of 2026-07-15). The CLI (`@higgsfield/cli`) is installed at `~/.npm-global/bin/higgsfield` and authenticated via OAuth (`higgsfield auth login`) -- no env key.
+
+### Wrapper (use this)
+```bash
+./scripts/higgsfield.sh --type image --model nano_banana_pro --prompt "prompt" --slug slug
+./scripts/higgsfield.sh --type video --model seedance_2_0    --prompt "prompt" --slug slug
+./scripts/higgsfield.sh --type audio --model sonilo_music    --prompt "prompt" --slug slug
+```
+The wrapper runs `generate create <model> --prompt ... --wait`, downloads the finished `result_url` into `K2B-Vault/Assets/{images,video,audio}/YYYY-MM-DD_<type>_<slug>.<ext>`, and prints the Obsidian embed + absolute path. Flags after a literal `--` pass straight to the CLI (e.g. `--aspect-ratio 16:9`, `--image-references ./ref.png`, `--start-image ./a.png`, `--end-image ./b.png`); local paths are auto-uploaded. Exit codes: 2 = not authenticated (run `higgsfield auth login`), 3 = generation failed (check `higgsfield account status` for credits), 4 = download failed.
+
+### Key models (`higgsfield model list [--video]`)
+- **Image**: `nano_banana_pro` (premium default), `gpt_image_2`, `flux_2`, `flux_kontext` (edits), `grok_image`, `text2image_soul_v2` (Soul character consistency).
+- **Video**: `seedance_2_0` (default), `seedance_2_0_mini` (drafts), `veo3_1` / `veo3_1_lite` (Google Veo), `kling3_0` / `kling3_0_turbo` (Kling), `wan2_7`, `sync_so` (lipsync), `video_upscale`.
+- **Audio**: `sonilo_music` (music), `text2speech_v2` / `inworld_text_to_speech` (TTS), `seed_audio`.
+- **Also**: `product-photoshoot` and `soul-id` are dedicated CLI subcommands (brand-quality product shots, trained character refs) -- call the CLI directly for those; the wrapper covers generic generate jobs.
+
+### Cost & safety
+- Always check cost first for anything beyond a quick image: `higgsfield generate cost <model> --prompt "..."` (free, prints credits). Nano Banana image ~1 credit; video costs more.
+- Confirm with Keith before batch runs or premium video -- credits are finite.
+- Video jobs can take minutes. In Telegram, send a progress message first. The wrapper uses `--wait-timeout 20m`.
+- Mac Mini (Telegram bot) needs its own `higgsfield auth login` before the scripted path works there; the OAuth token is per-machine.
+
+### Telegram / vault delivery
+Same as GPTsAPI images: after the wrapper prints the asset path, write the outbox manifest (`scripts/telegram-outbox-write.sh photo|video "$PATH" "caption"`) so the bot delivers it, then print the `![[...]]` embed and update any target note.
+
+## Provider Routing
+
+| Want | Provider / path |
+|---|---|
+| Executive editorial image, typography, diagram, quote card, LinkedIn header, clean business visual | **GPTsAPI** `gptsapi-image.sh` (default) |
+| Premium / photoreal / stylized image, or when GPTsAPI quality falls short | **Higgsfield** `nano_banana_pro` / `flux_2` |
+| Consistent recurring character across images | **Higgsfield** `text2image_soul_v2` + `soul-id` |
+| Brand product photoshoot | **Higgsfield** `product-photoshoot` |
+| Image edit / restyle / image-to-image | **Higgsfield** `flux_kontext` (preferred -- real wrapper, auto-upload) over the experimental GPTsAPI image-edit endpoint |
+| Video (any) | **Higgsfield** `seedance_2_0` default, `veo3_1` / `kling3_0` premium |
+| Music | **Higgsfield** `sonilo_music` |
+| Speech / TTS | **GPTsAPI** `gptsapi-speech.sh` default; Higgsfield `text2speech_v2` if a specific voice is needed |
+| Transcription (STT) | **GPTsAPI** Whisper (Groq fallback). Higgsfield has `speech2text` but GPTsAPI stays default |
+| Infographic with exact wording | **[[k2b-infographic]]** skill (never let a model render the label text) |
 
 ## Image Generation
 
@@ -246,26 +295,28 @@ rm -f /tmp/k2b-transcribe-input.mp3 /tmp/k2b-transcribe-chunk_*.mp3
 - Process voice memos from phone
 - Transcribe interview recordings for recruitment notes
 
-## Video Generation (Retired)
+## Video Generation (Higgsfield)
 
-Video generation is currently blocked. If Keith asks for `/media video`, show this message and stop:
-> Video generation is non-functional because the MiniMax subscription lapsed on 2026-05-27 (`status_code 2049`). No video provider is configured right now. Use `/media image` for static visuals instead.
+Video runs on **Higgsfield** (see the **Higgsfield** section). MiniMax video stays retired -- never call MCP `generate_video` / `query_video_generation`.
 
-### Parameters (when available)
-- **prompt**: Video description. Use camera movements in brackets: `[Pan left]`, `[Zoom in]`, `[Static shot]`, `[Pedestal up]`, `[Tilt down]`
-- **slug**: Filename slug
-- Model: `MiniMax-Hailuo-2.3` (1080p, 6s) or `MiniMax-Hailuo-2.3-Fast` (drafts)
+### Workflow
+1. Check cost: `higgsfield generate cost seedance_2_0 --prompt "..."` (free). Confirm with Keith for premium models or batches.
+2. Generate: `./scripts/higgsfield.sh --type video --model seedance_2_0 --prompt "prompt" --slug slug`
+   - Premium: `--model veo3_1` or `--model kling3_0`.
+   - Image-to-video: append `-- --start-image ./ref.png` (local path auto-uploads).
+3. Saves to `K2B-Vault/Assets/video/YYYY-MM-DD_video_slug.mp4` (the wrapper reserves a collision-free name, so a retry never overwrites an earlier paid clip). If a K2B agent session generated it and wants to hand it to Keith on Telegram, it may write the outbox manifest itself: `scripts/telegram-outbox-write.sh video "$PATH" "caption"`. Note this is an agent-initiated push -- a Telegram *user* typing `/media video` still gets the "use the MacBook session" reply (see **Surface scope** above); the bot does not run video generation.
+4. Print the embed `![[Assets/video/YYYY-MM-DD_video_slug.mp4]]`.
 
-### Retired Workflow
-Do not call MCP `generate_video` or `query_video_generation`. Keep these names only as historical context for why the command is blocked.
+### Prompt tips
+- Camera movement reads well in brackets: `[Pan left]`, `[Zoom in]`, `[Static shot]`, `[Tilt down]`.
 
-## Music Generation (Retired)
+## Music Generation (Higgsfield)
 
-Music generation is currently blocked. If Keith asks for `/media music`, show the same non-functional MiniMax subscription message as video and stop.
+Music runs on **Higgsfield** `sonilo_music`. MiniMax music stays retired.
 
-### Parameters (when available)
-- **description**: Music description (genre, mood, instruments, tempo)
-- Model: `music-2.5+`
+### Workflow
+1. `./scripts/higgsfield.sh --type audio --model sonilo_music --prompt "genre, mood, instruments, tempo" --slug slug`
+2. Saves to `K2B-Vault/Assets/audio/YYYY-MM-DD_audio_slug.<ext>`; deliver + embed as with speech.
 
 ## `/media for <idea-slug>` -- Content Idea Media Generation
 
@@ -456,5 +507,5 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 - Always print the Obsidian embed path so Keith can paste it into notes
 - API key error guidance, by command:
   - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard." For agent/CLI runs the key must be in `k2b-remote/.env`; load it with the preamble in Integration Method (non-interactive shells do not source `~/.zshrc`).
-  - `/media video`, `/media music` (MiniMax-only modalities) -- **NON-FUNCTIONAL. MiniMax subscription lapsed 2026-05-27; all calls fail with `status_code 2049`. No alternative provider for video/music is configured. Do NOT tell Keith to set `MINIMAX_API_KEY` for these -- a fresh key will not help while the subscription is dead.**
+  - `/media video`, `/media music` -- now run on **Higgsfield** (see the Higgsfield section). If a call fails with exit 2, the CLI is not authenticated on this machine: run `higgsfield auth login`. Exit 3 usually means out of credits: check `higgsfield account status`. MiniMax stays dead -- never set `MINIMAX_API_KEY` or call any MiniMax API for these.
   - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in `~/Projects/K2B/k2b-remote/.env`."
