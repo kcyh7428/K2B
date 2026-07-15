@@ -4652,3 +4652,19 @@ Note: a concurrent session's commit `fdfa60f` ("docs: devlog for A4") swept the 
 **Follow-ups:** Codex round-1 medium -- validate human-edited digest rows against the pending ledger before applying in the manual `cmd_apply` path. Deferred; that path is rarely used now that auto-apply is default. Needs `/sync` to reach the Mini cron.
 
 **Key decisions:** make the policy-ledger autonomy gate executable rather than bypassing it (honors the graduation mechanism); retry pairs owned exclusively by a separate loop that bypasses the confidence threshold and exclusion filter; applied-record failure is fatal-with-remainder so a clean success is never reported when the audit row is missing.
+
+## 2026-07-15 -- Higgsfield wired into /media (desktop path)
+
+**Commit:** `6ab1010` feat(media): wire Higgsfield into /media as premium + video/music provider
+
+**What shipped:** New `scripts/higgsfield.sh` wraps the Higgsfield CLI (`generate create --wait`), downloads `result_url` into `K2B-Vault/Assets/{images,video,audio}/` with collision-safe names, and prints the Obsidian embed. k2b-media-generator (both mirrors) gains a Higgsfield section + GPTsAPI-vs-Higgsfield routing rubric and unblocks `/media video` (Seedance/Veo/Kling) and `/media music` (Sonilo), dead since MiniMax lapsed 2026-05-27. CLAUDE.md documents the provider. Desktop/agent sessions only; the Telegram bot still handles image+speech.
+
+**Review:** Codex adversarial, tier-3, builder-family anthropic (jobs `ed8253` + `c899e9`). 3 findings round 1 (Telegram overclaim, silent overwrite/race, unvalidated slug) + 1 medium round 2 (jq parse-failure misclassified as download error). All 4 fixed, verified with stubbed tests + `bash -n` + skills parity. Keith declined a redundant third review since the diff was already Codex-reviewed.
+
+**Feature status change:** feature_higgsfield-media (new) -> in-progress with pending-action (live video + music MVP close pending). Not marked shipped: MVP condition 2 not yet live-run.
+
+**Follow-ups:** (1) Keith runs one live `/media video` + `/media music` to close MVP. (2) Mac Mini needs its own `higgsfield auth login` for any headless use. (3) Add a `review.sh --model` flag so /ship reviews can run on Luna/Terra at high effort instead of Sol.
+
+**Toolchain side-fix:** Codex CLI was broken this session -- `~/.codex/config.toml` had invalid `service_tier = "default"` (removed) and CLI `0.128.0` was too old for model `gpt-5.6-sol` (upgraded to `0.144.4`). Not committed (user config).
+
+**Key decisions:** Chose the Higgsfield CLI over the hosted MCP -- cheaper for agentic/scripted use, works headless on the Mini, already OAuth-authed.
