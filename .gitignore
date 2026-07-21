@@ -94,6 +94,9 @@ k2b-dashboard/dist/
 plans/Parked/
 plans/Shipped/
 
+# Isolated implementation worktrees created by Codex/Superpowers.
+/.worktrees/
+
 # Kimi handoff job specs (local only)
 .kimi/
 
