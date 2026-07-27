@@ -2,6 +2,23 @@
 
 
 ---
+## 2026-07-27 -- Codex-only live authority
+
+**Commit:** `818ce66` feat: make Codex the sole live K2B authority
+
+**What shipped:** Task 2 of the Claude/Telegram retirement plan makes `AGENTS.md`, `.agents/skills`, and `.codex/hooks.json` the live K2B authority. Codex is the sole live desktop commander, Kimi remains the background text worker and normal independent reviewer, and GPTsAPI, Groq, Higgsfield, and NotebookLM remain specialist providers. Claude files are rollback-only residue pending Task 11. Telegram is retired as a required input, output, reminder, and alert channel; remaining Telegram code is dormant removal residue. Hooks now use Codex payloads and vault/Codex memory paths, and a fail-closed authority scanner blocks stale live dependencies.
+
+**Review:** Six Kimi attempts failed without a valid verdict. Keith explicitly authorized GPT-5.5 as a same-family closure waiver. The full review found two P1 defects, both corrected. Two bounded findings-only reviews passed with no findings. No additional review was run during commit because the staged set exactly matched the reviewed candidate.
+
+**Verification:** `bash tests/verify-codex-authority.test.sh`; `bash tests/codex-hooks.test.sh`; `bash tests/session-start-hook.test.sh`; `bash tests/post-tool-skill-track.test.sh`; `bash tests/stop-observe-hook.test.sh`; `bash scripts/verify-codex-authority.sh`; `git diff --check`. The first canonical gate exposed a Bash 3.2 test-cleanup defect; the reviewed one-file correction fixed it and the permitted full replay passed.
+
+**Feature status change:** `feature_codex-primary-migration` remains in progress. The prior OpenAI Telegram bridge/canary plan is superseded by the approved twelve-task Claude/Telegram retirement plan. Gate 0 and Task 2 are complete; Tasks 3-12 remain.
+
+**Follow-ups:** Mac Mini sync explicitly deferred by Keith. Continue with Task 3 separately. Do not add OpenAI Agents SDK or a K2B `OPENAI_API_KEY`.
+
+**Key decisions:** Telegram is retired rather than replaced. The MacBook Codex subscription remains the command plane; background text work remains on Kimi to preserve the zero-OpenAI-API-cost boundary.
+
+---
 ## 2026-07-09 -- /ship gains close-the-handoff sweep (step 14 category 6)
 
 **Commit:** `89853de` fix(ship): close-the-handoff sweep as step-14 category 6
