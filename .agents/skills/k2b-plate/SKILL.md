@@ -5,6 +5,15 @@ description: Surface every pending item that needs Keith's attention across all 
 
 # K2B Plate
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Read every canonical pending-state source and emit a single dashboard so Keith knows what needs his attention without re-deriving it every session.
 
 ## When to Trigger
@@ -68,7 +77,7 @@ Sections in fixed order:
 
 ## Rendering convention (the Hybrid -- agent-side display layer)
 
-The agent (Claude Code or Codex) does NOT show the raw script output verbatim by default. It renders into the **Hybrid format** below, established 2026-05-16 after Keith compared three options (Raw, Curated, Hybrid) and picked Hybrid. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
+Codex does NOT show the raw script output verbatim by default. It renders into the **Hybrid format** below, established 2026-05-16 after Keith compared three options (Raw, Curated, Hybrid) and picked Hybrid. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
 
 **Per-section rule:**
 
@@ -85,7 +94,7 @@ The agent (Claude Code or Codex) does NOT show the raw script output verbatim by
 
 **Why this shape:** pending stuff is what Keith ACTS on -- needs full context. Lanes/snapshots are reference -- need to be visible but not loud. The compression on lanes/checkpoint/shipped is bias-managed (the script still has the full data; agent just narrows the display).
 
-**Narrow-pane rule (Codex Desktop default):** Codex Desktop renders assistant messages in a narrower column than Claude Code, so long verbatim pending-action bodies become hard to read. When rendering `/plate` in Codex or any visibly narrow pane, use **Compact-Hybrid** for the `Needs your decision now` section:
+**Narrow-pane rule (Codex Desktop default):** Long verbatim pending-action bodies can be hard to read in the desktop pane. When rendering `/plate` in Codex or any visibly narrow pane, use **Compact-Hybrid** for the `Needs your decision now` section:
 
 - Preserve all action-critical content: feature/project slug, pending date, current gate/state, exact next action, Close/MVP condition, and any "do not", stop-if, or safety constraint.
 - Compress evidence chains into 1-3 short paragraphs or bullets instead of pasting every transition verbatim.
@@ -105,7 +114,7 @@ The agent (Claude Code or Codex) does NOT show the raw script output verbatim by
 - **Frontmatter-aware parsing required.** Naive `grep '^pending-action: '` matches YAML example blocks in feature note bodies (verified during pending-discipline smoke test). The script uses an awk parser that toggles on `^---$` and only emits matches within the first frontmatter block.
 - **`*.sync-conflict-*` files are skipped** at every read step. Syncthing can create these on the vault during cross-machine writes.
 - **Class-differentiated reading:** handoffs check status: open from frontmatter; reminders use the `[open]` text marker; pending-actions check that both `status: in-progress` AND `pending-action:` are set.
-- **The script itself is read-only.** `plate.sh` performs zero writes to vault or memory state -- only `echo`/`awk`/`grep`/`sed`/`find`/`cut` (all read operations). The post-task usage logging in the "Usage logging" section below is an *agent-side convention* (Claude appends one line to `skill-usage-log.tsv` after running the skill), consistent with all other K2B skills (k2b-sync, k2b-ship, etc.) and not part of the script's own execution.
+- **The script itself is read-only.** `plate.sh` performs zero writes to vault or memory state -- only `echo`/`awk`/`grep`/`sed`/`find`/`cut` (all read operations). The post-task usage logging in the "Usage logging" section below is an *agent-side convention* (Codex appends one line to `skill-usage-log.tsv` after running the skill), consistent with all other K2B skills (k2b-sync, k2b-ship, etc.) and not part of the script's own execution.
 - **Needs digestion helper.** `plate.sh` calls `scripts/raw-needs-compile.py` read-only with `K2B_VAULT_ROOT="$K2B_VAULT_PATH"` and renders only the returned action bullets. The helper owns raw-frontmatter scanning so future `/lint` integration can reuse the same logic.
 - **Defensive frontmatter parsing.** `fm_get_block` caps block output at 50 lines to prevent body-content leakage if a feature note has malformed frontmatter (missing closing `---`, unusual next-key formatting). Legitimate pending-action bodies are < 10 lines; the 50-line cap is belt-and-suspenders.
 - **Debug mode.** Set `K2B_PLATE_DEBUG=1` to surface awk/grep errors that are otherwise suppressed. Use when a known pending item isn't appearing in the output and you need to see the parse errors.
@@ -127,6 +136,6 @@ echo -e "$(date +%Y-%m-%d)\tk2b-plate\t$(echo $RANDOM | md5sum | head -c 8)\tsur
 
 ## Notes
 
-- This skill is the **consumer** in the pending-discipline architecture (shipped 2026-05-16 via [[wiki/concepts/Shipped/feature_pending-discipline]]). Producers are: K2B Claude Code sessions (set `pending-action:` on feature notes when shipping with deferred MVP), me (write `raw/sessions/*_handoff_*.md` when drafting paste-ins), Keith (manual edits to `reminders.md`), K2Bi PM hat (writes Resume Card checkpoint).
-- If `/plate` output is missing something Keith expected to see, the bug is in the producer side (failed to write to the canonical home), not the reader. Fix at source per the Memory Layer Ownership doctrine in CLAUDE.md.
+- This skill is the **consumer** in the pending-discipline architecture (shipped 2026-05-16 via [[wiki/concepts/Shipped/feature_pending-discipline]]). Producers are: K2B Codex sessions (set `pending-action:` on feature notes when shipping with deferred MVP), me (write `raw/sessions/*_handoff_*.md` when drafting paste-ins), Keith (manual edits to `reminders.md`), K2Bi PM hat (writes Resume Card checkpoint).
+- If `/plate` output is missing something Keith expected to see, the bug is in the producer side (failed to write to the canonical home), not the reader. Fix at source per the Memory Layer Ownership doctrine in `AGENTS.md`.
 - This skill replaces nothing. It complements the existing loop dashboard (a N / r N / d N triage) and session-start hook (review queue + observer items).

@@ -11,6 +11,15 @@ scope: project
 
 # k2b-lint -- Vault Health Maintenance
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Subsumes the backlogged `feature_vault-housekeeping-agent`. Run weekly (scheduled) or on-demand via `/lint`.
 
 ## Trigger
@@ -136,9 +145,9 @@ Kimi K2.7 Code-powered semantic check -- only runs when explicitly requested (`/
 ~/Projects/K2B/scripts/minimax-lint-deep.sh [domain]
 ```
 
-- Runs on Kimi K2.7 Code (not Opus) -- cheap (~$0.02-0.05 per run)
+- Runs on Kimi K2.7 Code, not the interactive Codex commander
 - Script reads wiki pages, sends to Kimi, returns JSON with contradiction pairs
-- Opus parses JSON and presents findings to Keith
+- Codex parses JSON and presents findings to Keith
 - Add confirmed contradictions to review/ queue for Keith's judgment
 - If domain is specified, only scans pages with matching `domain:` frontmatter
 - If omitted, scans all wiki pages (excluding context/)
@@ -149,9 +158,11 @@ Kimi K2.7 Code-powered semantic check -- only runs when explicitly requested (`/
 Audits `MEMORY.md` and `active_rules.md` in the symlinked memory dir (`K2B-Vault/System/memory/`). Catches two silent failure modes:
 
 - An `.md` pointer in `MEMORY.md` resolving to a missing file (common after renaming or deleting a memory file without updating the index).
-- `MEMORY.md` or `active_rules.md` growing past Anthropic's ~200-line auto-memory truncation. Content past that point is invisible to Claude without warning.
+- `MEMORY.md` or `active_rules.md` growing past K2B's configured 200-line
+  visibility budget. Content past that point is not guaranteed to be surfaced
+  in the session-start context.
 
-Run (invoked by both manual `/lint` and the weekly schedule):
+Run (invoked by both manual `/lint` and the registered weekly host job):
 
 ```bash
 ~/Projects/K2B/scripts/lint-memory.sh
@@ -272,14 +283,19 @@ This structured file is the source of truth for `/improve` Sections 1b and 3 -- 
 
 ## Scheduled Execution
 
-When run via weekly schedule:
+When run via the registered weekly host job:
 1. Run checks 1-11 + 13 (check 12 is skipped in weekly runs)
 2. Auto-fix what's safe
 3. Write structured report to `wiki/context/lint-report.md` (overwrite)
 4. Append lint summary via `scripts/wiki-log-append.sh /lint <lint-run-id> "<summary>"`
-5. If any "needs review" items: leave report in vault for Keith
+5. Write an observable job receipt with counts, report path, exit status, and
+   completion time.
+6. If any "needs review" items or failures occur, add them to the Operations
+   Console attention queue.
 
-Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules staleness) and check 13 (memory integrity) run as part of the weekly schedule.
+Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules
+staleness) and check 13 (memory integrity) run as part of the registered weekly
+host job.
 Check 12 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
 
 When run manually (`/lint`):

@@ -5,6 +5,15 @@ description: Dispatch and monitor K2Bi analyst tasks via the orchestrator board,
 
 # K2B Orchestrator
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Manage durable tasks that dispatch allowlisted analyst commands to the sibling K2Bi workspace. The orchestrator owns the control plane: task creation, preflight checks, worker spawn, heartbeats, result artifacts, and a board mirror.
 
 ## When to Trigger
@@ -185,7 +194,7 @@ Parked flights show on `/portfolio active` ("waiting on your Kimi run" / "needs 
 
 ## Chat 2 conductor -- trend -> candidate-ticker theme file (AGENT-NATIVE, no Kimi)
 
-This is the runtime procedure K2B (you, the agent) follows when Keith drops a trend and wants it mapped to non-obvious tickers. Chat 2 is **agent-native**, the same shape as Chat 1: YOU (Claude Code / Codex) do the candidate generation AND the citation validation/repair in-session -- there is **NO Kimi call and NO dispatched K2Bi command** anywhere in this path. (Why: K2Bi's `invest_narrative_pipeline` used Kimi to invent candidates + citation URLs; Kimi fabricates URLs and the pipeline dropped every dead-link candidate, so 2 live MVP runs failed for the same trend-independent cause. Kimi is a code worker, not a grounded-research generator. Fix = retire Kimi from this path. Design + reviews: [[feature_k2b-orchestrator-v1]] + `plans/2026-05-31_chat2-agent-native-spec.md`.)
+This is the runtime procedure K2B (you, the agent) follows when Keith drops a trend and wants it mapped to non-obvious tickers. Chat 2 is **agent-native**, the same shape as Chat 1: YOU (Codex) do the candidate generation AND the citation validation/repair in-session -- there is **NO Kimi call and NO dispatched K2Bi command** anywhere in this path. (Why: K2Bi's `invest_narrative_pipeline` used Kimi to invent candidates + citation URLs; Kimi fabricates URLs and the pipeline dropped every dead-link candidate, so 2 live MVP runs failed for the same trend-independent cause. Kimi is a code worker, not a grounded-research generator. Fix = retire Kimi from this path. Design + reviews: [[feature_k2b-orchestrator-v1]] + `plans/2026-05-31_chat2-agent-native-spec.md`.)
 
 The flight is created **PARKED** (`waiting_for_agent_theme`) so `poll-once` never dispatches it; the agent writes the theme directly and the `verify-theme` gate (>=5 supported candidates + >=1 2nd/3rd-order + citation-ledger >=60% supported) is the ONLY exit to `done`. Plumbing in `orchestrator_store.py` (parked state, `verify-theme`, `_verify_theme_gate`).
 

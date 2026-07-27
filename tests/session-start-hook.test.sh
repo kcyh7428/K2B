@@ -7,20 +7,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/hooks/session-start.sh"
 
-TMP_DIRS=()
+TMP_PARENT="$(mktemp -d)"
 cleanup() {
-  local d
-  for d in "${TMP_DIRS[@]}"; do
-    [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
-  done
+  [ -n "${TMP_PARENT:-}" ] && [ -d "$TMP_PARENT" ] && rm -rf "$TMP_PARENT"
 }
 trap cleanup EXIT
 
 mktmp() {
-  local d
-  d="$(mktemp -d)"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  mktemp -d "$TMP_PARENT/case.XXXXXX"
 }
 
 fail() {

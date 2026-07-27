@@ -1,67 +1,68 @@
 ---
 name: k2b-scheduler
-description: Create, list, pause, resume, and delete persistent scheduled tasks for K2B. Use when Keith says /schedule, "schedule", "remind me", "set up a recurring", "every week do X", "run this daily", "automate", or wants any task to run on a timer. Handles both recurring cron schedules and one-time reminders.
+description: Create, list, pause, resume, and delete registered host jobs for K2B. Use when Keith says /schedule, "schedule", "remind me", "set up a recurring", "every week do X", "run this daily", "automate", or wants any task to run on a timer. Handles recurring jobs and one-time reminders with observable receipts.
 ---
 
 # K2B Scheduler
 
-Manage persistent scheduled tasks via k2b-remote's SQLite database on the Mac Mini. Tasks run automatically -- k2b-remote polls every 60 seconds, executes due tasks through Claude, and sends results to Keith via Telegram.
+## Live K2B Authority
 
-Two task types:
-- **recurring** -- runs on a cron schedule (daily, weekly, etc.)
-- **one-time** -- fires once at a specific datetime, then auto-deletes
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
-## Step 0: Check Which Machine You're On
+Manage K2B scheduled work as registered host jobs. A valid job has:
 
-**ALWAYS run this first before any schedule-cli command:**
+- a stable job identifier and explicit owner host;
+- a checked-in or otherwise reviewable command entrypoint;
+- an HKT schedule or one-time fire time;
+- an observable receipt containing start time, finish time, exit status, and artifact paths;
+- a failure path into the Operations Console attention queue;
+- no interactive agent-session launch and no message-channel delivery dependency.
 
-```bash
-hostname && whoami
-```
+Do not use the legacy `k2b-remote` SQLite scheduler. Do not encode a chat ID or route results through Telegram.
 
-| hostname contains | user | You are on | How to run commands |
-|---|---|---|---|
-| `Mac-mini` | `fastshower` | **Mac Mini** | Run locally (no SSH) |
-| anything else | `keithmbpm2` | **MacBook** | SSH to Mac Mini |
+Two job types:
+- **recurring** -- registered with the supported host scheduler and runs on a defined cadence;
+- **one-time** -- registered for one HKT datetime and disabled or removed after a successful receipt.
 
-**If you're on the Mac Mini (via Telegram), you are ALREADY on the right machine. Do NOT SSH.**
+## Host and Registration Rules
 
-## Running Commands
-
-```bash
-# STEP 1: Determine the command prefix based on hostname check above
-
-# If Mac Mini (local):
-SCHED="cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js"
-
-# If MacBook (remote):
-SCHED='ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js'
-# (close the double-quote after the full command)
-```
+1. Identify the intended host from the requested workload and verify it live before registration.
+2. Prefer the Codex automation/host-job control surface available in the current environment. If no supported registration surface is available, stop with a precise proposal; do not edit `crontab`, launchd, PM2, or service state ad hoc.
+3. Register only a deterministic script or command that can run without an interactive Codex session.
+4. Store receipts in the job's declared receipt path and make failures discoverable in the Operations Console attention queue.
+5. After every create, pause, resume, delete, or run-now action, read back the registered job and report the exact state.
 
 ## Commands
 
-- `/schedule <frequency> "<prompt>"` -- Create a recurring task
-- `/schedule once "<datetime>" "<prompt>"` -- Create a one-time reminder
-- `/schedule list` -- Show all scheduled tasks
-- `/schedule pause <task-id>` -- Pause a task
-- `/schedule resume <task-id>` -- Resume a paused task
-- `/schedule delete <task-id>` -- Delete a task
+- `/schedule <frequency> "<command-purpose>"` -- Create a recurring registered host job
+- `/schedule once "<datetime>" "<command-purpose>"` -- Create a one-time registered host job
+- `/schedule list` -- Show registered K2B jobs
+- `/schedule pause <job-id>` -- Pause a job
+- `/schedule resume <job-id>` -- Resume a paused job
+- `/schedule delete <job-id>` -- Delete a job after confirming the exact target
 
 ## Creating a Recurring Task
 
 ### Step 1: Parse the request
 
 Extract:
-- **prompt**: The instruction K2B will execute
-- **cron**: Parse frequency into a cron expression (see table below)
-- **chatId**: `8394008217` (Keith's Telegram chat ID)
+- **purpose**: the intended outcome;
+- **entrypoint**: the deterministic K2B command or script;
+- **schedule**: parse the frequency in HKT;
+- **owner host**: the machine that owns the required files and dependencies;
+- **receipt path**: the observable completion artifact;
+- **attention route**: the Operations Console queue location for failures.
 
 ### Frequency Parsing
 
 All times in Keith's LOCAL timezone (HKT, UTC+8).
 
-| Input | Cron Expression | Notes |
+| Input | Host schedule | Notes |
 |-------|----------------|-------|
 | `daily` or `daily 9am` | `0 9 * * *` | Default 9am if no time given |
 | `weekly` or `weekly monday` | `0 9 * * 1` | Default Monday 9am |
@@ -71,19 +72,16 @@ All times in Keith's LOCAL timezone (HKT, UTC+8).
 | `every 2h` | `0 */2 * * *` | Every 2 hours |
 | `friday 4pm` | `0 16 * * 5` | Every Friday |
 
-### Step 2: Create the task
+### Step 2: Validate before registration
 
-```bash
-# Mac Mini (local):
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create "<prompt>" "<cron>" 8394008217
+- Confirm the entrypoint exists and has a bounded, non-interactive execution contract.
+- Confirm no OpenAI API key or unrelated global credential is inherited.
+- Confirm the receipt and attention-queue paths are writable by the owner host.
+- Preview the exact job name, host, cadence, entrypoint, and receipt location.
 
-# MacBook (SSH):
-ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create \"<prompt>\" \"<cron>\" 8394008217"
-```
+### Step 3: Register and verify
 
-### Step 3: Confirm to Keith
-
-Show: Task ID, schedule (human-readable + cron), next run time, the prompt.
+Use the supported host-job control surface, then read the job back. Show: job ID, owner host, human-readable schedule, next run, entrypoint, receipt path, and attention route.
 
 ## Creating a One-Time Reminder
 
@@ -91,55 +89,20 @@ Use for "remind me", "on [date] do X", or any single-fire task.
 
 ### Step 1: Parse the request
 
-Extract:
-- **prompt**: What to remind Keith about
-- **datetime**: Convert to `YYYY-MM-DD HH:MM` format in HKT
-- **chatId**: `8394008217`
-
-### Step 2: Create the reminder
-
-```bash
-# Mac Mini (local):
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create-once "<prompt>" "<YYYY-MM-DD HH:MM>" 8394008217
-
-# MacBook (SSH):
-ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create-once \"<prompt>\" \"<YYYY-MM-DD HH:MM>\" 8394008217"
-```
-
-### Step 3: Confirm to Keith
-
-Show: Task ID, fire time, the prompt. Note it auto-deletes after firing.
+Extract the purpose, deterministic entrypoint, owner host, and `YYYY-MM-DD HH:MM` HKT fire time. Register through the supported host-job surface, verify by reading it back, and report its job ID, fire time, receipt path, and post-success disable/delete behavior.
 
 ## Listing Tasks
-
-```bash
-# Mac Mini (local):
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js list
-
-# MacBook (SSH):
-ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js list"
-```
 
 Format output as a table:
 
 ```
-| ID | Type | Schedule | Status | Next Run | Prompt |
-|----|------|----------|--------|----------|--------|
+| ID | Host | Type | Schedule | Status | Next Run | Receipt |
+|----|------|------|----------|--------|----------|---------|
 ```
 
 ## Pausing/Resuming/Deleting
 
-```bash
-# Mac Mini (local):
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js pause <id>
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js resume <id>
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js delete <id>
-
-# MacBook (SSH):
-ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js pause <id>"
-ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js resume <id>"
-ssh macmini "cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js delete <id>"
-```
+Resolve the exact registered job first, perform one bounded action through the supported host-job control surface, then read it back. Deletion requires an exact job ID and explicit user intent.
 
 ## Usage Logging
 
@@ -156,9 +119,9 @@ echo -e "$(date +%Y-%m-%d)\tk2b-scheduler\t$(echo $RANDOM | md5 | head -c 8)\tcr
 /schedule once "Apr 2 6pm" "Bring driving license for Shanghai car rental pickup"
 ```
 
-### Weekly research
+### Weekly research receipt
 ```
-/schedule weekly wednesday "Run /research external 'AI recruiting tools' and save to review/"
+/schedule weekly wednesday "Run the reviewed research entrypoint, save results to review/, and write a receipt"
 ```
 
 ### Daily check
@@ -169,8 +132,7 @@ echo -e "$(date +%Y-%m-%d)\tk2b-scheduler\t$(echo $RANDOM | md5 | head -c 8)\tcr
 ## Notes
 
 - No em dashes, no AI cliches, no sycophancy
-- Tasks run on the Mac Mini, not the MacBook -- MacBook can be closed
-- Results are delivered to Keith via Telegram automatically
-- One-time reminders auto-delete from the database after firing
-- The Mac Mini must have Clash Verge VPN running for Telegram connectivity
-- When Keith asks "what reminders do I have" or similar, ALWAYS run `schedule-cli.js list` -- do NOT confuse this with inbox processing
+- Jobs run on their declared owner host; do not assume the Mac Mini.
+- Results land in their declared artifacts and receipt; failures enter the Operations Console attention queue.
+- One-time jobs disable or remove themselves only after a successful receipt.
+- When Keith asks "what reminders do I have" or similar, list the registered K2B host jobs; do not inspect the retired SQLite scheduler.

@@ -5,6 +5,15 @@ description: Surface K2Bi ticker pipeline state across all stages -- awaiting pr
 
 # K2B Portfolio
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Read every canonical K2Bi pipeline source and emit a single dashboard so Keith knows where every ticker sits without opening K2Bi.
 
 ## When to Trigger
@@ -72,7 +81,7 @@ Sections in fixed order:
 
 ## Rendering convention (Hybrid)
 
-The agent (Claude Code) does NOT show the raw script output verbatim by default. It renders into the **Hybrid format**, mirroring `k2b-plate`. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
+Codex does NOT show the raw script output verbatim by default. It renders into the **Hybrid format**, mirroring `k2b-plate`. The script stays the source of truth; the rendering is a display layer applied between the script's stdout and the user-facing message.
 
 **Per-section rule:**
 
@@ -98,7 +107,7 @@ The agent (Claude Code) does NOT show the raw script output verbatim by default.
 - **NOT a /plate replacement.** `/plate` covers K2B project state; `/portfolio` covers K2Bi investment pipeline state. Run both for a full picture.
 - **NOT a calculator.** Reads what K2Bi already wrote. P&L numbers come from journal events, not re-computed.
 - **NOT live broker-data.** Position state is journal-derived, latest-as-of-last-event. Not a real-time broker query.
-- **NOT runnable on Mac Mini.** K2Bi-Vault was nuked from Mac Mini during Phase 3.9 VPS migration (2026-04-25). The K2Bi engine + vault live on the Hostinger VPS in KL; the K2Bi PM workspace lives on Keith's MacBook only. Sending `/portfolio` to the Telegram bot (which runs on Mac Mini) will dispatch the script there and fail with `K2Bi vault unreachable at /Users/fastshower/Projects/K2Bi-Vault`. **Use `/portfolio` from K2B Claude Code on MacBook.** If the Telegram path is ever needed, the prerequisite is restoring K2Bi-Vault to Mac Mini via Syncthing read-only mirror (separate feature, not in this skill's scope).
+- **MacBook Codex only.** K2Bi-Vault was removed from Mac Mini during Phase 3.9 VPS migration (2026-04-25). The K2Bi engine + vault live on the Hostinger VPS in KL; the K2Bi PM workspace lives on Keith's MacBook only. Run `/portfolio` from a K2B Codex session on the MacBook.
 
 ## Implementation notes
 
@@ -134,5 +143,5 @@ echo -e "$(date +%Y-%m-%d)\tk2b-portfolio\t$(echo $RANDOM | md5sum | head -c 8)\
 ## Notes
 
 - This skill is the **consumer** in the K2Bi pipeline architecture. Producers are: K2Bi macro-theme extraction (writes `theme_*.md`), K2Bi watchlist promotion (writes `watchlist/<SYMBOL>.md`), K2Bi thesis generation (writes `tickers/<SYMBOL>.md`), K2Bi strategy proposal (writes `strategies/strategy_*.md`), K2Bi engine (writes `raw/journal/*.jsonl`), and K2Bi retro generation (writes `wiki/insights/<date>_*-retro.md`).
-- If `/portfolio` output is missing something Keith expected to see, the bug is in the producer side (failed to write to the canonical home), not the reader. Fix at source per the Memory Layer Ownership doctrine in CLAUDE.md.
+- If `/portfolio` output is missing something Keith expected to see, the bug is in the producer side (failed to write to the canonical home), not the reader. Fix at source per the Memory Layer Ownership doctrine in `AGENTS.md`.
 - This skill replaces nothing. It complements `/plate` (K2B project state) and the K2Bi dashboard (if one exists elsewhere).

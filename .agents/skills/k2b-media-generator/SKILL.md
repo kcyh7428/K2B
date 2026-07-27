@@ -5,6 +5,15 @@ description: Generate K2B media assets through GPTsAPI and Higgsfield -- images,
 
 # K2B Media Generator
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Generate images, image edits, speech, audio transcriptions, video, and music. Two providers:
 
 - **GPTsAPI** -- default for executive editorial images, typography, diagrams, quote cards, LinkedIn headers, clean business visuals (`gpt-image-2`), plus speech (`tts-1-hd`) and transcription (`whisper-1`, Groq fallback).
@@ -17,10 +26,10 @@ Provider routing rubric is in the **Provider Routing** section below. MiniMax im
 - `/media image "prompt" [aspect] [slug]` -- Generate an image via GPTsAPI `gpt-image-2`
 - `/media speech "text" [voice] [model] [slug]` -- Generate TTS audio via GPTsAPI `tts-1-hd`
 - `/media transcribe <audio-file> [language] [slug]` -- Transcribe audio via GPTsAPI Whisper (Chinese/English/50+ languages); Groq Whisper available as fallback
-- `/media video "prompt" [slug]` -- Generate video via Higgsfield (default `seedance_2_0`; use `veo3_1` or `kling3_0` for premium). **Desktop / agent Claude Code sessions only.** See the **Higgsfield** section. (MiniMax video stays retired -- never call any MiniMax API.)
-- `/media music "description" [slug]` -- Generate music via Higgsfield (`sonilo_music`). **Desktop / agent Claude Code sessions only.** See the **Higgsfield** section. (MiniMax music stays retired.)
+- `/media video "prompt" [slug]` -- Generate video via Higgsfield (default `seedance_2_0`; use `veo3_1` or `kling3_0` for premium). **MacBook Codex sessions only.** See the **Higgsfield** section. (MiniMax video stays retired -- never call any MiniMax API.)
+- `/media music "description" [slug]` -- Generate music via Higgsfield (`sonilo_music`). **MacBook Codex sessions only.** See the **Higgsfield** section. (MiniMax music stays retired.)
 
-> **Surface scope.** The Telegram bot (`k2b-remote/src/mediaCommand.ts`) only parses `/media image` and `/media speech`; a Telegram user who types `/media video` or `/media music` gets "use the MacBook session" and no generation runs. Video and music work today only in a desktop / agent Claude Code session that calls `scripts/higgsfield.sh` directly. Wiring video/music into the Telegram bot (arg parsing + progress + outbox delivery) is a separate, not-yet-built task -- do not tell Keith the Telegram path works for them.
+> **Surface scope.** Media requests enter through a MacBook Codex session, the dashboard, or a vault drop. Video and music run only from a MacBook Codex session that calls `scripts/higgsfield.sh` directly; there is no background intake path for either command.
 - `/media for <idea-slug>` -- Auto-generate media for a content idea
 - `/media voices` -- List available voices
 - **Presentation decks** (stunning / editorial) -- not a one-shot command; see the **Presentation Decks** section below for the HTML -> headless Chrome -> PDF + image-PPTX build workflow
@@ -33,7 +42,7 @@ Provider routing rubric is in the **Provider Routing** section below. MiniMax im
 - **Retired (do NOT call):** the legacy MiniMax image and OCR wrapper scripts were deleted 2026-05-27. `scripts/minimax-speech.sh` deleted 2026-05-16. `mcp__minimax__text_to_audio` MCP tool still exists in the agent's tool list but its backend is dead (status_code 2049). `scripts/minimax-transcribe.sh` does not exist and MUST NOT be created -- MiniMax has no STT endpoint.
 - Assets: `~/Projects/K2B-Vault/Assets/` (images/, audio/, video/)
 - Vault: `~/Projects/K2B-Vault`
-- Mirror copies must stay synchronized; run `scripts/verify-skills-parity.sh` after editing this skill. If the script is unavailable, manually compare the mirrored copy before shipping.
+- This `.agents/skills` copy is the sole live skill. Validate it with `scripts/verify-codex-authority.sh` before delivery.
 
 ## Integration Method
 
@@ -43,9 +52,9 @@ Use the bash wrapper for image generation:
 ./scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio 16:9 --slug slug
 ```
 
-The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. In Telegram, `/media image` sends a progress message first so Keith does not see a silent wait.
+The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. Keep the active Codex session visibly updated during the wait.
 
-Loading `GPTSAPI_KEY` (agent / CLI runs). The wrapper reads `GPTSAPI_KEY` from its environment and does not source any `.env` itself. The k2b-remote bot injects it via `process.env`, so `/media image` works through Telegram. An agent or terminal session is a non-interactive shell that does NOT source `~/.zshrc`, so the key is absent and the script exits `missing_gptsapi_key`. Before calling any `gptsapi-*` script from an agent/CLI session, load it first:
+Loading `GPTSAPI_KEY` (agent / CLI runs). The wrapper reads `GPTSAPI_KEY` from its environment and does not source any `.env` itself. An agent or terminal session is a non-interactive shell that does NOT source `~/.zshrc`, so the key may be absent and the script exits `missing_gptsapi_key`. Before calling any `gptsapi-*` script from an agent/CLI session, load it from the approved K2B environment:
 
 ```
 if [ -z "${GPTSAPI_KEY:-}" ]; then set -a; . "$HOME/Projects/K2B/k2b-remote/.env" 2>/dev/null; set +a; fi
@@ -55,7 +64,7 @@ if [ -z "${GPTSAPI_KEY:-}" ]; then set -a; . "$HOME/Projects/K2B/k2b-remote/.env
 Never echo the key. Same preamble for `gptsapi-speech.sh`, `gptsapi-transcribe.sh`, `gptsapi-vlm.sh`.
 
 **Image-to-image edit: GPTsAPI direct endpoint (experimental)**
-When Keith wants to transform, restyle, preserve, or improve an existing image, use this user-provided GPTsAPI image-edit endpoint shape as a reference until a maintained wrapper exists. This path is not equivalent to `/media image`: no K2B wrapper, polling, automatic asset save, Telegram delivery, or Obsidian embed handling exists yet.
+When Keith wants to transform, restyle, preserve, or improve an existing image, use this user-provided GPTsAPI image-edit endpoint shape as a reference until a maintained wrapper exists. This path is not equivalent to `/media image`: no K2B wrapper, polling, automatic asset save, dashboard delivery, or Obsidian embed handling exists yet.
 
 Endpoint:
 ```text
@@ -128,11 +137,11 @@ The wrapper runs `generate create <model> --prompt ... --wait`, downloads the fi
 ### Cost & safety
 - Always check cost first for anything beyond a quick image: `higgsfield generate cost <model> --prompt "..."` (free, prints credits). Nano Banana image ~1 credit; video costs more.
 - Confirm with Keith before batch runs or premium video -- credits are finite.
-- Video jobs can take minutes. In Telegram, send a progress message first. The wrapper uses `--wait-timeout 20m`.
-- Mac Mini (Telegram bot) needs its own `higgsfield auth login` before the scripted path works there; the OAuth token is per-machine.
+- Video jobs can take minutes. Keep the active Codex session visibly updated. The wrapper uses `--wait-timeout 20m`.
+- Higgsfield authentication is per machine. This skill authorizes the existing MacBook OAuth path only.
 
-### Telegram / vault delivery
-Same as GPTsAPI images: after the wrapper prints the asset path, write the outbox manifest (`scripts/telegram-outbox-write.sh photo|video "$PATH" "caption"`) so the bot delivers it, then print the `![[...]]` embed and update any target note.
+### Dashboard / vault delivery
+After the wrapper prints the asset path, print the `![[...]]` embed, update any target note, and surface the result in the active Codex session or dashboard. Do not create a Telegram outbox item.
 
 ## Provider Routing
 
@@ -173,14 +182,7 @@ Same as GPTsAPI images: after the wrapper prints the asset path, write the outbo
 ### Workflow
 1. Default: run `scripts/gptsapi-image.sh --prompt "prompt" --aspect-ratio aspect --slug slug`
 2. Asset saves to `K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png`
-3. **Send to Telegram**:
-   - If running through k2b-remote `/media image`, the bot sends a progress message, waits for the wrapper, then sends the photo directly.
-   - If running inside an agent session, write an outbox manifest so the bot delivers the image to Keith:
-   ```bash
-   ~/Projects/K2B/scripts/telegram-outbox-write.sh photo \
-     "$HOME/Projects/K2B-Vault/Assets/images/YYYY-MM-DD_image_slug.png" \
-     "description"
-   ```
+3. Surface the saved asset in the active Codex session or dashboard.
 4. Print the Obsidian embed: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
 5. If generating for a vault note, update that note with the embed link
 
@@ -200,11 +202,7 @@ Same as GPTsAPI images: after the wrapper prints the asset path, write the outbo
 ### Workflow
 1. Run `scripts/gptsapi-speech.sh "text" [voice] [model] [slug]`
 2. Asset saves to `K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3`
-3. **Send to Telegram** (if running via k2b-remote): write an outbox manifest:
-   ```bash
-   jq -n --arg path "$HOME/Projects/K2B-Vault/Assets/audio/YYYY-MM-DD_speech_slug.mp3" --arg caption "description" \
-     '{type:"audio", path:$path, caption:$caption}' > ~/Projects/K2B/k2b-remote/workspace/telegram-outbox/$(date +%s)_$RANDOM.json
-   ```
+3. Surface the saved asset in the active Codex session or dashboard.
 4. Print embed: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
 
 ### Language Support
@@ -271,7 +269,7 @@ curl -s --retry 2 --retry-delay 3 \
 - Model: `whisper-large-v3` (Groq free tier, high quality)
 - Use `--retry 2` to handle intermittent SSL resets (curl exit 35)
 - Set `transcript_method: groq-whisper`
-- Best used when GPTsAPI credit is tight or for k2b-remote Telegram voice memos (currently still on Groq)
+- Best used when GPTsAPI credit is tight; retained voice transcription continues to use Groq.
 
 > **Note:** MiniMax does NOT have STT/transcription. Their audio APIs are TTS, voice cloning, and voice design only. Do not use `minimax-transcribe.sh` -- it calls a non-existent endpoint.
 
@@ -304,7 +302,7 @@ Video runs on **Higgsfield** (see the **Higgsfield** section). MiniMax video sta
 2. Generate: `./scripts/higgsfield.sh --type video --model seedance_2_0 --prompt "prompt" --slug slug`
    - Premium: `--model veo3_1` or `--model kling3_0`.
    - Image-to-video: append `-- --start-image ./ref.png` (local path auto-uploads).
-3. Saves to `K2B-Vault/Assets/video/YYYY-MM-DD_video_slug.mp4` (the wrapper reserves a collision-free name, so a retry never overwrites an earlier paid clip). If a K2B agent session generated it and wants to hand it to Keith on Telegram, it may write the outbox manifest itself: `scripts/telegram-outbox-write.sh video "$PATH" "caption"`. Note this is an agent-initiated push -- a Telegram *user* typing `/media video` still gets the "use the MacBook session" reply (see **Surface scope** above); the bot does not run video generation.
+3. Saves to `K2B-Vault/Assets/video/YYYY-MM-DD_video_slug.mp4` (the wrapper reserves a collision-free name, so a retry never overwrites an earlier paid clip). Surface the saved asset in the active Codex session or dashboard; do not create an outbox item.
 4. Print the embed `![[Assets/video/YYYY-MM-DD_video_slug.mp4]]`.
 
 ### Prompt tips

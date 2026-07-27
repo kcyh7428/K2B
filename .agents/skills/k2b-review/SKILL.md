@@ -17,6 +17,15 @@ description: Review and process pending content ideas and LinkedIn drafts -- tri
 
 # K2B Review Manager
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 ## Narrowed Scope (Vault Redesign)
 
 **review/ holds items requiring Keith's judgment:** `origin: k2b-generate` content suggestions, LinkedIn drafts, and anything needing human review before promotion. All other captures auto-promote to their destination folder. If non-review items appear in review/, they are misrouted -- flag and relocate them.
@@ -169,7 +178,7 @@ Group by type if there are many items.
 
 ## Video feedback from `/research videos` (run-level)
 
-`review/videos_YYYY-MM-DD_<query-slug>.md` files are run-level notes dropped by `/research videos`. Each note carries 0-5 picks; each pick has a fenced ` ```yaml ... ``` ` block with K2B-managed state (`pick_id`, `video_id`, `suggested_category`, `category_override`, `decision`, `playlist_action`, `preference_logged`, `processed_at`, `notes`). Keith edits ONLY `decision`, `category_override`, and `notes` in Obsidian -- or sends a Telegram reaction, in which case the Telegram feedback path below edits the same block. Both paths share the flock and the atomic rewrite helper.
+`review/videos_YYYY-MM-DD_<query-slug>.md` files are run-level notes dropped by `/research videos`. Each note carries 0-5 picks; each pick has a fenced ` ```yaml ... ``` ` block with K2B-managed state (`pick_id`, `video_id`, `suggested_category`, `category_override`, `decision`, `playlist_action`, `preference_logged`, `processed_at`, `notes`). Keith edits ONLY `decision`, `category_override`, and `notes` in Obsidian, or gives the same feedback through the dashboard. Both paths share the flock and the atomic rewrite helper.
 
 ### Concurrency and atomicity
 
@@ -182,7 +191,7 @@ flock -x 9
 exec 9>&-
 ```
 
-Preference-tail appends to `wiki/context/video-preferences.md` are atomic write-then-rename (write full file to `.tmp`, then `mv`). Never direct `>>` append -- the Telegram feedback path can be racing.
+Preference-tail appends to `wiki/context/video-preferences.md` are atomic write-then-rename (write full file to `.tmp`, then `mv`). Never direct `>>` append -- dashboard feedback can be racing.
 
 ### Playlist map
 
@@ -226,14 +235,14 @@ If `DEST_ID` is empty, K2B suggested a new category that doesn't exist yet. Leav
 
 - **Do NOT parse the prose above a pick's YAML fence.** It exists only for Keith to read.
 - **Do NOT double-execute picks.** Always check `playlist_action == done` and `preference_logged == true` before skipping.
-- **Do NOT direct-append to `video-preferences.md`.** Always use atomic write-then-rename; the Telegram feedback path is racing you.
+- **Do NOT direct-append to `video-preferences.md`.** Always use atomic write-then-rename; dashboard feedback can be racing you.
 - **Do NOT create YouTube playlists automatically** when K2B suggests a new category. Flag and wait for Keith.
 
-## Video Feedback from Telegram (run-level)
+## Video Feedback from the Dashboard (run-level)
 
-When Keith reacts to a video in a Telegram conversation (examples: "the Wolfe video was great, move it to K2B Claude", "that Operator breakdown was shallow, drop Matthew Berman", "I liked pick #3 from today's batch", "loved all 3 today"), the interactive Claude session edits the same `videos_*.md` run-level notes this skill processes. The two paths share the same flock, the same atomic rewrite helper, and the same preference-tail append contract documented above. Do not ask for confirmation before acting on Telegram video feedback -- act.
+When Keith reacts to a video in the dashboard or an active Codex session (examples: "the Wolfe video was great, move it to K2B Claude", "that Operator breakdown was shallow, drop Matthew Berman", "I liked pick #3 from today's batch", "loved all 3 today"), Codex edits the same `videos_*.md` run-level notes this skill processes. The two paths share the same flock, the same atomic rewrite helper, and the same preference-tail append contract documented above. Do not ask for confirmation before acting on unambiguous video feedback.
 
-### Telegram reaction flow
+### Dashboard reaction flow
 
 1. **Glob `K2B-Vault/review/videos_*.md`** (run-level notes; not `video_*.md`).
 2. **Match the reaction to a pick.** Read candidates from the most recent `run-date` backwards. Within each file, parse picks via their fenced ` ```yaml ... ``` ` blocks (same contract as step 2 of "Processing flow" above: locate each `^### \d+\. ` heading, read the first YAML fence inside that pick). Match rule: URL if Keith pasted one → exact title → channel → "pick #N" ordinal within the most recent run. Bulk reactions ("loved all 3", "drop the last two") iterate through matched picks in sequence.
@@ -243,17 +252,17 @@ When Keith reacts to a video in a Telegram conversation (examples: "the Wolfe vi
    - Append one distilled line to `wiki/context/video-preferences.md` via atomic write-then-rename. Same format as the main flow.
    - On success: update the pick's YAML block with `playlist_action: done`, `processed_at: <ISO8601>`, `preference_logged: true`. On failure: `playlist_action: failed`, append the error to `notes`, leave `preference_logged` at its prior value.
    - Release the flock.
-4. **Reply in Telegram** with the concrete result for each pick processed: `"done -- moved <title> to K2B Claude"` / `"done -- dropped <title> from Watch"`. For bulk reactions, combine into one reply.
+4. **Reply in the active surface** with the concrete result for each pick processed: `"done -- moved <title> to K2B Claude"` / `"done -- dropped <title> from Watch"`. For bulk reactions, combine into one reply.
 5. **Zero matches:** reply `"no matching pick in recent run notes -- want me to log this as a standalone preference line?"` and wait for Keith's answer.
-6. **Ambiguous within one file:** list the candidate picks in Telegram with their `pick_id`s and ask Keith to disambiguate.
+6. **Ambiguous within one file:** list the candidate picks in the active surface with their `pick_id`s and ask Keith to disambiguate.
 
-### Forbidden on the Telegram path (Liam Ottley bug prevention)
+### Forbidden on the dashboard path (Liam Ottley bug prevention)
 
-- **NEVER append directly to `wiki/context/video-preferences.md`.** The file is jointly owned by `/review` and the Telegram path. ALL writes go through the SAME atomic read-rewrite-rename helper -- never `>>`, never `echo >>`, never `obsidian_append_content`. If you catch yourself about to do a direct append, STOP: read the file, rewrite it in full to a `.tmp` sibling, then `mv` atomically. The direct-append pattern is exactly what produced the Liam Ottley bug during B8 testing and this rule exists to prevent recurrence.
+- **NEVER append directly to `wiki/context/video-preferences.md`.** The file is jointly owned by `/review` and the dashboard path. ALL writes go through the SAME atomic read-rewrite-rename helper -- never `>>`, never `echo >>`, never `obsidian_append_content`. If you catch yourself about to do a direct append, STOP: read the file, rewrite it in full to a `.tmp` sibling, then `mv` atomically. The direct-append pattern is exactly what produced the Liam Ottley bug during B8 testing and this rule exists to prevent recurrence.
 - **NEVER hardcode playlist IDs.** Always `jq`-lookup from `scripts/k2b-playlists.json`.
 - **NEVER skip the flock.** `/review` can be running concurrently; double-execution of a playlist move is exactly the failure mode this locking prevents.
 
-The "is this video feedback?" decision is made by reading Telegram conversation context. No new MCP tool, no routing code, no keyword matching -- the interactive Claude session uses its built-in Edit/Glob/Grep/Bash tools.
+The "is this video feedback?" decision is made from the active dashboard or Codex-session context. No new MCP tool, no routing code, and no keyword matching is required.
 
 ## Usage Logging
 

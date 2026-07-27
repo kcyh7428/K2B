@@ -17,6 +17,15 @@ description: Full K2B system health dashboard -- reviews self-improvement logs, 
 
 # K2B Self-Improvement Dashboard
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Single command for the full picture of how K2B is doing -- learnings, errors, requests, preferences, vault health, and skill eval status.
 
 ## Memory & Data Paths
@@ -59,7 +68,7 @@ Generate the full system health report. Sections can be run individually for spe
    - Top 5 most-reinforced learnings
    - Recent errors (last 30 days) -- any unresolved?
    - Open feature requests
-3. Suggest any learnings with `Reinforced` >= 3 for promotion to standalone memory files or CLAUDE.md.
+3. Suggest any learnings with `Reinforced` >= 3 for promotion to standalone memory files or `AGENTS.md`.
 4. Flag any recurring error patterns.
 5. If any learnings are older than 90 days and reinforced only once, suggest pruning (confirm before deleting).
 
@@ -169,5 +178,5 @@ echo -e "$(date +%Y-%m-%d)\tk2b-improve\t$(echo $RANDOM | md5sum | head -c 8)\tr
 
 - No em dashes, no AI cliches, no sycophancy
 - Keep the report scannable -- Keith wants a dashboard, not an essay
-- When suggesting actions, be specific: "promote L-2026-03-15-002 to CLAUDE.md" not "consider promoting some learnings"
+- When suggesting actions, be specific: "promote L-2026-03-15-002 to AGENTS.md" not "consider promoting some learnings"
 - The vault health section replaces what /research internal used to do

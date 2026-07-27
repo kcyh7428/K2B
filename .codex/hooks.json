@@ -24,6 +24,18 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/youtube-transcript-prefetch.sh\"",
+            "timeout": 180
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

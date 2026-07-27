@@ -5,6 +5,15 @@ description: Dormant daily-note lane -- use only when Keith explicitly says /dai
 
 # K2B Daily Capture
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 > [!warning] Dormant lane
 > This skill has no logged live use in the recent K2B usage window. Do not recommend it as the default way to save a useful answer or update K2B. Invoke it only when Keith explicitly asks for `/daily`, start-of-day capture, or end-of-day capture.
 
@@ -22,24 +31,14 @@ description: Dormant daily-note lane -- use only when Keith explicitly says /dai
 
 Gather from all available sources in parallel:
 
-**a) Telegram messages from k2b-remote (Mac Mini):**
-```bash
-ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/store/k2b-remote.db \
-  \"SELECT content, created_at FROM memories \
-    WHERE chat_id='8394008217' \
-    AND created_at >= $(date -u -d 'today 00:00' +%s)000 \
-    ORDER BY created_at\""
-```
-On macOS the date command differs -- use:
-```bash
-ssh macmini "sqlite3 ~/Projects/K2B/k2b-remote/store/k2b-remote.db \
-  \"SELECT content, created_at FROM memories \
-    WHERE chat_id='8394008217' \
-    AND created_at >= $(python3 -c 'import datetime; print(int(datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp() * 1000))') \
-    ORDER BY created_at\""
-```
-- Voice transcriptions (`[Voice transcribed]: ...`) are treated as normal text
-- Messages are mixed across all contexts (SJM, Signhub, TalentSignals, personal) -- do NOT assume they're all about one topic
+**a) Dashboard and vault-drop captures:**
+
+- Read today's accepted intake manifests and derived artifacts under the
+  configured vault intake area.
+- Read today's raw notes created through the dashboard or explicit vault drop.
+- Treat transcripts as normal text after deterministic extraction.
+- Captures are mixed across all contexts (SJM, Signhub, TalentSignals,
+  personal); do not assume they are all about one topic.
 
 **b) Vault notes created or modified today:**
 ```bash
@@ -71,7 +70,7 @@ Rules:
 - **Omit empty sections entirely.** If nothing fits a section, don't show it.
 - A quiet day = a short note. That's fine.
 - Use bullet points, not paragraphs.
-- Don't hallucinate details. If a Telegram message is vague, include what's there and ask.
+- Don't hallucinate details. If a capture is vague, include what's there and ask.
 - Don't generate insights Keith didn't express. Use `> [!robot] K2B analysis` callout if surfacing a K2B-originated connection.
 - Don't force Content Seeds if none naturally emerged.
 
@@ -102,16 +101,15 @@ Based on Keith's responses:
 - After saving, append via helper:
   `scripts/wiki-log-append.sh /daily <daily-note> "captured: <entities>"`
 
-**Channel-aware preview:**
-- On Claude Code terminal: show the full note before saving
-- On Telegram (k2b-remote): show compact summary (section headers + bullet counts), ask "Save? Or tell me what to change"
+**Codex preview:** show the full note before saving, then ask "Save? Or tell me
+what to change?"
 
 ## Morning Mode
 
 When Keith says `/daily` in the morning (or when no captures exist for today yet):
 
 1. Pull yesterday's open loops
-2. If any Telegram messages already sent today, include them
+2. If any dashboard or vault-drop captures already arrived today, include them
 3. Otherwise: show open loops and say "Capture things as they happen today. /daily again tonight to compile."
 
 Morning mode is brief. Don't prompt for a full daily plan.

@@ -11,6 +11,15 @@ scope: project
 
 # k2b-compile -- Knowledge Compilation Engine
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Reads raw source captures and compiles them into wiki knowledge pages. Based on Karpathy's LLM Wiki architecture: the LLM owns the wiki layer, Keith curates sources and approves updates.
 
 ## Trigger
@@ -48,9 +57,9 @@ Do not create more raw captures when the real issue is that existing raw capture
 ## Commander/Worker Architecture
 
 **Kimi K2.7 Code** does the heavy cognitive work (reading, analyzing, generating structured output).
-**Opus** orchestrates (calls the script, presents summary, applies file changes, updates indexes).
+**Codex** orchestrates (calls the script, presents summary, applies file changes, updates indexes).
 
-This is the same pattern used by the observer loop. ~30-50x cheaper than running everything on Opus.
+This is the same pattern used by the observer loop and keeps background text work on the approved worker.
 
 ## Policy Ledger Check (MANDATORY -- runs before every compile)
 
@@ -81,7 +90,7 @@ The script:
 
 ### 2. Parse, Validate, and Present Summary
 
-Opus parses the JSON but treats it as a **suggestion, not a directive**. Before presenting to Keith:
+Codex parses the JSON but treats it as a **suggestion, not a directive**. Before presenting to Keith:
 - For each `pages_to_create`: check raw source `related:` frontmatter links and grep `wiki/` for the entity. If an existing page covers this entity, convert the "create" to an "update" in the plan.
 - For each `pages_to_update`: verify the target file exists. If not, convert to a "create".
 
@@ -111,10 +120,10 @@ If Keith gives specific feedback: adjust plan and re-present.
 
 For each planned change:
 
-Opus applies changes from the Kimi JSON output:
+Codex applies changes from the Kimi JSON output:
 
 **For each entry in `pages_to_create`:**
-1. **BEFORE creating:** Check if the raw source frontmatter has `related:` links pointing to existing wiki pages that cover this entity. If yes, ENRICH the existing page instead of creating a new one. Kimi's create suggestion is a hint, not a directive -- Opus must verify against existing wiki state.
+1. **BEFORE creating:** Check if the raw source frontmatter has `related:` links pointing to existing wiki pages that cover this entity. If yes, ENRICH the existing page instead of creating a new one. Kimi's create suggestion is a hint, not a directive -- Codex must verify against existing wiki state.
 2. **BEFORE creating:** Grep `wiki/` for the entity name. If a page already exists, update it instead.
 3. Only if steps 1-2 confirm no existing page: write the file using frontmatter + content from JSON
 4. Verify wikilinks point to existing pages (glob check)
@@ -165,26 +174,13 @@ Shows plan, waits for Keith's approval. Best for interactive sessions.
 Groups multiple uncompiled sources:
 1. Read all raw files where `compiled:` is missing or false
 2. Show combined summary: "5 sources, 12 wiki updates, 4 new pages"
-3. One approval for all (approval gate STAYS on Opus -- see below)
-4. Process sequentially
+3. One approval for all; the approval gate stays with Codex.
+4. Process sequentially by calling the Kimi compile wrapper for each source.
 
-**claude-minimaxi offload for large batches.** When this runs on Opus (`[[ "${K2B_OFFLOADED:-0}" != "1" ]]`) AND there are **3 or more** uncompiled sources, offload the sequential processing loop (step 4) to `claude-minimaxi` after Keith approves the plan. Opus still owns steps 1-3 (discovery, plan summary, approval gate) because those need identity-aware synthesis; Kimi handles the mechanical per-source loop.
-
-Dispatch shape:
-```bash
-# After Keith approves on Opus side, dispatch the execution:
-claude-minimaxi "/compile batch --approved" \
-  --add-dir ~/Projects/K2B \
-  --add-dir ~/Projects/K2B-Vault
-```
-
-The child session sees `K2B_OFFLOADED=1` set by the wrapper, reads the same raw sources, skips the re-dispatch check (no recursion), calls `minimax-compile.sh` per source, runs `compile-index-update.py`, and marks frontmatter. Then exits. Opus reads the return status and reports to Keith.
-
-**Why this specifically.** Per-source orchestration in batch mode is mechanical loop work -- for each source, build context, call Kimi worker, parse JSON, apply changes, mark compiled. The only semantic judgment (classify-vs-enrich, voice alignment, cross-link decisions) happens once, at the approval gate, which stays on Opus. Dispatching the loop saves orchestration tokens and keeps the measurement pipeline (`minimax-jobs.jsonl` with `job: "claude-minimaxi-session"`) getting data.
-
-**Under 3 sources**: stay on Opus. Overhead of dispatch isn't worth it for 1-2 items.
-
-**If already offloaded (`K2B_OFFLOADED=1`)**: skip the re-dispatch, run the loop directly. Prevents infinite recursion.
+For unattended batches, register one bounded host job. The job writes an
+observable receipt containing the source set, wrapper exit status, updated
+paths, and completion time. Surface failures in the Operations Console
+attention queue; do not start an interactive agent session from a scheduler.
 
 ### deep
 Manual trigger for deeper analysis:

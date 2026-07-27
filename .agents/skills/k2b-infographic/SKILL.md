@@ -5,9 +5,20 @@ description: "Build controlled, on-brand infographics by compositing text-free A
 
 # K2B Infographic Builder
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 The controllable alternative to fully-AI-painted images.
 
-Maintenance: this skill is mirrored for both Claude Code and Codex. K2B's ship path blocks on `scripts/verify-skills-parity.sh` when parity drifts. That guard checks mirrored skill presence, frontmatter `name`/`description`, and stale surface-specific paths. Run it manually before review to catch drift early.
+Maintenance: `.agents/skills/k2b-infographic/SKILL.md` is the sole live copy.
+Run `scripts/verify-codex-authority.sh` before review to catch live
+authority or retired-routing drift.
 
 ## The pattern
 

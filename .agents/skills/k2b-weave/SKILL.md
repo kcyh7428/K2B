@@ -12,6 +12,15 @@ scope: project
 
 # k2b-weave -- Background Cross-Link Weaver
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Weaves the wiki graph tighter over time by finding semantically related pages that don't cross-link, proposing the top candidates for Keith's approval, and applying approved links as single-sided `related:` frontmatter entries.
 
 ## Core Concept
@@ -22,7 +31,7 @@ Weaves the wiki graph tighter over time by finding semantically related pages th
 
 **Why auto-apply:** a proposal only ever adds one `related:` link (additive, reversible, low stakes). Waiting on a human gate Keith never passed left 31 high-confidence links unapplied for a month (cleared 2026-06-29). Keith authorized hands-off operation 2026-06-29.
 
-**Why Kimi, not Opus:** ~30-50x cheaper. Same pattern as `k2b-compile` and `k2b-observer`. Cost: ~$1/week total at current vault scale.
+**Why Kimi:** background cross-link analysis is pattern-matching work; Codex remains the interactive commander and applies validated results. Same pattern as `k2b-compile` and `k2b-observer`.
 
 ## Auto-apply gate (EXECUTABLE -- enforced in `cmd_run`, not just documented)
 
@@ -161,16 +170,7 @@ Read last 5 rows from `weave-metrics.jsonl`, count ledger entries by status, com
 
 ## Scheduling
 
-Registered via `/schedule` (k2b-remote CLI):
-
-```bash
-cd ~/Projects/K2B/k2b-remote && node dist/schedule-cli.js create \
-  "run /weave" \
-  "0 20 * * 0,2,4" \
-  8394008217
-```
-
-Cron expression: `0 20 * * 0,2,4` = 20:00 UTC Sun/Tue/Thu = **04:00 HKT Mon/Wed/Fri**. The scheduler posts "run /weave" to Keith's Telegram bot on schedule, which triggers a Claude Code session on Mac Mini that invokes this skill.
+Register through `/schedule` as a host job that directly runs the reviewed weave entrypoint. The intended cadence is **04:00 HKT Monday/Wednesday/Friday**. Each run must write an observable receipt containing start/finish time, exit status, proposal count, digest path, and error-log path. Failures go to the Operations Console attention queue. Never launch an interactive agent session from the job.
 
 ## Failure handling
 

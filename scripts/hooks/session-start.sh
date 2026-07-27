@@ -1,7 +1,7 @@
 #!/bin/bash
 # K2B Session Start Hook
-# Fires on every Claude Code session start. Outputs context to stdout.
-# Deterministic replacement for the "Session Start" section in CLAUDE.md.
+# Fires on every Codex session start. Outputs context to stdout.
+# Deterministic project-session context for the live Codex authority.
 
 set -euo pipefail
 
@@ -72,7 +72,7 @@ fi
 
 # --- 3. K2B loop dashboard (observer candidates + review + research-delivery) ---
 # Replaces the bare observer-candidates dump. The dashboard numbers observer
-# candidates AND review items in one index space so Claude can route one-word
+# candidates AND review items in one index space so Codex can route one-word
 # accept/reject/defer tokens back to scripts/loop/loop-apply.sh before the
 # first prompt response. Ship 2 added review routing and the defer counter;
 # research-without-delivery items are still informational (edit frontmatter
@@ -103,13 +103,13 @@ rm -f "$dashboard_stderr"
 # --- 4. Load active rules ---
 # Vault memory is canonical once the vault root exists. Dotfile memory is only
 # a bootstrap fallback when the vault path itself is absent; this prevents old
-# ~/.claude or ~/.codex memory from overriding an intentionally empty vault
+# ~/.codex memory from overriding an intentionally empty vault
 # memory directory during migration.
 active_rules=""
 if [ -f "$MEMORY_DIR/active_rules.md" ]; then
   active_rules="$MEMORY_DIR/active_rules.md"
 elif $vault_missing; then
-  active_rules=$(find -L ~/.claude/projects/ ~/.codex/memories/ -name "active_rules.md" -type f 2>/dev/null | head -1 || true)
+  active_rules=$(find -L ~/.codex/memories/ -name "active_rules.md" -type f 2>/dev/null | head -1 || true)
 fi
 if [ -f "$active_rules" 2>/dev/null ]; then
   output+="ACTIVE RULES (follow these every session):"$'\n'
@@ -124,7 +124,7 @@ learnings_file=""
 if [ -f "$MEMORY_DIR/self_improve_learnings.md" ]; then
   learnings_file="$MEMORY_DIR/self_improve_learnings.md"
 elif $vault_missing; then
-  learnings_file=$(find -L ~/.claude/projects/ ~/.codex/memories/ -name "self_improve_learnings.md" -type f 2>/dev/null | head -1 || true)
+  learnings_file=$(find -L ~/.codex/memories/ -name "self_improve_learnings.md" -type f 2>/dev/null | head -1 || true)
 fi
 if [ -f "$learnings_file" 2>/dev/null ]; then
   # Build exclusion list from active rules (they reference learning IDs like L-2026-03-26-001)

@@ -45,6 +45,17 @@ cat > "$VALID_FIXTURE" <<'JSON'
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/youtube-transcript-prefetch.sh\"",
+            "timeout": 180
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -113,11 +124,13 @@ expected_targets = {
     "scripts/hooks/post-tool-skill-track.sh",
     "scripts/hooks/session-start.sh",
     "scripts/hooks/stop-observe.sh",
+    "scripts/hooks/youtube-transcript-prefetch.sh",
 }
 expected_timeouts = {
     "scripts/hooks/post-tool-skill-track.sh": 3,
     "scripts/hooks/session-start.sh": 10,
     "scripts/hooks/stop-observe.sh": 5,
+    "scripts/hooks/youtube-transcript-prefetch.sh": 180,
 }
 for hook_entries in data.get("hooks", {}).values():
     for entry in hook_entries:
@@ -170,7 +183,8 @@ run_hook_commands() {
   for target in \
     scripts/hooks/post-tool-skill-track.sh \
     scripts/hooks/session-start.sh \
-    scripts/hooks/stop-observe.sh
+    scripts/hooks/stop-observe.sh \
+    scripts/hooks/youtube-transcript-prefetch.sh
   do
     mkdir -p "$stub_root/$(dirname "$target")"
     printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' > "$stub_root/$target"
@@ -263,7 +277,38 @@ mkdir -p "$OUTSIDE_GIT"
     test -x "$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh"
     test -x "$K2B_PROJECT_ROOT/scripts/hooks/post-tool-skill-track.sh"
     test -x "$K2B_PROJECT_ROOT/scripts/hooks/stop-observe.sh"
+    test -x "$K2B_PROJECT_ROOT/scripts/hooks/youtube-transcript-prefetch.sh"
   '
 ) || fail "K2B_PROJECT_ROOT should resolve hook targets outside a git cwd"
+
+PREFETCH_ROOT="$TMP_DIR/prefetch-root"
+mkdir -p "$PREFETCH_ROOT/scripts/hooks"
+cp "$REPO_ROOT/scripts/hooks/youtube-transcript-prefetch.sh" "$PREFETCH_ROOT/scripts/hooks/"
+cat > "$PREFETCH_ROOT/scripts/yt-transcript.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "CODEX TRANSCRIPT FIXTURE"
+SH
+chmod +x "$PREFETCH_ROOT/scripts/yt-transcript.sh"
+
+prefetch_out="$(
+  printf '%s\n' '{"hook_event_name":"UserPromptSubmit","turn_id":"turn_fixture","prompt":"review https://youtu.be/codex123"}' |
+    K2B_PROJECT_ROOT="$PREFETCH_ROOT" \
+    K2B_YT_REMOTE_HOST=none \
+    bash "$PREFETCH_ROOT/scripts/hooks/youtube-transcript-prefetch.sh"
+)"
+printf '%s\n' "$prefetch_out" | jq -e '
+  .hookSpecificOutput.hookEventName == "UserPromptSubmit" and
+  (.hookSpecificOutput.additionalContext | contains("CODEX TRANSCRIPT FIXTURE"))
+' >/dev/null || fail "Codex UserPromptSubmit prompt field was not prefetched"
+echo "PASS: Codex UserPromptSubmit prompt field"
+
+legacy_out="$(
+  printf '%s\n' '{"hook_event_name":"UserPromptSubmit","user_prompt":"review https://youtu.be/legacy123"}' |
+    K2B_PROJECT_ROOT="$PREFETCH_ROOT" \
+    K2B_YT_REMOTE_HOST=none \
+    bash "$PREFETCH_ROOT/scripts/hooks/youtube-transcript-prefetch.sh"
+)"
+[ -z "$legacy_out" ] || fail "legacy user_prompt field should not be treated as Codex prompt input"
+echo "PASS: legacy prompt field ignored"
 
 echo "PASS: hook command fixtures are provider-neutral"

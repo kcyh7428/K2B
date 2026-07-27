@@ -1,15 +1,15 @@
 #!/bin/bash
 # K2B Stop-Observe Hook
-# Fires after every Claude response. Captures observations for the background observer.
-# Reads JSON from stdin (Claude's stop hook payload).
+# Fires after every Codex response. Captures observations for the background observer.
+# Reads the Codex Stop hook JSON from stdin.
 
 set -euo pipefail
 
 VAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
 OBS_FILE="$VAULT/wiki/context/observations.jsonl"
-hook_provider="${K2B_HOOK_PROVIDER:-${K2B_PROVIDER:-default}}"
+hook_provider="${K2B_HOOK_PROVIDER:-codex}"
 case "$hook_provider" in
-  *[!A-Za-z0-9_-]*|"") hook_provider="default" ;;
+  *[!A-Za-z0-9_-]*|"") hook_provider="codex" ;;
 esac
 CURRENT_SKILL_FILE="${K2B_CURRENT_SKILL_FILE:-/tmp/k2b-current-skill-$hook_provider}"
 LAST_OBSERVE_FILE="${K2B_LAST_OBSERVE_FILE:-/tmp/k2b-last-observe-$hook_provider}"
@@ -27,6 +27,7 @@ mkdir -p "$(dirname "$OBS_FILE")" 2>/dev/null || true
 input=$(cat)
 stop_active=$(echo "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)
 if [ "$stop_active" = "true" ]; then
+  printf '{}\n'
   exit 0
 fi
 
@@ -124,4 +125,5 @@ touch -r "$RUN_MARKER" "$LAST_OBSERVE_FILE"
 cleanup_run_marker
 trap - EXIT ERR HUP INT TERM
 
+printf '{}\n'
 exit 0

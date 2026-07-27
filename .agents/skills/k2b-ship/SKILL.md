@@ -1,9 +1,18 @@
 ---
 name: k2b-ship
-description: End-of-session shipping workflow -- runs adversarial pre-commit review through the builder-family matrix, commits, pushes, updates the feature note, updates wiki/concepts/index.md lane membership, appends DEVLOG.md and wiki/log.md, suggests next Backlog promotion, and resolves /sync now-or-defer. Use when Keith says /ship, "ship it", "wrap up", "end of session", "done shipping", or at the natural end of a build session where code was modified.
+description: K2B delivery adapter -- runs adversarial pre-commit review through the builder-family matrix, commits, pushes, updates delivery records, and resolves /sync now-or-defer. Use when Keith explicitly authorizes delivery with /ship, "ship it", "commit this", "push this", "sync this", "deploy this", or equivalent delivery wording.
 ---
 
 # K2B Ship
+
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
 Keystone skill for shipping discipline. Replaces the manual Session Discipline checklist with an enforceable workflow that keeps `wiki/concepts/index.md` (the canonical roadmap) honest.
 
@@ -11,7 +20,7 @@ Keystone skill for shipping discipline. Replaces the manual Session Discipline c
 
 **Explicit:** Keith says `/ship`, "ship it", "ship this", "wrap up", "end of session", "done shipping", "close out", "commit and push this".
 
-**Proactive prompt:** At the natural end of any session where K2B modified project files in `AGENTS.md`, `CLAUDE.md`, Claude/Codex skill surfaces, Codex hook surfaces, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md`, `k2b-remote/`, `scripts/`, `k2b-dashboard/`, or a feature note moved into `in-progress` or `shipped` state -- say: "We have uncommitted changes in [list]. Want me to /ship?"
+Plain implementation wording is not delivery authority. At a natural end without explicit delivery wording, preserve an uncommitted checkpoint and report the modified files and verification state. Do not create a pending-sync entry because no commit exists.
 
 **Codex Desktop manual ship contract:** In Codex harnesses where `/ship` is unavailable as a slash command, the agent must run this skill body manually instead of stopping at code edits. Keep this block in sync with `AGENTS.md` -> `Session Discipline`. If Keith's request uses delivery command wording -- for example "ship it", "commit this", "push this", "sync this to the Mini", "deploy this", "merge this", "do all the commit/etc.", or "make sure this is shipped" -- the full manual ship path is already authorized. Delivery command wording can also be a compound instruction such as "implement X, then commit/push/sync it." Do not ask a second "should I ship?" question; proceed through review, commit, push, DEVLOG, `wiki/log.md`, Step 14 sweep, and sync-now/defer resolution. Still report the proposed commit message, reviewer findings, tests, sync result, and any explicit override.
 
@@ -27,7 +36,7 @@ For compound instructions such as "implement X, then commit/push/sync it", the f
 
 - Vault-only changes (daily notes, review processing, content drafts) -- these sync via Syncthing, no commit needed
 - Emergency hotfixes where Keith explicitly says "just commit, skip review"
-- When the user is mid-implementation and just wants an interim checkpoint -- they should say `/commit` or commit manually
+- When the user is mid-implementation or asks for an uncommitted checkpoint
 
 ## Commands
 
@@ -136,12 +145,12 @@ Categorize touched files into:
 
 | Category | Matching paths | Needs /sync? |
 |----------|---------------|--------------|
-| skills    | Claude/Codex skill surfaces, `AGENTS.md`, `CLAUDE.md`, Codex hook surfaces, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md` | yes |
+| skills    | `.agents/skills/`, `AGENTS.md`, `.codex/hooks.json`, `.mcp.json`, `README.md`, `DEVLOG.md` | yes |
 | code      | `k2b-remote/` | yes (build + pm2 restart k2b-remote) |
 | dashboard | `k2b-dashboard/` | yes (build + pm2 restart k2b-dashboard) |
 | scripts   | `scripts/` including `scripts/hooks/` | yes |
 | vault     | `K2B-Vault/` | no (Syncthing) |
-| plans     | `.claude/plans/` | no |
+| plans     | `plans/` | no |
 
 **Category names must match `/sync`'s category table exactly.** `/sync` currently defines: `skills`, `code`, `dashboard`, `scripts`. Any category label that `/ship --defer` writes into a mailbox entry must be one of those four -- otherwise `/sync` would consume the entry without a deploy target, silently dropping the change. In particular, `scripts/hooks/**` rolls up into `scripts` (not a separate `hooks` category): the deploy script's `scripts` mode already rsyncs `scripts/` recursively, which covers hooks.
 
@@ -169,7 +178,7 @@ Before tier detection, identify who built the diff. This is mandatory for offici
 |---|---|---|
 | `openai` | Codex, OpenAI Agents, OpenAI Responses | Kimi only: `--builder-family openai --primary kimi --no-fallback` |
 | `kimi` | Kimi K2.7 Code worker edits | Codex only: `--builder-family kimi --primary codex --no-fallback` |
-| `anthropic` | Claude Code, Claude Agent SDK | Codex or Kimi are both independent |
+| `anthropic` | Pre-existing work with historical Claude builder metadata | Codex or Kimi are both independent |
 | `other` | Human, shell-only, unknown or mixed tool | Choose one independent reviewer, pass `--builder-family other --no-fallback`, and record why |
 
 Use reviewer key `kimi` for the live Kimi K2.7 reviewer. The key `minimax` remains a deprecated compatibility alias only; do not use it in new ship instructions. The review runner invokes `scripts/kimi-review.sh`; it no longer falls back to `scripts/minimax-review.sh`.
@@ -642,7 +651,7 @@ The log at `log_path` is a plain-text unified log with two kinds of lines:
 
 Runner state lives in `.code-reviews/<job_id>.json` (updated by the watchdog while running; finalized at completion with `status`, `primary_used`, `fallback_used`, `exit_code`, `reviewer_attempts[]`). For background mode (no `--wait`), `scripts/review-poll.sh <job_id>` returns a snapshot with `phase`, `elapsed_s`, `last_activity_s_ago`, `tail`, `should_poll_again`, and `recommended_poll_interval_s`. The skill doesn't use background mode in the Tier 2/3 flows (they use `--wait`) but the poll path exists for ad-hoc use.
 
-**Why the runner replaces the old inline patterns:** the old Step 3c ran `node codex-companion.mjs review` synchronously and relied on Claude-side polling + manual Kimi fallback when Codex wedged. Observed failure modes: Codex silent hang during WebSocket cold-start (~10+ min), Kimi HTTP 529 with no retry, "both reviewers available but k2b-ship bash can't coordinate the fallback." The runner solves all three: hard SIGTERM at deadline, automatic fallback on any failure mode, and watchdog HEARTBEAT lines that make "still working" observable. Built once in K2Bi, validated in production there for several days, ported here.
+**Why the runner replaces the old inline patterns:** the old Step 3c ran `node codex-companion.mjs review` synchronously and relied on session-side polling + manual Kimi fallback when Codex wedged. Observed failure modes included Codex silent hangs during WebSocket cold-start, Kimi HTTP failures, and poor fallback coordination. The runner provides bounded deadlines and observable heartbeat output.
 
 **Presentation rules for reviewer findings (unchanged):**
 
@@ -675,10 +684,10 @@ K2B uses an independent second-model reviewer to catch blind spots the builder c
 
 - **OpenAI-built plans**: use Kimi only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family openai --primary kimi --no-fallback --wait`.
 - **Kimi-built plans**: use Codex only: `scripts/review.sh plan --plan <repo-relative-path> --builder-family kimi --primary codex --no-fallback --wait`.
-- **Claude/other-built plans**: Codex can review while available: `scripts/review.sh plan --plan <repo-relative-path> --builder-family anthropic --primary codex --wait`.
+- **Pre-existing plans with historical Anthropic builder metadata**: Codex can review them with `scripts/review.sh plan --plan <repo-relative-path> --builder-family anthropic --primary codex --wait`. This preserves review provenance; it is not a live builder recommendation.
 - **Bare Kimi fallback caveat**: Kimi CANNOT see files outside the git working tree, and plan files may live outside a repo. A bare `scripts/kimi-review.sh` invocation gathers context from `git status` / `git diff` only, so pass `--scope plan --plan <path>` through `scripts/review.sh` when possible. If not possible, use one of these workarounds:
   - **(a) Inline the plan content into the `--focus` prompt** (preferred for non-trivial plans). Read the plan file, paste its content as: `scripts/kimi-review.sh --focus "challenge this plan: <PASTE FULL PLAN HERE>. Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity."` Kimi K2.7 Code has a large prompt window so even multi-thousand-line plans fit.
-  - **(b) Copy the plan into the working tree as a temp file** (e.g., `cp ~/.claude/plans/<file> .kimi-review-plan.tmp.md`) so the working-tree scan picks it up; delete after the review. Less clean but works without prompt-stuffing.
+  - **(b) Copy an authorized external plan into the working tree as a temp file** (for example `.kimi-review-plan.tmp.md`) so the working-tree scan picks it up; delete it after review.
   - **(c) Skip Plan Review entirely and rely on Checkpoint 2 being mandatory** when Checkpoint 1 was skipped. Acceptable for small plans where adversarial review at pre-commit time catches the same issues; not acceptable for large architectural plans where catching the issue early matters.
 - Look for: over-engineering, simpler alternatives, missing edge cases, unnecessary complexity
 - Adjust the plan based on findings BEFORE writing code
@@ -779,7 +788,7 @@ Before ANY status transition to `shipped` (single-ship feature) OR before markin
 **Gate 3 (substantive evidence of pass, not just citation):** The MVP test has been executed and passed in THIS ship. Bare citations are insufficient. Concretely:
 
 - If the feature spec has a dedicated "MVP" section with numbered pass conditions (WMM line 84 is the template), the ship's `## Updates` entry MUST name each numbered condition that was executed AND state the outcome per condition. Example: "Step 2 passed: classifier emitted contact row with phone 2830 3709, confirmed via `cat wiki/context/shelves/semantic.md | grep Lo`. Step 7 passed: agent reply contained 2830 3709 with zero tool calls, transcript at `tests/wmm-commit5-mvp.log`." A commit message that says only "MVP test passed" or "ran the doctor-phone test" FAILS this gate.
-- If the MVP lives only in frontmatter (single-sentence test), the `## Updates` entry MUST (a) restate the bug being killed in one sentence, (b) describe the reproduction steps actually executed, (c) state the concrete observable outcome that proves the bug is dead, and (d) cite the artifact (test file path + green output, Telegram transcript excerpt, screenshot path, etc.).
+- If the MVP lives only in frontmatter (single-sentence test), the `## Updates` entry MUST (a) restate the bug being killed in one sentence, (b) describe the reproduction steps actually executed, (c) state the concrete observable outcome that proves the bug is dead, and (d) cite the artifact (test file path + green output, dashboard evidence, receipt, screenshot path, etc.).
 - The gate checks evidence SHAPE, not truth. `/ship` cannot verify that a cited artifact is genuine. But by requiring named conditions + reproduction steps + concrete observables + artifact citation, the gate forces the author to write a claim that can be falsified post-hoc by reading the artifact. A lazy "ran the test" is no longer sufficient.
 
 **If any gate fails, REFUSE to mark `shipped`.** Tell Keith exactly which gate failed and why. Keep the ship in its current lane (typically `in-progress`). Do not attempt to rescue by rewording `mvp:` inline -- that is exactly the "shipped at 20%" antipattern the gate exists to catch. Do not attempt to rescue by adding evidence to the `## Updates` entry at ship time if the evidence wasn't generated by the actual ship work -- that's evidence fabrication, not a dead bug.
@@ -862,7 +871,7 @@ Before the final response, prepare a short ship brief for Keith. This is separat
 Default to this order and these exact headings when the ship meaning could be unclear:
 
 1. **What you will notice** -- day-to-day behavior change.
-2. **What stays the same** -- especially Claude Code, Telegram, Mini sync, and other compatibility lanes.
+2. **What stays the same** -- especially Mini sync, retained providers, and rollback options. Describe Claude state as rollback-only residue and Telegram code as retired dormant residue, not live compatibility lanes.
 3. **What is not included yet** -- later ships and unsolved gaps, so K2B does not overclaim.
 4. **What to do now** -- switch tools, restart, test a workflow, run `/sync`, or do nothing.
 5. **Under the hood** -- commits, files, hooks, tests, provider names, and review logs.
@@ -872,7 +881,7 @@ Use plain words. Prefer before/after examples and "this means / this does not me
 
 For the Codex primary migration, good default wording is:
 
-> You can still use Claude Code. Codex is now treated as the normal desktop driver, and if Codex writes code K2B requires Kimi review instead of trusting Codex to review itself. Telegram is unchanged until the provider ships.
+> Codex is the sole live desktop commander, with Kimi providing independent review for Codex-built changes. Claude project state remains only as rollback residue pending its separately authorized removal. Telegram is retired; any remaining Telegram implementation is dormant removal residue.
 
 ### 9. Append wiki/log.md
 
@@ -889,7 +898,7 @@ Replace `<feature-slug>` with the feature note basename (e.g. `feature_k2b-ship`
 If the feature has a Shipping Status table and this ship has a gate scheduled (per minimax-offload phase gate pattern):
 
 - Remind Keith: "Ship X of Y done. Gate review scheduled for YYYY-MM-DD. Nothing else should start on Ship X+1 until the gate passes."
-- Offer to create a scheduled task via `/schedule` if the gate review is not already scheduled: the task should run `/observe` and the phase gate checklist from the feature note, then Telegram Keith the go/no-go summary.
+- Offer to create a registered host job via `/schedule` if the gate review is not already scheduled. It must run a deterministic gate entrypoint, write an observable receipt, and route failures to the Operations Console attention queue.
 
 ### 11. Promote next Backlog item to Next Up (only for single-ship ships or final-ship ships)
 

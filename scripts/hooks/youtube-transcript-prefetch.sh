@@ -1,14 +1,14 @@
 #!/bin/bash
 # K2B UserPromptSubmit Hook -- YouTube Transcript Prefetch
 #
-# When Keith pastes a YouTube URL into a Claude Code message, this hook
+# When Keith pastes a YouTube URL into a Codex message, this hook
 # fetches the transcript via scripts/yt-transcript.sh (the shared helper that
 # can retry on the Mac Mini when the local MacBook path hits YouTube's bot wall)
-# and injects it as additionalContext, so Claude sees the transcript before
+# and injects it as additionalContext, so Codex sees the transcript before
 # generating its response.
 #
 # Per K2B Memory Layer Ownership: automated "when X happens" behaviors belong
-# in hooks, not skills/learnings/CLAUDE.md. This hook is that path for
+# in hooks, not skills or learnings. This hook is that path for
 # YouTube URLs.
 #
 # Failure mode: silent. Any extraction failure exits 0 with no output so a
@@ -30,15 +30,7 @@ case "${K2B_YT_REMOTE_TIMEOUT:-30}" in
     export K2B_YT_REMOTE_TIMEOUT
     ;;
 esac
-if [[ -n "${CLAUDE_HOOK_TIMEOUT_MS:-}" && "${CLAUDE_HOOK_TIMEOUT_MS}" =~ ^[0-9]+$ ]]; then
-  min_budget_ms=$(( (K2B_YT_REMOTE_TIMEOUT + 10) * 1000 ))
-  if (( CLAUDE_HOOK_TIMEOUT_MS <= min_budget_ms )); then
-    export K2B_YT_REMOTE_FALLBACK=0
-  fi
-fi
-# The outer Claude Code hook timeout still bounds total prefetch latency; if a
-# future runtime budget env var is exposed, compare it against the remote retry
-# plus local overhead before fetching.
+# The outer Codex hook timeout bounds total prefetch latency.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRANSCRIPT_SCRIPT="$HERE/../yt-transcript.sh"
@@ -52,16 +44,13 @@ MAX_CHARS_PER_URL="${YT_PREFETCH_MAX_CHARS:-25000}" # truncate per transcript
 # No script = nothing to do.
 [[ -x "$TRANSCRIPT_SCRIPT" ]] || exit 0
 
-# Read stdin JSON. Claude Code's UserPromptSubmit hook provides `.user_prompt`
-# per the official `plugin-dev/skills/hook-development` schema; we read `.prompt`
-# too for back-compat with synthetic test fixtures (see pipe-tests in the README).
-# Codex Checkpoint-2 HIGH-1 fix 2026-05-13.
+# Codex UserPromptSubmit provides the user text in `.prompt`.
 INPUT=$(cat)
-PROMPT=$(printf '%s' "$INPUT" | jq -r '.user_prompt // .prompt // ""' 2>/dev/null)
+PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // ""' 2>/dev/null)
 [[ -n "$PROMPT" ]] || exit 0
 
 # Extract YouTube URLs. Mirrors k2b-remote/src/url-prefetch.ts YT_URL_REGEX so
-# Telegram-side and Claude-Code-side prefetch see the same URL universe:
+# explicit capture and Codex prefetch see the same URL universe:
 #   https?://(www.|m.)?youtube.com/{watch?v=<id>, shorts/<id>, embed/<id>}
 #   https?://youtu.be/<id>
 # Plus an optional tail of safe query/fragment chars. Trailing terminal

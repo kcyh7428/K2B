@@ -12,7 +12,7 @@ Turn videos Keith saved to a K2B category playlist into `raw/youtube/` vault not
 
 ## Scope
 
-This skill is a pure **batch processor** for videos Keith has manually saved to category playlists in YouTube. Discovery of fresh videos from search queries runs through `/research videos "<query>"` (see [[feature_research-videos-notebooklm]]). Per-video feedback flows into `wiki/context/video-preferences.md` via `/review` and the Telegram feedback path.
+This skill is a pure **batch processor** for videos Keith has manually saved to category playlists in YouTube. Discovery of fresh videos from search queries runs through `/research videos "<query>"` (see [[feature_research-videos-notebooklm]]). Per-video feedback flows into `wiki/context/video-preferences.md` through the review queue and dashboard.
 
 ## Commands
 
@@ -67,7 +67,7 @@ Use `mcp__YouTube_Transcript_MCP_Server__get_video_info` to get title, channel, 
 
 #### 2b. Get Transcript (Cascade)
 
-The cascade logic lives in `scripts/yt-transcript.sh` so the batch playlist flow (this skill) and the Telegram ad-hoc URL flow (k2b-remote) share one code path. Call it and read the method from stderr:
+The cascade logic lives in `scripts/yt-transcript.sh` so the batch playlist flow (this skill) and the Codex `UserPromptSubmit` transcript-prefetch hook share one code path. Call it and read the method from stderr:
 
 ```bash
 TRANSCRIPT=$(~/Projects/K2B/scripts/yt-transcript.sh "<video-url>" 2>/tmp/yt-transcript-err.txt)
@@ -225,7 +225,7 @@ The following subcommands existed briefly and were all retired 2026-04-14 along 
 - **`/youtube recommend`** / **`/youtube morning`** / **`/youtube cleanup`** -- these belonged to the 6-hour agent loop in `k2b-remote`. The whole loop, the taste model, the channel affinity scoring, and the nudge pipeline were deleted. Fresh-video discovery is now `/research videos "<query>"` via NotebookLM.
 - **`/youtube <url>`** (direct URL screening) -- the Telegram bot's `handleDirectYouTubeUrl` path was deleted in the same cleanup. To capture a single URL to the vault today, paste it into a K2B category playlist in YouTube and run `/youtube <playlist-name>`.
 
-  For ad-hoc Q&A on a single URL (summarise, fact-check, explain), just send the URL to the Telegram bot directly. As of 2026-04-21 the bot pre-fetches the transcript via `scripts/yt-transcript.sh` before the agent runs, so the agent answers your question using the transcript without reinventing the fetch each time. See `wiki/concepts/feature_telegram-url-prefetch.md`. This path does NOT save to the vault -- it's disposable triage. For vault capture, still use the playlist flow.
+  For ad-hoc Q&A on a single URL (summarise, fact-check, explain), paste the URL into the active Codex session. The registered `UserPromptSubmit` hook pre-fetches the transcript through `scripts/yt-transcript.sh` before Codex answers, avoiding a duplicate fetch path. This path does NOT save to the vault -- it is disposable triage. For vault capture, still use the playlist flow.
 - **`/youtube status`** -- check `wiki/context/youtube-processed.md` directly.
 
 If Keith asks for any of these commands, point him at `/research videos "<query>"` (for discovery) or the batch `/youtube` flow (for saved videos). The retired feature's spec is at [[Shipped/2026-04-08_feature_youtube-agent]].

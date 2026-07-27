@@ -5,6 +5,15 @@ description: Harvest implicit preference signals from vault behavior and synthes
 
 # K2B Observer
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Harvest implicit preference signals from Keith's vault behavior. Synthesize patterns into a preference profile that other K2B skills reference before producing output.
 
 ## Vault & Skill Paths
@@ -95,7 +104,7 @@ For content-specific tracking:
 
 ### 1e. Video Feedback (from `/research videos`)
 
-Video preferences are captured inline in `wiki/context/video-preferences.md` by `/review` or the Telegram feedback path. That file IS the NotebookLM preference tail -- `/research videos` reads it directly on every run. The observer does not need to re-synthesize a separate YouTube profile; it can surface recurring themes from `video-preferences.md` as patterns (e.g., "Keith consistently drops managed-agent content").
+Video preferences are captured inline in `wiki/context/video-preferences.md` by `/review` or dashboard feedback. That file IS the NotebookLM preference tail -- `/research videos` reads it directly on every run. The observer does not need to re-synthesize a separate YouTube profile; it can surface recurring themes from `video-preferences.md` as patterns (e.g., "Keith consistently drops managed-agent content").
 
 ## Phase 2: Detect Patterns
 
@@ -279,7 +288,7 @@ See Phase 3 above for full format. This is a vault note with frontmatter, readab
 
 K2B runs a background observer on Mac Mini (`scripts/observer-loop.sh`, managed by pm2 as `k2b-observer`). This loop:
 
-1. Captures observations via a Stop hook (`scripts/hooks/stop-observe.sh`) after every Claude response
+1. Captures observations via a Stop hook (`scripts/hooks/stop-observe.sh`) after every Codex response
 2. When 20+ observations accumulate, calls Kimi K2.7 Code to analyze patterns
 3. Writes findings to `observer-candidates.md` (surfaced by session-start hook)
 4. Appends detected patterns to `preference-signals.jsonl`
@@ -287,7 +296,7 @@ K2B runs a background observer on Mac Mini (`scripts/observer-loop.sh`, managed 
 
 **How `/observe` relates to the background loop:**
 - The background loop runs automatically and cheaply via Kimi (~$0.007/analysis)
-- `/observe` is Keith's manual command for on-demand analysis with full Claude reasoning
+- `/observe` is Keith's manual command for on-demand analysis with full Codex reasoning
 - `/observe` reads the same files (preference-signals.jsonl, observations.jsonl) and produces the same output (preference-profile.md)
 - They complement each other: background loop catches patterns continuously, `/observe` does deep synthesis on demand
 - `/observe` should read `observer-candidates.md` and incorporate any background findings

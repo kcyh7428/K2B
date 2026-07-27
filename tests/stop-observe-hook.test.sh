@@ -10,7 +10,7 @@ SCRIPT="$REPO_ROOT/scripts/hooks/stop-observe.sh"
 TMP_DIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$TMP_DIR"
-  rm -f /tmp/k2b-current-skill-codex /tmp/k2b-current-skill-claude
+  rm -f /tmp/k2b-current-skill-codex
 }
 trap cleanup EXIT
 
@@ -54,9 +54,8 @@ line_count="$(wc -l < "$obs_file" | tr -d ' ')"
 [ "$line_count" = "1" ] || fail "second run duplicated unchanged observation"
 echo "PASS: marker advancement prevents duplicate observations"
 
-rm -f /tmp/k2b-current-skill-codex /tmp/k2b-current-skill-claude
+rm -f /tmp/k2b-current-skill-codex
 printf 'k2b-tldr\n' > /tmp/k2b-current-skill-codex
-printf 'k2b-ship\n' > /tmp/k2b-current-skill-claude
 provider_vault="$TMP_DIR/provider-vault"
 provider_last="$TMP_DIR/provider-last-observe-codex"
 mkdir -p "$provider_vault/wiki/context" "$provider_vault/wiki/concepts"
@@ -72,7 +71,4 @@ printf '{"session_id":"codex-provider-default","input":{"reason":"complete"}}' |
 provider_obs="$provider_vault/wiki/context/observations.jsonl"
 tail -n 1 "$provider_obs" | grep -q '"session":"codex-provider-default"' || fail "provider default run did not write observation"
 tail -n 1 "$provider_obs" | grep -q '"skill":"k2b-tldr"' || fail "provider default did not read Codex state file"
-if tail -n 1 "$provider_obs" | grep -q '"skill":"k2b-ship"'; then
-  fail "provider default leaked Claude state file"
-fi
 echo "PASS: provider default state file is isolated in stop-observe"

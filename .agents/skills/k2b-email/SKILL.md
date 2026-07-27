@@ -5,6 +5,15 @@ description: Handle Gmail operations via the gws CLI -- reading, searching, tria
 
 # K2B Email
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 Manage Keith's Gmail via the `gws` CLI tool. Authenticated as **keith.cheung@signhub.io**.
 
 ## Auth & Account
@@ -16,7 +25,9 @@ Manage Keith's Gmail via the `gws` CLI tool. Authenticated as **keith.cheung@sig
 
 ## Safety Rules -- Non-Negotiable
 
-The authoritative send-gate also lives in `~/Projects/K2B/CLAUDE.md` under "Email Safety" (always loaded). These four rules are the full set. No elaboration below them.
+The authoritative send-gate lives in `~/Projects/K2B/AGENTS.md` and the four
+rules below are the operational contract. Do not import email authority from
+rollback-only compatibility files.
 
 1. **Never send in the same turn you create a draft.** Sending is a separate turn.
 2. **Never delete emails.**

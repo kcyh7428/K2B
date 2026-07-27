@@ -5,6 +5,15 @@ description: Deep dive into external topics -- scan for new AI tools, techniques
 
 # K2B Research Agent
 
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
 On-demand research that scans externally for new tools, techniques, and ideas, and deep dives into specific topics or URLs. Supports multi-source deep research via NotebookLM.
 
 ## Commands
@@ -58,9 +67,9 @@ Detect URL type and handle accordingly:
    TRANSCRIPT=$(K2B_YT_REMOTE_HOST="${K2B_YT_REMOTE_HOST:-macmini}" K2B_YT_REMOTE_TIMEOUT="${K2B_YT_REMOTE_TIMEOUT:-30}" ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE")
    METHOD=$(grep "^METHOD:" "$ERRFILE" | tail -1 | awk '{print $2}')
    ```
-   This helper is the canonical path for Codex, Claude Code, and Telegram. It tries local captions (`no cookies -> cookie file -> browser cookies`), an explicit Mac Mini retry when configured, and Groq Whisper. If you are already on the Mini, set `K2B_YT_IS_MINI=1` to force local-only behavior, or `K2B_YT_REMOTE_FALLBACK=0` to disable SSH fallback entirely.
+   This helper is the canonical path for Codex sessions and registered host jobs. It tries local captions (`no cookies -> cookie file -> browser cookies`), an explicit Mac Mini retry when configured, and Groq Whisper. If you are already on the Mini, set `K2B_YT_IS_MINI=1` to force local-only behavior, or `K2B_YT_REMOTE_FALLBACK=0` to disable SSH fallback entirely.
    Expected methods are `captions-en`, `captions-zh`, `captions-en-remote`, `captions-zh-remote`, `groq-whisper`, `groq-whisper-remote`, and `failed`.
-   This `METHOD=` parsing pattern is for explicit shell use of `yt-transcript.sh`; the Claude hook path only consumes stdout, not stderr.
+   This `METHOD=` parsing pattern is for explicit shell use of `yt-transcript.sh`; the Codex hook path only consumes stdout, not stderr.
    If `yt-transcript.sh` exits non-zero or returns empty stdout, fall back to the transcript MCP only as a last resort and note why the shared helper failed.
 2. Analyze the full transcript
 3. Extract key concepts, techniques, tools mentioned
@@ -138,7 +147,7 @@ notebooklm source list --json
 
 #### Phase 3: Structured Research Queries
 
-Run 5-8 targeted questions against the notebook. NotebookLM (Gemini) does ALL the analysis -- zero Opus tokens for this phase.
+Run 5-8 targeted questions against the notebook. NotebookLM (Gemini) does ALL the analysis -- zero Codex reasoning for this phase.
 
 ```bash
 notebooklm ask "<question>"
@@ -180,7 +189,7 @@ notebooklm download infographic ~/Projects/K2B-Vault/Assets/images/<date>_resear
 
 #### Phase 5: Synthesis
 
-Opus reads all NotebookLM answers and writes a structured vault note. This is the ONLY phase that costs Opus tokens.
+Codex reads all NotebookLM answers and writes a structured vault note. This is the only phase that needs interactive K2B judgment.
 
 Output format: use the **Lens-Based Review Format** (see section below). The lens is usually implied by the topic Keith chose (for example, "multi-agent coding patterns" is Stack lens; "semiconductor earnings trends" is K2Bi lens), but multi-lens is common on cross-cutting topics and both lenses should run in full when they apply.
 
@@ -223,11 +232,11 @@ Deep research adds Gemini (via NotebookLM) as a third worker alongside Kimi:
 
 | Role | Who | What they do in deep research |
 |------|-----|-------------------------------|
-| Commander | Opus | Source gathering, question design, K2B framing, vault integration |
+| Commander | Codex | Source gathering, question design, K2B framing, vault integration |
 | Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers |
 | Worker 2 | Kimi K2.7 Code | Bulk extraction on individual long sources (if needed, per size gate) |
 
-Gemini handles the expensive multi-doc synthesis for free. Opus adds identity-aware judgment. Kimi handles individual source extraction when sources exceed the 10K char size gate.
+Gemini handles the expensive multi-doc synthesis. Codex adds identity-aware judgment. Kimi handles individual source extraction when sources exceed the 10K char size gate.
 
 ## Lens-Based Review Format
 
@@ -273,7 +282,7 @@ Each lens has a specific "already-have anchor" and a fixed set of "stake-a-claim
 
 #### Stack lens (Claude Code, agent harness, dev tool content)
 
-- **Already-have anchor**: K2B's harness -- Commander/Worker (Opus + Kimi K2.7 Code), adversarial review (Codex primary + Kimi fallback), 30+ specialized skills, hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
+- **Already-have anchor**: K2B's harness -- Commander/Worker (Codex + Kimi K2.7 Code), builder-family-clean adversarial review, specialized skills, Codex hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
 - **Check every claim against the anchor**: state explicitly "you already have this as X" or "new to you".
 - **Stake-a-claim options** (pick one): `Adopt` (rare -- whole-cloth migration justified) / `Retrofit` (steal specific ideas into existing stack, with file paths) / `Skip` / `Watch` (track, revisit later).
 
@@ -397,9 +406,9 @@ And add `notebooklm-notebook: "<notebook-id>"` to the frontmatter. Everything el
 
 ## `/research videos "<query>"` -- on-demand video discovery via NotebookLM
 
-Retires the old YouTube recommend agent. Finds videos matching a query, filters them via NotebookLM using Keith's baked framing + the tail of `wiki/context/video-preferences.md`, adds suitable ones to the K2B Watch playlist, drops per-video review notes, sends a Telegram notification.
+Retires the old YouTube recommend agent. Finds videos matching a query, filters them via NotebookLM using Keith's baked framing + the tail of `wiki/context/video-preferences.md`, adds suitable ones to the K2B Watch playlist, and drops per-video review notes. Interactive results surface in Codex or the dashboard; registered jobs write receipts and route failures to the Operations Console attention queue.
 
-**Prerequisites:** `notebooklm auth check --test` passes. `K2B_BOT_TOKEN` is set in env.
+**Prerequisites:** `notebooklm auth check --test` passes.
 
 ### Baked Keith framing (do not edit per query)
 
@@ -428,12 +437,12 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    COUNT=$(jq '.count' "$CANDIDATES" 2>/dev/null)
    if [[ -z "$COUNT" || ! "$COUNT" =~ ^[0-9]+$ ]]; then
      echo "FATAL: yt-search produced unparseable output in $CANDIDATES" >&2
-     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: yt-search output unparseable for: $QUERY -- aborting, see run log" || true
+     echo "ATTENTION: /research videos yt-search output unparseable for: $QUERY -- see run log" >&2
      exit 1
    fi
-   CANDIDATES_SCREENED="$COUNT"   # consumed by Step 10 zero-picks Telegram message
+   CANDIDATES_SCREENED="$COUNT"   # consumed by Step 10 result summary
    if (( COUNT == 0 )); then
-     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: no recent videos found for: $QUERY"
+     echo "No recent videos found for: $QUERY"
      exit 0
    fi
    ```
@@ -511,8 +520,7 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    FAIL_COUNT=$(grep -c '^fail '  "$READY_LOG" 2>/dev/null || true)
 
    if (( READY_COUNT < 5 )); then
-     ~/Projects/K2B/scripts/send-telegram.sh \
-       "K2B /research videos: only $READY_COUNT of $TOTAL_COUNT videos indexed for: $QUERY (reconcile=$RECONCILE_SOURCE) -- aborting, see run record"
+     echo "ATTENTION: only $READY_COUNT of $TOTAL_COUNT videos indexed for: $QUERY (reconcile=$RECONCILE_SOURCE) -- see run record" >&2
      # Still write a partial run record + delete the notebook before exiting
      notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
      exit 1
@@ -592,7 +600,7 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
 
    Capture the raw answer into a variable `NBLM_RAW`.
 
-6. **K2B-as-judge -- Claude reasoning inline (NOT a bash invocation).** This step is the Claude session running the skill applying judgment to the NBLM descriptions and writing `$SUITABLE_JSON`. Execute the following substeps explicitly:
+6. **K2B-as-judge -- Codex reasoning inline (NOT a bash invocation).** This step is the Codex session running the skill applying judgment to the NBLM descriptions and writing `$SUITABLE_JSON`. Execute the following substeps explicitly:
 
    a. **Parse the NBLM answer defensively** via the committed helper `scripts/parse-nblm.py`. The helper encapsulates three defensive passes that a prior incident (2026-04-15) hit in a single run, so this step no longer describes inline Python: (1) citation-marker stripping with a regex that handles comma lists AND dash ranges (`[44, 47]`, `[1-4]`, mixed `[13-16, 17-20]`; the old inline regex was comma-only and silently let dash markers survive into `json.loads`), (2) literal-newline normalization inside JSON string literals via a character walker that tracks `in_string` state (NBLM sometimes wraps long `what_it_covers` values with raw `\n` bytes which `json.loads` rejects as invalid control characters), and (3) rejoin-by-title against `$CANDIDATES` so every entry carries authoritative `real_url`, `real_title`, `real_channel`, `real_duration`, `real_published`, and `video_id` from yt-search instead of NBLM's synthetic `v=<name>` placeholders.
 
@@ -607,7 +615,7 @@ QUERY_SLUG=$(printf '%s' "$QUERY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9
    if ! python3 ~/Projects/K2B/scripts/parse-nblm.py "$NBLM_RAW_FILE" "$CANDIDATES" > "$PARSED_JSON" 2>"$NBLM_PARSE_ERR"; then
      # Parse failed after all defensive passes in parse-nblm.py. Write the raw
      # NBLM answer + the parse-nblm.py stderr to raw/research/ as the durable
-     # audit trail BEFORE aborting, then send Telegram, delete the notebook,
+     # audit trail BEFORE aborting, then surface attention, delete the notebook,
      # exit 1. The audit trail is most valuable on failure, so it is written
      # first and always.
      #
@@ -643,7 +651,7 @@ with open(path, "w") as f:
     )
 PYEOF
 
-     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: NBLM parse failed for: $QUERY -- see run record" || true
+     echo "ATTENTION: NBLM parse failed for: $QUERY -- see run record" >&2
      notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
      exit 1
    fi
@@ -651,9 +659,9 @@ PYEOF
 
    The helper outputs a JSON array where each entry carries both the NBLM content fields (`what_it_covers`, `style`, `level`, `concrete_examples`, `key_speakers_or_companies`) AND the candidate-sourced identity fields. Entries where title-rejoin failed appear with `identity_resolved: false`, `match_method: "failed"`, `video_id: ""`, and `real_published: "unknown"` -- **these are NOT dropped silently**; Step 6d must sort them into `rejects[]` with `reason: "identity resolution failed"`. `real_published` is pre-normalized by the helper to `YYYY-MM-DD` or the literal `"unknown"`, and the jq schema gate in Step 6g accepts both forms. The recency veto in Step 6d simply skips candidates with `"unknown"` (neither fresh nor stale).
 
-   b. **Load Keith's framing from the skill header, explicitly.** Read the block at the "### Baked Keith framing (do not edit per query)" callout above (lines 262-264 of this SKILL.md). The Claude session reads that block directly from the skill file -- single source of truth, explicit load, no implicit "scroll up and remember". Do NOT re-inline the framing text into the Step 5 NBLM prompt; Gemini does not get taste context.
+   b. **Load Keith's framing from the skill header, explicitly.** Read the block at the "### Baked Keith framing (do not edit per query)" callout above. The Codex session reads that block directly from the skill file -- single source of truth, explicit load, no implicit "scroll up and remember". Do NOT re-inline the framing text into the Step 5 NBLM prompt; Gemini does not get taste context.
 
-   c. **Load the preference tail AND reload active motivations** (point-in-time snapshots, both re-read fresh here because Step 6 runs in Claude reasoning, not in the Step 5 shell):
+   c. **Load the preference tail AND reload active motivations** (point-in-time snapshots, both re-read fresh here because Step 6 runs in Codex reasoning, not in the Step 5 shell):
    ```bash
    PREF_TAIL=$(tail -n 30 ~/Projects/K2B-Vault/wiki/context/video-preferences.md)
    MOTIVATIONS=""
@@ -662,7 +670,7 @@ PYEOF
    fi
    ```
 
-   `$MOTIVATIONS` here must be reloaded even though Step 5 also loaded it -- Step 5's bash scope does not survive into the Claude-side judgment. When non-empty, it represents Keith's current active projects (Building section) and self-added learning questions, available to K2B-the-judge for the match-bonus rule in (d). When empty (rollback toggle off or helper returns nothing), the judgment rubric below runs identically to the pre-feature flow. Step 5 and Step 6 must use the SAME motivations text for a given run; do not re-run the helper between them in a way that could produce different output (the helper is deterministic given unchanged vault state, so back-to-back reads are safe).
+   `$MOTIVATIONS` here must be reloaded even though Step 5 also loaded it -- Step 5's bash scope does not survive into the Codex-side judgment. When non-empty, it represents Keith's current active projects (Building section) and self-added learning questions, available to K2B-the-judge for the match-bonus rule in (d). When empty (rollback toggle off or helper returns nothing), the judgment rubric below runs identically to the pre-feature flow. Step 5 and Step 6 must use the SAME motivations text for a given run; do not re-run the helper between them in a way that could produce different output (the helper is deterministic given unchanged vault state, so back-to-back reads are safe).
 
    d. **Apply the judgment rubric** to each parsed NBLM entry:
    - A candidate is a **pick** only if K2B can name a *specific* reason Keith will finish it through one of these lenses: concrete-examples, 90-day-deployable, senior-TA-in-traditional-corporate.
@@ -711,15 +719,15 @@ PYEOF
    - `pick_id` format: `YYYY-MM-DD-<query-slug>-NN` (1-indexed, zero-padded NN, stable across the run).
    - `suggested_category` must be one of the names in `scripts/k2b-playlists.json` OR a new name clearly flagged by K2B for Keith's approval.
 
-   f. **Allocate the tmpfile, extend the trap, and write the JSON.** The Claude session running this skill executes these steps explicitly via its Bash and Write tools (the session IS the judge, so the "write" is not a subagent hand-off -- it is Claude directly emitting the validated object to the file):
+   f. **Allocate the tmpfile, extend the trap, and write the JSON.** The Codex session running this skill executes these steps explicitly via its shell and file-edit tools (the session IS the judge, so the write is not a subagent hand-off):
 
    ```bash
    SUITABLE_JSON=$(mktemp -t k2b-suitable.XXXXXX.json)
    trap 'rm -f "$CANDIDATES" "$READY_LOG" "$CANONICAL_JSON" "$NBLM_RAW_FILE" "$PARSED_JSON" "$NBLM_PARSE_ERR" "$SUITABLE_JSON"' EXIT
-   echo "$SUITABLE_JSON"   # print the path so Claude can reference it explicitly
+   echo "$SUITABLE_JSON"   # print the path so Codex can reference it explicitly
    ```
 
-   Then Claude writes the `{picks, rejects}` JSON object to that exact path via the Write tool (preferred for JSON correctness) OR via an atomic heredoc:
+   Then Codex writes the `{picks, rejects}` JSON object to that exact path through the supported file-edit surface or via an atomic heredoc:
    ```bash
    cat > "$SUITABLE_JSON" <<'JSON_EOF'
    { "picks": [...], "rejects": [...] }
@@ -733,7 +741,7 @@ PYEOF
    jq empty "$SUITABLE_JSON" || { echo "FATAL: $SUITABLE_JSON is not valid JSON" >&2; exit 1; }
    ```
 
-   g. **Schema validation gate (mandatory before Step 7).** Validates BOTH `picks[]` and `rejects[]` object shapes. Identity fields are checked with `type == "string"` AND `length > 0` so an empty-string `video_id` cannot slip past a bare `has(...)` check and hit `yt-playlist-add.sh` with a blank ID. On failure, log the raw NBLM answer to the run record, Telegram abort, delete notebook, exit 1.
+   g. **Schema validation gate (mandatory before Step 7).** Validates BOTH `picks[]` and `rejects[]` object shapes. Identity fields are checked with `type == "string"` AND `length > 0` so an empty-string `video_id` cannot slip past a bare `has(...)` check and hit `yt-playlist-add.sh` with a blank ID. On failure, log the raw NBLM answer to the run record, surface an attention item, delete notebook, exit 1.
    ```bash
    jq -e '
      (type == "object") and
@@ -774,7 +782,7 @@ raw   = os.environ.get("NBLM_RAW") or "(NBLM_RAW not captured)"
 with open(path, "w") as f:
     f.write(f'---\ntype: research-run\nstatus: schema-validation-failed\nquery: "{query_yaml}"\n---\n\n# Schema validation failed\n\n## Raw NBLM answer\n\n```\n{raw}\n```\n')
 PYEOF
-     ~/Projects/K2B/scripts/send-telegram.sh "K2B /research videos: schema validation failed for: $QUERY -- see run record"
+     echo "ATTENTION: schema validation failed for: $QUERY -- see run record" >&2
      notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
      exit 1
    }
@@ -911,7 +919,7 @@ PYEOF
          # synthetic v=<name> URLs instead of the real ones. If url keys don't match picks' real_url,
          # every Step 8 lookup returns empty and the feature silently degrades to thin for all picks
          # while DEEPEXTRACT_STATUS still reports "ok" (because parse + schema both passed). Detect
-         # this distinct mode so the run record + Telegram diagnostics show what happened.
+         # this distinct mode so the run record + attention diagnostics show what happened.
          URL_MATCH_COUNT=$(jq -r --slurpfile picks "$SUITABLE_JSON" '
            [.[] | .url] as $detail_urls
            | $picks[0].picks
@@ -968,7 +976,7 @@ PYEOF
    ```
    K2B-Vault/review/videos_$(date +%F)_${QUERY_SLUG}.md
    ```
-   Use an atomic write-then-rename so `/review` and Telegram feedback paths can never observe a half-written file:
+   Use an atomic write-then-rename so `/review` and dashboard feedback paths can never observe a half-written file:
    ```bash
    RUN_NOTE="$K2B_VAULT/review/videos_$(date +%F)_${QUERY_SLUG}.md"
    RUN_NOTE_TMP="$K2B_VAULT/review/.videos_$(date +%F)_${QUERY_SLUG}.md.tmp.$$"
@@ -1028,7 +1036,7 @@ PYEOF
    ```
    ````
 
-   **Rich template** (when `$RENDER_MODE == "rich"`). Adds prose sections above the YAML fence and a `details:` subkey inside the YAML; existing fields unchanged so `/review` and the Telegram feedback parse contract still holds:
+   **Rich template** (when `$RENDER_MODE == "rich"`). Adds prose sections above the YAML fence and a `details:` subkey inside the YAML; existing fields unchanged so `/review` and the dashboard feedback parse contract still holds:
 
    ````markdown
    ### N. <real_title>
@@ -1075,7 +1083,7 @@ PYEOF
    ```
    ````
 
-   **YAML safety inside `details:`.** Only `watch_priority` lives in YAML, and ONLY when it matches one of the three known enum values (`skim_5min`, `watch_30min`, `watch_full`). NBLM-returned strings (`named_entities.*`, `summary_paragraph`, `skim_pitch`, individual `key_claims[].claim` text) all live in the **prose** above the YAML fence -- never in the YAML -- because they routinely contain colons, double-quotes, brackets, and literal newlines that break PyYAML parsing in `/review` and the Telegram feedback path. Validate `watch_priority` against the enum before writing; on miss, omit the `details:` subkey entirely and treat the pick as thin even though prose details are present. The YAML stays the sole machine-parsed surface; the prose carries the human-readable depth.
+   **YAML safety inside `details:`.** Only `watch_priority` lives in YAML, and ONLY when it matches one of the three known enum values (`skim_5min`, `watch_30min`, `watch_full`). NBLM-returned strings (`named_entities.*`, `summary_paragraph`, `skim_pitch`, individual `key_claims[].claim` text) all live in the **prose** above the YAML fence -- never in the YAML -- because they routinely contain colons, double-quotes, brackets, and literal newlines that break PyYAML parsing in `/review` and the dashboard feedback path. Validate `watch_priority` against the enum before writing; on miss, omit the `details:` subkey entirely and treat the pick as thin even though prose details are present. The YAML stays the sole machine-parsed surface; the prose carries the human-readable depth.
 
    **Full template skeleton:**
 
@@ -1107,11 +1115,11 @@ PYEOF
    - ... one bullet per rejected video, no exceptions
    ````
 
-   The `real_url`, `real_title`, `real_channel`, and `real_published` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the Telegram feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean. `real_published` is sourced from yt-search, never NBLM.
+   The `real_url`, `real_title`, `real_channel`, and `real_published` fields are duplicated from `$SUITABLE_JSON` into the YAML block so `/review` and the dashboard feedback path can match picks and distill preference lines without parsing the prose above the fence. This keeps the "YAML block is the sole parse surface" contract clean. `real_published` is sourced from yt-search, never NBLM.
 
    **Rejects MUST NOT be compressed.** Every reject from `$SUITABLE_JSON.rejects[]` gets its own bullet with its own one-line reason. Do NOT lump multiple rejects into meta-summaries like "15 Chinese drama videos · various channels -- entertainment content" even when many rejects share a category. The per-video reason is what `/review` and `/observe` learn from; lumping silently destroys that signal. `len(reject bullets in note) == len($SUITABLE_JSON.rejects[])`. If 21 videos were rejected, write 21 bullets.
 
-   **Parsing contract.** The `/review` handler and the Telegram feedback path parse ONLY the fenced ` ```yaml ... ``` ` block after each `### N. ` heading (via PyYAML). The prose above the YAML fence is for Keith to read, never parsed. Keith edits only `decision:`, `category_override:`, and `notes:` -- everything else is K2B-managed state. The new `details:` subkey under YAML is K2B-managed too.
+   **Parsing contract.** The `/review` handler and the dashboard feedback path parse ONLY the fenced ` ```yaml ... ``` ` block after each `### N. ` heading (via PyYAML). The prose above the YAML fence is for Keith to read, never parsed. Keith edits only `decision:`, `category_override:`, and `notes:` -- everything else is K2B-managed state. The new `details:` subkey under YAML is K2B-managed too.
 
    **N=0 still writes the note.** The note exists with an empty picks section and the full rejects list. Audit trail is mandatory even when nothing cleared the bar.
 
@@ -1124,11 +1132,11 @@ PYEOF
    - **Pick deep-extract section (Step 6.5 output).** When `$DEEPEXTRACT_STATUS == "ok"` or `"partial"`, append the entire `$PICK_DETAILS_JSON` content as a fenced JSON block under a `## Pick deep-extract (NBLM)` heading. When status is `schema-failed`, `parse-failed`, or `ask-failed`, append the raw NBLM response from `$PICK_DETAILS_RAW_FILE` AND the `$PICK_DETAILS_ERR` log under `## Pick deep-extract (failed)` so the failure is diagnosable later. When status is `skipped-no-picks`, write a one-line note "No picks, deep-extract skipped".
    - Ready/fail log from Step 3.
    - Per-video playlist-add results from Step 7.
-   - Any Telegram failures from Step 10.
+   - Any Operations Console attention events from Step 10.
 
    This is the durable audit trail. It persists after `/review` moves the run note out of `review/`.
 
-10. **Send Telegram notification.** Count picks from `.picks[]` (NOT `READY_COUNT`). Zero picks gets a dedicated message pointing Keith at the run note.
+10. **Surface the result.** Count picks from `.picks[]` (NOT `READY_COUNT`). Zero picks gets a dedicated summary pointing Keith at the run note.
     ```bash
     PICKS_COUNT=$(jq '.picks | length' "$SUITABLE_JSON")
 
@@ -1140,12 +1148,9 @@ PYEOF
       MSG+=$(jq -r '.picks[] | "- \(.real_title)\n  why: \(.why_k2b)\n  category: \(.suggested_category)\n  \(.real_url)\n"' "$SUITABLE_JSON")
     fi
 
-    if ! ~/Projects/K2B/scripts/send-telegram.sh "$MSG"; then
-      echo "WARN: telegram notification failed for query: $QUERY" >&2
-      # Continue: notebook delete + run record still need to happen.
-    fi
+    printf '%s\n' "$MSG"
     ```
-    `send-telegram.sh` handles the 4096-byte chunking internally; callers do NOT pre-batch. Exit-code check is mandatory.
+    Interactive runs surface this summary in Codex or the dashboard. Registered jobs include it in the receipt. Failures must also create an Operations Console attention item.
 
 11. **Delete the notebook** (fresh per run, no accumulation):
     ```bash
@@ -1154,33 +1159,29 @@ PYEOF
 
 12. **Append to skill-usage-log** as usual.
 
-### Scheduling (not a skill concern)
+### Scheduling
 
-Wrap with `/schedule`:
-```
-/schedule add "research-videos-ai-recruiting" weekly "/research videos \"AI recruiting tools for large enterprises\""
-```
-The scheduler runs the command on the Mac Mini weekly. Output lands in the vault via Syncthing. Telegram notification fires from the Mac Mini using `send-telegram.sh`.
+Register a deterministic research-videos entrypoint through `/schedule`. The job must declare its owner host, write a receipt with query, candidate/pick counts, run-note path, and exit status, and route failures to the Operations Console attention queue. Never schedule an interactive `/research` prompt.
 
 ### Playlist ID resolution
 
-All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the canonical name→ID map. Lookup via `jq -r '."<name>"' ~/Projects/K2B/scripts/k2b-playlists.json`. Never hardcode an ID in this skill, `k2b-review/SKILL.md`, or CLAUDE.md. If K2B suggests a category name not present in the JSON (K2B-invented category), the run note still writes the pick but `/review` leaves `playlist_action: pending` with a "new category suggested" note until Keith approves creating the playlist.
+All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the canonical name→ID map. Lookup via `jq -r '."<name>"' ~/Projects/K2B/scripts/k2b-playlists.json`. Never hardcode an ID in this skill, `k2b-review/SKILL.md`, or `AGENTS.md`. If K2B suggests a category name not present in the JSON (K2B-invented category), the run note still writes the pick but `/review` leaves `playlist_action: pending` with a "new category suggested" note until Keith approves creating the playlist.
 
 ### Failure modes
 
 - **NotebookLM ask times out or errors (Step 5):** abort, log to run record, notify Keith "research timed out on: <query>", delete the notebook.
 - **NBLM JSON parse fails twice (Step 6a, parse-nblm.py):** log raw answer to run record, notify Keith "NBLM descriptions weren't parseable, see raw/research/", abort downstream steps.
-- **K2B schema validation fails on `$SUITABLE_JSON` (Step 6g):** Write partial run record with raw NBLM answer to `raw/research/` first, then Telegram abort, delete notebook, exit 1. This is the Step 6g gate.
+- **K2B schema validation fails on `$SUITABLE_JSON` (Step 6g):** Write partial run record with raw NBLM answer to `raw/research/` first, then surface an Operations Console attention event, delete notebook, exit 1. This is the Step 6g gate.
 - **Pick deep-extract fails (Step 6.5):** ENRICHMENT FAILURE, NOT GATING. Step 7 onward continues. Status recorded in run note frontmatter (`deepextract-status:`) and run record. Per-pick fallback to thin template -- Keith still gets the run note, just without the rich detail for affected picks. The notebook is NOT deleted on this failure (Step 11 handles deletion at end of run regardless).
-- **Playlist add fails for a pick:** log per-video in run record, continue with the others, include the failure count in the Telegram summary.
-- **Zero picks:** still write the run note + run record + Telegram message ("nothing worth watching this week"), still delete the notebook. N=0 is normal, not an error. Step 6.5 is skipped (`deepextract-status: skipped-no-picks`).
+- **Playlist add fails for a pick:** log per-video in run record, continue with the others, include the failure count in the receipt/result summary.
+- **Zero picks:** still write the run note + run record + result summary ("nothing worth watching this week"), still delete the notebook. N=0 is normal, not an error. Step 6.5 is skipped (`deepextract-status: skipped-no-picks`).
 
 ### What NOT to do
 
 - Do NOT cache NotebookLM notebooks across runs. Fresh per run.
 - Do NOT dedupe across runs via a URL log. The preference tail handles this naturally once Keith rates videos.
-- Do NOT ask Keith to confirm each add. K2B already decided in Step 6. Keith's feedback comes after watching via Telegram reaction or `/review`.
-- Do NOT write to `wiki/context/video-preferences.md` from `/research videos`. Only `/review` and the Telegram feedback path append there, and both do so via atomic write-then-rename.
+- Do NOT ask Keith to confirm each add. K2B already decided in Step 6. Keith's feedback comes after watching via dashboard feedback or `/review`.
+- Do NOT write to `wiki/context/video-preferences.md` from `/research videos`. Only `/review` and the dashboard feedback path append there, and both do so via atomic write-then-rename.
 - Do NOT re-inline the baked Keith framing into the Step 5 NBLM prompt. Gemini must not see Keith's taste. Only K2B (Step 6) sees framing + preference tail.
 - Do NOT hardcode playlist IDs. Always `jq`-lookup from `scripts/k2b-playlists.json`.
 - Do NOT pad picks to 5 when fewer clearly deserve it. Zero is a valid outcome.
@@ -1261,9 +1262,9 @@ up: "[[Home]]"
 
 {notebooklm ask output, verbatim}
 
-## K2B framing (optional, Opus-added)
+## K2B framing (optional, Codex-added)
 
-{1-3 sentences if Opus has an identity-aware take; otherwise omit this section.}
+{1-3 sentences if Codex has an identity-aware take; otherwise omit this section.}
 ```
 
 #### `/research notebook add-source <name> <url>`
@@ -1402,7 +1403,7 @@ PY
 fi
 
 # ---- Phase C: review (if candidates remain) ---------------------------------
-# [Claude reasoning step, not bash.] Show Keith numbered candidates with
+# [Codex reasoning step, not bash.] Show Keith numbered candidates with
 # title + URL + domain tag. Parse selection in Python per the grammar below.
 # On double-ambiguous input, set STATUS="skipped"; REASON="unparseable-selection".
 # On "none", set STATUS="skipped-by-user"; REASON="keith-selected-none".
@@ -1572,23 +1573,23 @@ The `notebooklm` skill at `~/.agents/skills/notebooklm/` has full command docume
 
 ## Kimi extraction offload (added 2026-04-10)
 
-**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that burns Opus tokens on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.7 Code and keep Opus focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
+**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that consumes interactive context on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.7 Code and keep Codex focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
 
 **Contract**:
 - Kimi produces a compressed, citation-backed digest: `{tldr, source_type, key_claims[], entities[], methodology_notes[], open_questions[]}`.
 - Every `key_claim` carries a verbatim `source_span`, a `confidence` rating, and an `ambiguity` note.
-- Opus reads the digest (not the raw source) and adds the K2B applicability section before writing the `raw/research/` note.
-- Fail-open: if Kimi is unavailable or returns invalid JSON, fall back to Opus-direct extraction on the raw source with a visible warning. Research notes are not durable commitment memory, so fail-open is safe.
+- Codex reads the digest (not the raw source) and adds the K2B applicability section before writing the `raw/research/` note.
+- Fail-open: if Kimi is unavailable or returns invalid JSON, fall back to Codex-direct extraction on the raw source with a visible warning. Research notes are not durable commitment memory, so fail-open is safe.
 
 **When to use (size gate)**:
 - URL deep-dive mode (`/research <url>`) when the fetched source exceeds **~10,000 chars**.
 - Long YouTube transcripts, full papers, READMEs for large repos, long-form articles.
-- SKIP for short topic-scan findings, landing pages, or anything under 10K chars. On short sources, Kimi's structured digest is typically LARGER than the original, so there are no token savings (this was measured empirically on 2026-04-10 against 3-9KB K2B research notes where the digest ran 1.0x-2.8x the input size). In that range, Opus-direct is cheaper AND faster.
-- Rule of thumb: if you would only read the source once to extract, Opus-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, Kimi-extract wins.
+- SKIP for short topic-scan findings, landing pages, or anything under 10K chars. On short sources, Kimi's structured digest is typically LARGER than the original, so there are no context savings (this was measured empirically on 2026-04-10 against 3-9KB K2B research notes where the digest ran 1.0x-2.8x the input size). In that range, Codex-direct is cheaper and faster.
+- Rule of thumb: if you would only read the source once to extract, Codex-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, Kimi-extract wins.
 
 **Workflow**:
 1. Fetch the source content as usual (`scripts/yt-transcript.sh` for YouTube, WebFetch for articles, Read for GitHub README, etc.).
-2. If fetched content is under 10K chars, skip the offload entirely and extract on Opus. See size gate above.
+2. If fetched content is under 10K chars, skip the offload entirely and extract in Codex. See size gate above.
 3. Otherwise, write the fetched content to a temp file, e.g. `/tmp/k2b-research-input-$(date +%s).txt`, remembering the exact filename for the next step.
 4. Call the extractor with the SAME filename from step 3:
    ```bash
@@ -1598,18 +1599,18 @@ The `notebooklm` skill at `~/.agents/skills/notebooklm/` has full command docume
      "<source-title>"
    ```
 5. Parse the returned JSON.
-6. Spot-check 3 random `source_span` values against the fetched content. A simple substring match after collapsing whitespace is sufficient (`python3 -c 'import json,re,sys; ...'` or just visual). If any spot-check fails, fall back to Opus-direct extraction on the full source and append a manual-override entry to `wiki/context/minimax-jobs.jsonl`.
-7. Write the K2B applicability section (this is Opus's job, NOT Kimi's) using the digest as input plus Keith's framing (SJM/Signhub/TalentSignals positioning, content angle, his role).
-8. Compose the final `raw/research/` note: frontmatter, Source, Key Takeaways (from digest), K2B Applicability (from Opus), Implementation Ideas.
+6. Spot-check 3 random `source_span` values against the fetched content. A simple substring match after collapsing whitespace is sufficient (`python3 -c 'import json,re,sys; ...'` or just visual). If any spot-check fails, fall back to Codex-direct extraction on the full source and append a manual-override entry to `wiki/context/minimax-jobs.jsonl`.
+7. Write the K2B applicability section (this is Codex's job, NOT Kimi's) using the digest as input plus Keith's framing (SJM/Signhub/TalentSignals positioning, content angle, his role).
+8. Compose the final `raw/research/` note: frontmatter, Source, Key Takeaways (from digest), K2B Applicability (from Codex), Implementation Ideas.
 9. Delete the temp file.
 10. Trigger k2b-compile on the new note as usual.
 
-**Fallback behavior**: if the extractor script exits non-zero (network error, invalid JSON, empty content), do NOT retry the script. Instead read the raw source content directly and extract in Opus, mentioning "Kimi extractor unavailable, using Opus-direct path" in the session. The `minimax-jobs.jsonl` log already captured the failure via the script's own logging, so no additional action is needed.
+**Fallback behavior**: if the extractor script exits non-zero (network error, invalid JSON, empty content), do NOT retry the script. Instead read the raw source content directly and extract in Codex, mentioning "Kimi extractor unavailable, using Codex-direct path" in the session. The `minimax-jobs.jsonl` log already captured the failure via the script's own logging, so no additional action is needed.
 
 **Observability**: every invocation appends a line to `wiki/context/minimax-jobs.jsonl` via the `log_job_invocation` helper in `scripts/minimax-common.sh`. Parse failure rate, cost, and duration are surfaced by `/improve`.
 
 **Revert criteria** (per project_minimax-offload.md):
-- If parse failure rate exceeds 5% over two weeks, revert to the Opus-direct path.
+- If parse failure rate exceeds 5% over two weeks, revert to the Codex-direct path.
 - If a sample audit of 10 outputs shows semantic drift (dropped claims, invented content, flattened voice) in 2+ cases, revert.
 - If Keith manually overrides the extractor output more than twice in the first two weeks, revert.
 

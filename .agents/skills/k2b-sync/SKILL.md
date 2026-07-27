@@ -1,9 +1,18 @@
 ---
 name: k2b-sync
-description: Sync K2B project files to the Mac Mini server -- detects what changed, syncs skills/code/scripts, rebuilds if needed. Use when Keith says /sync, "sync to mini", "deploy to mini", "push to mini", or after K2B modifies project files (skills, CLAUDE.md, README.md, K2B_ARCHITECTURE.md, .mcp.json, DEVLOG.md, k2b-remote code, k2b-dashboard, scripts).
+description: Sync K2B project files to the Mac Mini server -- detects what changed, syncs skills/code/scripts, rebuilds if needed. Use when Keith says /sync, "sync to mini", "deploy to mini", or "push to mini".
 ---
 
 # K2B Sync to Mac Mini
+
+## Live K2B Authority
+
+- `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
+- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Capture enters through the dashboard or a vault drop, never Telegram.
+- Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
 Push K2B project file changes from MacBook to the always-on Mac Mini server.
 
@@ -13,7 +22,7 @@ Push K2B project file changes from MacBook to the always-on Mac Mini server.
 
 **Proactively prompt Keith** at the end of any session where K2B modified files in:
 - `.agents/skills/` (any skill SKILL.md)
-- `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, or `DEVLOG.md` (top-level docs synced alongside skills)
+- `AGENTS.md`, `.codex/hooks.json`, `README.md`, `.mcp.json`, or `DEVLOG.md` (live instruction/config surfaces synced alongside skills)
 - `k2b-remote/` (bot code)
 - `k2b-dashboard/` (dashboard app -- full-stack React/Vite + Express, requires build + pm2 restart on Mini)
 - `scripts/` (utility scripts)
@@ -25,7 +34,7 @@ Do NOT auto-sync without Keith's confirmation. Always ask first.
 ## Commands
 
 - `/sync` -- auto-detect what changed and sync it
-- `/sync skills` -- sync only skills + top-level docs (CLAUDE.md, README.md, K2B_ARCHITECTURE.md, .mcp.json, DEVLOG.md)
+- `/sync skills` -- sync only `.agents/skills/` + live instruction/config surfaces (`AGENTS.md`, `.codex/hooks.json`, `README.md`, `.mcp.json`, `DEVLOG.md`)
 - `/sync code` -- sync only k2b-remote code (+ build + restart pm2)
 - `/sync dashboard` -- sync only k2b-dashboard (+ npm run build + pm2 restart k2b-dashboard)
 - `/sync scripts` -- sync only scripts/
@@ -179,7 +188,7 @@ If the sync **fails**, do NOT delete any entries. They remain in place so the ne
 
 **Why the mailbox design is race-free:** producers (`/ship --defer`) write each entry as a unique filename via `os.replace()` (atomic rename). They never read or delete. The consumer (`/sync`) deletes only filenames it read at the start of its run -- so any concurrent producer's new filename is simply not in the delete list and survives untouched. No compare-and-swap, no locks, no TOCTOU. Correct on POSIX under concurrent `/ship` and `/sync` invocations.
 
-This mechanism is the durable recovery path: a fresh Claude Code session can discover that the Mini is stale and act on it without needing access to a previous session's conversation.
+This mechanism is the durable recovery path: a fresh Codex session can discover that the Mini is stale and act on it without needing access to a previous session's conversation.
 
 ### 1. Detect Changes
 
@@ -189,10 +198,13 @@ This mechanism is the durable recovery path: a fresh Claude Code session can dis
 ```bash
 # Skills + config
 rsync -avn --delete \
-  ~/Projects/K2B/.agents/skills/ macmini:~/Projects/K2B/.agents/skills/ 2>&1 | grep -E "^(sending|deleting|\.claude)"
+  ~/Projects/K2B/.agents/skills/ macmini:~/Projects/K2B/.agents/skills/ 2>&1 | grep -E "^(sending|deleting|\.agents)"
 
-rsync -avn ~/Projects/K2B/CLAUDE.md ~/Projects/K2B/README.md ~/Projects/K2B/K2B_ARCHITECTURE.md ~/Projects/K2B/.mcp.json ~/Projects/K2B/DEVLOG.md \
+rsync -avn ~/Projects/K2B/AGENTS.md ~/Projects/K2B/README.md ~/Projects/K2B/.mcp.json ~/Projects/K2B/DEVLOG.md \
   macmini:~/Projects/K2B/ 2>&1 | grep -v "^$"
+
+rsync -avn ~/Projects/K2B/.codex/hooks.json \
+  macmini:~/Projects/K2B/.codex/ 2>&1 | grep -v "^$"
 
 # Scripts
 rsync -avn ~/Projects/K2B/scripts/ macmini:~/Projects/K2B/scripts/ 2>&1 | grep -E "^(sending|deleting|scripts)"
@@ -216,7 +228,7 @@ Group changed files into categories:
 
 | Category | Matched Paths | Needs Build? |
 |----------|--------------|-------------|
-| skills | `.agents/skills/`, `CLAUDE.md`, `README.md`, `K2B_ARCHITECTURE.md`, `.mcp.json`, `DEVLOG.md` | No |
+| skills | `.agents/skills/`, `AGENTS.md`, `.codex/hooks.json`, `README.md`, `.mcp.json`, `DEVLOG.md` | No |
 | code | `k2b-remote/` | Yes -- npm run build + pm2 restart k2b-remote |
 | dashboard | `k2b-dashboard/` | Yes -- npm run build + pm2 restart k2b-dashboard |
 | scripts | `scripts/` | No |
@@ -258,8 +270,9 @@ After sync completes, verify:
 
 **For skills:**
 ```bash
-ssh macmini "head -3 ~/Projects/K2B/CLAUDE.md"
+ssh macmini "head -3 ~/Projects/K2B/AGENTS.md"
 ssh macmini "ls ~/Projects/K2B/.agents/skills/ | wc -l"
+ssh macmini "cd ~/Projects/K2B && bash scripts/verify-codex-authority.sh"
 ```
 
 **For code (k2b-remote):**
