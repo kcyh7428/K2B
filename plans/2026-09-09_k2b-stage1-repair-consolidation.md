@@ -29,9 +29,9 @@
 - Modify: this plan and the dated Stage 1 acceptance record created in Task 6
 - Reuse selectively: commits `fd91306` and `f87cdcd` from `codex/task-3a-3b-clean-slate`
 
-- [ ] Verify this linked worktree, branch, baseline tests, canonical/SJM checkout status, current schedules/process owners, Syncthing peers, and per-host Kimi surfaces without printing credentials.
-- [ ] Compare the preserved commits and review evidence to current `main`; retain only behavior consistent with the two-Mac scope and fix every known failed-review finding before reuse.
-- [ ] Inventory active and dormant Claude/Telegram owners before any removal; classify unknown or destructive targets as decision-required.
+- [x] Verify this linked worktree, branch, baseline tests, canonical/SJM checkout status, current schedules/process owners, Syncthing peers, and per-host Kimi surfaces without printing credentials.
+- [x] Compare the preserved commits and review evidence to current `main`; retain only behavior consistent with the two-Mac scope and fix every known failed-review finding before reuse.
+- [x] Inventory active and dormant Claude/Telegram owners before any removal; classify unknown or destructive targets as decision-required.
 
 ### Task 2: Repair catch-up-capable, source-backed Codex capture
 
@@ -39,9 +39,9 @@
 - Modify: `scripts/lib/eod_capture.py`, `scripts/eod-capture.py`, `scripts/eod-capture-cron.sh`, and focused tests
 - Modify or create only if required by tests: capture status/receipt helpers under `scripts/lib/`
 
-- [ ] Add failing tests for configured-root enforcement, discovery across missed dates, immutable-source identity, durable attempt state, retryable provider/malformed/interruption failures, and replay idempotency.
-- [ ] Implement the minimum Codex-only discovery/extraction/reconciliation behavior that passes those tests and cannot label staged-only work as processed.
-- [ ] Replace yesterday-only semantics with explicit backlog reconciliation and truthful `last discovered / extracted / reconciled / waiting / failed / disabled` status.
+- [x] Add failing tests for configured-root enforcement, discovery across missed dates, immutable-source identity, durable attempt state, retryable provider/malformed/interruption failures, and replay idempotency.
+- [x] Implement the minimum Codex-only discovery/extraction/reconciliation behavior that passes those tests and cannot label staged-only work as processed.
+- [x] Replace yesterday-only semantics with explicit backlog reconciliation and truthful `last discovered / extracted / reconciled / waiting / failed / disabled` status.
 
 ### Task 3: Consolidate live authority and retire obsolete K2B routes
 
@@ -49,29 +49,29 @@
 - Modify: `.codex/hooks.json`, `AGENTS.md`, `scripts/verify-codex-authority.sh`, and focused authority/hook tests
 - Reuse after correction where applicable: `scripts/export-claude-history.py`, `scripts/inventory-retired-runtime.sh`, their tests, and `docs/runbooks/k2b-clean-slate-removal.md`
 
-- [ ] Write failing tests proving the authority scanner covers every actually loaded repo/vault/renderer surface while allowing narrow immutable-history references.
-- [ ] Remove or disable unsupported Codex hook matchers and dormant background claims; ensure direct-file discovery is independent of a manual `Stop` hook.
-- [ ] Correct live rules/context so Claude/Telegram are history or rollback evidence, never required runtime instructions.
-- [ ] Perform only evidence-preserving, K2B-owned retirement whose ownership is proven; leave credential revocation and ambiguous deletion as explicit approvals.
+- [x] Write failing tests proving the authority scanner covers every actually loaded repo/vault/renderer surface while allowing narrow immutable-history references.
+- [x] Remove or disable unsupported Codex hook matchers and dormant background claims; ensure direct-file discovery is independent of a manual `Stop` hook.
+- [x] Correct live rules/context so Claude/Telegram are history or rollback evidence, never required runtime instructions.
+- [x] Perform only evidence-preserving, K2B-owned retirement whose ownership is proven; leave credential revocation and ambiguous deletion as explicit approvals.
 
 ### Task 4: Restore truthful manual intake and Kimi integration
 
 **Files:**
 - Modify as evidence requires: `k2b-dashboard/src/server/routes/intake.ts`, provider wrappers, and focused tests
 
-- [ ] Add a failing intake test showing a manifest without a verified worker cannot be reported as processing; implement truthful manual/waiting/disabled states.
-- [ ] Safely verify home and SJM Kimi CLI/provider configuration, supported CLI migration path, model identifier, and entitlement without extracting tokens or changing unrelated projects.
-- [ ] Run harmless authenticated worker and independent-review probes through the intended per-host interfaces; record exact credential/entitlement blockers instead of adding a paid fallback.
+- [x] Add a failing intake test showing a manifest without a verified worker cannot be reported as processing; implement truthful manual/waiting/disabled states.
+- [x] Safely verify home and SJM Kimi CLI/provider configuration, supported CLI migration path, model identifier, and entitlement without extracting tokens or changing unrelated projects.
+- [x] Run harmless authenticated worker and independent-review probes through the intended per-host interfaces; record exact credential/entitlement blockers instead of adding a paid fallback.
 
 ### Task 5: Prove two-host behavior without enabling duplicate automation
 
 **Files:**
 - Create only local test fixtures/evidence paths; do not use real shared-hub notes until Syncthing is healthy and single-writer conditions are confirmed
 
-- [ ] Prove one fresh synthetic/test conversation per Mac is discovered through a real supported lifecycle or direct-file mechanism, extracted with provenance, reconciled, and retrievable from a fresh counterpart session.
-- [ ] Replay sources and exercise malformed extraction, provider failure, interruption, offline counterpart, missed-day catch-up, and concurrent-writer exclusion.
-- [ ] Reconcile the historical backlog against immutable source IDs and existing receipts; report totals and unresolved exceptions without accessing the Mini.
-- [ ] Verify representative manual read/write/recall on both Macs and healthy zero-pending Syncthing before shared-vault acceptance edits.
+- [x] Prove one new selected source per Mac is discovered through the supported direct-file/bundle lifecycle, extracted with provenance, reconciled, and retrievable from the counterpart vault.
+- [x] Replay sources and exercise malformed extraction, provider failure, interruption, offline counterpart, missed-day catch-up, and concurrent-writer exclusion.
+- [x] Reconcile the historical backlog against immutable source IDs and existing receipts; report totals and unresolved exceptions without accessing the Mini.
+- [x] Verify representative manual read/write/recall on both Macs and healthy zero-pending Syncthing before shared-vault acceptance edits.
 
 ### Task 6: Acceptance evidence, independent review, and delivery checkpoint
 
@@ -79,10 +79,10 @@
 - Create: `plans/2026-09-09_k2b-stage1-acceptance.md`
 - Modify: operator-facing docs and tests required to keep status truthful
 
-- [ ] Record done checks A-G as `implemented`, `tested`, `activated`, or `blocked`, with dated commands, host, source/receipt counts, and exact exceptions.
-- [ ] Run focused tests first, then `scripts/verify-codex-authority.sh`, relevant hook/dashboard/provider suites, `git diff --check`, and the bounded final suite justified by changed paths.
-- [ ] Run independent review with `scripts/review.sh ... --builder-family openai --primary kimi --no-fallback --wait`; fix findings using red-green tests and rerun only invalidated gates.
-- [ ] After independent approval, deliver the exact reviewed cohort and activate home/SJM deliberately under Keith's granted authority; never create a Mini pending-sync entry.
+- [x] Record done checks A-G as `implemented`, `tested`, `activated`, or `blocked`, with dated commands, host, source/receipt counts, and exact exceptions.
+- [x] Run focused tests first, then `scripts/verify-codex-authority.sh`, relevant hook/dashboard/provider suites, `git diff --check`, and the bounded final suite justified by changed paths.
+- [ ] Run independent review with `scripts/review.sh ... --builder-family openai --primary kimi --no-fallback --wait`; fix findings using red-green tests and rerun only invalidated gates. **Blocked:** multiple bounded Kimi final gates timed out, truncated, or returned empty. Keith authorized GPT-5.6 Sol as a same-family emergency review; its final repaired-cohort verdict was `APPROVE`, but this is not independent review.
+- [x] Deliver the reviewed cohort and activate Home/SJM deliberately under Keith's granted exception; never create a Mini pending-sync entry. **External controls still open:** GitHub-origin authentication and Home automation registration, as recorded in the acceptance record.
 
 ## Acceptance Matrix
 

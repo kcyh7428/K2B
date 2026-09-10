@@ -14,7 +14,11 @@
 
 **Verification:** `804 passed, 5 skipped, 5 subtests passed`; all 49 remaining shell integration suites passed; all 26 live K2B skills passed validation; dashboard intake tests 4/4; dashboard typecheck and production build passed; `npm audit --omit=dev` reported zero vulnerabilities; Codex authority and diff checks passed.
 
-**Activation:** Delivery is limited to the Home and SJM MacBook Pro checkouts. The reviewed commit, per-host activation receipts, live discovery/Kimi/scoped-source/Syncthing/recall canaries, and final acceptance state are recorded after the delivery gate. No Mac Mini deployment or pending-sync obligation is permitted.
+**Activation:** Commits `59ab8a8` and `4db14d5` are active on Home and SJM. Authority, deterministic discovery, harmless authenticated Kimi, Syncthing, reciprocal source-backed recall, and replay-idempotence canaries passed. Home is the only vault writer. Post-canary discovery reports Home 64 discovered / 63 waiting / 1 reconciled / 0 failed and SJM 13 / 12 / 1 / 0. The SJM daily 23:30 HKT source-only discovery automation is active and failure-only; the equivalent Home registration is blocked because the remote Codex automation/task control surface is unavailable. No ad-hoc scheduler was installed.
+
+**Delivery exception:** The reviewed branch was pushed through the authorized Home SSH Git remote and both `main` checkouts were fast-forwarded. GitHub-origin pushes remain blocked on both Macs because the HTTPS remote has no non-interactive credential and `gh` is absent. This is recorded as an external delivery-control blocker, not represented as complete GitHub delivery. No Mac Mini deployment or pending-sync obligation was created.
+
+**Preservation:** Home's untracked retired `k2b-remote/` residue is recoverable in private quarantine under `~/.local/state/k2b/retired-runtime/20260910-stage1/`. SJM's replaced local adaptations are recoverable in stash `pre-stage1-sjm-adaptations-2026-09-10`; the stash was neither applied nor dropped.
 
 **Follow-ups:** Stage 2 will separately evaluate local-agent/model use on the 128 GB SJM Mac. It is intentionally absent from this ship.
 
