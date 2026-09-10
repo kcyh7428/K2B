@@ -10,22 +10,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB_DIR="$REPO_ROOT/scripts/lib"
 SCRIPT="$REPO_ROOT/scripts/ship-detect-tier.py"
 
-TMP_DIRS=()
-cleanup() {
-  local d
-  for d in "${TMP_DIRS[@]}"; do
-    [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
-  done
-}
-trap cleanup EXIT
+TMP_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 mktmp() {
-  local d
-  d="$(mktemp -d)"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  mktemp -d "$TMP_ROOT/case.XXXXXX"
 }
 
 # build_fixture_repo OUT_DIR
@@ -146,8 +137,8 @@ test_tier_0_vault_only() {
   echo "PASS: test_tier_0_vault_only"
 }
 
-test_tier_0_plans_dot_claude() {
-  # Codex omission: .claude/plans/ consistency with plans/.
+test_retired_claude_plans_not_tier_0() {
+  # Retired Claude project paths are no longer privileged documentation.
   local repo
   repo="$(mktmp)"
   build_fixture_repo "$repo"
@@ -156,8 +147,8 @@ test_tier_0_plans_dot_claude() {
 
   local out
   out=$(call_classifier "$repo")
-  echo "$out" | grep -q "tier:0" || fail ".claude/plans should be tier 0; got: $out"
-  echo "PASS: test_tier_0_plans_dot_claude"
+  echo "$out" | grep -q "tier:2" || fail ".claude/plans should use the default tier after retirement; got: $out"
+  echo "PASS: test_retired_claude_plans_not_tier_0"
 }
 
 test_tier_0_plans_toplevel() {
@@ -174,7 +165,7 @@ test_tier_0_plans_toplevel() {
 }
 
 test_tier_0_vault_only
-test_tier_0_plans_dot_claude
+test_retired_claude_plans_not_tier_0
 test_tier_0_plans_toplevel
 
 test_tier_3_allowlist_hit_literal() {
@@ -408,8 +399,8 @@ test_tier_1_skill_docs_only() {
   local repo
   repo="$(mktmp)"
   build_fixture_repo "$repo"
-  mkdir -p "$repo/.claude/skills/k2b-test"
-  (cd "$repo" && printf '# test\n' > .claude/skills/k2b-test/SKILL.md)
+  mkdir -p "$repo/.agents/skills/k2b-test"
+  (cd "$repo" && printf '# test\n' > .agents/skills/k2b-test/SKILL.md)
 
   local config="$(mktmp)/tier3-paths.yml"
   cat > "$config" <<'YAML'
@@ -422,11 +413,11 @@ YAML
   echo "PASS: test_tier_1_skill_docs_only"
 }
 
-test_tier_1_claude_md() {
+test_tier_1_agents_md() {
   local repo
   repo="$(mktmp)"
   build_fixture_repo "$repo"
-  (cd "$repo" && printf '# updated\n' > CLAUDE.md)
+  (cd "$repo" && printf '# updated\n' > AGENTS.md)
 
   local config="$(mktmp)/tier3-paths.yml"
   cat > "$config" <<'YAML'
@@ -435,8 +426,8 @@ YAML
 
   local out
   out=$(call_classifier "$repo" "$config")
-  echo "$out" | grep -q "tier:1" || fail "CLAUDE.md should be tier 1; got: $out"
-  echo "PASS: test_tier_1_claude_md"
+  echo "$out" | grep -q "tier:1" || fail "AGENTS.md should be tier 1 without an allowlist override; got: $out"
+  echo "PASS: test_tier_1_agents_md"
 }
 
 test_tier_1_wiki_docs() {
@@ -463,8 +454,8 @@ test_tier_1_big_docs_still_tier_1_not_scale_tier_3() {
   local repo
   repo="$(mktmp)"
   build_fixture_repo "$repo"
-  mkdir -p "$repo/.claude/skills/k2b-big"
-  (cd "$repo" && python3 -c "print('\n'.join(['line ' + str(i) for i in range(250)]))" > .claude/skills/k2b-big/SKILL.md)
+  mkdir -p "$repo/.agents/skills/k2b-big"
+  (cd "$repo" && python3 -c "print('\n'.join(['line ' + str(i) for i in range(250)]))" > .agents/skills/k2b-big/SKILL.md)
 
   local config="$(mktmp)/tier3-paths.yml"
   cat > "$config" <<'YAML'
@@ -496,7 +487,7 @@ YAML
 }
 
 test_tier_1_skill_docs_only
-test_tier_1_claude_md
+test_tier_1_agents_md
 test_tier_1_wiki_docs
 test_tier_1_big_docs_still_tier_1_not_scale_tier_3
 test_tier_1_mixed_docs_and_code_is_NOT_tier_1
@@ -578,13 +569,13 @@ test_tier_2_scale_three_small_files
 # Evidence-case regressions (the four commits from feature spec Problem section)
 
 test_evidence_k2b_73984d3_skill_md_81_lines() {
-  # K2B 73984d3: 81 lines of .md inside .claude/skills/, no other files.
+  # Historical shape updated to the live .agents skill root: 81 lines of one skill document.
   # Expected tier: 1 (pure docs under skills/, scale-under threshold).
   local repo
   repo="$(mktmp)"
   build_fixture_repo "$repo"
-  mkdir -p "$repo/.claude/skills/k2b-research"
-  (cd "$repo" && python3 -c "print('\n'.join(['line ' + str(i) for i in range(81)]))" > .claude/skills/k2b-research/SKILL.md)
+  mkdir -p "$repo/.agents/skills/k2b-research"
+  (cd "$repo" && python3 -c "print('\n'.join(['line ' + str(i) for i in range(81)]))" > .agents/skills/k2b-research/SKILL.md)
 
   local config="$(mktmp)/tier3-paths.yml"
   cat > "$config" <<'YAML'
@@ -856,14 +847,14 @@ import sys
 sys.path.insert(0, r'$LIB_DIR')
 from tier_detection import _is_tier_1_doc
 cases = [
-    ('.claude/skills/foo/SKILL.md', True),
+    ('.agents/skills/foo/SKILL.md', True),
     ('wiki/concepts/thing.md', True),
-    ('CLAUDE.md', True),
+    ('AGENTS.md', True),
     ('README.md', True),
-    ('foo.md', False),             # .md at root, not CLAUDE/README exact
+    ('foo.md', False),             # .md at root, not AGENTS/README exact
     ('foo.md.bak', False),         # not ending in .md
     ('readme.md', False),          # lowercase, not exact README.md
-    ('.claude/skills/foo/helper.py', False),  # not .md
+    ('.agents/skills/foo/helper.py', False),  # not .md
     ('wiki/concepts/thing.txt', False),        # not .md
 ]
 for path, expected in cases:
@@ -885,11 +876,11 @@ from tier_detection import _is_tier_0_path
 cases = [
     ('K2B-Vault/raw/foo.md', True),
     ('plans/2026-04-19_thing.md', True),
-    ('.claude/plans/foo.md', True),
+    ('.claude/plans/foo.md', False),  # retired project path is not privileged
     ('DEVLOG.md', True),
     ('devlog.md', False),          # lowercase, not exact DEVLOG.md
     ('plans-archive/foo.md', False),  # not under plans/
-    ('.claude/skills/foo/SKILL.md', False),  # .claude/skills/ is Tier 1
+    ('.agents/skills/foo/SKILL.md', False),  # .agents/skills/ is Tier 1
 ]
 for path, expected in cases:
     got = _is_tier_0_path(path)
@@ -907,17 +898,17 @@ test_rule_ordering_tier_3_allowlist_wins_over_docs() {
   local repo
   repo="$(mktmp)"
   build_fixture_repo "$repo"
-  (cd "$repo" && printf '# allowlisted doc\n' > CLAUDE.md)  # normally Tier 1
+  (cd "$repo" && printf '# allowlisted doc\n' > AGENTS.md)  # normally Tier 1
 
   local config="$(mktmp)/tier3-paths.yml"
   cat > "$config" <<'YAML'
 paths:
-  - "CLAUDE.md"
+  - "AGENTS.md"
 YAML
 
   local out
   out=$(call_classifier "$repo" "$config")
-  echo "$out" | grep -q "tier:3" || fail "allowlist CLAUDE.md should be tier 3 (allowlist wins over docs); got: $out"
+  echo "$out" | grep -q "tier:3" || fail "allowlist AGENTS.md should be tier 3 (allowlist wins over docs); got: $out"
   echo "PASS: test_rule_ordering_tier_3_allowlist_wins_over_docs"
 }
 
@@ -944,9 +935,9 @@ test_default_mode_is_working_tree_classifies_full_dirty_tree() {
   build_fixture_repo "$repo"
 
   # Pre-existing staged Tier-0 docs (e.g., leftover from a half-attempted commit)
-  mkdir -p "$repo/.claude/plans"
-  (cd "$repo" && printf 'plan\n' > .claude/plans/old.md)
-  (cd "$repo" && git add .claude/plans/old.md)
+  mkdir -p "$repo/plans"
+  (cd "$repo" && printf 'plan\n' > plans/old.md)
+  (cd "$repo" && git add plans/old.md)
 
   # Unstaged session code change
   (cd "$repo" && printf 'def real_session_code(): pass\n' > unstaged_code.py)
@@ -973,9 +964,9 @@ test_explicit_working_tree_mode_sees_staged_and_unstaged() {
   build_fixture_repo "$repo"
 
   (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 250))" > unrelated.py)
-  mkdir -p "$repo/.claude/skills/k2b-test"
-  (cd "$repo" && printf '# small\n' > .claude/skills/k2b-test/SKILL.md)
-  (cd "$repo" && git add .claude/skills/k2b-test/SKILL.md)
+  mkdir -p "$repo/.agents/skills/k2b-test"
+  (cd "$repo" && printf '# small\n' > .agents/skills/k2b-test/SKILL.md)
+  (cd "$repo" && git add .agents/skills/k2b-test/SKILL.md)
 
   local out
   out=$(PYTHONPATH="$LIB_DIR" python3 -c "
@@ -987,7 +978,7 @@ print('files:', sorted(state['files']))
 print('total_loc:', state['total_loc'])
 ")
   echo "$out" | grep -q "'unrelated.py'" || fail "working-tree mode must include unstaged file; got: $out"
-  echo "$out" | grep -q "'.claude/skills/k2b-test/SKILL.md'" || fail "working-tree mode must include staged file too; got: $out"
+  echo "$out" | grep -q "'.agents/skills/k2b-test/SKILL.md'" || fail "working-tree mode must include staged file too; got: $out"
   echo "PASS: test_explicit_working_tree_mode_sees_staged_and_unstaged"
 }
 
@@ -1004,9 +995,9 @@ test_explicit_staged_mode_scopes_to_staged_only() {
   (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 250))" > unrelated.py)
 
   # Staged: 1-line docs change
-  mkdir -p "$repo/.claude/skills/k2b-test"
-  (cd "$repo" && printf '# small\n' > .claude/skills/k2b-test/SKILL.md)
-  (cd "$repo" && git add .claude/skills/k2b-test/SKILL.md)
+  mkdir -p "$repo/.agents/skills/k2b-test"
+  (cd "$repo" && printf '# small\n' > .agents/skills/k2b-test/SKILL.md)
+  (cd "$repo" && git add .agents/skills/k2b-test/SKILL.md)
 
   local config="$(mktmp)/tier3-paths.yml"
   cat > "$config" <<'YAML'
@@ -1118,9 +1109,9 @@ YAML
 
   # Unrelated 250-LOC unstaged + 1-line staged docs
   (cd "$repo" && python3 -c "print('\n'.join(['x=1'] * 250))" > unrelated.py)
-  mkdir -p "$repo/.claude/skills/k2b-test"
-  (cd "$repo" && printf '# small\n' > .claude/skills/k2b-test/SKILL.md)
-  (cd "$repo" && git add .claude/skills/k2b-test/SKILL.md)
+  mkdir -p "$repo/.agents/skills/k2b-test"
+  (cd "$repo" && printf '# small\n' > .agents/skills/k2b-test/SKILL.md)
+  (cd "$repo" && git add .agents/skills/k2b-test/SKILL.md)
 
   # Default mode (working-tree): both files visible, 250 LOC -> tier 3
   local default_out

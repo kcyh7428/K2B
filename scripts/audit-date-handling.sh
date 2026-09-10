@@ -39,19 +39,6 @@ fi
 # Trigger filename patterns: scripts likely fired by cron/launchd on calendar boundary.
 TRIGGER_RE='(cron|daily|eod|nightly|morning)'
 
-# Find candidate script files (sh, py) whose basename matches a trigger pattern.
-mapfile -t CANDIDATES < <(
-  find "$SCRIPTS_DIR" -type f \( -name '*.sh' -o -name '*.py' \) \
-    -print0 2>/dev/null \
-    | xargs -0 -I{} bash -c '
-        f="$1"
-        base="$(basename "$f")"
-        if [[ "$base" =~ '"$TRIGGER_RE"' ]]; then
-          printf "%s\n" "$f"
-        fi
-      ' _ {}
-)
-
 # Findings file: one finding per line, format "<file>:<lineno>:<text>". Using a
 # real file instead of a bash array makes the JSON path trivial (jq -R -s) and
 # survives quoting hazards in arbitrary code lines (quotes, $, %, etc).
@@ -64,7 +51,9 @@ trap 'rm -f "$FINDINGS_FILE"' EXIT
 # DO NOT just skip any line containing "# " — that suppresses real lines with
 # inline comments (e.g. RUN_DATE="$(date '+%Y-%m-%d')" # default) which is exactly
 # the bug class this audit catches.
-for f in "${CANDIDATES[@]}"; do
+while IFS= read -r -d '' f; do
+  base="$(basename "$f")"
+  [[ "$base" =~ $TRIGGER_RE ]] || continue
   while IFS= read -r match; do
     [ -n "$match" ] || continue
     # Grep with a single file argument outputs "<lineno>:<full-line>". Strip
@@ -115,7 +104,10 @@ for f in "${CANDIDATES[@]}"; do
     -e "\\\$\\(date[[:space:]][^)]*%Y-%m-%d\\)" \
     -e "\`date[^\`]*%Y-%m-%d['\"\`]" \
     "$f" 2>/dev/null || true)
-done
+done < <(
+  find "$SCRIPTS_DIR" -type f \( -name '*.sh' -o -name '*.py' \) \
+    -print0 2>/dev/null
+)
 
 FINDINGS_COUNT="$(wc -l < "$FINDINGS_FILE" | tr -d ' ')"
 

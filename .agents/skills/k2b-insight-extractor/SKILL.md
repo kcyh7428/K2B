@@ -5,6 +5,8 @@ description: Find patterns and surface content ideas -- searches the vault to sy
 
 # K2B Insight Extractor
 
+> **Host boundary:** SJM may inspect patterns read-only, but any insight note or review item must be written on Home.
+
 ## Vault Path
 
 `~/Projects/K2B-Vault`
@@ -137,7 +139,7 @@ When creating insight or content idea notes, always add `[[wiki links]]`:
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-insight-extractor\t$(echo $RANDOM | md5sum | head -c 8)\textracted insights on TOPIC" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-insight-extractor --summary "extracted insights on TOPIC"
 ```
 
 ## Notes

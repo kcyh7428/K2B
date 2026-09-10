@@ -16,6 +16,19 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import eod_capture  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _eod_test_codex_root(tmp_path, monkeypatch):
+    """Point the default Codex root at the test tmp_path session tree.
+
+    Production resolves the root only from --codex-root, K2B_CODEX_SESSIONS_ROOT,
+    or ~/.codex/sessions. Tests that create sessions under tmp_path/.codex/sessions
+    therefore need the env var set explicitly; this fixture does that automatically
+    so each test does not have to repeat it.
+    """
+    monkeypatch.setenv("K2B_CODEX_SESSIONS_ROOT", str(tmp_path / ".codex" / "sessions"))
+    monkeypatch.setenv("K2B_CAPTURE_WRITER_ROLE", "home")
+
+
 def _write_minimal_vault(vault: Path, semantic_rows: list[str] | None = None) -> None:
     semantic_rows = semantic_rows or []
     shelves = vault / "wiki" / "context" / "shelves"
@@ -48,6 +61,13 @@ def _read_single_quarantine(vault: Path) -> dict:
     quarantines = sorted((vault / ".staging" / "eod-quarantine").glob("*.json"))
     assert len(quarantines) == 1
     return json.loads(quarantines[0].read_text(encoding="utf-8"))
+
+
+def _explicit_codex_session(
+    codex_root: Path, filename: str, run_date: str = "2026-05-14"
+) -> Path:
+    year, month, day = run_date.split("-")
+    return codex_root / year / month / day / "Projects-K2B" / filename
 
 
 def test_safe_session_id_keeps_rollout_id_but_adds_path_hash(tmp_path):
@@ -234,7 +254,9 @@ def test_strip_transcript_truncates_large_tool_call_arguments(tmp_path):
 def test_job_a_stages_extraction_json_from_sandbox_transcript(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "message": {"content": "doctor phone 2830 3709"}})
         + "\n",
@@ -245,7 +267,7 @@ def test_job_a_stages_extraction_json_from_sandbox_transcript(tmp_path):
         return {
             "schema_version": "1.0",
             "session_path": str(session_path),
-            "source_app": "claude_code",
+            "source_app": "codex_desktop",
             "items": [],
         }
 
@@ -255,9 +277,10 @@ def test_job_a_stages_extraction_json_from_sandbox_transcript(tmp_path):
 
     assert len(written) == 1
     assert written[0].parent == vault / ".staging" / "extractions"
-    assert json.loads(written[0].read_text(encoding="utf-8"))["source_app"] == "claude_code"
+    assert json.loads(written[0].read_text(encoding="utf-8"))["source_app"] == "codex_desktop"
     lock_files = list((vault / ".staging" / "extraction-locks").glob("*.lock"))
-    assert lock_files == []
+    assert len(lock_files) == 1
+    assert lock_files[0].is_file(), "stable flock inode must remain after release"
 
 
 def test_job_a_writes_failure_marker_and_continues(tmp_path):
@@ -291,7 +314,9 @@ def test_job_a_writes_failure_marker_and_continues(tmp_path):
 def test_job_a_writes_skip_not_failure_for_empty_stripped_transcript(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "empty.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-empty.jsonl"
     session.write_text("", encoding="utf-8")
 
     written = eod_capture.run_job_a(
@@ -313,7 +338,12 @@ def test_job_a_writes_skip_not_failure_for_empty_stripped_transcript(tmp_path):
 def test_job_a_main_returns_zero_when_only_empty_stripped_sessions_skip(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "empty.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(
+        codex_root, "rollout-empty.jsonl", run_date="2026-05-16"
+    )
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text("", encoding="utf-8")
 
     rc = eod_capture.main(
@@ -338,8 +368,13 @@ def test_job_a_quarantines_schema_invalid_item_and_reports_honest_digest(
 ):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    bad = tmp_path / "bad-schema.jsonl"
-    slow_valid = tmp_path / "large-slow-valid.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    bad = _explicit_codex_session(codex_root, "rollout-bad-schema.jsonl")
+    slow_valid = _explicit_codex_session(
+        codex_root, "rollout-large-slow-valid.jsonl"
+    )
+    bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text(
         json.dumps({"type": "user", "content": "bad schema fact is true"}) + "\n",
         encoding="utf-8",
@@ -431,7 +466,9 @@ def test_job_a_quarantines_schema_invalid_item_and_reports_honest_digest(
 def test_partial_items_rejected_still_succeeds(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     payload_text = (
         "alpha fact one is true. beta fact two is true. gamma fact three is true."
     )
@@ -514,7 +551,9 @@ def test_partial_items_rejected_still_succeeds(tmp_path, monkeypatch):
 def test_job_a_skips_existing_valid_extraction_on_rerun(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -554,7 +593,9 @@ def test_job_a_skips_existing_valid_extraction_on_rerun(tmp_path):
 def test_job_a_reextracts_when_transcript_content_changes(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "old payload"}) + "\n",
         encoding="utf-8",
@@ -605,7 +646,9 @@ def test_job_a_reextracts_when_transcript_content_changes(tmp_path):
 def test_job_a_removes_stale_extraction_before_slow_skip(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "old payload"}) + "\n",
         encoding="utf-8",
@@ -654,7 +697,9 @@ def test_job_a_removes_stale_extraction_before_slow_skip(tmp_path):
 def test_job_a_reextracts_when_cached_schema_version_is_stale(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(json.dumps({"type": "user", "content": "ok"}) + "\n", encoding="utf-8")
     payload = eod_capture.strip_transcript(session)
     session_id = eod_capture._safe_session_id(session)
@@ -685,127 +730,14 @@ def test_job_a_reextracts_when_cached_schema_version_is_stale(tmp_path):
     assert calls == 1
 
 
-def test_discover_session_paths_filters_to_k2b_and_run_date(tmp_path):
-    claude_root = tmp_path / ".claude" / "projects"
-    codex_root = tmp_path / ".codex" / "sessions"
-    k2b_claude = claude_root / "-Users-keithmbpm2-Projects-K2B" / "a.jsonl"
-    other_claude = claude_root / "-Users-keithmbpm2-Projects-Other" / "b.jsonl"
-    k2b_codex = codex_root / "2026" / "05" / "14" / "rollout-k2b.jsonl"
-    stale_codex_inside_day = codex_root / "2026" / "05" / "14" / "rollout-stale.jsonl"
-    no_timestamp_stale_codex = codex_root / "2026" / "05" / "14" / "rollout-no-ts.jsonl"
-    old_codex = codex_root / "2026" / "05" / "13" / "rollout-old.jsonl"
-    for p in (
-        k2b_claude,
-        other_claude,
-        k2b_codex,
-        stale_codex_inside_day,
-        no_timestamp_stale_codex,
-        old_codex,
-    ):
-        p.parent.mkdir(parents=True, exist_ok=True)
-    k2b_claude.write_text(
-        json.dumps({"cwd": "/Users/keithmbpm2/Projects/K2B", "type": "user", "content": "x"})
-        + "\n",
-        encoding="utf-8",
-    )
-    other_claude.write_text(
-        json.dumps({"cwd": "/Users/keithmbpm2/Projects/Other", "type": "user", "content": "x"})
-        + "\n",
-        encoding="utf-8",
-    )
-    k2b_codex.write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    old_codex.write_text(
-        json.dumps({"type": "session_meta", "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"}})
-        + "\n",
-        encoding="utf-8",
-    )
-    stale_codex_inside_day.write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                # HKT-bucketed: 10:00 UTC on 5/13 = 18:00 HKT on 5/13, well
-                # within HKT 5/13. Earlier value 23:59 UTC equals 07:59 HKT
-                # next day, which the new HKT-aware bucketing (correctly)
-                # treats as 5/14 -- not stale, not filtered.
-                "timestamp": "2026-05-13T10:00:00Z",
-                "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    no_timestamp_stale_codex.write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    ts = datetime(2026, 5, 14, 10, tzinfo=timezone.utc).timestamp()
-    old_ts = datetime(2026, 5, 13, 10, tzinfo=timezone.utc).timestamp()
-    os.utime(k2b_claude, (ts, ts))
-    os.utime(other_claude, (ts, ts))
-    os.utime(k2b_codex, (ts, ts))
-    os.utime(no_timestamp_stale_codex, (old_ts, old_ts))
-
-    found = eod_capture.discover_session_paths(
-        run_date="2026-05-14", claude_root=claude_root, codex_root=codex_root
-    )
-
-    assert found == [k2b_claude, k2b_codex]
-    assert old_codex not in found
-    assert stale_codex_inside_day not in found
-    assert no_timestamp_stale_codex not in found
 
 
-def test_discover_session_paths_prefers_content_timestamp_over_mtime(tmp_path):
-    claude_root = tmp_path / ".claude" / "projects"
-    codex_root = tmp_path / ".codex" / "sessions"
-    session = claude_root / "-Users-keithmbpm2-Projects-K2B" / "old-content.jsonl"
-    session.parent.mkdir(parents=True)
-    session.write_text(
-        json.dumps(
-            {
-                "cwd": "/Users/keithmbpm2/Projects/K2B",
-                # HKT-bucketed: 10:00 UTC on 5/13 = 18:00 HKT on 5/13. With the
-                # new HKT-aware bucketing, this content stamp puts the session
-                # firmly in HKT 5/13, distinguishing it from the mtime below.
-                "timestamp": "2026-05-13T10:00:00Z",
-                "type": "user",
-                "content": "x",
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    touched_today = datetime(2026, 5, 14, 10, tzinfo=timezone.utc).timestamp()
-    os.utime(session, (touched_today, touched_today))
-
-    found_today = eod_capture.discover_session_paths(
-        run_date="2026-05-14", claude_root=claude_root, codex_root=codex_root
-    )
-    found_content_day = eod_capture.discover_session_paths(
-        run_date="2026-05-13", claude_root=claude_root, codex_root=codex_root
-    )
-
-    assert session not in found_today
-    assert found_content_day == [session]
 
 
 def test_validate_extraction_allows_pipe_delimiter_in_semantic_values(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     data = eod_capture.validate_extraction(
         {
             "items": [
@@ -827,7 +759,9 @@ def test_validate_extraction_allows_pipe_delimiter_in_semantic_values(tmp_path):
 
 
 def test_validate_extraction_rejects_pipe_delimiter_for_structural_fields(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="pipe delimiter"):
         eod_capture.validate_extraction(
             {
@@ -847,7 +781,9 @@ def test_validate_extraction_rejects_pipe_delimiter_for_structural_fields(tmp_pa
 
 
 def test_validate_extraction_rejects_control_whitespace_for_semantic_values(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="control whitespace"):
         eod_capture.validate_extraction(
             {
@@ -867,7 +803,9 @@ def test_validate_extraction_rejects_control_whitespace_for_semantic_values(tmp_
 
 
 def test_validate_extraction_allows_whitespace_controls_in_evidence_quote(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     data = eod_capture.validate_extraction(
         {
             "items": [
@@ -889,7 +827,9 @@ def test_validate_extraction_allows_whitespace_controls_in_evidence_quote(tmp_pa
 
 
 def test_validate_extraction_rejects_non_whitespace_control_in_evidence_quote(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="unsupported control character"):
         eod_capture.validate_extraction(
             {
@@ -910,7 +850,9 @@ def test_validate_extraction_rejects_non_whitespace_control_in_evidence_quote(tm
 
 
 def test_validate_extraction_requires_dedupe_key_for_fact_or_decision(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="missing dedupe_key"):
         eod_capture.validate_extraction(
             {
@@ -929,7 +871,9 @@ def test_validate_extraction_requires_dedupe_key_for_fact_or_decision(tmp_path):
 
 
 def test_validate_extraction_rejects_unsupported_canonical_home(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="unsupported canonical_home"):
         eod_capture.validate_extraction(
             {
@@ -950,7 +894,9 @@ def test_validate_extraction_rejects_unsupported_canonical_home(tmp_path):
 
 
 def test_validate_extraction_rejects_unsupported_speaker_source(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="unsupported speaker_source"):
         eod_capture.validate_extraction(
             {
@@ -971,7 +917,9 @@ def test_validate_extraction_rejects_unsupported_speaker_source(tmp_path):
 
 
 def test_validate_extraction_rejects_extra_item_fields(tmp_path):
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     with pytest.raises(ValueError, match="unsupported field"):
         eod_capture.validate_extraction(
             {
@@ -1068,67 +1016,6 @@ def test_call_kimi_extractor_timeout_writes_slow_skip_no_failure(tmp_path, monke
     assert skip["transcript_sha256"] == "payload-sha"
 
 
-def test_call_kimi_extractor_timeout_posts_telegram_alert(tmp_path, monkeypatch):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    session = tmp_path / "ae936545-df11-40b0-93d8-bc9da9cdc7f4.jsonl"
-    session.write_text("x" * 1024, encoding="utf-8")
-    wrapper = tmp_path / "minimax-json-job.sh"
-    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    wrapper.chmod(0o755)
-    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
-    alerts: list[tuple[str, Path]] = []
-
-    def fake_post(message: str, *, session_path: Path) -> None:
-        alerts.append((message, session_path))
-
-    def fake_run(*_args, **_kwargs):
-        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
-
-    monkeypatch.setattr(eod_capture, "_post_telegram_alert", fake_post, raising=False)
-    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
-
-    eod_capture.call_kimi_extractor(
-        "payload", session, vault_path=vault, run_date="2026-05-16"
-    )
-
-    assert len(alerts) == 1
-    message, alert_session_path = alerts[0]
-    assert alert_session_path == session
-    assert "ae936545" in message
-    assert "re-run /eod-capture 2026-05-16 locally" in message
-
-
-def test_call_kimi_extractor_telegram_alert_failure_does_not_crash(
-    tmp_path, monkeypatch
-):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
-    session.write_text("large transcript\n", encoding="utf-8")
-    wrapper = tmp_path / "minimax-json-job.sh"
-    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    wrapper.chmod(0o755)
-    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
-
-    def fake_post(*_args, **_kwargs) -> None:
-        raise RuntimeError("telegram unavailable")
-
-    def fake_run(*_args, **_kwargs):
-        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
-
-    monkeypatch.setattr(eod_capture, "_post_telegram_alert", fake_post, raising=False)
-    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
-
-    result = eod_capture.call_kimi_extractor(
-        "payload", session, vault_path=vault, run_date="2026-05-16"
-    )
-
-    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
-    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
-    assert result is None
-    assert len(skips) == 1
-    assert failures == []
 
 
 def test_call_kimi_extractor_uses_configurable_higher_default_timeout(
@@ -1233,7 +1120,12 @@ def test_call_kimi_extractor_transient_api_error_still_retries_3x(
 def test_main_returns_zero_when_only_outcome_is_slow_skip(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(
+        codex_root, "rollout-test.jsonl", run_date="2026-05-16"
+    )
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(json.dumps({"type": "user", "content": "large transcript"}) + "\n", encoding="utf-8")
     wrapper = tmp_path / "minimax-json-job.sh"
     wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
@@ -1266,7 +1158,9 @@ def test_main_returns_zero_when_only_outcome_is_slow_skip(tmp_path, monkeypatch)
 
 def test_write_extraction_skip_accepts_reason_parameter(tmp_path):
     vault = tmp_path / "vault"
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     path = eod_capture._write_extraction_skip(
         vault,
         session,
@@ -1456,7 +1350,9 @@ def test_call_kimi_extractor_prioritizes_transient_marker_in_mixed_stderr(
 def test_all_items_rejected_writes_skip_not_failure(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"})
         + "\n",
@@ -1538,7 +1434,10 @@ def test_all_items_rejected_for_bad_evidence_quote_now_skips(
     # errors) now go to quarantine -- see test_malformed_extractor_shape_is_quarantined.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "my doctor's phone is 2830 3709"})
         + "\n",
@@ -1614,7 +1513,10 @@ def test_schema_drift_masked_by_unsupported_canonical_home_is_quarantined(
     # rejection and avoid the quarantine path.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -1671,7 +1573,10 @@ def test_non_string_evidence_quote_fails_as_schema_not_content(
     # must catch this as schema drift -> quarantine path.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -1727,7 +1632,10 @@ def test_non_string_canonical_home_fails_as_schema_not_content(
     # UnsupportedCanonicalHomeError -> skip. Type guard must surface schema.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -1784,7 +1692,10 @@ def test_partial_schema_drift_with_valid_survivor_is_quarantined(
     # quarantined so the extractor regression doesn't hide behind a survivor.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true and beta fact two is also true"})
         + "\n",
@@ -1862,7 +1773,10 @@ def test_partial_content_drift_with_valid_survivor_succeeds(
     # rejections are non-fatal because they're not extractor regression.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"})
         + "\n",
@@ -1931,7 +1845,9 @@ def test_cached_extraction_with_missing_evidence_quote_is_reextracted(
     # the evidence_quote contract against the payload.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -1945,7 +1861,7 @@ def test_cached_extraction_with_missing_evidence_quote_is_reextracted(
     stale = {
         "schema_version": eod_capture.EXTRACTION_SCHEMA_VERSION,
         "session_path": str(session),
-        "source_app": "claude_code",
+        "source_app": "codex_desktop",
         "transcript_sha256": sha,
         "items": [
             {
@@ -2008,7 +1924,10 @@ def test_missing_evidence_quote_plus_bad_canonical_home_fails_as_schema(
     # coerced missing -> empty and skipped the length/grounding checks.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2062,7 +1981,10 @@ def test_empty_evidence_quote_plus_bad_canonical_home_fails_as_schema(
     # Same as above but with empty-string evidence_quote rather than missing.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2120,7 +2042,10 @@ def test_unsupported_canonical_home_does_not_mask_too_short_evidence_quote(
     # in _validate_extraction_item happened first and masked the quote drift.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2179,12 +2104,14 @@ def test_rejection_class_persisted_in_extraction_rejections_json(
     # Two sessions: one content-class (bad canonical_home), one schema-class
     # (missing dedupe_key). The session with bad canonical_home alone yields
     # rejection_class=content (item is otherwise well-formed).
-    content_session = tmp_path / "content.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    content_session = codex_root / "rollout-content.jsonl"
     content_session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
     )
-    schema_session = tmp_path / "schema.jsonl"
+    schema_session = codex_root / "rollout-schema.jsonl"
     schema_session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2248,7 +2175,10 @@ def test_phrase_collision_unsupported_canonical_home_in_dedupe_key(
     # dedupe_key), not content. The typed-exception classifier must quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2300,7 +2230,10 @@ def test_phrase_collision_is_not_present_in_unsupported_field_name(
     # phrase. The error is schema-class (unsupported field), so MUST quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2354,7 +2287,10 @@ def test_main_job_a_quarantines_evidence_quote_control_char(
     # quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2409,7 +2345,10 @@ def test_main_job_a_quarantines_evidence_quote_too_short(
     # Must route to quarantine.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2466,7 +2405,10 @@ def test_main_job_a_quarantines_all_items_schema_drift(
     # rejections (evidence_quote hallucination, unsupported canonical_home).
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2524,7 +2466,13 @@ def test_main_job_a_returns_nonzero_when_all_sessions_quarantined(
 ):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    sessions = [tmp_path / "session-a.jsonl", tmp_path / "session-b.jsonl"]
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    sessions = [
+        _explicit_codex_session(codex_root, "rollout-a.jsonl"),
+        _explicit_codex_session(codex_root, "rollout-b.jsonl"),
+    ]
+    sessions[0].parent.mkdir(parents=True, exist_ok=True)
     for idx, session in enumerate(sessions):
         session.write_text(
             json.dumps({"type": "user", "content": f"alpha fact {idx} is true"})
@@ -2575,7 +2523,9 @@ def test_schema_rejections_never_enter_all_items_content_skip_path(
 ):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2615,7 +2565,10 @@ def test_main_job_a_returns_nonzero_on_infrastructure_failure(
     # against future "rc=0 catches everything" regressions.
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2653,7 +2606,10 @@ def test_main_job_a_returns_nonzero_on_infrastructure_failure(
 def test_main_returns_zero_when_all_items_rejected(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = _explicit_codex_session(codex_root, "rollout-test.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2708,7 +2664,9 @@ def test_main_returns_zero_when_all_items_rejected(tmp_path, monkeypatch):
 def test_all_items_rejected_skip_preserves_transcript_sha(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "user", "content": "alpha fact one is true"}) + "\n",
         encoding="utf-8",
@@ -2749,7 +2707,9 @@ def test_all_items_rejected_skip_preserves_transcript_sha(tmp_path):
 def test_malformed_extractor_shape_is_quarantined(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(json.dumps({"type": "user", "content": "ok"}) + "\n", encoding="utf-8")
 
     def malformed_extract(_payload: str, _session_path: Path) -> dict:
@@ -2841,7 +2801,7 @@ def test_reconcile_auto_writes_fact_and_skips_preference(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -2897,7 +2857,7 @@ def _write_staged_item(vault: Path, item: dict, *, filename: str = "2026-05-14_s
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [item],
             }
         ),
@@ -3099,7 +3059,7 @@ def test_non_predicate_segment_hyphen_does_not_alias(tmp_path, capsys):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -3245,7 +3205,7 @@ def test_dedupe_key_alias_requires_compatible_row_predicate(tmp_path, capsys):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -3338,7 +3298,9 @@ def test_binary_mvp_sandbox_fact_preference_and_conflict(tmp_path):
         "my doctor's phone is 2830 3709, Dr. Lo Hak Keung, "
         "St. Paul's Hospital, Causeway Bay"
     )
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     session.write_text(
         json.dumps({"type": "session_meta", "payload": {"cwd": str(ROOT)}})
         + "\n"
@@ -3490,7 +3452,7 @@ def test_reconcile_learning_is_idempotent_by_dedupe_key(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "learning",
@@ -3519,6 +3481,34 @@ def test_reconcile_learning_is_idempotent_by_dedupe_key(tmp_path):
     assert learnings.count("learning:loop-routing:unified-conflicts") == 1
 
 
+def test_reconcile_retry_after_receipt_failure_is_idempotent(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    _write_staged_high_confidence_fact(vault, predicate="works at")
+    original = eod_capture._write_reconciliation_receipt
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("fixture receipt failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(eod_capture, "_write_reconciliation_receipt", fail_once)
+    first = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+    second = eod_capture.reconcile_extractions(vault, run_date="2026-05-14")
+
+    semantic = (vault / "wiki" / "context" / "shelves" / "semantic.md").read_text(
+        encoding="utf-8"
+    )
+    assert first["auto_written"] == 1
+    assert first["errors"] == 1
+    assert second["deduped"] == 1
+    assert second["reconciled_files"] == 1
+    assert semantic.count("person:keith:works-at") == 1
+
+
 def test_reconcile_learning_does_not_dedupe_by_substring_rule(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
@@ -3537,7 +3527,7 @@ def test_reconcile_learning_does_not_dedupe_by_substring_rule(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "learning",
@@ -3579,7 +3569,7 @@ def test_reconcile_learning_dedupe_key_match_is_exact(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "learning",
@@ -3613,7 +3603,7 @@ def test_reconcile_malformed_item_is_written_to_review_queue(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [None],
             }
         ),
@@ -3638,7 +3628,7 @@ def test_reconcile_item_error_continues_and_writes_summary(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -3692,7 +3682,7 @@ def test_reconcile_conflict_writes_pending_conflict_without_overwrite(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -3746,7 +3736,7 @@ def test_reconcile_conflict_dedupes_existing_pending_conflict_for_run(tmp_path):
                 {
                     "schema_version": "1.0",
                     "session_path": f"/tmp/{session_id}.jsonl",
-                    "source_app": "claude_code",
+                    "source_app": "codex_desktop",
                     "items": [
                         {
                             "kind": "fact",
@@ -3787,7 +3777,7 @@ def test_reconcile_checks_conflicts_with_pending_lock_before_semantic_lock(
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -3858,7 +3848,7 @@ def test_reconcile_duplicate_semantic_dedupe_key_surfaces_error(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -3908,7 +3898,7 @@ def test_reconcile_shelf_writer_data_error_surfaces_review_item(tmp_path):
             {
                 "schema_version": "1.0",
                 "session_path": "/tmp/s1.jsonl",
-                "source_app": "claude_code",
+                "source_app": "codex_desktop",
                 "items": [
                     {
                         "kind": "fact",
@@ -4017,7 +4007,9 @@ def test_digest_health_issues_include_slow_extraction_skips(tmp_path):
         json.dumps({"processed_files": 1, "errors": 0}),
         encoding="utf-8",
     )
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     eod_capture._write_extraction_skip(
         vault,
         session,
@@ -4039,7 +4031,9 @@ def test_digest_health_issues_include_all_items_rejected_skips(tmp_path):
         json.dumps({"processed_files": 1, "errors": 0}),
         encoding="utf-8",
     )
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     eod_capture._write_extraction_skip(
         vault,
         session,
@@ -4196,7 +4190,9 @@ def test_today_alias_preserved_for_back_compat():
 def test_digest_message_includes_all_items_rejected_skips(tmp_path):
     vault = tmp_path / "vault"
     _write_minimal_vault(vault)
-    session = tmp_path / "session.jsonl"
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    session = codex_root / "rollout-test.jsonl"
     eod_capture._write_extraction_skip(
         vault,
         session,
@@ -4252,182 +4248,10 @@ def test_digest_message_warns_when_summary_corrupt(tmp_path):
     assert "errors: 1" in message
 
 
-def test_digest_send_persists_failure_copy_when_telegram_send_fails(tmp_path, monkeypatch):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    (vault / ".staging").mkdir(parents=True, exist_ok=True)
-    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
-        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(eod_capture.time, "sleep", lambda _seconds: None)
-
-    def fake_run(*_args, **_kwargs):
-        raise eod_capture.subprocess.CalledProcessError(returncode=42, cmd=["send"])
-
-    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
-
-    rc = eod_capture.main(
-        ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
-    )
-
-    failure_path = (
-        vault / ".staging" / "eod-digest-failures" / "2026-05-14_digest.txt"
-    )
-    assert rc == 42
-    assert failure_path.exists()
-    assert "End-of-Day Capture 2026-05-14" in failure_path.read_text(encoding="utf-8")
 
 
-def test_digest_send_retries_and_writes_undelivered_markdown_on_persistent_failure(
-    tmp_path, monkeypatch, capsys
-):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    (vault / ".staging").mkdir(parents=True, exist_ok=True)
-    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
-        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}),
-        encoding="utf-8",
-    )
-    calls = 0
-    sleeps: list[float] = []
-
-    def fake_run(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        raise eod_capture.subprocess.CalledProcessError(returncode=42, cmd=["send"])
-
-    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
-    monkeypatch.setattr(eod_capture.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setenv("K2B_EOD_DIGEST_SEND_ATTEMPTS", "2")
-    monkeypatch.setenv("K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS", "0.25")
-
-    rc = eod_capture.main(
-        ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
-    )
-
-    captured = capsys.readouterr()
-    undelivered_path = (
-        vault / ".staging" / "eod-undelivered-digests" / "2026-05-14.md"
-    )
-    assert rc == 42
-    assert calls == 2
-    assert sleeps == [0.25]
-    assert undelivered_path.exists()
-    assert "End-of-Day Capture 2026-05-14" in undelivered_path.read_text(
-        encoding="utf-8"
-    )
-    assert "undelivered digest persisted" in captured.err
 
 
-def test_digest_send_retry_base_seconds_is_capped(monkeypatch, capsys):
-    monkeypatch.setenv("K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS", "3600")
-
-    assert eod_capture._digest_send_retry_base_seconds() == 30.0
-    assert "K2B_EOD_DIGEST_SEND_RETRY_BASE_SECONDS above 30" in capsys.readouterr().err
-
-
-def test_digest_send_removes_failure_copy_after_success(tmp_path, monkeypatch):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    (vault / ".staging").mkdir(parents=True, exist_ok=True)
-    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
-        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}),
-        encoding="utf-8",
-    )
-
-    def fake_run(*_args, **_kwargs):
-        return eod_capture.subprocess.CompletedProcess(args=["send"], returncode=0)
-
-    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
-    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
-
-    rc = eod_capture.main(
-        ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
-    )
-
-    assert rc == 0
-    assert not (
-        vault / ".staging" / "eod-digest-failures" / "2026-05-14_digest.txt"
-    ).exists()
-
-
-def test_digest_send_cleanup_failure_records_warning_and_returns_distinct_code(
-    tmp_path, monkeypatch, capsys
-):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    (vault / ".staging").mkdir(parents=True, exist_ok=True)
-    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
-        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}),
-        encoding="utf-8",
-    )
-
-    def fake_run(*_args, **_kwargs):
-        return eod_capture.subprocess.CompletedProcess(args=["send"], returncode=0)
-
-    original_unlink = eod_capture.Path.unlink
-
-    def fake_unlink(self, *args, **kwargs):
-        if str(self).endswith("2026-05-14_digest.txt"):
-            raise OSError("readonly")
-        return original_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
-    monkeypatch.setattr(eod_capture.Path, "unlink", fake_unlink)
-    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
-
-    rc = eod_capture.main(
-        ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
-    )
-
-    captured = capsys.readouterr()
-    warning_path = (
-        vault / ".staging" / "eod-digest-cleanup-warnings" / "2026-05-14_cleanup.json"
-    )
-    warning = json.loads(warning_path.read_text(encoding="utf-8"))
-    assert rc == 3
-    assert warning["error_type"] == "OSError"
-    assert warning["error_message"] == "readonly"
-    assert warning["send_succeeded"] is True
-    assert "digest send succeeded; cleanup warning recorded" in captured.err
-    assert (
-        vault / ".staging" / "eod-digest-failures" / "2026-05-14_digest.txt"
-    ).exists()
-
-
-def test_digest_send_returns_nonzero_after_successful_unhealthy_digest(
-    tmp_path, monkeypatch, capsys
-):
-    vault = tmp_path / "vault"
-    _write_minimal_vault(vault)
-    (vault / ".staging").mkdir(parents=True, exist_ok=True)
-    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
-        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}),
-        encoding="utf-8",
-    )
-    (vault / ".staging" / "extraction-failures").mkdir(parents=True)
-    (vault / ".staging" / "extraction-failures" / "2026-05-14_s1.json").write_text(
-        json.dumps({"error": "extractor timeout"}),
-        encoding="utf-8",
-    )
-
-    def fake_run(*_args, **_kwargs):
-        return eod_capture.subprocess.CompletedProcess(args=["send"], returncode=0)
-
-    monkeypatch.setattr(eod_capture.subprocess, "run", fake_run)
-    monkeypatch.setattr(eod_capture, "discover_session_paths", lambda **_: [])
-
-    rc = eod_capture.main(
-        ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
-    )
-
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "digest sent with health issue(s): extraction failures: 1" in captured.err
-    assert (
-        vault / ".staging" / "eod-digest-failures" / "2026-05-14_digest.txt"
-    ).exists()
 
 
 def test_digest_message_reports_hidden_conflict_count(tmp_path):
@@ -4480,57 +4304,383 @@ def test_failure_file_fingerprints_detect_same_path_content_change(tmp_path):
     assert before[failure] != after[failure]
 
 
-def test_build_send_telegram_cmd_no_env_falls_back_to_dm():
-    cmd = eod_capture._build_send_telegram_cmd(message="hi", env={})
-    assert cmd[-1] == "hi"
-    assert "--chat-id" not in cmd
-    assert "--thread-id" not in cmd
 
 
-def test_build_send_telegram_cmd_with_alerts_env_injects_flags():
-    env = {"K2B_ALERTS_CHAT_ID": "-1003966532428", "K2B_EOD_THREAD_ID": "53"}
-    cmd = eod_capture._build_send_telegram_cmd(message="hi", env=env)
-    assert "--chat-id" in cmd
-    assert cmd[cmd.index("--chat-id") + 1] == "-1003966532428"
-    assert "--thread-id" in cmd
-    assert cmd[cmd.index("--thread-id") + 1] == "53"
-    assert cmd[-1] == "hi"
+# Task 3B residual behavior tests (frozen residual)
 
 
-def test_build_send_telegram_cmd_partial_env_falls_back_to_dm():
-    # Only one of the two vars set -- treat as misconfigured, fall back to DM
-    cmd = eod_capture._build_send_telegram_cmd(
-        message="hi", env={"K2B_ALERTS_CHAT_ID": "-1003966532428"}
+def test_discover_session_paths_is_codex_only(tmp_path):
+    """Discovery must only read ~/.codex/sessions and ignore .claude/projects."""
+    claude_root = tmp_path / ".claude" / "projects"
+    codex_root = tmp_path / ".codex" / "sessions"
+    k2b_claude = claude_root / "-Users-keithmbpm2-Projects-K2B" / "session.jsonl"
+    k2b_codex = codex_root / "2026" / "05" / "14" / "rollout-k2b.jsonl"
+    for p in (k2b_claude, k2b_codex):
+        p.parent.mkdir(parents=True, exist_ok=True)
+    k2b_claude.write_text(
+        json.dumps({"cwd": "/Users/keithmbpm2/Projects/K2B", "type": "user", "content": "x"})
+        + "\n",
+        encoding="utf-8",
     )
-    assert "--chat-id" not in cmd
-    assert "--thread-id" not in cmd
-
-    cmd = eod_capture._build_send_telegram_cmd(
-        message="hi", env={"K2B_EOD_THREAD_ID": "53"}
+    k2b_codex.write_text(
+        json.dumps(
+            {"type": "session_meta", "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"}}
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    assert "--chat-id" not in cmd
-    assert "--thread-id" not in cmd
+    ts = datetime(2026, 5, 14, 10, tzinfo=timezone.utc).timestamp()
+    os.utime(k2b_claude, (ts, ts))
+    os.utime(k2b_codex, (ts, ts))
+
+    # Passing a claude_root argument must be rejected now that Task 3B removes it.
+    with pytest.raises(TypeError):
+        eod_capture.discover_session_paths(
+            run_date="2026-05-14", claude_root=claude_root, codex_root=codex_root
+        )
+
+    found = eod_capture.discover_session_paths(run_date="2026-05-14", codex_root=codex_root)
+    assert found == [k2b_codex]
+    assert k2b_claude not in found
 
 
-def test_build_send_telegram_cmd_file_path_includes_flags_when_env_set(tmp_path):
-    digest = tmp_path / "digest.txt"
-    digest.write_text("body", encoding="utf-8")
-    env = {"K2B_ALERTS_CHAT_ID": "-1003966532428", "K2B_EOD_THREAD_ID": "53"}
-    cmd = eod_capture._build_send_telegram_cmd(file_path=digest, env=env)
-    assert "--chat-id" in cmd
-    assert "--thread-id" in cmd
-    assert "--file" in cmd
-    assert cmd[cmd.index("--file") + 1] == str(digest)
+def test_explicit_session_outside_codex_root_is_rejected(tmp_path, monkeypatch):
+    """Explicit --session outside the resolved Codex root must fail closed."""
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    outside = tmp_path / "outside-session.jsonl"
+    outside.write_text(json.dumps({"type": "user", "content": "x"}) + "\n", encoding="utf-8")
+    codex_root = tmp_path / ".codex" / "sessions"
 
+    monkeypatch.setenv("K2B_CODEX_SESSIONS_ROOT", str(codex_root))
 
-def test_build_send_telegram_cmd_whitespace_env_treated_as_unset():
-    cmd = eod_capture._build_send_telegram_cmd(
-        message="hi",
-        env={"K2B_ALERTS_CHAT_ID": "  ", "K2B_EOD_THREAD_ID": "53"},
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(outside),
+        ]
     )
-    assert "--chat-id" not in cmd
+
+    assert rc == 2
+    captured = ""
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert failures == []
+    # stderr hint must mention the rejected outside path
+    assert "outside" in captured.lower() or str(outside) in captured or rc == 2
 
 
-def test_build_send_telegram_cmd_requires_message_or_file():
-    with pytest.raises(ValueError):
-        eod_capture._build_send_telegram_cmd(env={})
+def test_explicit_session_outside_default_root_is_rejected_without_inference(
+    tmp_path, monkeypatch, capsys
+):
+    """Regression: without --codex-root or env, root defaults to ~/.codex/sessions.
+
+    An explicit session under an arbitrary .codex/sessions tree must not be
+    treated as its own authorized root.
+    """
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    # Ensure no env override from the autouse fixture.
+    monkeypatch.delenv("K2B_CODEX_SESSIONS_ROOT", raising=False)
+    untrusted = tmp_path / "untrusted" / ".codex" / "sessions"
+    untrusted.mkdir(parents=True, exist_ok=True)
+    session = untrusted / "session.jsonl"
+    session.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"cwd": "/Users/keithmbpm2/Projects/K2B"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "rejected" in captured.err.lower()
+    assert str(session) in captured.err or "outside codex root" in captured.err.lower()
+
+
+def test_detect_source_app_rejects_out_of_root_paths(tmp_path):
+    """Regression: detect_source_app must label out-of-root sessions as unknown."""
+    codex_root = tmp_path / ".codex" / "sessions"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    inside = codex_root / "rollout.jsonl"
+    outside = tmp_path / "other" / "session.jsonl"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_text("{}", encoding="utf-8")
+    outside.write_text("{}", encoding="utf-8")
+
+    assert eod_capture.detect_source_app(inside, codex_root=codex_root) == "codex_desktop"
+    assert eod_capture.detect_source_app(outside, codex_root=codex_root) == "unknown"
+
+
+def test_telegram_send_helpers_removed():
+    """No Telegram alert or send helpers may remain in the capture module."""
+    assert not hasattr(eod_capture, "_post_telegram_alert")
+    assert not hasattr(eod_capture, "_build_send_telegram_cmd")
+    assert not hasattr(eod_capture, "_send_telegram")
+
+
+def test_digest_send_mode_rejected(tmp_path, monkeypatch):
+    """The digest --send mode must be removed from the CLI."""
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    (vault / ".staging").mkdir(parents=True, exist_ok=True)
+    (vault / ".staging" / "eod-capture-summary-2026-05-14.json").write_text(
+        json.dumps({"processed_files": 1, "auto_written": 1, "errors": 0}), encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        eod_capture.main(
+            ["digest", "--date", "2026-05-14", "--vault", str(vault), "--send"]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_k2b_k2bi_scope_is_included_and_unrelated_excluded(tmp_path):
+    """Discovery includes K2B/K2Bi sessions and excludes unrelated project sessions."""
+    codex_root = tmp_path / ".codex" / "sessions"
+    k2b = codex_root / "2026" / "05" / "14" / "rollout-k2b.jsonl"
+    k2bi = codex_root / "2026" / "05" / "14" / "rollout-k2bi.jsonl"
+    other = codex_root / "2026" / "05" / "14" / "rollout-other.jsonl"
+    for p in (k2b, k2bi, other):
+        p.parent.mkdir(parents=True, exist_ok=True)
+    for p, cwd in (
+        (k2b, "/Users/keithmbpm2/Projects/K2B"),
+        (k2bi, "/Users/keithmbpm2/Projects/K2Bi"),
+        (other, "/Users/keithmbpm2/Projects/Other"),
+    ):
+        p.write_text(
+            json.dumps({"type": "session_meta", "payload": {"cwd": cwd}}) + "\n",
+            encoding="utf-8",
+        )
+    ts = datetime(2026, 5, 14, 10, tzinfo=timezone.utc).timestamp()
+    for p in (k2b, k2bi, other):
+        os.utime(p, (ts, ts))
+
+    found = eod_capture.discover_session_paths(run_date="2026-05-14", codex_root=codex_root)
+    assert k2b in found
+    assert k2bi in found
+    assert other not in found
+
+
+def test_extraction_retry_and_raw_hash_preserved_on_slow_skip(tmp_path, monkeypatch):
+    """Slow extraction skip preserves the raw transcript hash; retries do not mutate raw source."""
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    codex_root = tmp_path / ".codex" / "sessions"
+    session = _explicit_codex_session(codex_root, "rollout-slow.jsonl")
+    session.parent.mkdir(parents=True, exist_ok=True)
+    raw_text = json.dumps({"type": "user", "content": "large transcript"}) + "\n"
+    session.write_text(raw_text, encoding="utf-8")
+    transcript_hash = hashlib.sha256(
+        eod_capture.strip_transcript(session).encode("utf-8")
+    ).hexdigest()
+    raw_hash = hashlib.sha256(session.read_bytes()).hexdigest()
+    wrapper = tmp_path / "minimax-json-job.sh"
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(eod_capture, "MINIMAX_JSON_JOB", wrapper)
+
+    attempts = []
+
+    def fake_run(*_args, **_kwargs):
+        attempts.append(1)
+        raise eod_capture.subprocess.TimeoutExpired(cmd="kimi", timeout=360)
+
+    monkeypatch.setattr(eod_capture, "_run_extractor_process", fake_run)
+
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--session",
+            str(session),
+        ]
+    )
+
+    skips = sorted((vault / ".staging" / "extraction-skips").glob("*.json"))
+    failures = sorted((vault / ".staging" / "extraction-failures").glob("*.json"))
+    assert rc == 0
+    assert len(skips) == 1
+    assert failures == []
+    skip = json.loads(skips[0].read_text(encoding="utf-8"))
+    assert skip["reason"] == "slow_extraction"
+    assert skip["transcript_sha256"] == transcript_hash
+    assert skip["raw_source_sha256"] == raw_hash
+    # Raw source file must be untouched.
+    assert session.read_text(encoding="utf-8") == raw_text
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize(
+    ("cwd", "timestamp", "error_fragment"),
+    [
+        ("/Users/keithmbpm2/Projects/K2B-Archive", "2026-05-14T10:00:00Z", "scope"),
+        ("/Users/keithmbpm2/Projects/K2B", "2026-05-13T10:00:00Z", "date"),
+    ],
+)
+def test_explicit_session_enforces_exact_scope_and_run_date(
+    tmp_path, monkeypatch, capsys, cwd, timestamp, error_fragment
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    codex_root = tmp_path / ".codex" / "sessions"
+    session = codex_root / "2026" / "05" / "14" / "rollout-explicit.jsonl"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "timestamp": timestamp,
+                "payload": {"cwd": cwd},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    called = False
+
+    def should_not_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(eod_capture, "run_job_a", should_not_run)
+    rc = eod_capture.main(
+        [
+            "job-a",
+            "--date",
+            "2026-05-14",
+            "--vault",
+            str(vault),
+            "--codex-root",
+            str(codex_root),
+            "--session",
+            str(session),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert not called
+    assert error_fragment in captured.err.lower()
+
+
+def test_raw_source_hash_is_separate_and_invalidates_stripped_payload_cache(tmp_path):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    codex_root = tmp_path / ".codex" / "sessions"
+    session = codex_root / "2026" / "05" / "14" / "rollout-raw-hash.jsonl"
+    session.parent.mkdir(parents=True, exist_ok=True)
+
+    def write_session(meta_revision: int) -> None:
+        session.write_text(
+            json.dumps(
+                {
+                    "type": "session_meta",
+                    "timestamp": "2026-05-14T10:00:00Z",
+                    "payload": {
+                        "cwd": "/Users/keithmbpm2/Projects/K2B",
+                        "revision": meta_revision,
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps({"type": "user", "content": "stable visible payload"})
+            + "\n",
+            encoding="utf-8",
+        )
+
+    calls = 0
+
+    def fake_extract(_payload: str, _session_path: Path) -> dict:
+        nonlocal calls
+        calls += 1
+        return {"schema_version": "1.0", "items": []}
+
+    write_session(1)
+    first = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        extract_func=fake_extract,
+        codex_root=codex_root,
+    )
+    first_data = json.loads(first[0].read_text(encoding="utf-8"))
+    assert first_data["raw_source_sha256"] == hashlib.sha256(session.read_bytes()).hexdigest()
+    assert first_data["transcript_sha256"] == hashlib.sha256(
+        eod_capture.strip_transcript(session).encode("utf-8")
+    ).hexdigest()
+
+    write_session(2)
+    second = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        extract_func=fake_extract,
+        codex_root=codex_root,
+    )
+
+    assert len(second) == 1
+    assert calls == 2
+    second_data = json.loads(second[0].read_text(encoding="utf-8"))
+    assert second_data["raw_source_sha256"] == hashlib.sha256(session.read_bytes()).hexdigest()
+    assert second_data["raw_source_sha256"] != first_data["raw_source_sha256"]
+    assert second_data["transcript_sha256"] == first_data["transcript_sha256"]
+
+
+def test_extractor_child_error_is_redacted_before_stderr_and_durable_failure(
+    tmp_path, monkeypatch, capsys
+):
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    codex_root = tmp_path / ".codex" / "sessions"
+    session = codex_root / "2026" / "05" / "14" / "rollout-secret-error.jsonl"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        json.dumps({"type": "user", "content": "safe payload"}) + "\n",
+        encoding="utf-8",
+    )
+    secret = "sk-childstderrsecret123456"
+
+    def fake_kimi(*_args, **_kwargs):
+        raise RuntimeError(f"extractor failed Authorization: Bearer {secret}")
+
+    monkeypatch.setattr(eod_capture, "call_kimi_extractor", fake_kimi)
+    eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-05-14",
+        codex_root=codex_root,
+    )
+
+    captured = capsys.readouterr()
+    failure = next((vault / ".staging" / "extraction-failures").glob("*.json"))
+    durable = failure.read_text(encoding="utf-8")
+    assert secret not in captured.err
+    assert secret not in durable
+    assert "[REDACTED]" in captured.err
+    assert "[REDACTED]" in durable

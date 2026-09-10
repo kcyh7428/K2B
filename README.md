@@ -1,367 +1,113 @@
-# K2B -- Keith's Second Brain
+# K2B — Keith's Second Brain
 
-A personal AI operating system built on Claude Code + Obsidian. Captures work, surfaces patterns, drafts content, and gets smarter over time.
+K2B is Keith's personal knowledge and workflow system. Codex is the primary interface and sole live instruction authority. Kimi K2.7 Code is the retained cloud worker for bounded extraction, analysis, and independent review of OpenAI-built changes.
 
-![K2B system architecture](docs/images/k2b-system-infographic.png)
+Stage 1 uses two Macs:
 
-Inspired by [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) and his [autoresearch](https://github.com/karpathy/autoresearch) self-improvement loop.
+- **Home MacBook Pro** — owns shared-vault writes and reconciliation.
+- **SJM MacBook Pro** — captures local Codex sessions and reads the synchronized vault; shared write operations are queued for the home writer.
 
-See `wiki/context/context_k2b-system.md` in the vault for the comprehensive written reference, and `Assets/2026-04-19_k2b-system-mindmap.json` for the full hierarchical map.
+Git carries project code. Syncthing replicates `K2B-Vault` directly between the two Macs. Syncthing is transport, not a lock or backup. Credentials remain per-machine.
 
-## Inspiration & Credits
+## Daily experience
 
-K2B's knowledge architecture is built on Karpathy's LLM Wiki idea (April 2026): instead of RAG-style retrieval on every query, an LLM incrementally builds and maintains a persistent wiki -- structured, interlinked markdown files that sit between you and raw sources. Knowledge is compiled once and kept current, not re-derived every time you ask a question.
+Most K2B work is intentionally conversational and manual:
 
-The self-improvement system adapts Karpathy's autoresearch pattern: define ONE thing to change, ONE metric to measure, then loop (modify -> commit -> test -> if better keep, if worse revert -> repeat). In autoresearch this optimizes neural network training code. In K2B it optimizes skill instructions.
+1. Talk with Codex on either Mac.
+2. Local discovery finds eligible Codex session files directly and leaves the source immutable.
+3. During a requested session, Codex processes queued conversations with retained Kimi assistance within its interactive entitlement.
+4. The home writer commits accepted knowledge to the vault.
+5. Syncthing makes the result available on the other Mac for later recall.
 
-K2B extends the original pattern with:
-- A **review queue** (human judgment layer between LLM suggestions and wiki promotion)
-- A **commander/worker architecture** (Opus orchestrates, Kimi K2.6 handles heavy extraction at a fraction of Opus cost)
-- A **background observer** that continuously learns from vault behavior patterns
-- A **cross-link weaver** that proactively proposes semantic connections between wiki pages
-- A **content pipeline** that turns captured knowledge into LinkedIn posts, emails, and media
-- **Active rules** auto-promoted from learnings and injected every session (vs. hand-written program.md)
+Missed days are handled by range-based discovery rather than a yesterday-only schedule. Replaying an already reconciled source is idempotent. `python3 scripts/eod-capture.py status --since 2026-07-26` reports source/receipt evidence without claiming that another host is healthy.
 
-## What it does
+Keith selected **automatic discovery, interactive capture with Codex and Kimi**. The unattended-safe entrypoint is `scripts/codex-discovery-job.sh home` (use `sjm-source-only` on SJM). It runs local discovery only, writes private queue/status plus an observable receipt under `~/.local/state/k2b/`, and never calls a provider or edits the vault. Schedule registration is an activation step; see the dated acceptance record for actual installation state.
 
-**Capture** -- Daily notes, meeting transcripts, YouTube videos, emails, research, and conversation summaries flow into a structured Obsidian vault. Every capture lands in `raw/` as an immutable source, then gets compiled into `wiki/` knowledge pages with automatic cross-linking, frontmatter, and index updates.
+Scheduler receipts retain the latest 90 runs. Vault reconciliation receipts are durable provenance and remain paired with their extraction artifact; a missing or changed extraction makes status retryable rather than silently trusting an orphan receipt.
 
-**Think** -- Pattern recognition across notes, content idea extraction, deep research on external topics, review triage. The wiki is searchable through `index.md` (content catalog) and `log.md` (chronological record) -- no vector DB or RAG infrastructure needed. For complex multi-source research, `/research deep` offloads analysis to Google NotebookLM (Gemini) at zero token cost.
+During a requested Codex session, review a selected source and produce a JSON object with an explicit `items` list plus its `raw_source_sha256` and `transcript_sha256`. On home, `stage-reviewed --date YYYY-MM-DD --session /absolute/source.jsonl --reviewed-json /private/reviewed.json` validates provenance, source scope, and evidence before staging; `job-b --date YYYY-MM-DD` performs locked reconciliation after healthy vault sync. Missing, malformed, or stale reviewed output must not be treated as an empty successful extraction. The extractor schema and evidence rules remain in `scripts/prompts/eod-capture-extract.md`.
 
-**Create** -- LinkedIn posts drafted from vault insights, media generation (images, speech, transcription via GPTsAPI), email drafting via Google Workspace.
+For an SJM source, run `export-source --source-host sjm --session /absolute/source.jsonl --output ~/.local/state/k2b/capture-bundles/<id>.json` on SJM during the requested session. It accepts only an exact K2B/K2Bi Codex source, removes tool/system/developer content, redacts credential patterns, binds the immutable raw-source and dialogue hashes, and writes mode 0600. Transfer only that selected bundle over the existing authorized SSH connection; never synchronize the complete Codex session tree. Home stages it with `stage-reviewed --source-bundle /private/bundle.json`. Bundles and reviewed JSON stay machine-local, outside Git and Syncthing.
 
-**Learn** -- K2B improves itself continuously (see Self-Improvement System below).
+Kimi Code membership is for interactive use, not scripted batch processing. Do not schedule legacy `job-a`, `catch-up`, or the compatibility cron wrapper. No paid API fallback is enabled. Backlog sources stay waiting until actually reviewed and reconciled.
 
-**Remote access** -- Always-on Mac Mini runs a Telegram bot (Anthropic Agent SDK) for K2B access from anywhere.
+Optional Obsidian MCP reads the owning machine's private Local REST API plugin credential through `scripts/run-obsidian-mcp.sh`. That plugin's `data.json` must be mode 0600 and excluded from Syncthing on each Mac. No API key belongs in Git or in a copied configuration.
 
-## Knowledge Architecture
+The dashboard intake route is optional manual staging. A present manifest is reported as `staged`, never `processing`, unless a verified worker exists. Stage 1 does not require a continuously running dashboard.
 
-Based on Karpathy's three-layer design, extended with a human judgment queue:
+## Knowledge layout
 
-```
-Layer 1: Raw Sources (immutable)          Layer 2: Wiki (LLM-owned)
-raw/                                      wiki/
-  youtube/    Video transcripts             people/       20 person pages
-  meetings/   Meeting transcripts           projects/     11 project pages
-  research/   Research briefings            work/         6 operational pages
-  tldrs/      Conversation summaries        concepts/     12 concept/feature pages
-  daily/      Daily note extracts           insights/     3 insight pages
-                                            reference/    15 reference pages
-                                            content-pipeline/  4 content ideas
-                                            context/      21 operational configs
+The vault remains plain Markdown:
 
-Layer 3: Review (human judgment)          Schema
-review/                                   CLAUDE.md     System prompt + conventions
-  Content ideas awaiting adoption           (co-evolved with K2B over time)
-  Compile conflicts needing resolution    Active rules  7 behavioral rules injected
-  Cross-link proposals from weave           every session, promoted from learnings
+```text
+K2B-Vault/
+  raw/                 immutable source captures
+  wiki/                compiled, source-backed knowledge
+  review/              items awaiting Keith's judgment
+  System/memory/       active rules and memory ledgers
 ```
 
-**How ingest works (the ripple effect):**
+Important shared hubs have one writer on the home Mac. Use their owning helper rather than editing concurrently:
 
-A single source (YouTube video, meeting transcript, research article) triggers a compile pass that can touch 10-15 wiki pages:
+- `wiki/log.md` → `scripts/wiki-log-append.sh`
+- compile indexes → `scripts/compile-index-update.py`
+- observer candidates/defers and policy or usage ledgers → their owning scripts
 
-```
-Raw source dropped in raw/
-    |
-k2b-compile calls Kimi K2.6 for structured extraction
-    |
-Kimi returns: pages_to_update, pages_to_create, content_seeds
-    |
-Opus applies changes atomically:
-    +-- Creates/updates person pages (who was mentioned)
-    +-- Creates/updates project pages (what was discussed)
-    +-- Creates/updates concept pages (ideas and patterns)
-    +-- Updates wiki subfolder index
-    +-- Updates raw subfolder index
-    +-- Updates master wiki/index.md counts
-    +-- Appends to wiki/log.md
-```
+SJM-side pending operations belong in `~/.local/state/k2b/`, outside the synchronized vault. Wait for healthy, up-to-date Syncthing state before applying a queued shared-vault change.
 
-**Navigation (directly from Karpathy's pattern):**
-- `wiki/index.md` -- content catalog, read FIRST on every query. Navigate to any page in 2 hops.
-- `wiki/log.md` -- append-only record of all vault operations. Parseable with `grep "^## \[" log.md`.
-- Per-subfolder `index.md` files for granular navigation within each wiki category.
+## Providers
 
-## Deep Research with NotebookLM
+- **Codex** — commander, implementation, and normal desktop interface.
+- **Kimi K2.7 Code** — extraction/analysis worker and independent reviewer. The integration uses the Kimi Code membership service at `https://api.kimi.com/coding`; it must not silently switch to a metered Moonshot Open Platform endpoint.
+- **NotebookLM/Gemini** — optional specialist for explicitly requested multi-source synthesis.
+- **GPTsAPI/Groq/Higgsfield** — retained media, OCR, transcription, and generation routes where their specific skills apply.
 
-K2B integrates Google NotebookLM as a third worker model for multi-source research. While Kimi handles single-source extraction and Opus handles orchestration, NotebookLM (powered by Gemini) handles multi-document synthesis across 10-50 sources at zero token cost to K2B.
+Provider credentials are stored per machine, outside Git. The K2B scripts read the required variables from the environment or `~/.k2b-env`. Never copy credentials between Macs.
 
-**Setup:** `pip install "notebooklm-py[browser]"` + `notebooklm login` + `notebooklm skill install` (MacBook only).
+## Active and disabled lanes
 
-**The flow:**
+Active Stage 1 behavior is deliberately small:
 
-```
-/research deep "topic"
-    |
-Phase 1: Source Gathering
-    +-- YouTube Data API (yt-search.py, 101 quota units/search)
-    +-- Perplexity MCP (GitHub repos, Reddit, articles, tweets)
-    +-- Vault grep (existing wiki notes on topic)
-    |
-Keith reviews and approves source list
-    |
-Phase 2: NotebookLM Setup
-    +-- notebooklm create "K2B Research: <topic>"
-    +-- notebooklm source add <url> (for each approved source, up to 50)
-    +-- Wait for indexing
-    |
-Phase 3: Structured Research Queries (Gemini does ALL analysis -- FREE)
-    +-- 5-8 targeted questions against the notebook
-    +-- Landscape, architecture, comparison, risks, applicability
-    +-- Citation-grounded answers, zero hallucination
-    |
-Phase 4: Optional Deliverables
-    +-- Audio overview (podcast), mind map, infographic
-    |
-Phase 5: Synthesis (Opus -- only phase that costs tokens)
-    +-- K2B-specific framing (Keith's context, vault architecture fit)
-    +-- Save to raw/research/
-    |
-Phase 6: Compile into wiki pages
-```
+- automatic Codex conversation discovery; interactive Codex/Kimi capture and receipt-backed home reconciliation
+- manual vault reading, writing, compile, review, and research when Keith requests them
+- Git code synchronization and two-Mac Syncthing vault replication
+- truthful local status and authority checks
 
-**Three-model architecture for research:**
+The following routines are disabled unless Keith explicitly starts a separate task for them: daily capture, meeting processing, observer, weave, YouTube batch capture, LinkedIn publishing, reminders, alerts, and broad background automation. Disabled means no scheduled worker should be enabled and no dashboard should describe one as healthy.
 
-| Role | Model | What it does | Cost |
-|------|-------|-------------|------|
-| Commander | Claude Opus | Source gathering, question design, K2B framing, vault integration | Standard |
-| Worker 1 | Gemini (NotebookLM) | Multi-document analysis, cross-referencing, citation-grounded answers | Free |
-| Worker 2 | Kimi K2.6 | Single-source bulk extraction (when source > 10K chars) | Much cheaper than Opus |
+Tracked Claude compatibility material and the K2B Telegram bot are removed by Stage 1. The obsolete Mini router-watchdog jobs, legacy observer writers, and the old local sentence-transformer preflight/index/retrieval lane are also removed; local AI returns only as a separately designed Stage 2. Personal Claude/Telegram application data and historical captures are not part of this cleanup. Historical records are evidence, never live instructions.
 
-The NotebookLM notebook persists on Google's servers. Keith can revisit it for follow-up queries anytime. Deep research runs on MacBook only (not via Telegram). Compiled wiki pages sync to Mac Mini via Syncthing.
+The former Mac Mini topology is outside Stage 1. Do not contact, inspect, configure, deploy to, or create a pending obligation for it. Local-model installation or evaluation is Stage 2 and requires separate acceptance and authorization.
 
-## YouTube Knowledge Pipeline
+## Repository map
 
-K2B processes YouTube videos through 7 category playlists, each with domain-specific analysis:
-
-| Playlist | Focus | Analysis Angle |
-|----------|-------|---------------|
-| K2B | AI tools, second brain systems | Architecture patterns, integration opportunities |
-| K2B Claude | Claude Code, Anthropic ecosystem | Techniques to adopt, skill improvements |
-| K2B Invest | Markets, trading, macro | Investment thesis extraction, risk signals |
-| K2B Recruit | Talent acquisition, HR tech | Industry trends, competitive intelligence |
-| K2B Content | Content creation, LinkedIn | Format ideas, engagement patterns |
-| K2B Learn | General learning, productivity | Frameworks, mental models |
-| K2B Screen | Pre-screened, high-signal content | Deep analysis (curator-approved) |
-
-**The flow:**
-
-```
-YouTube playlist (saved by Keith)
-    |
-yt-playlist-poll.sh detects new videos
-    |
-Transcript extracted (YouTube API or Groq Whisper for Chinese/unavailable)
-    |
-Playlist-specific analysis prompt generates raw/ capture
-    |
-k2b-compile digests into wiki/ (updates people, concepts, reference pages)
-```
-
-Fresh-video discovery from search queries runs through `/research videos "<query>"` via NotebookLM, which reads `wiki/context/video-preferences.md` as its filter tail on every run. Feedback flows: `/research videos` drops per-video review notes in `review/`, `/review` (or the Telegram feedback path) distills Keith's verdicts into `video-preferences.md`, and the next run is naturally tuned.
-
-The old 6-hour YouTube conversational agent (taste model, channel affinity scoring, recommendation engine) was retired 2026-04-14. See the feature note for the full change.
-
-## Self-Improvement System
-
-K2B gets smarter through three interconnected loops:
-
-### 1. Observation and Pattern Detection
-
-```
-Keith uses K2B normally (capture, triage, create)
-    |
-Stop hook fires after every Claude response
-    |
-Detects vault file changes, guesses which skill was active
-    |
-Writes structured observation to observations.jsonl
-    |
-Background observer (Kimi K2.6, pm2 on Mac Mini)
-    +-- Batches 20+ observations
-    +-- Detects patterns: what gets promoted vs. archived,
-    |   revision patterns, content adoption rates
-    +-- Writes findings to observer-candidates.md
-    +-- Appends signals to preference-signals.jsonl
-    |
-Session start hook surfaces findings for Keith to review
-```
-
-Cost: ~$0.007 per analysis, ~$0.11/day for hourly checks during active hours.
-
-### 2. Learning and Active Rules
-
-```
-Corrections, errors, and preferences accumulate:
-    |
-/learn captures a correction        -> self_improve_learnings.md
-/error logs a failure with root cause -> self_improve_errors.md
-/request logs a missing capability   -> self_improve_requests.md
-    |
-Learnings get reinforced (tracked count) on repeat observations
-    |
-Weekly audit promotes high-confidence learnings to active_rules.md
-    (last audit: pruned 14 -> 7 rules, demoted 3, merged 2)
-    |
-Active rules injected into every session via startup hook
-    |
-Rules shape behavior -> new observations generated -> cycle continues
-```
-
-Current active rules (7): content identity boundaries, pipeline discipline, context vs. insight triage, deployment safety, poll-before-act, shipped-means-complete, compile index checklist.
-
-### 3. Skill Optimization (Karpathy's Autoresearch, Adapted)
-
-```
-/autoresearch [skill-name]
-    |
-Phase 0: Preconditions (clean git, eval.json exists)
-Phase 1: Review (read SKILL.md, results.tsv, git log, learnings)
-Phase 2: Ideate (choose next change by priority)
-Phase 3: ONE focused change to SKILL.md
-Phase 4: git commit BEFORE testing (enables clean revert)
-Phase 5: Run binary assertions from eval.json
-Phase 6: If pass rate improved -> keep. If worse -> git reset
-Phase 7: Log to eval/results.tsv
-Phase 8: Update eval/learnings.md
-    |
-Repeat. Each iteration is one experiment. Git history is memory.
-```
-
-5 skills have eval infrastructure: daily-capture (91.7% pass rate), meeting-processor (80%), tldr, vault-writer, insight-extractor.
-
-### 4. Cross-Link Weaver
-
-```
-Scheduled 3x/week (Sun/Tue/Thu at 04:00 HKT)
-    |
-k2b-weave reads all wiki pages, extracts existing links
-    |
-Kimi K2.6 finds semantic gaps (missing cross-links)
-    |
-Top 10 proposals ranked by utility:
-    +3 if target is orphan (zero inbound links)
-    +2 if from/to cross wiki categories
-    +1 if confidence > 0.75
-    |
-Digest note dropped in review/ for Keith's approval
-    |
-crosslink-ledger.jsonl tracks applied/rejected/deferred pairs
-```
-
-### 5. Vault Lint
-
-`/lint` checks for: orphan pages, broken wikilinks, stale content, uncompiled raw sources, sparse articles, backlink gaps. `/lint deep` adds contradiction detection via Kimi K2.6 across the full wiki.
-
-## Commander/Worker Architecture
-
-K2B uses a three-model pattern to balance capability, cost, and coverage:
-
-| Role | Model | What it does | Cost |
-|------|-------|-------------|------|
-| **Commander** | Claude Opus (Claude Code) | Daily dialogue, orchestration, tool use, file changes | Standard Opus pricing |
-| **Worker 1** | Kimi K2.6 (api.kimi.com/coding) | Background analysis, compilation, contradiction detection, bulk extraction | Much cheaper than Opus |
-| **Worker 2** | Gemini (via NotebookLM) | Multi-source deep research, cross-referencing, citation-grounded synthesis | Free (Google pays) |
-
-Worker scripts in `scripts/`:
-- `minimax-compile.sh` -- structured extraction for raw -> wiki compilation
-- `minimax-weave.sh` -- semantic gap detection for cross-linking
-- `minimax-lint-deep.sh` -- contradiction detection across wiki pages
-- `minimax-research-extract.sh` -- extraction on long external sources
-- `observer-loop.sh` -- background preference pattern detection
-
-Pattern: Opus calls bash scripts that route text work to Kimi K2.6, receives structured JSON, applies changes to the vault. The worker scripts are still named `minimax-*.sh` for historical reasons; they switch provider through `K2B_LLM_PROVIDER` (default `kimi`). MiniMax was the original worker -- its subscription lapsed 2026-05-27, so `K2B_LLM_PROVIDER=minimax` is now an inert rollback path.
-
-## Infrastructure
-
-```
-Telegram (mobile)             MacBook (interactive sessions)
-    |                              |
-Mac Mini (always-on)          Claude Code + Hooks
-    |                              |
-    +-- k2b-remote                 +-- SessionStart hook (review, triggers, observer)
-    |   (Anthropic Agent SDK)      +-- Stop hook (observation capture)
-    |                              |
-    +-- k2b-observer-loop          +-- 22 Skills
-    |   (Kimi K2.6)                |     Capture: /daily, /meeting, /tldr, /youtube, /email, /compile
-    |   Analyzes usage patterns    |     Think:   /review, /insight, /content, /research, /observe
-    |   Writes observer-candidates |     Create:  /linkedin, /media
-    |   Updates preference signals |     Teach:   /learn, /error, /request
-    |                              |     System:  /ship, /schedule, /usage, /sync, /autoresearch,
-    +-- k2b-weave (3x/week)       |             /lint, /improve
-    |   Cross-link proposals       |
-    |                              +-- Obsidian Vault (Syncthing-synced)
-    +-- Syncthing (vault sync)     +-- Google Workspace (Gmail, Calendar, Drive)
-                                   +-- GPTsAPI (image, speech, transcription) + Kimi K2.6 (text)
-                                   +-- YouTube API, LinkedIn API, Airtable
-```
-
-## Skills (22)
-
-| Category | Skills | What they do |
-|----------|--------|-------------|
-| Capture | daily-capture, meeting-processor, tldr, youtube-capture, email, compile | Ingest from calendar, transcripts, videos, Gmail, compile raw -> wiki |
-| Think | review, insight-extractor, observer, research, improve, lint, weave | Triage, pattern detection, preference learning, vault health, cross-linking |
-| Create | linkedin, media-generator, vault-writer | Draft posts, generate media, write vault notes |
-| Teach K2B | feedback, usage-tracker, autoresearch | Corrections, usage stats, Karpathy-style self-improvement |
-| System | ship, sync, scheduler | End-of-session shipping, deploy to Mac Mini, scheduled tasks |
-
-Each skill is a Markdown file with YAML frontmatter in `.claude/skills/k2b-*/SKILL.md`.
-
-## Directory structure
-
-```
+```text
 K2B/
-  .claude/
-    skills/k2b-*/      22 skills (capture, think, create, teach, system)
-    settings.json       Project-level hooks configuration
-  k2b-remote/           Telegram bot (Anthropic Agent SDK, runs on Mac Mini via pm2)
-  scripts/
-    hooks/              Claude Code hooks (session-start, stop-observe)
-    observer-loop.sh    Background observer, Kimi-backed (pm2 on Mac Mini)
-    observer-prompt.md  Structured prompt for observer analysis
-    minimax-*.sh        Text-worker utilities, Kimi-backed (compile, weave, lint, research) -- historical name
-    gptsapi-*.sh        Media utilities (image, speech, transcribe, VLM/OCR)
-    k2b-weave*.sh/.py   Cross-link weaver scripts
-    yt-*.sh             YouTube API scripts (playlist poll, transcribe, auth)
-    yt-search.py        YouTube Data API v3 search (topic-based video discovery)
-    linkedin-*.sh       LinkedIn publishing scripts
-    deploy-to-mini.sh   Deployment script for Mac Mini
-    vault-query.sh      Vault search utility
-  docs/                 Original planning and architecture documents
-  tests/                Test fixtures (weave vault mock, etc.)
-  CLAUDE.md             Live system prompt (source of truth for K2B behavior)
-  DEVLOG.md             Development log
+  AGENTS.md                    live Codex authority
+  .agents/skills/k2b-*/        live K2B skills
+  .codex/hooks.json            bounded Codex hooks
+  k2b-dashboard/               optional manual intake/status UI
+  scripts/                     capture, provider, vault, and verification tools
+  tests/                       focused regression and safety tests
+  plans/                       dated implementation and acceptance evidence
 ```
 
-## Tech stack
+## Focused verification
 
-| Component | Role |
-|-----------|------|
-| Claude Code (Opus) | Primary AI engine, interactive sessions, commander |
-| Kimi K2.6 | Worker model: compilation, observer, weave, lint deep, research extraction (much cheaper than Opus) |
-| Google NotebookLM (Gemini) | Deep research worker: multi-source synthesis, citation-grounded answers (free, via teng-lin/notebooklm-py) |
-| Obsidian | Vault UI, graph view, cross-linking |
-| Anthropic Agent SDK | Telegram bot (k2b-remote) |
-| Google Workspace CLI | Gmail, Calendar, Drive integration |
-| GPTsAPI | Image, speech, transcription, VLM/OCR |
-| YouTube Data API | Playlist polling, video metadata, OAuth-authenticated |
-| Syncthing | Vault sync between MacBook and Mac Mini |
-| pm2 | Process management (k2b-remote, k2b-observer-loop) |
-| Claude Code Hooks | Automated session startup and observation capture |
+Start with the checks relevant to a change. Stage 1's core gates include:
 
-## Portability
+```bash
+scripts/verify-codex-authority.sh
+bash tests/codex-discovery-job.test.sh
+bash tests/eod-capture-cron.test.sh
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests/test_eod_capture.py tests/test_eod_capture_status.py
+python3 -m pytest tests/test_export_claude_history.py
+bash tests/inventory-retired-runtime.test.sh
+```
 
-This architecture is domain-agnostic. The three-layer vault (raw/wiki/review), compile pipeline, observer, weave, autoresearch, lint, and active rules system can transfer to any knowledge domain by swapping:
+Dashboard changes also require its focused test, typecheck, and build. Provider changes require the Kimi wrapper tests and harmless authenticated probes on both Macs.
 
-1. The wiki subfolder categories (e.g. `wiki/tickers/` instead of `wiki/people/`)
-2. The Kimi extraction prompts (financial analysis instead of meeting notes)
-3. The eval assertions (analysis quality instead of note formatting)
-4. The active rules (trading discipline instead of content identity)
+## Delivery
 
-The commander/worker pattern (Opus + Kimi + NotebookLM), observation loop, and self-improvement infrastructure remain the same.
-
-## Note
-
-This is a personal tool, not a framework or library. Built for one person's workflow. Architecture documented here for reference and potential adaptation to other domains.
+Implementation and delivery are separate decisions. Every eventual commit requires independent Kimi review when OpenAI built the change. Without explicit commit/push/ship wording, keep the verified work uncommitted and report what is implemented, tested, activated, and still blocked.

@@ -5,6 +5,8 @@ description: Dormant capture lane for meeting transcripts -- use only when Keith
 
 # K2B Meeting Processor
 
+> **Host boundary:** On SJM, the synchronized K2B vault is read-only. This dormant writer may run only when explicitly requested on Home.
+
 > [!warning] Dormant lane
 > This skill has no logged live use in the recent K2B usage window. Do not recommend it as a routine capture path. Invoke it only when Keith explicitly asks for `/meeting` or provides a transcript and asks to process it.
 
@@ -77,7 +79,7 @@ When creating a meeting note, always add `[[wiki links]]`:
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-meeting-processor\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed meeting transcript: TITLE" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-meeting-processor --summary "processed meeting transcript: TITLE"
 ```
 
 ## Notes

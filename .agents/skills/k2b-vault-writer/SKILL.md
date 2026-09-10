@@ -5,6 +5,8 @@ description: Default desktop path for creating or updating K2B vault notes with 
 
 # K2B Vault Writer
 
+> **Host boundary:** On SJM, the synchronized K2B vault is read-only. Stop before any vault mutation and ask Keith to run the write on Home; only the usage helper may queue its small record locally.
+
 Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
 
 ## Desktop Capture Default
@@ -391,5 +393,5 @@ After writing, confirm:
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-vault-writer\t$(echo $RANDOM | md5sum | head -c 8)\twrote/updated vault note: FILENAME" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-vault-writer --summary "wrote/updated vault note: FILENAME"
 ```

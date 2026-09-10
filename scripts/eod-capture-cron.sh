@@ -1,38 +1,20 @@
 #!/usr/bin/env bash
 # Cron-safe wrapper for End-of-Day Capture.
-# Does not install cron. Use this from crontab on the Mac Mini after Keith
-# approves the schedule and transcript Syncthing setup.
+# Compatibility wrapper for explicit single-date runs. It does not install or
+# enable a schedule. Stage 1 catch-up should use eod_capture.py's range-aware
+# command on the home writer after source synchronization is healthy.
 set -euo pipefail
 umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ORIGINAL_ARGS=("$@")
 
 usage() {
   cat <<'EOF'
-Usage: scripts/eod-capture-cron.sh <job-a|job-b|job-a-then-b|digest|digest-send> [YYYY-MM-DD]
+Usage: scripts/eod-capture-cron.sh <job-a|job-b|job-a-then-b|digest> [YYYY-MM-DD]
 
-Suggested Mac Mini crontab lines, after transcript dirs are synced.
-
-Form A (preferred -- bare invocation, relies on the script default):
-  0 2 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh job-a-then-b
-  0 8 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh digest-send
-
-The script default at line 91 is `$(date -v-1d '+%Y-%m-%d')` which returns
-yesterday HKT. Cron fires at 02:00 / 08:00 HKT (already the new HKT calendar
-day) and the script default correctly resolves to the day whose work we want
-to process.
-
-Form B (explicit -- ONLY if you want the schedule layer to declare intent):
-  0 2 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh job-a-then-b "$(date -v-1d '+\%Y-\%m-\%d')"
-  0 8 * * *  ~/Projects/K2B/scripts/eod-capture-cron.sh digest-send    "$(date -v-1d '+\%Y-\%m-\%d')"
-
-CRITICAL when using Form B: the `%` characters MUST be escaped as `\%`. cron
-treats unescaped `%` as newline-to-stdin, which truncates the command into
-"\$(date -v-1d '+" and the rest becomes stdin to the truncated command.
-Form A avoids this footgun entirely.
-
-Manual ad-hoc split mode remains available:
+No schedule is enabled by this script. Manual diagnostic modes:
   scripts/eod-capture-cron.sh job-a
   scripts/eod-capture-cron.sh job-b
 
@@ -84,6 +66,92 @@ if not (is_within(log_dir, vault) or is_within(log_dir, home)):
 PY
 }
 
+sanitize_run_output() {
+  python3 - "$1" "$2" <<'PY'
+import re
+import sys
+
+source, destination = sys.argv[1:3]
+try:
+    text = open(source, encoding="utf-8", errors="replace").read()
+except OSError:
+    raise SystemExit(1)
+
+text = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@", r"\1[REDACTED]@", text)
+text = re.sub(
+    r"(?i)\b((?:[A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|OAUTH)[A-Z0-9_]*)=)([^\s]+)",
+    r"\1[REDACTED]",
+    text,
+)
+text = re.sub(
+    r"(?i)(--(?:api[-_]?key|token|secret|password|credential|auth|cookie|oauth)(?:=|\s+))([^\s]+)",
+    r"\1[REDACTED]",
+    text,
+)
+text = re.sub(
+    r"(?i)(\b(?:authorization|authentication)\s*:\s*(?:bearer\s+)?)([^\s]+)",
+    r"\1[REDACTED]",
+    text,
+)
+text = re.sub(
+    r"\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|(?:tk|tok)_[A-Za-z0-9_-]{6,}|(?=[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=]))(?=[A-Za-z0-9+/]*[G-Zg-z+/])[A-Za-z0-9+/]{40,}={0,2})\b",
+    "[REDACTED]",
+    text,
+)
+try:
+    with open(destination, "w", encoding="utf-8") as f:
+        f.write(text)
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+append_run_output() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import stat
+import sys
+
+source, destination = sys.argv[1:3]
+source_fd = None
+destination_fd = None
+try:
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    source_stat = os.fstat(source_fd)
+    if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_uid != os.getuid():
+        raise OSError("source is not an owned regular file")
+    destination_fd = os.open(
+        destination,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+    )
+    destination_stat = os.fstat(destination_fd)
+    if (
+        not stat.S_ISREG(destination_stat.st_mode)
+        or destination_stat.st_uid != os.getuid()
+        or destination_stat.st_mode & 0o077
+    ):
+        raise OSError("destination is not an owned private regular file")
+    while True:
+        chunk = os.read(source_fd, 1024 * 1024)
+        if not chunk:
+            break
+        view = memoryview(chunk)
+        while view:
+            written = os.write(destination_fd, view)
+            view = view[written:]
+    os.fsync(destination_fd)
+except OSError as exc:
+    print(f"eod-capture-cron: secure log append failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    if destination_fd is not None:
+        os.close(destination_fd)
+    if source_fd is not None:
+        os.close(source_fd)
+PY
+}
+
 MODE="${1:-}"
 if [[ -z "$MODE" || "$MODE" == "-h" || "$MODE" == "--help" ]]; then
   usage
@@ -122,6 +190,19 @@ if [[ -f "$ENV_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$ENV_FILE"
   set +a
+fi
+
+CAPTURE_WRITER_ROLE="${K2B_CAPTURE_WRITER_ROLE:-}"
+if [[ -z "$CAPTURE_WRITER_ROLE" ]]; then
+  if [[ "$(basename "$HOME")" == "keithmbpm2" ]]; then
+    CAPTURE_WRITER_ROLE="home"
+  else
+    CAPTURE_WRITER_ROLE="sjm-source-only"
+  fi
+fi
+if [[ "$CAPTURE_WRITER_ROLE" != "home" ]]; then
+  echo "eod-capture-cron: compatibility wrapper is home-writer-only; SJM/source-only runs are rejected" >&2
+  exit 2
 fi
 
 VAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
@@ -238,25 +319,6 @@ run_job_a_then_b() {
 PIPELINE_LOCK_ACQUIRED=0
 PIPELINE_LOCK_FILE=""
 
-lock_fd_nonblocking() {
-  if command -v flock >/dev/null 2>&1; then
-    flock -n 9
-    return $?
-  fi
-  python3 - <<'PY'
-import fcntl
-import sys
-
-try:
-    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    raise SystemExit(1)
-except OSError as exc:
-    print(f"eod-capture-cron: pipeline lock error: {exc}", file=sys.stderr)
-    raise SystemExit(2)
-PY
-}
-
 unlock_fd() {
   if command -v flock >/dev/null 2>&1; then
     flock -u 9 2>/dev/null || true
@@ -273,13 +335,58 @@ acquire_pipeline_lock() {
   local lock_root="$VAULT/.staging"
   mkdir -p "$lock_root"
   PIPELINE_LOCK_FILE="$lock_root/.eod-pipeline.lock"
-  exec 9>"$PIPELINE_LOCK_FILE"
-  if ! lock_fd_nonblocking; then
-    echo "[eod-capture-cron] another pipeline run holds the lock" >&2
-    exec 9>&-
-    return 3
+  if [[ "${K2B_EOD_PIPELINE_LOCKED:-0}" == "1" ]]; then
+    if ! python3 - <<'PY'
+import os
+import stat
+
+metadata = os.fstat(9)
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+    raise SystemExit(1)
+PY
+    then
+      echo "eod-capture-cron: inherited pipeline lock is invalid" >&2
+      return 2
+    fi
+    PIPELINE_LOCK_ACQUIRED=1
+    return 0
   fi
-  PIPELINE_LOCK_ACQUIRED=1
+  exec python3 - "$PIPELINE_LOCK_FILE" "$SELF_PATH" "${ORIGINAL_ARGS[@]}" <<'PY'
+import fcntl
+import os
+import stat
+import sys
+
+lock_path, script, *args = sys.argv[1:]
+fd = None
+try:
+    fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+    )
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise OSError("lock is not an owned regular file")
+    if metadata.st_mode & 0o077:
+        os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("[eod-capture-cron] another pipeline run holds the lock", file=sys.stderr)
+    raise SystemExit(3)
+except OSError as exc:
+    print(f"eod-capture-cron: secure pipeline lock failed: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+
+if fd != 9:
+    os.dup2(fd, 9, inheritable=True)
+    os.close(fd)
+else:
+    os.set_inheritable(9, True)
+env = os.environ.copy()
+env["K2B_EOD_PIPELINE_LOCKED"] = "1"
+os.execve(script, [script, *args], env)
+PY
 }
 
 release_pipeline_lock() {
@@ -294,9 +401,11 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/${RUN_DATE}_${MODE}.log"
 RUN_OUTPUT="$(mktemp "$LOG_DIR/.${RUN_DATE}_${MODE}.$$.XXXXXX")"
 RUN_STATUS="$(mktemp "$LOG_DIR/.${RUN_DATE}_${MODE}.status.$$.XXXXXX")"
+RUN_SANITIZED="$(mktemp "$LOG_DIR/.${RUN_DATE}_${MODE}.sanitized.$$.XXXXXX")"
 cleanup_run_output() {
   rm -f "$RUN_OUTPUT"
   rm -f "$RUN_STATUS"
+  rm -f "$RUN_SANITIZED"
 }
 trap cleanup_run_output EXIT
 cleanup_all() {
@@ -322,9 +431,6 @@ case "$MODE" in
     ;;
   digest)
     CMD=("$EOD_COMMAND" digest --date "$RUN_DATE" --vault "$VAULT")
-    ;;
-  digest-send)
-    CMD=("$EOD_COMMAND" digest --date "$RUN_DATE" --vault "$VAULT" --send)
     ;;
   *)
     echo "eod-capture-cron: unknown mode: $MODE" >&2
@@ -355,10 +461,16 @@ set +e
 } >"$RUN_OUTPUT" 2>&1
 cmd_rc="$(cat "$RUN_STATUS")"
 set -e
+if ! sanitize_run_output "$RUN_OUTPUT" "$RUN_SANITIZED"; then
+  echo "eod-capture-cron: failed to sanitize child output; raw output discarded" >&2
+  exit 124
+fi
+mv "$RUN_SANITIZED" "$RUN_OUTPUT"
 cat "$RUN_OUTPUT"
-if ! cat "$RUN_OUTPUT" >> "$LOG_FILE"; then
-  FAILSAFE_LOG="$LOG_DIR/${RUN_DATE}_${MODE}.append-failed.$$.log"
-  if cp "$RUN_OUTPUT" "$FAILSAFE_LOG"; then
+if ! append_run_output "$RUN_OUTPUT" "$LOG_FILE"; then
+  FAILSAFE_LOG=""
+  if FAILSAFE_LOG="$(mktemp "$LOG_DIR/${RUN_DATE}_${MODE}.append-failed.XXXXXX.log")" \
+    && append_run_output "$RUN_OUTPUT" "$FAILSAFE_LOG"; then
     echo "eod-capture-cron: preserved run output: $FAILSAFE_LOG" >&2
     append_failure_rc=125
   else

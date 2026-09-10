@@ -5,12 +5,14 @@ description: Deep dive into external topics -- scan for new AI tools, techniques
 
 # K2B Research Agent
 
+> **Host boundary:** SJM may perform read-only research, but any raw note, review item, asset, or other synchronized-vault output must be produced on Home.
+
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background research jobs are disabled in Stage 1; run research interactively unless Keith separately authorizes a bounded job.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -64,11 +66,11 @@ Detect URL type and handle accordingly:
    set -euo pipefail
    ERRFILE=$(mktemp -t yt-transcript-err.XXXXXX.log)
    trap 'rm -f "$ERRFILE"' EXIT INT TERM
-   TRANSCRIPT=$(K2B_YT_REMOTE_HOST="${K2B_YT_REMOTE_HOST:-macmini}" K2B_YT_REMOTE_TIMEOUT="${K2B_YT_REMOTE_TIMEOUT:-30}" ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE")
+   TRANSCRIPT=$(K2B_YT_REMOTE_FALLBACK=0 ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE")
    METHOD=$(grep "^METHOD:" "$ERRFILE" | tail -1 | awk '{print $2}')
    ```
-   This helper is the canonical path for Codex sessions and registered host jobs. It tries local captions (`no cookies -> cookie file -> browser cookies`), an explicit Mac Mini retry when configured, and Groq Whisper. If you are already on the Mini, set `K2B_YT_IS_MINI=1` to force local-only behavior, or `K2B_YT_REMOTE_FALLBACK=0` to disable SSH fallback entirely.
-   Expected methods are `captions-en`, `captions-zh`, `captions-en-remote`, `captions-zh-remote`, `groq-whisper`, `groq-whisper-remote`, and `failed`.
+   This helper tries local captions (`no cookies -> cookie file -> browser cookies`) and local Groq Whisper fallback. Remote-host retry is disabled in the two-Mac Stage 1 topology.
+   Expected methods are `captions-en`, `captions-zh`, `groq-whisper`, and `failed`.
    This `METHOD=` parsing pattern is for explicit shell use of `yt-transcript.sh`; the Codex hook path only consumes stdout, not stderr.
    If `yt-transcript.sh` exits non-zero or returns empty stdout, fall back to the transcript MCP only as a last resort and note why the shared helper failed.
 2. Analyze the full transcript
@@ -107,7 +109,7 @@ Multi-source research powered by Google NotebookLM. Creates a dedicated notebook
 #### Phase 1: Source Gathering
 
 1. Search for sources in parallel:
-   - **YouTube**: Run `python3 ~/Projects/K2B/scripts/yt-search.py "<topic>" --count 15 --months 6` for relevant videos. Uses YouTube Data API v3 with K2B's OAuth credentials (works on both MacBook and Mac Mini). Costs ~101 quota units per search (100 for search.list + 1 for videos.list) out of 10,000/day.
+   - **YouTube**: Run `python3 ~/Projects/K2B/scripts/yt-search.py "<topic>" --count 15 --months 6` for relevant videos. Uses the current Mac's YouTube OAuth credentials. Costs ~101 quota units per search (100 for search.list + 1 for videos.list) out of 10,000/day.
    - **Perplexity**: Use `mcp__perplexity-ask__perplexity_ask` for broader research including GitHub repos, Reddit discussions, blog posts, tweets. Ask for specific URLs and repo names.
    - **Vault**: Grep `~/Projects/K2B-Vault/wiki/` for existing vault notes on the topic
 2. Present a numbered source list to Keith. Include title, source type, and brief reason for inclusion.
@@ -282,7 +284,7 @@ Each lens has a specific "already-have anchor" and a fixed set of "stake-a-claim
 
 #### Stack lens (Claude Code, agent harness, dev tool content)
 
-- **Already-have anchor**: K2B's harness -- Commander/Worker (Codex + Kimi K2.7 Code), builder-family-clean adversarial review, specialized skills, Codex hooks, Ship/Sync workflow, `active_rules` + `policy-ledger.jsonl`, background observer.
+- **Already-have anchor**: K2B's harness -- Commander/Worker (Codex + Kimi K2.7 Code), builder-family-clean adversarial review, specialized skills, bounded Codex hooks, two-Mac Git/Syncthing workflow, `active_rules` + `policy-ledger.jsonl`.
 - **Check every claim against the anchor**: state explicitly "you already have this as X" or "new to you".
 - **Stake-a-claim options** (pick one): `Adopt` (rare -- whole-cloth migration justified) / `Retrofit` (steal specific ideas into existing stack, with file paths) / `Skip` / `Watch` (track, revisit later).
 
@@ -406,7 +408,7 @@ And add `notebooklm-notebook: "<notebook-id>"` to the frontmatter. Everything el
 
 ## `/research videos "<query>"` -- on-demand video discovery via NotebookLM
 
-Retires the old YouTube recommend agent. Finds videos matching a query, filters them via NotebookLM using Keith's baked framing + the tail of `wiki/context/video-preferences.md`, adds suitable ones to the K2B Watch playlist, and drops per-video review notes. Interactive results surface in Codex or the dashboard; registered jobs write receipts and route failures to the Operations Console attention queue.
+Retires the old YouTube recommend agent. On explicit request, finds videos matching a query, filters them via NotebookLM using Keith's baked framing + the tail of `wiki/context/video-preferences.md`, adds suitable ones to the K2B Watch playlist, and drops per-video review notes. Results and failures surface in the active Codex session with durable run evidence.
 
 **Prerequisites:** `notebooklm auth check --test` passes.
 
@@ -1132,7 +1134,7 @@ PYEOF
    - **Pick deep-extract section (Step 6.5 output).** When `$DEEPEXTRACT_STATUS == "ok"` or `"partial"`, append the entire `$PICK_DETAILS_JSON` content as a fenced JSON block under a `## Pick deep-extract (NBLM)` heading. When status is `schema-failed`, `parse-failed`, or `ask-failed`, append the raw NBLM response from `$PICK_DETAILS_RAW_FILE` AND the `$PICK_DETAILS_ERR` log under `## Pick deep-extract (failed)` so the failure is diagnosable later. When status is `skipped-no-picks`, write a one-line note "No picks, deep-extract skipped".
    - Ready/fail log from Step 3.
    - Per-video playlist-add results from Step 7.
-   - Any Operations Console attention events from Step 10.
+   - Any failure evidence surfaced during Step 10.
 
    This is the durable audit trail. It persists after `/review` moves the run note out of `review/`.
 
@@ -1150,18 +1152,18 @@ PYEOF
 
     printf '%s\n' "$MSG"
     ```
-    Interactive runs surface this summary in Codex or the dashboard. Registered jobs include it in the receipt. Failures must also create an Operations Console attention item.
+    Interactive runs surface this summary in Codex or the dashboard. Failures must remain visible in the run record and active session.
 
 11. **Delete the notebook** (fresh per run, no accumulation):
     ```bash
     notebooklm delete -n "$NB_ID" -y >/dev/null 2>&1 || true
     ```
 
-12. **Append to skill-usage-log** as usual.
+12. **Log usage through `scripts/k2b-shared-append.py`** so source-only hosts queue the small record locally.
 
 ### Scheduling
 
-Register a deterministic research-videos entrypoint through `/schedule`. The job must declare its owner host, write a receipt with query, candidate/pick counts, run-note path, and exit status, and route failures to the Operations Console attention queue. Never schedule an interactive `/research` prompt.
+Disabled in Stage 1. Do not register a research-videos job without a separately authorized scheduling task and a named host owner, receipt path, and failure surface.
 
 ### Playlist ID resolution
 
@@ -1171,7 +1173,7 @@ All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the ca
 
 - **NotebookLM ask times out or errors (Step 5):** abort, log to run record, notify Keith "research timed out on: <query>", delete the notebook.
 - **NBLM JSON parse fails twice (Step 6a, parse-nblm.py):** log raw answer to run record, notify Keith "NBLM descriptions weren't parseable, see raw/research/", abort downstream steps.
-- **K2B schema validation fails on `$SUITABLE_JSON` (Step 6g):** Write partial run record with raw NBLM answer to `raw/research/` first, then surface an Operations Console attention event, delete notebook, exit 1. This is the Step 6g gate.
+- **K2B schema validation fails on `$SUITABLE_JSON` (Step 6g):** Write a partial run record with the raw NBLM answer to `raw/research/` first, surface the failure in the active session, delete the notebook, and exit 1. This is the Step 6g gate.
 - **Pick deep-extract fails (Step 6.5):** ENRICHMENT FAILURE, NOT GATING. Step 7 onward continues. Status recorded in run note frontmatter (`deepextract-status:`) and run record. Per-pick fallback to thin template -- Keith still gets the run note, just without the rich detail for affected picks. The notebook is NOT deleted on this failure (Step 11 handles deletion at end of run regardless).
 - **Playlist add fails for a pick:** log per-video in run record, continue with the others, include the failure count in the receipt/result summary.
 - **Zero picks:** still write the run note + run record + result summary ("nothing worth watching this week"), still delete the notebook. N=0 is normal, not an error. Step 6.5 is skipped (`deepextract-status: skipped-no-picks`).
@@ -1657,7 +1659,7 @@ Use the **Lens-Based Review Format** (defined earlier in this file). The old "So
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-research\t$(echo $RANDOM | md5sum | head -c 8)\tran research: FOCUS" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-research --summary "ran research: FOCUS"
 ```
 
 ## Notes
@@ -1665,6 +1667,6 @@ echo -e "$(date +%Y-%m-%d)\tk2b-research\t$(echo $RANDOM | md5sum | head -c 8)\t
 - No em dashes, no AI cliches, no sycophancy
 - Be specific in recommendations -- "improve the meeting processor" is useless, "add an explicit instruction for formatting action items with owner names in brackets" is actionable
 - External findings should be filtered for relevance -- don't dump every search result
-- When scanning YouTube videos, use `~/Projects/K2B/scripts/yt-transcript.sh` first, with `K2B_YT_REMOTE_HOST=macmini` on the MacBook when SSH to the Mini is available. Do not use transcript MCP tools as the primary path; they are a fallback only if the shared helper is unavailable.
+- When scanning YouTube videos, use `K2B_YT_REMOTE_FALLBACK=0 ~/Projects/K2B/scripts/yt-transcript.sh` first. Do not use a remote host. Transcript MCP tools are a fallback only if the local helper is unavailable.
 - When scanning GitHub repos, focus on README, key source files, and patterns
 - Always cross-link findings to existing vault notes where relevant

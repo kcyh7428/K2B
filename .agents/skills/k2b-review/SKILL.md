@@ -3,26 +3,16 @@ name: k2b-review
 description: Review and process pending content ideas and LinkedIn drafts -- triage review queue items by promoting, archiving, deleting, or revising based on Keith's Obsidian review decisions. Use when Keith says /review, "check review", "process review", "what's in review", or wants to review/triage review queue items.
 ---
 
-> [!warning] DEPRECATED in Ship 2 of k2b-integrated-loop
-> The session-start dashboard routes review/ queue items via the same
-> `a N / r N / d N` grammar used for observer candidates. Accept -> move to
-> `review/Ready/`, reject -> move to `Archive/review-archive/YYYY-MM-DD/`,
-> defer -> counter (auto-archive on third defer). Run `/review` directly only
-> when Keith needs the full triage workflow -- video-feedback batch moves,
-> crosslink application via k2b-vault-writer, content-idea promotion to
-> `wiki/content-pipeline/`. Before proceeding with the legacy workflow, emit
-> the sentence "DEPRECATED in Ship 2 of k2b-integrated-loop -- the session-
-> start dashboard covers accept/reject/defer; continue only if you need the
-> full triage workflow" and wait for Keith's explicit go-ahead.
-
 # K2B Review Manager
+
+> **Host boundary:** Review-queue mutations are Home-writer-only. On SJM, list/read items only; do not promote, archive, delete, revise, or append a shared preference signal.
 
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -137,7 +127,10 @@ After processing each actionable item, append a feedback signal to the preferenc
 # REVIEW_NOTES_TEXT = the actual review-notes content (if any)
 # FILENAME = the processed filename
 
-echo '{"date":"'$(date +%Y-%m-%d)'","file":"'"$FILENAME"'","source_skill":"'"$SKILL_ORIGIN"'","type":"'"$TYPE"'","action":"'"$ACTION"'","days_in_inbox":'"$DAYS_IN_INBOX"',"has_feedback":"'"$HAS_REVIEW_NOTES"'","feedback":"'"$REVIEW_NOTES_TEXT"'"}' >> ~/Projects/K2B-Vault/wiki/context/preference-signals.jsonl
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" preference \
+  --file "$FILENAME" --source-skill "$SKILL_ORIGIN" --type "$TYPE" \
+  --action "$ACTION" --days-in-inbox "$DAYS_IN_INBOX" \
+  --has-feedback "$HAS_REVIEW_NOTES" --feedback "$REVIEW_NOTES_TEXT"
 ```
 
 **How to determine source_skill from the note:**
@@ -268,5 +261,5 @@ The "is this video feedback?" decision is made from the active dashboard or Code
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-review\t$(echo $RANDOM | md5sum | head -c 8)\tprocessed review: SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-review --summary "processed review: SUMMARY"
 ```

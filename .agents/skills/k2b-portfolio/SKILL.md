@@ -10,7 +10,7 @@ description: Surface K2Bi ticker pipeline state across all stages -- awaiting pr
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -27,7 +27,7 @@ Keith says any of:
 - "K2Bi status"
 - "portfolio view"
 
-Do NOT auto-trigger on session start -- the session-start hook already surfaces review queue + observer items. `/portfolio` is for explicit "give me the K2Bi pipeline view."
+Run `/portfolio` only when Keith asks for the K2Bi pipeline view. Do not auto-trigger it or claim that another routine has already surfaced its queues.
 
 ## What it does
 
@@ -137,7 +137,7 @@ Codex does NOT show the raw script output verbatim by default. It renders into t
 After completing the main task, log this skill invocation:
 
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-portfolio\t$(echo $RANDOM | md5sum | head -c 8)\tsurfaced portfolio dashboard" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-portfolio --summary "surfaced portfolio dashboard"
 ```
 
 ## Notes

@@ -8,6 +8,7 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+export K2B_CAPTURE_WRITER_ROLE=home
 
 STUB="$TMP/eod-stub.sh"
 CALLS="$TMP/calls.txt"
@@ -35,6 +36,13 @@ if [ "${1:-}" = "job-a" ] && [ "${K2B_EOD_STUB_JOB_A_RC:-0}" != "0" ]; then
   printf 'stub failed: %s\n' "$*"
   exit "$K2B_EOD_STUB_JOB_A_RC"
 fi
+if [ "${K2B_EOD_STUB_SECRET_OUTPUT:-0}" = "1" ]; then
+  printf 'worker identity: API_KEY=%s Authorization: Bearer %s --token %s https://user:%s@example.com/path\n' \
+    "$K2B_EOD_STUB_SECRET" "$K2B_EOD_STUB_SECRET" "$K2B_EOD_STUB_SECRET" "$K2B_EOD_STUB_SECRET" >&2
+fi
+if [ -n "${K2B_EOD_STUB_IDENTIFIER_OUTPUT:-}" ]; then
+  printf 'source_sha256=%s\n' "$K2B_EOD_STUB_IDENTIFIER_OUTPUT"
+fi
 if [ "${1:-}" = "job-b" ] && [ "${K2B_EOD_STUB_BLOCK_IF_MARKER:-0}" = "1" ] \
   && [ -n "${K2B_EOD_STUB_MARKER:-}" ] && [ -e "$K2B_EOD_STUB_MARKER" ]; then
   printf 'stub overlap: job-b saw active job-a marker\n'
@@ -61,6 +69,24 @@ fi
 wait "$sleep_pid"
 EOF
 chmod +x "$SLEEP_STUB"
+
+SJM_REJECT_VAULT="$TMP/sjm-reject-vault"
+mkdir -p "$SJM_REJECT_VAULT"
+set +e
+K2B_CAPTURE_WRITER_ROLE=sjm-source-only \
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$SJM_REJECT_VAULT" \
+K2B_EOD_LOG_DIR="$SJM_REJECT_VAULT/.staging/eod-capture-logs" \
+"$ROOT/scripts/eod-capture-cron.sh" job-a 2026-05-14 >"$TMP/sjm-reject.out" 2>"$TMP/sjm-reject.err"
+sjm_reject_rc=$?
+set -e
+[ "$sjm_reject_rc" = "2" ] || { echo "FAIL: SJM/source-only wrapper should be rejected with rc 2"; exit 1; }
+[ -z "$(find "$SJM_REJECT_VAULT" -mindepth 1 -print -quit)" ] \
+  || { echo "FAIL: rejected SJM/source-only wrapper mutated the vault"; find "$SJM_REJECT_VAULT" -mindepth 1; exit 1; }
+grep -q 'home-writer-only' "$TMP/sjm-reject.err" \
+  || { echo "FAIL: SJM/source-only rejection message missing"; cat "$TMP/sjm-reject.err"; exit 1; }
 
 wait_for_file() {
   local path="$1"
@@ -119,7 +145,6 @@ run_mode() {
 run_mode job-a
 run_mode job-b
 run_mode digest
-run_mode digest-send
 
 grep -qx 'job-a --date 2026-05-14 --vault '"$TMP"'/vault' "$CALLS" \
   || { echo "FAIL: job-a dispatch missing"; cat "$CALLS"; exit 1; }
@@ -127,15 +152,51 @@ grep -qx 'job-b --date 2026-05-14 --vault '"$TMP"'/vault' "$CALLS" \
   || { echo "FAIL: job-b dispatch missing"; cat "$CALLS"; exit 1; }
 grep -qx 'digest --date 2026-05-14 --vault '"$TMP"'/vault' "$CALLS" \
   || { echo "FAIL: digest dispatch missing"; cat "$CALLS"; exit 1; }
-grep -qx 'digest --date 2026-05-14 --vault '"$TMP"'/vault --send' "$CALLS" \
-  || { echo "FAIL: digest-send dispatch missing"; cat "$CALLS"; exit 1; }
 
-for mode in job-a job-b digest digest-send; do
+# digest-send mode must be rejected now that Task 3B removed Telegram sending.
+set +e
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$TMP/vault" \
+K2B_EOD_LOG_DIR="$LOGS" \
+"$ROOT/scripts/eod-capture-cron.sh" digest-send 2026-05-14 >/dev/null 2>"$TMP/digest-send-reject.log"
+rc=$?
+set -e
+[ "$rc" = "2" ] || { echo "FAIL: digest-send should be rejected with rc 2, got $rc"; cat "$TMP/digest-send-reject.log"; exit 1; }
+grep -q "unknown mode" "$TMP/digest-send-reject.log" || { echo "FAIL: digest-send rejection message missing"; cat "$TMP/digest-send-reject.log"; exit 1; }
+
+for mode in job-a job-b digest; do
   log="$LOGS/2026-05-14_${mode}.log"
   [ -f "$log" ] || { echo "FAIL: missing log $log"; exit 1; }
   grep -q "mode=${mode}" "$log" || { echo "FAIL: log missing mode $mode"; cat "$log"; exit 1; }
 done
 
+CHILD_SECRET="sk-cronchildsecret123456"
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$TMP/vault" \
+K2B_EOD_LOG_DIR="$LOGS" \
+K2B_EOD_STUB_SECRET_OUTPUT=1 \
+K2B_EOD_STUB_SECRET="$CHILD_SECRET" \
+"$ROOT/scripts/eod-capture-cron.sh" job-a 2026-05-15 >"$TMP/secret-child.out" 2>"$TMP/secret-child.err"
+for path in "$TMP/secret-child.out" "$TMP/secret-child.err" "$LOGS/2026-05-15_job-a.log"; do
+  ! grep -qF "$CHILD_SECRET" "$path" || { echo "FAIL: child secret leaked to $path"; cat "$path"; exit 1; }
+done
+for path in "$TMP/secret-child.out" "$LOGS/2026-05-15_job-a.log"; do
+  grep -q 'worker identity' "$path" || { echo "FAIL: sanitized child output lost command identity in $path"; cat "$path"; exit 1; }
+done
+SOURCE_IDENTIFIER="0123456789abcdef0123456789abcdef01234567"
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$TMP/vault" \
+K2B_EOD_LOG_DIR="$LOGS" \
+K2B_EOD_STUB_IDENTIFIER_OUTPUT="$SOURCE_IDENTIFIER" \
+"$ROOT/scripts/eod-capture-cron.sh" job-a 2026-05-18 >"$TMP/identifier-child.out"
+grep -qF "$SOURCE_IDENTIFIER" "$TMP/identifier-child.out" \
+  || { echo "FAIL: sanitizer redacted a non-secret source identifier"; cat "$TMP/identifier-child.out"; exit 1; }
 : > "$CALLS"
 K2B_EOD_COMMAND="$STUB" \
 K2B_EOD_CALLS="$CALLS" \
@@ -198,6 +259,7 @@ if not start_ts > finish_ts:
     raise SystemExit(f"job-b start {start_ts} was not after job-a finish {finish_ts}")
 PY
 
+if [ "${K2B_EOD_TEST_REDACTION_ONLY:-0}" != "1" ]; then
 TERM_MARKER="$TMP/term-job-a-running"
 set +e
 K2B_EOD_COMMAND="$STUB" \
@@ -310,9 +372,9 @@ K2B_EOD_SLEEP_STUB_PID_FILE="$LOCK_WRAPPER_PID_FILE" \
 K2B_EOD_SLEEP_CHILD_PID_FILE="$LOCK_WRAPPER_CHILD_PID_FILE" \
 "$ROOT/scripts/eod-capture-cron.sh" job-a-then-b 2026-05-14 >"$TMP/lock-wrapper.out" 2>"$TMP/lock-wrapper.err" &
 lock_wrapper_pid=$!
-lock_supervisor_pid="$(wait_for_child_pid "$lock_wrapper_pid" '[Pp]ython')"
 wait_for_file "$LOCK_WRAPPER_MARKER" "wrapper-sigkill EOD marker"
 wait_for_file "$LOCK_WRAPPER_CHILD_PID_FILE" "wrapper-sigkill sleep child pid"
+lock_supervisor_pid="$(wait_for_child_pid "$lock_wrapper_pid" '[Pp]ython')"
 kill -KILL "$lock_wrapper_pid"
 set +e
 wait "$lock_wrapper_pid" 2>/dev/null
@@ -337,9 +399,9 @@ K2B_EOD_SLEEP_STUB_PID_FILE="$LOCK_SUPERVISOR_PID_FILE" \
 K2B_EOD_SLEEP_CHILD_PID_FILE="$LOCK_SUPERVISOR_CHILD_PID_FILE" \
 "$ROOT/scripts/eod-capture-cron.sh" job-a-then-b 2026-05-14 >"$TMP/lock-supervisor.out" 2>"$TMP/lock-supervisor.err" &
 lock_supervisor_wrapper_pid=$!
-lock_supervisor_pid="$(wait_for_child_pid "$lock_supervisor_wrapper_pid" '[Pp]ython')"
 wait_for_file "$LOCK_SUPERVISOR_MARKER" "wrapper-and-supervisor-sigkill EOD marker"
 wait_for_file "$LOCK_SUPERVISOR_CHILD_PID_FILE" "wrapper-and-supervisor-sigkill sleep child pid"
+lock_supervisor_pid="$(wait_for_child_pid "$lock_supervisor_wrapper_pid" '[Pp]ython')"
 lock_eod_pid="$(cat "$LOCK_SUPERVISOR_PID_FILE")"
 kill -KILL "$lock_supervisor_wrapper_pid" "$lock_supervisor_pid"
 set +e
@@ -365,9 +427,9 @@ K2B_EOD_SLEEP_STUB_PID_FILE="$LOCK_TREE_PID_FILE" \
 K2B_EOD_SLEEP_CHILD_PID_FILE="$LOCK_TREE_CHILD_PID_FILE" \
 "$ROOT/scripts/eod-capture-cron.sh" job-a-then-b 2026-05-14 >"$TMP/lock-tree.out" 2>"$TMP/lock-tree.err" &
 lock_tree_wrapper_pid=$!
-lock_tree_supervisor_pid="$(wait_for_child_pid "$lock_tree_wrapper_pid" '[Pp]ython')"
 wait_for_file "$LOCK_TREE_MARKER" "full-tree EOD marker"
 wait_for_file "$LOCK_TREE_CHILD_PID_FILE" "full-tree sleep child pid"
+lock_tree_supervisor_pid="$(wait_for_child_pid "$lock_tree_wrapper_pid" '[Pp]ython')"
 lock_tree_eod_pid="$(cat "$LOCK_TREE_PID_FILE")"
 kill -KILL -- "$lock_tree_wrapper_pid" "$lock_tree_supervisor_pid" "$lock_tree_eod_pid" "$(cat "$LOCK_TREE_CHILD_PID_FILE")" 2>/dev/null || true
 set +e
@@ -430,6 +492,7 @@ wait "$active_chain_pid"
   || { echo "FAIL: manual job-a should fail fast while chain lock is active, got rc=$manual_during_chain_rc"; cat "$TMP/manual-during-chain.out"; cat "$TMP/manual-during-chain.err"; exit 1; }
 grep -q 'another pipeline run holds the lock' "$TMP/manual-during-chain.err" \
   || { echo "FAIL: manual job-a lock-active error missing"; cat "$TMP/manual-during-chain.err"; exit 1; }
+fi
 
 FAIL_LOGS="$TMP/vault/.staging/eod-capture-logs-fail"
 mkdir -p "$FAIL_LOGS/2026-05-16_job-a.log"
@@ -449,6 +512,68 @@ FAILSAFE_LOG="$(find "$FAIL_LOGS" -name '2026-05-16_job-a.append-failed.*.log' -
 [ -n "$FAILSAFE_LOG" ] || { echo "FAIL: append failure did not preserve output"; exit 1; }
 grep -q 'stub ran: job-a --date 2026-05-16 --vault ' "$FAILSAFE_LOG" \
   || { echo "FAIL: preserved output missing command output"; cat "$FAILSAFE_LOG"; exit 1; }
+
+mkdir -p "$FAIL_LOGS/2026-05-17_job-a.log"
+set +e
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$TMP/vault" \
+K2B_EOD_LOG_DIR="$FAIL_LOGS" \
+K2B_EOD_STUB_SECRET_OUTPUT=1 \
+K2B_EOD_STUB_SECRET="$CHILD_SECRET" \
+"$ROOT/scripts/eod-capture-cron.sh" job-a 2026-05-17 >"$TMP/secret-append-fail.out" 2>"$TMP/secret-append-fail.err"
+secret_append_rc=$?
+set -e
+[ "$secret_append_rc" = "125" ] || { echo "FAIL: secret append failure expected exit 125, got $secret_append_rc"; exit 1; }
+SECRET_FAILSAFE_LOG="$(find "$FAIL_LOGS" -name '2026-05-17_job-a.append-failed.*.log' -type f | head -1)"
+[ -n "$SECRET_FAILSAFE_LOG" ] || { echo "FAIL: secret append failure did not preserve output"; exit 1; }
+for path in "$TMP/secret-append-fail.out" "$TMP/secret-append-fail.err" "$SECRET_FAILSAFE_LOG"; do
+  ! grep -qF "$CHILD_SECRET" "$path" || { echo "FAIL: child secret leaked to append-failure path $path"; cat "$path"; exit 1; }
+done
+
+# Predictable lock/log paths must not follow symlinks or alter their targets.
+LOCK_SYMLINK_VAULT="$TMP/lock-symlink-vault"
+LOCK_SYMLINK_LOGS="$LOCK_SYMLINK_VAULT/.staging/eod-capture-logs"
+LOCK_SYMLINK_TARGET="$TMP/lock-symlink-target.txt"
+mkdir -p "$LOCK_SYMLINK_VAULT/.staging"
+printf 'lock target must survive\n' > "$LOCK_SYMLINK_TARGET"
+ln -s "$LOCK_SYMLINK_TARGET" "$LOCK_SYMLINK_VAULT/.staging/.eod-pipeline.lock"
+set +e
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$LOCK_SYMLINK_VAULT" \
+K2B_EOD_LOG_DIR="$LOCK_SYMLINK_LOGS" \
+"$ROOT/scripts/eod-capture-cron.sh" job-a 2026-05-19 >"$TMP/lock-symlink.out" 2>"$TMP/lock-symlink.err"
+lock_symlink_rc=$?
+set -e
+[ "$lock_symlink_rc" = "2" ] || { echo "FAIL: symlink lock should be rejected with rc 2, got $lock_symlink_rc"; exit 1; }
+grep -qx 'lock target must survive' "$LOCK_SYMLINK_TARGET" \
+  || { echo "FAIL: symlink lock target was modified"; exit 1; }
+grep -q 'secure pipeline lock failed' "$TMP/lock-symlink.err" \
+  || { echo "FAIL: symlink lock rejection missing"; cat "$TMP/lock-symlink.err"; exit 1; }
+
+LOG_SYMLINK_VAULT="$TMP/log-symlink-vault"
+LOG_SYMLINK_LOGS="$LOG_SYMLINK_VAULT/.staging/eod-capture-logs"
+LOG_SYMLINK_TARGET="$TMP/log-symlink-target.txt"
+mkdir -p "$LOG_SYMLINK_LOGS"
+printf 'log target must survive\n' > "$LOG_SYMLINK_TARGET"
+ln -s "$LOG_SYMLINK_TARGET" "$LOG_SYMLINK_LOGS/2026-05-20_job-a.log"
+set +e
+K2B_EOD_COMMAND="$STUB" \
+K2B_EOD_CALLS="$CALLS" \
+K2B_EOD_ENV_FILE="$TMP/missing.env" \
+K2B_VAULT_PATH="$LOG_SYMLINK_VAULT" \
+K2B_EOD_LOG_DIR="$LOG_SYMLINK_LOGS" \
+"$ROOT/scripts/eod-capture-cron.sh" job-a 2026-05-20 >"$TMP/log-symlink.out" 2>"$TMP/log-symlink.err"
+log_symlink_rc=$?
+set -e
+[ "$log_symlink_rc" = "125" ] || { echo "FAIL: symlink log should use failsafe rc 125, got $log_symlink_rc"; exit 1; }
+grep -qx 'log target must survive' "$LOG_SYMLINK_TARGET" \
+  || { echo "FAIL: symlink log target was modified"; exit 1; }
+find "$LOG_SYMLINK_LOGS" -name '2026-05-20_job-a.append-failed.*.log' -type f | grep -q . \
+  || { echo "FAIL: symlink log failure did not preserve output"; exit 1; }
 
 set +e
 K2B_EOD_COMMAND="$STUB" \

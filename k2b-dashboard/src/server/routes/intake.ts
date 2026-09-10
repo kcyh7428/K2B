@@ -4,6 +4,7 @@ import { mkdirSync, existsSync, writeFileSync, renameSync, readFileSync } from '
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { paths } from '../lib/vault-paths.js'
+import { resolveIntakeStatus } from '../lib/intake-status.js'
 
 const router = Router()
 
@@ -172,9 +173,9 @@ router.post('/audio', runUpload(upload.single('file')), (req, res) => {
 //
 // Contract (authoritative signals, in priority order):
 //   processed/<uuid>/ exists (directory)      -> { status: 'done' }
-//   intake/<uuid>/.error present               -> { status: 'error', error }
-//   intake/<uuid>/manifest.json present        -> { status: 'processing' }
-//   otherwise                                  -> { status: 'pending-sync' }
+//   intake/<uuid>/.error present              -> { status: 'error', error }
+//   intake/<uuid>/manifest.json present       -> { status: 'staged', action: 'process-on-home' }
+//   otherwise                                 -> { status: 'not-found' }
 //
 // The .done sentinel is a best-effort metadata sidecar (it carries the echoed
 // message for debugging), NOT the authoritative signal. The watcher's rename
@@ -191,7 +192,13 @@ router.get('/status/:uuid', (req, res) => {
 
   // Done: dir exists in processed/. The rename is authoritative; read .done
   // only for the details payload if present.
-  if (existsSync(processedDir)) {
+  const processed = existsSync(processedDir)
+  const errorSentinel = join(intakeDir, '.error')
+  const errored = existsSync(errorSentinel)
+  const manifest = existsSync(join(intakeDir, 'manifest.json'))
+  const resolved = resolveIntakeStatus({ processed, errored, manifest })
+
+  if (resolved.status === 'done') {
     let doneBody: unknown = null
     const processedDone = join(processedDir, '.done')
     if (existsSync(processedDone)) {
@@ -205,8 +212,7 @@ router.get('/status/:uuid', (req, res) => {
   }
 
   // Error: watcher left the dir in place with a .error sentinel
-  const errorSentinel = join(intakeDir, '.error')
-  if (existsSync(errorSentinel)) {
+  if (resolved.status === 'error') {
     let errBody: unknown = null
     let errMessage = 'unknown error'
     try {
@@ -224,13 +230,7 @@ router.get('/status/:uuid', (req, res) => {
     return res.json({ status: 'error', error: errMessage, details: errBody })
   }
 
-  // Processing: manifest is present locally, watcher hasn't completed yet
-  if (existsSync(join(intakeDir, 'manifest.json'))) {
-    return res.json({ status: 'processing' })
-  }
-
-  // Nothing here: either still syncing to the Mac Mini, or uuid unknown
-  return res.json({ status: 'pending-sync' })
+  return res.json(resolved)
 })
 
 export default router

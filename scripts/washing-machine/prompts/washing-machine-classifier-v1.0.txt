@@ -239,10 +239,10 @@ Output:
 {"keep":true,"category":"preference","shelf":"semantic","entities":[{"type":"preference","fields":{"trigger":"adversarial review","rule":"use Codex when available"}}]}
 
 Input: [anchor] 2026-04-01
-Always use the Telegram bot path for reminders, not the dashboard.
+Do not create or route reminders from this classifier; the scheduling lane is disabled unless explicitly authorized.
 
 Output:
-{"keep":true,"category":"preference","shelf":"semantic","entities":[{"type":"preference","fields":{"trigger":"reminder channel","rule":"use Telegram bot, not dashboard"}}]}
+{"keep":true,"category":"preference","shelf":"semantic","entities":[{"type":"preference","fields":{"trigger":"reminder automation","rule":"do not create reminders without explicit scheduling authorization"}}]}
 
 ## Format rules (strict)
 

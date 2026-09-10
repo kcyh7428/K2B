@@ -46,6 +46,22 @@ class FlightLockError(Exception):
     pass
 
 
+def _require_home_writer() -> None:
+    """Fail before opening SQLite when this host is not the Home writer."""
+    role = os.environ.get("K2B_CAPTURE_WRITER_ROLE", "").strip().lower()
+    if not role:
+        user = os.environ.get("USER", "").strip()
+        if user == "keithmbpm2":
+            role = "home"
+        elif user in {"keithcheung", "fastshower"}:
+            role = "sjm-source-only"
+    if role != "home":
+        raise RuntimeError(
+            "K2B orchestrator is Home-writer-only; SJM source-only sessions "
+            "must not open or mutate the synchronized orchestrator store"
+        )
+
+
 # Centralized status enum (Codex round-1 finding 5). A task is terminal iff it
 # is one of these; everything else is non-terminal (holds the entity_key lock,
 # shows on /portfolio active, is sweepable). A task may be CREATED only in one
@@ -167,8 +183,9 @@ def _is_trailing_citation_line(stripped: str) -> bool:
     return False
 
 
-def telegram_cmd():
-    return os.environ.get("K2B_ORCH_TELEGRAM_CMD") or os.path.join(REPO_ROOT, "scripts", "send-telegram.sh")
+def notification_cmd() -> str | None:
+    """Return the explicitly configured local notification adapter, if any."""
+    return os.environ.get("K2B_ORCH_NOTIFY_CMD") or None
 
 
 def connect() -> sqlite3.Connection:
@@ -5004,8 +5021,13 @@ def reclaim_zombies(timeout_s=300) -> list[str]:
 
 
 def notify(message) -> None:
-    cmd = telegram_cmd()
-    subprocess.run([cmd, message], check=False)
+    cmd = notification_cmd()
+    if not cmd:
+        return
+    try:
+        subprocess.run([cmd, message], check=False)
+    except OSError as exc:
+        print(f"orchestrator notification unavailable: {exc}", file=sys.stderr)
 
 
 def render_board(path=BOARD_PATH) -> None:
@@ -5307,6 +5329,7 @@ def _print_task(task: dict) -> str:
 
 
 def _main():
+    _require_home_writer()
     parser = argparse.ArgumentParser(description="K2B Orchestrator Store CLI")
     sub = parser.add_subparsers(dest="cmd")
 

@@ -2,11 +2,9 @@
 # Attachment extraction dispatcher (Ship 1B).
 #
 # Reads a single JSON envelope from stdin and emits a single JSON envelope
-# on stdout. Used by k2b-remote/src/attachmentIngest.ts to turn a Telegram
-# photo / document / text message into plain text that flows through the
-# existing Ship 1 Normalization Gate (text-only classifier). Voice memos
-# are NOT routed here -- they take a separate path through
-# k2b-remote/src/voice.ts (Groq Whisper) before any normalization.
+# on stdout. Used for explicit local photo, document, or text intake before the
+# existing normalization gate. Voice transcription remains a separate caller
+# responsibility.
 #
 # Input:
 #   {

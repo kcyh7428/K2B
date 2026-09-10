@@ -22,41 +22,34 @@
 
 set -euo pipefail
 
+_K2B_MINIMAX_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Optional dedicated credentials file for non-interactive environments.
-# Prefer ~/.k2b-env over ~/.zshrc when it exists so review/review-runner
-# scripts avoid sourcing large interactive shell logic.
 K2B_ENV_FILE="${K2B_ENV_FILE:-$HOME/.k2b-env}"
+K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
 
 # --- Config ---
-# The shell that sources this file may be non-interactive (e.g. Claude Code's
-# Bash tool, a cron job, or a background pm2 process) and may not have sourced
-# ~/.zshrc. Prefer sourcing ~/.k2b-env if present (minimal exports only), then
-# fallback to ~/.zshrc for existing machine setups.
-# This makes every minimax-*.sh script work from any shell without the caller
-# having to remember to source the profile first. Same pattern already used
-# by scripts/claude-minimaxi.sh, scripts/kimi-review.sh, and the historical
-# scripts/minimax-review.sh alias.
-#
-if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) ]]; then
-  if [[ -f "$K2B_ENV_FILE" ]]; then
-    # shellcheck disable=SC1091
-    set +eu
-    source "$K2B_ENV_FILE" >/dev/null 2>&1 || true
-    set -euo pipefail
-  fi
-fi
+# Load only the credential required by the selected provider. Once the
+# dedicated file resolves it, do not source interactive shell startup logic.
+if [[ "$K2B_LLM_PROVIDER" == "kimi" && -z "${KIMI_API_KEY:-}" && -f "$K2B_ENV_FILE" ]]; then
+  if ! python3 -c '
+import os
+import stat
+import sys
 
-if [[ ( -z "${MINIMAX_API_KEY:-}" || -z "${KIMI_API_KEY:-}" ) && -f "$HOME/.zshrc" ]]; then
-  # set +e in addition to +u: a stale `source /path/to/missing-file` line in
-  # ~/.zshrc will fail INSIDE .zshrc with set -e still active, killing the
-  # whole shell before the trailing `|| true` can catch it. Bit us 2026-05-04
-  # when an uninstalled openclaw line in .zshrc broke the VLM extractor chain.
+info = os.stat(sys.argv[1])
+if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit(1)
+' "$K2B_ENV_FILE"; then
+    echo "ERROR: Kimi credential file must be owned by the current user and mode 0600: $K2B_ENV_FILE" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  # shellcheck disable=SC1091
   set +eu
-  source "$HOME/.zshrc" >/dev/null 2>&1 || true
+  source "$K2B_ENV_FILE" >/dev/null 2>&1 || true
   set -euo pipefail
 fi
 
-K2B_LLM_PROVIDER="${K2B_LLM_PROVIDER:-kimi}"
 if [[ "$K2B_LLM_PROVIDER" == "minimax" ]]; then
   echo "ERROR: K2B_LLM_PROVIDER=minimax is deprecated and disabled (MiniMax subscription expired)." >&2
   echo "       Set K2B_LLM_PROVIDER=kimi." >&2
@@ -73,6 +66,38 @@ MINIMAX_API_HOST="${MINIMAX_API_HOST:-https://api.minimaxi.com}"
 # historical compatibility until a future provider ship deliberately re-enables it.
 KIMI_API_HOST="${KIMI_API_HOST:-https://api.kimi.com/coding}"
 KIMI_DEFAULT_MODEL="${KIMI_DEFAULT_MODEL:-kimi-k2.7-code}"
+
+# Kimi Code membership and Kimi Open Platform are separate services. Parse the
+# URL rather than matching a literal string so case, ports, and path variants
+# cannot bypass the metered-endpoint guard. Kimi credentials are never sent
+# over plaintext HTTP.
+_k2b_kimi_host_meta=$(python3 -c '
+import sys
+from urllib.parse import urlparse
+parsed = urlparse(sys.argv[1])
+if not parsed.scheme or not parsed.hostname:
+    raise SystemExit(1)
+print(parsed.scheme.lower() + "\t" + parsed.hostname.lower().rstrip("."))
+' "$KIMI_API_HOST") || {
+  echo "ERROR: KIMI_API_HOST must be a valid absolute URL." >&2
+  return 1 2>/dev/null || exit 1
+}
+IFS=$'\t' read -r _k2b_kimi_scheme _k2b_kimi_hostname <<<"$_k2b_kimi_host_meta"
+if [[ "$_k2b_kimi_scheme" != "https" ]]; then
+  echo "ERROR: KIMI_API_HOST must use HTTPS." >&2
+  return 1 2>/dev/null || exit 1
+fi
+case "$_k2b_kimi_hostname" in
+  api.moonshot.cn|api.moonshot.ai)
+    _k2b_metered_opt_in=$(printf '%s' "${K2B_ALLOW_METERED_KIMI_PLATFORM:-false}" | tr '[:upper:]' '[:lower:]')
+    if [[ "$_k2b_metered_opt_in" != "true" ]]; then
+      echo "ERROR: KIMI_API_HOST selects the pay-as-you-go Kimi Open Platform." >&2
+      echo "       K2B defaults to Kimi Code membership at https://api.kimi.com/coding." >&2
+      echo "       A metered platform switch requires explicit K2B_ALLOW_METERED_KIMI_PLATFORM=true." >&2
+      return 1 2>/dev/null || exit 1
+    fi
+    ;;
+esac
 # Convenience exposed to callers: use this instead of hardcoding model ids.
 if [[ "$K2B_LLM_PROVIDER" == "kimi" ]]; then
   K2B_LLM_MODEL="${K2B_LLM_MODEL:-$KIMI_DEFAULT_MODEL}"
@@ -85,21 +110,17 @@ else
 fi
 export K2B_TEXT_WORKER_NAME K2B_TEXT_WORKER_ERROR_KEY
 
-# KIMI_API_KEY must be in env. The .zshrc-source fallback above already covers
-# non-interactive shells (cron, pm2, Bash tool) if the export is present. If
-# KIMI_API_KEY is still missing, fail loud with remediation.
+# KIMI_API_KEY must be in the environment or the dedicated per-machine file.
 if [[ "$K2B_LLM_PROVIDER" == "kimi" && -z "${KIMI_API_KEY:-}" ]]; then
   echo "ERROR: KIMI_API_KEY is not set." >&2
-  echo "       Add to ~/.zshrc: export KIMI_API_KEY=\"sk-kimi-...\"" >&2
+  echo "       Configure the affected Mac's ~/.k2b-env with mode 0600." >&2
   echo "       Keep K2B_LLM_PROVIDER=kimi; MiniMax fallback is disabled." >&2
   return 1 2>/dev/null || exit 1
 fi
 
-# Detect vault path: Mac Mini (fastshower) vs MacBook (keithmbpm2)
+# Detect the current Mac's vault path.
 if [ -n "${K2B_VAULT:-}" ]; then
   : # Already set via env
-elif [ -d "/Users/fastshower/Projects/K2B-Vault" ]; then
-  K2B_VAULT="/Users/fastshower/Projects/K2B-Vault"
 elif [ -d "/Users/keithmbpm2/Projects/K2B-Vault" ]; then
   K2B_VAULT="/Users/keithmbpm2/Projects/K2B-Vault"
 else
@@ -189,89 +210,33 @@ _mm_api_kimi_text() {
   local method="$1"
   local body="${2:-}"
 
+  if [[ "$method" != "POST" ]]; then
+    echo "ERROR: _mm_api_kimi_text supports POST only" >&2
+    return 1
+  fi
   if [[ -z "$body" ]]; then
     echo "ERROR: _mm_api_kimi_text requires a JSON body" >&2
     return 1
   fi
 
-  # Translate OpenAI -> Anthropic Messages:
-  #   - collapse any system-role messages into a single top-level `system` string
-  #   - drop `response_format` (Anthropic has no equivalent; system prompts already say "return JSON")
-  #   - force model to the configured Kimi model (callers may still carry a MiniMax-* id)
-  local kimi_body
-  # Fallback output ceiling raised 4096 -> 16384 (env: K2B_LLM_MAX_TOKENS).
-  # At 4096 the large background jobs (observer / weave / compile) burned the
-  # whole budget reasoning and returned EMPTY content (finish_reason=max_tokens);
-  # verified 2026-07-04. Any caller-supplied max_tokens still wins.
-  # Guard: a non-numeric or empty override must fall back to the default, not
-  # reach --argjson (which would fail to parse it and error the whole request
-  # opaquely). Accept only a positive integer.
-  local maxtok="${K2B_LLM_MAX_TOKENS:-16384}"
-  if ! printf '%s' "$maxtok" | grep -qE '^[1-9][0-9]*$'; then
-    maxtok=16384
-  fi
-  kimi_body=$(jq -c --arg model "$K2B_LLM_MODEL" --argjson maxtok "$maxtok" '
-    {
-      model: $model,
-      max_tokens: (.max_tokens // .max_completion_tokens // $maxtok),
-      messages: [.messages[] | select(.role != "system")]
-    }
-    + ( if (.messages | map(select(.role=="system")) | length) > 0
-        then { system: (.messages | map(select(.role=="system") | .content) | join("\n\n")) }
-        else {}
-        end )
-    + ( if has("temperature") then { temperature: .temperature } else {} end )
-  ' <<<"$body" 2>/dev/null) || {
-    echo "ERROR: failed to translate request body to Kimi shape" >&2
-    echo "$body" >&2
-    return 1
-  }
-
+  # Route legacy shell workers through the same streaming, retrying Python
+  # client as the reviewer. This avoids upstream idle disconnects during
+  # Kimi's long thinking phase and keeps one response-validation contract.
   local response
-  response=$(curl \
-    --silent --show-error --fail-with-body \
-    --max-time 300 \
-    -X "$method" \
-    -H "x-api-key: ${KIMI_API_KEY}" \
-    -H "anthropic-version: 2023-06-01" \
-    -H "Content-Type: application/json" \
-    -d "$kimi_body" \
-    "${KIMI_API_HOST}/v1/messages" 2>&1) || {
+  response=$(printf '%s' "$body" | \
+    KIMI_API_KEY="$KIMI_API_KEY" \
+    KIMI_API_HOST="$KIMI_API_HOST" \
+    KIMI_DEFAULT_MODEL="$K2B_LLM_MODEL" \
+    K2B_LLM_PROVIDER="kimi" \
+    K2B_LLM_MAX_TOKENS="${K2B_LLM_MAX_TOKENS:-16384}" \
+    PYTHONPATH="${_K2B_MINIMAX_COMMON_DIR}/lib${PYTHONPATH:+:$PYTHONPATH}" \
+    "${K2B_KIMI_PYTHON:-python3}" \
+      "${_K2B_MINIMAX_COMMON_DIR}/lib/minimax_common.py" \
+      --kimi-openai-payload) || {
     echo "ERROR: Kimi API call failed" >&2
-    echo "$response" >&2
     return 1
   }
-
-  # Kimi error shape: {"error":{"type":"...","message":"..."}}
-  local err_type
-  err_type=$(echo "$response" | jq -r '.error.type // empty' 2>/dev/null)
-  if [[ -n "$err_type" ]]; then
-    local err_msg
-    err_msg=$(echo "$response" | jq -r '.error.message // "unknown"' 2>/dev/null)
-    echo "ERROR: Kimi API error ${err_type}: ${err_msg}" >&2
-    echo "$response" >&2
-    return 1
-  fi
-
-  # Translate Anthropic Messages response -> OpenAI envelope.
-  # Kimi already emits prompt_tokens/completion_tokens/total_tokens under .usage,
-  # so usage passes through unchanged.
-  echo "$response" | jq -c '
-    {
-      id: .id,
-      model: .model,
-      choices: [{
-        index: 0,
-        message: {
-          role: "assistant",
-          content: ((.content // []) | map(select(.type=="text") | .text) | join(""))
-        },
-        finish_reason: (.stop_reason // "stop")
-      }],
-      usage: (.usage // {}),
-      base_resp: { status_code: 0, status_msg: "success" }
-    }
-  '
+  echo "$response"
 }
 
 # Download a file from URL

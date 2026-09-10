@@ -111,7 +111,7 @@ def test_append_learning_writes_expected_entry(tmp_path):
     assert f"- **Confidence:** {cand.severity}" in text
     assert "- **Reinforced:** 1" in text
     assert "- **Date:** 2026-04-23" in text
-    assert "- **Source:** observer-candidates (auto-applied 2026-04-23 via session-start dashboard)" in text
+    assert "- **Source:** observer-candidates (accepted 2026-04-23 through explicit loop review)" in text
     assert cand.evidence in text
 
 

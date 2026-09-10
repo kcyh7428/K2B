@@ -7,22 +7,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLATE_SCRIPT="$REPO_ROOT/.agents/skills/k2b-plate/scripts/plate.sh"
 AUDIT_SCRIPT="$REPO_ROOT/scripts/audit-plate-freshness.py"
 
-TMP_DIRS=()
-cleanup() {
-  local d
-  for d in "${TMP_DIRS[@]}"; do
-    [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
-  done
-}
-trap cleanup EXIT
+TMP_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 mktmp() {
-  local d
-  d="$(mktemp -d)"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  mktemp -d "$TMP_ROOT/case.XXXXXX"
 }
 
 write_minimal_vaults() {
@@ -506,12 +497,12 @@ EOF
   echo "PASS: test_stale_audit_checks_default_k2bi_vault_when_present"
 }
 
-test_plate_skill_script_mirrors_stay_identical() {
-  cmp -s \
-    "$REPO_ROOT/.agents/skills/k2b-plate/scripts/plate.sh" \
-    "$REPO_ROOT/.claude/skills/k2b-plate/scripts/plate.sh" || \
-    fail "Codex and Claude k2b-plate scripts diverged"
-  echo "PASS: test_plate_skill_script_mirrors_stay_identical"
+test_plate_script_has_sole_live_authority() {
+  [ -x "$REPO_ROOT/.agents/skills/k2b-plate/scripts/plate.sh" ] || \
+    fail "live .agents k2b-plate script is missing or not executable"
+  [ ! -e "$REPO_ROOT/.claude" ] || \
+    fail "retired .claude project tree must be absent"
+  echo "PASS: test_plate_script_has_sole_live_authority"
 }
 
 test_recent_shipped_reads_inline_and_archived_rows
@@ -523,4 +514,4 @@ test_stale_audit_fails_explicit_missing_k2bi_path
 test_stale_audit_fails_empty_explicit_k2bi_path
 test_stale_audit_allows_explicit_missing_k2bi_vault_opt_in
 test_stale_audit_checks_default_k2bi_vault_when_present
-test_plate_skill_script_mirrors_stay_identical
+test_plate_script_has_sole_live_authority

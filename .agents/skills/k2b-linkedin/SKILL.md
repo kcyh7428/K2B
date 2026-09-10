@@ -5,6 +5,8 @@ description: Dormant LinkedIn publishing lane -- use only when Keith explicitly 
 
 # K2B LinkedIn
 
+> **Host boundary:** On SJM, the synchronized K2B vault is read-only. Draft or review-note mutations must run on Home; publishing still requires Keith's explicit approval.
+
 > [!warning] Dormant lane
 > This skill has no logged live use in the recent K2B usage window. Do not route generic "save this idea" or "capture this insight" requests here. Use it only for explicit LinkedIn drafting, revision, image, publishing, or status work.
 
@@ -333,5 +335,5 @@ This is what gets extracted by linkedin-publish.sh and posted to LinkedIn.]
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-linkedin\t$(echo $RANDOM | md5sum | head -c 8)\taction: DESCRIPTION" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-linkedin --summary "action: DESCRIPTION"
 ```

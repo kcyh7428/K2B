@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Generate images via GPTsAPI gpt-image-2.
 # GPTSAPI_KEY MUST be supplied by the caller's environment. The script does
-# not read .env files of its own accord; the TypeScript caller in
-# k2b-remote/src/mediaCommand.ts is the single source of truth for keys.
+# not read environment files of its own accord. The caller loads the required
+# key from the process environment or the per-machine ~/.k2b-env.
 
 set -euo pipefail
 

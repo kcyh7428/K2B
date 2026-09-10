@@ -260,11 +260,11 @@ distilled-rule: "{rule}"
 - **Area:** {area}
 - **Distilled rule:** {rule}
 - **Learning:** {rule}
-- **Context:** Observer run {observer_run}, {severity}-confidence candidate learning auto-applied via session-start dashboard. Evidence: {evidence}
+- **Context:** Observer run {observer_run}, {severity}-confidence candidate learning accepted through explicit loop review. Evidence: {evidence}
 - **Reinforced:** 1
 - **Confidence:** {severity}
 - **Date:** {date_str}
-- **Source:** observer-candidates (auto-applied {date_str} via session-start dashboard)
+- **Source:** observer-candidates (accepted {date_str} through explicit loop review)
 """
 
 

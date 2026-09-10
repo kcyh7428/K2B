@@ -13,20 +13,18 @@ Three guarantees:
      the unified log every --heartbeat-interval seconds (default 5s)
      regardless of vendor-side activity, and escalates to HEARTBEAT_STALE
      after 30s of no log growth and WEDGE_SUSPECTED after 120s. This is
-     what makes `scripts/review-poll.sh` always show *something* new, so
-     Claude can never mistake "in final inference" for "wedged".
+     what makes `scripts/review-poll.sh` always show *something* new during
+     long reviewer inference.
 
-Nothing in this file calls the Bash tool; Codex and the Kimi reviewer
-(scripts/kimi-review.sh) are spawned
-via subprocess.Popen, so the .claude PreToolUse guard hook does not block
-them -- the hook only fires on direct user-invoked Bash calls.
+Codex and the Kimi reviewer (`scripts/kimi-review.sh`) are spawned via
+`subprocess.Popen`; no retired instruction or hook runtime is involved.
 
 K2B-specific adaptations vs K2Bi reference (2026-04-21 port):
   A2: spawn_child uses process_group=0 (Python 3.11+) instead of
       preexec_fn=os.setsid, to avoid DeprecationWarning on Python 3.12+
-      (and 3.14 on Mac Mini) without changing semantics.
+      across the authorized Macs without changing semantics.
   A3: spawn_child proactively injects KIMI_API_KEY into extra_env when
-      it can be loaded, as defense-in-depth for pm2-launched ships on Mini
+      it can be loaded, as defense-in-depth for non-interactive review runs
       that don't inherit a zsh session. Falls back silently if no key is
       available (Codex-only paths shouldn't fail just because Kimi can't
       be configured).
@@ -40,6 +38,7 @@ import os
 import re
 import secrets
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -65,10 +64,7 @@ REPO_ROOT = Path(
     ).strip()
 )
 ARCHIVE_DIR = REPO_ROOT / ".code-reviews"
-CODEX_PLUGIN_DEFAULT = (
-    Path.home() / ".claude" / "plugins" / "marketplaces"
-    / "openai-codex" / "plugins" / "codex"
-)
+CODEX_EXECUTABLE_DEFAULT = os.environ.get("K2B_CODEX_BIN") or shutil.which("codex") or "codex"
 
 DEFAULT_DEADLINE_S = 360
 DEFAULT_HEARTBEAT_S = 5
@@ -160,7 +156,7 @@ def _working_tree_eisdir_hazard(repo_root: Path) -> str | None:
 
 
 def codex_unavailable_reason(scope: str, repo_root: Path,
-                             codex_plugin: Path,
+                             codex_executable: str,
                              plan: str | None = None) -> str | None:
     """Return a short reason string if Codex cannot review this scope, else None.
 
@@ -168,19 +164,14 @@ def codex_unavailable_reason(scope: str, repo_root: Path,
     reviewer_attempts[].reason and to the unified log as REVIEWER_SKIP so
     the fallback path is observable in review-poll output.
     """
-    companion = codex_plugin / "scripts" / "codex-companion.mjs"
-    if not companion.is_file():
-        return f"codex-companion.mjs not found at {companion}"
+    resolved = (shutil.which(codex_executable)
+                if os.sep not in codex_executable else codex_executable)
+    if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        return f"Codex executable not found or not executable: {codex_executable}"
     if scope == "plan":
-        # Plan scope reviews a single markdown plan file via the `task`
-        # subcommand (read-only sandbox), NOT the dirty-tree walk, so the
-        # EISDIR hazard below does not apply. Codex is the PRIMARY reviewer
-        # for plans (regression fix 2026-05-31): the old code hard-skipped
-        # plan scope to Kimi claiming codex-companion.mjs needs a --path
-        # flag it "dropped", but no companion version ever exposed --path and
-        # `task` does not need one. The only precondition is that the plan
-        # file actually exists; if not, fall back to Kimi with a clear
-        # reason rather than asking Codex to read a missing file.
+        # Plan scope uses native `codex exec --ephemeral --sandbox read-only`
+        # with the snapshotted prompt on stdin, so it does not walk the dirty
+        # tree and does not persist a resumable task.
         if not plan:
             return "plan scope requires --plan"
         plan_path = plan if os.path.isabs(plan) else str(repo_root / plan)
@@ -189,7 +180,7 @@ def codex_unavailable_reason(scope: str, repo_root: Path,
         return None
     hazard = _working_tree_eisdir_hazard(repo_root)
     if hazard is not None:
-        return (f"codex --scope working-tree would EISDIR on '{hazard}'; "
+        return (f"codex review --uncommitted would EISDIR on '{hazard}'; "
                 f"routing to Kimi until the path is removed or committed")
     return None
 
@@ -277,12 +268,10 @@ def build_plan_review_prompt(plan: str, plan_content: str, focus: str,
 def write_plan_prompt_file(prompt: str, job: str | None) -> Path:
     """Persist the plan-review prompt (with embedded plan snapshot) and return it.
 
-    Written as a real file so it is passed to `codex-companion.mjs task` via
-    --prompt-file instead of as a positional argument: the companion
-    re-tokenizes a single-element positional argv through
-    splitRawArgumentString(), which would mangle a multi-line prompt. The file
-    is the durable snapshot+audit artifact -- it captures exactly what Codex
-    reviewed, alongside the job's log + state.json.
+    Written as a real file so the native Codex CLI receives it on stdin rather
+    than as a logged argv value. The file is the durable snapshot+audit
+    artifact -- it captures exactly what Codex reviewed, alongside the job's
+    log and state.json.
     """
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     name = f"{job}.codex-plan-prompt.md" if job else "codex-plan-prompt.md"
@@ -292,61 +281,24 @@ def write_plan_prompt_file(prompt: str, job: str | None) -> Path:
 
 
 def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
-                    focus: str, codex_plugin: Path,
+                    focus: str, codex_executable: str,
                     job: str | None = None) -> list[str] | None:
-    """Return argv for Codex companion, or None when Codex can't handle scope.
+    """Return argv for the native Codex CLI, or None when unavailable.
 
     Skip conditions are centralized in codex_unavailable_reason(); if that
     returns a string the wrapper logs the reason and falls back to Kimi.
 
-    Constraints documented in the K2Bi reference (confirmed against
-    codex-companion.mjs --help 2026-04-19, re-confirmed 2026-05-31):
-      * `review` does not accept --focus. Use `adversarial-review` whenever
-        a focus string is supplied.
-      * `adversarial-review` takes the focus as a POSITIONAL argument, not
-        a --focus flag.
-      * Neither `review` nor `adversarial-review` supports --path/--files, so
-        they can only scope to git targets (working-tree/branch), not to a
-        single plan file or an explicit working-tree subset.
-      * Codex walks the dirty tree and read()s each path, EISDIRing on any
-        untracked or worktree directory -- pre-detected above.
-      * The `task` subcommand DOES review an arbitrary file: it runs Codex
-        with a freeform prompt in a read-only sandbox (no --write) and full
-        repo read access. That is how Codex stays PRIMARY for plan reviews
-        without a --path flag.
+    Native `codex review --uncommitted` covers the complete dirty tree; it does
+    not offer an explicit file subset, matching the old runner's limitation.
+    Plan review instead uses ephemeral, read-only `codex exec` and receives the
+    fenced snapshot on stdin.
 
     Scope -> Codex argv:
-      "diff"           -> adversarial-review --wait --scope working-tree [focus]
-      "working-tree"   -> adversarial-review --wait --scope working-tree [focus]
-      "files"          -> adversarial-review --wait --scope working-tree [focus]
-                          (Codex loses the subset; callers wanting subset
-                          fidelity should use --primary kimi.)
-      "plan"           -> task --prompt-file <prompt with embedded plan snapshot>
-                          (read-only; the plan content is snapshotted into the
-                          prompt and fenced as untrusted data; Codex may also
-                          read referenced files for grounding. Kimi stays the
-                          fallback if Codex fails.)
-
-    Resume hygiene (PARTIAL -- documented residual): `task` persists an
-    app-server thread named with the "Codex Companion Task" prefix, so a plan
-    review can be discovered by `codex task --resume-last` (Codex plan-review
-    rounds 2-3 #2). run_fallback_chain spawns the codex plan reviewer with
-    CLAUDE_PLUGIN_DATA at a per-job throwaway state dir (state.mjs
-    resolveStateDir), which removes the PRIMARY discovery path -- the companion's
-    job store. It does NOT remove the secondary path: when the job store has no
-    completed task, resolveLatestTrackedTaskThread() falls back to
-    findLatestTaskThread(), which queries the app-server by the thread-name
-    prefix and so can still surface this thread. Fully closing it needs a
-    no-persist/non-task mode the vendored companion does not expose (forking it
-    is out of scope; it is overwritten on plugin update). ACCEPTED because K2B
-    has zero `--resume-last` callers (the only `task` invocation in the repo is
-    this review path), so the only exposure is a manual interactive /codex:
-    resume, which is recoverable. The native `review`/`adversarial-review` paths
-    use jobClass "review" and are excluded from resume selection entirely.
+      "diff"/"working-tree"/"files" -> codex review --uncommitted [focus]
+      "plan" -> codex exec --ephemeral --sandbox read-only --cd <repo> -
     """
-    if codex_unavailable_reason(scope, REPO_ROOT, codex_plugin, plan) is not None:
+    if codex_unavailable_reason(scope, REPO_ROOT, codex_executable, plan) is not None:
         return None
-    companion = str(codex_plugin / "scripts" / "codex-companion.mjs")
     if scope == "plan":
         # plan is non-None and the file exists (codex_unavailable_reason
         # validated both). Snapshot the plan bytes NOW and embed them in the
@@ -356,11 +308,11 @@ def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
         plan_path = plan if os.path.isabs(plan) else str(REPO_ROOT / plan)
         plan_content = Path(plan_path).read_text(errors="replace")
         prompt = build_plan_review_prompt(plan, plan_content, focus, REPO_ROOT)
-        prompt_path = write_plan_prompt_file(prompt, job)
-        return ["node", companion, "task", "--prompt-file", str(prompt_path)]
-    subcmd = "adversarial-review" if focus else "review"
-    cmd = ["node", companion, subcmd, "--wait", "--scope", "working-tree"]
-    if focus and subcmd == "adversarial-review":
+        write_plan_prompt_file(prompt, job)
+        return [codex_executable, "exec", "--ephemeral", "--sandbox", "read-only",
+                "--cd", str(REPO_ROOT), "-"]
+    cmd = [codex_executable, "review", "--uncommitted"]
+    if focus:
         cmd.append(focus)
     return cmd
 
@@ -389,12 +341,12 @@ def build_kimi_cmd(scope: str, files: list[str] | None, plan: str | None,
     return cmd
 
 
-def spawn_child(cmd: list[str], logf, extra_env: dict | None = None
+def spawn_child(cmd: list[str], logf, extra_env: dict | None = None,
+                stdin_path: Path | None = None
                 ) -> subprocess.Popen:
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    env["CLAUDE_PLUGIN_ROOT"] = str(CODEX_PLUGIN_DEFAULT)
     # Harden provider/key preconditions before spawn for Kimi reviewer
     # launches only. Codex review paths intentionally do not need these keys.
     if cmd and cmd[0].endswith(("kimi-review.sh", "minimax-review.sh")):
@@ -423,16 +375,22 @@ def spawn_child(cmd: list[str], logf, extra_env: dict | None = None
     # parent's session. For our SIGTERM-via-killpg use it's equivalent. If
     # future reviewers spawn background subshells with terminal-detach
     # semantics, revisit.
-    return subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=1,
-        text=True,
-        env=env,
-        cwd=str(REPO_ROOT),
-        process_group=0,
-    )
+    stdin_handle = stdin_path.open("r", encoding="utf-8") if stdin_path else None
+    try:
+        return subprocess.Popen(
+            cmd,
+            stdin=stdin_handle,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+            text=True,
+            env=env,
+            cwd=str(REPO_ROOT),
+            process_group=0,
+        )
+    finally:
+        if stdin_handle is not None:
+            stdin_handle.close()
 
 
 def reader_thread(proc: subprocess.Popen, logf,
@@ -644,14 +602,15 @@ def run_one_reviewer(
     heartbeat_s: int,
     reconnect_stall_s: int = 0,
     extra_env: dict | None = None,
+    stdin_path: Path | None = None,
 ) -> int:
     """Run a single reviewer end-to-end with the three guarantees.
 
     Returns the child's exit code; 124 if killed by the deadline,
     126 if killed by the post-reconnect stall detector.
 
-    extra_env is merged into the child environment (used to isolate the codex
-    plan-review task's persisted state via CLAUDE_PLUGIN_DATA).
+    extra_env is merged into the child environment. stdin_path supplies a
+    snapshotted plan prompt without exposing it in argv.
     """
     if reconnect_stall_s > 0 and reviewer != "codex":
         reconnect_stall_s = 0
@@ -677,7 +636,7 @@ def run_one_reviewer(
             log_line(logf, f"[{utc_now_iso()}] RECONNECT_STALL_DISABLED "
                      f"reason={disabled_reason}")
         try:
-            proc = spawn_child(cmd, logf, extra_env)
+            proc = spawn_child(cmd, logf, extra_env, stdin_path)
         except Exception as e:
             log_line(logf, f"[{utc_now_iso()}] SPAWN_FAILED {e}")
             state.update({"status": "spawn_failed", "error": str(e),
@@ -771,7 +730,7 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
     def cmd_for(reviewer: str) -> list[str] | None:
         if reviewer == "codex":
             return build_codex_cmd(args.scope, files, args.plan, args.focus,
-                                   Path(args.codex_plugin), job)
+                                   args.codex_executable, job)
         return build_kimi_cmd(args.scope, files, args.plan, args.focus)
 
     for idx, reviewer in enumerate(reviewers):
@@ -780,8 +739,8 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
         if cmd is None:
             if reviewer == "codex":
                 reason = codex_unavailable_reason(
-                    args.scope, REPO_ROOT, Path(args.codex_plugin), args.plan
-                ) or "codex plugin/script not found"
+                    args.scope, REPO_ROOT, args.codex_executable, args.plan
+                ) or "Codex executable unavailable"
             else:
                 reason = (
                     "kimi-review.sh not found; the review runner no longer "
@@ -797,23 +756,12 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
         stall_s = (args.reconnect_stall_threshold_s
                    if reviewer == "codex" else 0)
         extra_env = None
-        if reviewer == "codex" and args.scope == "plan":
-            # Relocate the companion's job store to a per-job throwaway dir so
-            # this plan review is not discovered via the PRIMARY resume path
-            # (the job store). CLAUDE_PLUGIN_DATA relocates state+jobs (state.mjs
-            # resolveStateDir). NOTE: this does not hide the persisted app-server
-            # thread from findLatestTaskThread()'s name-prefix fallback -- see the
-            # accepted residual documented in build_codex_cmd. K2B has no
-            # --resume-last callers, so this partial isolation is sufficient.
-            iso_dir = ARCHIVE_DIR / f"{job}.codex-plan-state"
-            iso_dir.mkdir(parents=True, exist_ok=True)
-            extra_env = {"CLAUDE_PLUGIN_DATA": str(iso_dir)}
-            with log_path.open("a") as logf:
-                log_line(logf, f"[{utc_now_iso()}] CODEX_PLAN_ISOLATED_STATE "
-                         f"dir={iso_dir}")
+        stdin_path = (ARCHIVE_DIR / f"{job}.codex-plan-prompt.md"
+                      if reviewer == "codex" and args.scope == "plan" else None)
         rc = run_one_reviewer(reviewer, cmd, job, log_path, state_path, state,
                               args.deadline, args.heartbeat_interval,
-                              reconnect_stall_s=stall_s, extra_env=extra_env)
+                              reconnect_stall_s=stall_s, extra_env=extra_env,
+                              stdin_path=stdin_path)
         if rc == 0:
             attempt_result = "ok"
         elif rc == 124:
@@ -1075,7 +1023,8 @@ def main() -> int:
                          "(Reconnecting... N/N) before SIGTERMing the child "
                          "and triggering fallback. 0 disables. Only applied "
                          "to the codex reviewer."))
-    p.add_argument("--codex-plugin", default=str(CODEX_PLUGIN_DEFAULT))
+    p.add_argument("--codex-executable", default=CODEX_EXECUTABLE_DEFAULT,
+                   help="Native Codex CLI executable (default: discovered codex binary)")
     p.add_argument("--no-fallback", action="store_true",
                    help=("Run only the requested primary reviewer. Use this "
                          "when the fallback reviewer would violate the "

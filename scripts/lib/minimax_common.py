@@ -1,15 +1,7 @@
-"""Shared HTTP client + key loading for K2Bi MiniMax wrappers.
+"""Shared Kimi HTTP client behind K2B's historical wrapper module name.
 
-Always uses the global endpoint (api.minimaxi.com), never the China-only
-.chat host. See ~/.claude/projects/.../memory/minimax_endpoint.md.
-
-IMPORTANT: MiniMax subscription EXPIRED on or before 2026-05-27. All MiniMax
-endpoints (text chatcompletion, VLM, image, video, music) now return
-{"base_resp":{"status_code":2049,"status_msg":"invalid api key"}}. The
-K2B_LLM_PROVIDER=minimax branch is therefore inert in production; the default
-Kimi branch is the only working text path. Keep this skeleton for future
-provider reuse or possible MiniMax reactivation. Spec:
-wiki/concepts/Shipped/feature_vlm-gptsapi-migration.md.
+MiniMax is retired and cannot be selected through this module.  The old file
+name remains only to avoid a broad import migration during Stage 1.
 """
 
 import http.client
@@ -20,17 +12,15 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
-MINIMAX_API_HOST = os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com")
-CHAT_PATH = "/v1/text/chatcompletion_v2"
 DEFAULT_TIMEOUT_S = 300
 
 # Kimi K2.7 via the Anthropic-compatible /coding endpoint. Primary text
 # provider as of 2026-04-25 -- see scripts/minimax-common.sh header.
 # Kimi is text-only. GPTsAPI owns image, VLM/OCR, TTS, and STT in K2B now.
-# Rollback text routing: K2B_LLM_PROVIDER=minimax.
 K2B_LLM_PROVIDER = os.environ.get("K2B_LLM_PROVIDER", "kimi").strip() or "kimi"
 KIMI_API_HOST = os.environ.get("KIMI_API_HOST", "https://api.kimi.com/coding")
 KIMI_MESSAGES_PATH = "/v1/messages"
@@ -61,21 +51,14 @@ def _env_positive_int(name: str, default: int) -> int:
 
 DEFAULT_MAX_TOKENS = _env_positive_int("K2B_LLM_MAX_TOKENS", 16384)
 
-# Transient server-side HTTP statuses worth retrying. 529 = "overloaded"
-# (MiniMax congestion peak), 502/503/504 = upstream gateway hiccups. Anything
+# Transient server-side HTTP statuses worth retrying. 502/503/504 are upstream
+# gateway hiccups. Anything
 # else at the HTTP level is treated as a real error and surfaces immediately.
-RETRY_HTTP_STATUSES = {502, 503, 504, 529}
+RETRY_HTTP_STATUSES = {429, 500, 502, 503, 504, 529}
 # Transient application-level base_resp.status_code values worth retrying
 # with the same backoff as HTTP 529. 1002 = rate limit -- Keith's text usage
 # is flagged "Heavy" (1500 req / 5h window), so bursty /ship + observer runs
 # can hit 1002 without ever seeing a 529.
-RETRY_APP_STATUSES = {1002}
-# Application-level status_codes where retry is guaranteed not to help.
-# 1008 = "insufficient balance / quota" per MiniMax -- either the paid
-# balance is depleted OR the per-window rate quota is exhausted. Either way
-# no amount of client-side retry recovers; the operator has to top up or
-# wait. Fail loud immediately instead of burning the full backoff ladder.
-FAIL_FAST_APP_STATUSES = {1008}
 MAX_RETRIES = 3
 RETRY_BACKOFF_S = (10, 20, 40)
 # Full-jitter added on top of each backoff step. Keeps concurrent /ship +
@@ -89,29 +72,29 @@ class MinimaxError(RuntimeError):
     pass
 
 
-def load_api_key() -> str:
-    key = os.environ.get("MINIMAX_API_KEY", "").strip()
-    if key:
-        return key
-    zshrc = Path.home() / ".zshrc"
-    if zshrc.exists():
-        match = re.search(
-            r'^\s*export\s+MINIMAX_API_KEY\s*=\s*"([^"]+)"',
-            zshrc.read_text(),
-            re.MULTILINE,
-        )
-        if match:
-            return match.group(1)
-    raise MinimaxError(
-        "MINIMAX_API_KEY not set and not found in ~/.zshrc. "
-        "Export it or add: export MINIMAX_API_KEY=\"...\""
-    )
+class KimiTransientError(MinimaxError):
+    """A provider-declared transient SSE failure that is safe to retry."""
 
 
 def load_kimi_api_key() -> str:
     key = os.environ.get("KIMI_API_KEY", "").strip()
     if key:
         return key
+    env_file = Path(os.environ.get("K2B_ENV_FILE", Path.home() / ".k2b-env"))
+    if env_file.is_file():
+        env_stat = env_file.stat()
+        if env_stat.st_uid != os.getuid() or env_stat.st_mode & 0o777 != 0o600:
+            raise MinimaxError(
+                f"Kimi credential file must be owned by the current user "
+                f"and mode 0600: {env_file}"
+            )
+        match = re.search(
+            r"^\s*(?:export\s+)?KIMI_API_KEY\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s#]+))",
+            env_file.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        if match:
+            return next(value for value in match.groups() if value is not None)
     zshrc = Path.home() / ".zshrc"
     if zshrc.exists():
         match = re.search(
@@ -122,9 +105,29 @@ def load_kimi_api_key() -> str:
         if match:
             return match.group(1)
     raise MinimaxError(
-        "KIMI_API_KEY not set and not found in ~/.zshrc. "
-        "Export it and keep K2B_LLM_PROVIDER=kimi."
+        "KIMI_API_KEY not set and not found in the dedicated credential file "
+        "or ~/.zshrc. Configure ~/.k2b-env with mode 0600 and keep "
+        "K2B_LLM_PROVIDER=kimi."
     )
+
+
+def _validated_kimi_api_host() -> str:
+    """Return the configured Kimi host after guarding metered endpoints."""
+    host = KIMI_API_HOST.rstrip("/")
+    parsed = urllib.parse.urlparse(host)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme.lower() != "https" or not hostname:
+        raise MinimaxError("KIMI_API_HOST must be a valid HTTPS URL")
+    if hostname in {"api.moonshot.cn", "api.moonshot.ai"} and os.environ.get(
+        "K2B_ALLOW_METERED_KIMI_PLATFORM", "false"
+    ).lower() != "true":
+        raise MinimaxError(
+            "KIMI_API_HOST selects the pay-as-you-go Kimi Open Platform. "
+            "K2B defaults to Kimi Code membership at "
+            "https://api.kimi.com/coding. A metered platform switch requires "
+            "explicit K2B_ALLOW_METERED_KIMI_PLATFORM=true."
+        )
+    return host
 
 
 def chat_completion(
@@ -140,10 +143,8 @@ def chat_completion(
 ) -> dict:
     """POST a chat-completion request and return the parsed JSON response.
 
-    Routes to Kimi K2.7 when K2B_LLM_PROVIDER=kimi (default as of 2026-04-25,
-    since MiniMax text models are no longer live). The
-    K2B_LLM_PROVIDER=minimax branch remains only as historical provider
-    plumbing until a future explicit provider ship re-enables it.
+    Routes only to Kimi K2.7. Any other provider value fails closed before
+    credentials are loaded or a network request is constructed.
 
     Kimi responses are translated into the MiniMax chatcompletion_v2 envelope
     shape (choices[0].message.content / usage.{prompt,completion,total}_tokens
@@ -152,134 +153,24 @@ def chat_completion(
 
     Raises MinimaxError on transport, HTTP, or API-level errors.
     """
-    if K2B_LLM_PROVIDER == "kimi":
-        return _kimi_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timeout=timeout,
+    if K2B_LLM_PROVIDER != "kimi":
+        raise MinimaxError(
+            "MiniMax routing is retired; set K2B_LLM_PROVIDER=kimi"
         )
-    api_key = load_api_key()
-    payload: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
-    if tools:
-        payload["tools"] = tools
-    if tool_choice:
-        payload["tool_choice"] = tool_choice
-    if response_format:
-        payload["response_format"] = response_format
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    # Telemetry-only header that lets MiniMax distinguish K2B traffic from
-    # their official MCP client. Set MM_API_SOURCE_DISABLE=1 to drop it if
-    # a proxy or future API version rejects unknown headers.
-    if os.environ.get("MM_API_SOURCE_DISABLE") != "1":
-        headers["MM-API-Source"] = "K2B"
-    req = urllib.request.Request(
-        f"{MINIMAX_API_HOST}{CHAT_PATH}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    last_err: Exception | None = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            if e.code in RETRY_HTTP_STATUSES and attempt < MAX_RETRIES:
-                wait_s = RETRY_BACKOFF_S[attempt] + random.uniform(0, RETRY_JITTER_MAX_S)
-                # stderr only: callers like minimax-review.sh --json capture
-                # stdout verbatim for the final JSON payload, so retry
-                # diagnostics on stdout would corrupt the JSON.
-                print(
-                    f"[minimax] HTTP {e.code} (transient) on attempt {attempt + 1}; "
-                    f"retrying in {wait_s:.1f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                time.sleep(wait_s)
-                last_err = e
-                continue
-            raise MinimaxError(f"HTTP {e.code} from MiniMax: {detail[:500]}") from e
-        except urllib.error.URLError as e:
-            # Network errors (timeout, DNS, connection refused) are also worth
-            # one or two retries -- often resolves on the next attempt.
-            if attempt < MAX_RETRIES:
-                wait_s = RETRY_BACKOFF_S[attempt] + random.uniform(0, RETRY_JITTER_MAX_S)
-                print(
-                    f"[minimax] network error on attempt {attempt + 1}: {e}; "
-                    f"retrying in {wait_s:.1f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                time.sleep(wait_s)
-                last_err = e
-                continue
-            raise MinimaxError(f"Network error contacting MiniMax after {MAX_RETRIES + 1} attempts: {e}") from e
-
-        # HTTP 200. Parse and dispatch on application-level status_code.
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError as e:
-            raise MinimaxError(f"Non-JSON response from MiniMax: {body[:500]}") from e
-
-        base_resp = parsed.get("base_resp") or {}
-        status_code = base_resp.get("status_code")
-        if status_code in (None, 0):
-            return parsed
-
-        status_msg = base_resp.get("status_msg", "unknown")
-
-        # 1008: insufficient balance or exhausted rate quota -- no amount of
-        # retry recovers. Raise immediately and surface the provider's own
-        # status_msg so the operator sees the actual remediation path (top
-        # up balance vs wait for window reset) without us guessing.
-        if status_code in FAIL_FAST_APP_STATUSES:
-            raise MinimaxError(
-                f"MiniMax API error {status_code} "
-                f"(insufficient balance or rate quota): {status_msg}. "
-                f"Check balance/quota at minimaxi.com -- retry will not help."
-            )
-
-        # 1002 rate limit: transient, retry with the HTTP-level backoff ladder.
-        if status_code in RETRY_APP_STATUSES and attempt < MAX_RETRIES:
-            wait_s = RETRY_BACKOFF_S[attempt] + random.uniform(0, RETRY_JITTER_MAX_S)
-            print(
-                f"[minimax] API status {status_code} (rate-limit) on attempt "
-                f"{attempt + 1}; retrying in {wait_s:.1f}s",
-                file=sys.stderr,
-                flush=True,
-            )
-            time.sleep(wait_s)
-            last_err = MinimaxError(f"status {status_code}: {status_msg}")
-            continue
-
-        # Non-retryable, non-fail-fast app error, or retries exhausted on 1002.
-        raise MinimaxError(f"MiniMax API error {status_code}: {status_msg}")
-
-    # All attempts hit a transient condition (HTTP 5xx, URLError, or 1002)
-    # and we ran out of retries without ever getting a 200 with status_code=0.
-    raise MinimaxError(
-        f"MiniMax unreachable after {MAX_RETRIES + 1} attempts; last error: {last_err}"
+    kimi_model = model if str(model).lower().startswith("kimi-") else None
+    return _kimi_chat_completion(
+        messages=messages,
+        model=kimi_model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
     )
 
 
 def _kimi_chat_completion(
     messages: list,
     *,
+    model: str | None = None,
     max_tokens: int,
     temperature: float,
     timeout: int,
@@ -292,18 +183,22 @@ def _kimi_chat_completion(
         duplicates; we join with \\n\\n).
       - `response_format` dropped (no Anthropic equivalent; prompts already
         instruct JSON output).
-      - Model id forced to KIMI_DEFAULT_MODEL -- callers may still carry a
-        MiniMax-* id from older code.
+      - Kimi model ids are honored; historical MiniMax model ids fall back to
+        KIMI_DEFAULT_MODEL for compatibility.
     """
     api_key = load_kimi_api_key()
 
     system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
     non_system = [m for m in messages if m.get("role") != "system"]
     payload: dict = {
-        "model": KIMI_DEFAULT_MODEL,
+        "model": model or KIMI_DEFAULT_MODEL,
         "max_tokens": max_tokens,
         "messages": non_system,
         "temperature": temperature,
+        # Streaming keeps the authenticated connection active during Kimi's
+        # extended-thinking phase. The non-streaming endpoint can otherwise
+        # be closed upstream before a long review emits its final text.
+        "stream": True,
     }
     if system_parts:
         payload["system"] = "\n\n".join(s for s in system_parts if s)
@@ -314,7 +209,7 @@ def _kimi_chat_completion(
         "Content-Type": "application/json",
     }
     req = urllib.request.Request(
-        f"{KIMI_API_HOST}{KIMI_MESSAGES_PATH}",
+        f"{_validated_kimi_api_host()}{KIMI_MESSAGES_PATH}",
         data=json.dumps(payload).encode("utf-8"),
         headers=headers,
         method="POST",
@@ -323,8 +218,31 @@ def _kimi_chat_completion(
     for attempt in range(MAX_RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read().decode("utf-8")
+                parsed = _read_kimi_stream(resp)
             break
+        except KimiTransientError as e:
+            if attempt < MAX_RETRIES:
+                wait_s = RETRY_BACKOFF_S[attempt] + random.uniform(
+                    0, RETRY_JITTER_MAX_S
+                )
+                print(
+                    f"[kimi] transient stream error on attempt {attempt + 1}: "
+                    f"{e}; retrying in {wait_s:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(wait_s)
+                last_err = e
+                continue
+            raise MinimaxError(
+                f"Transient Kimi stream error after {MAX_RETRIES + 1} "
+                f"attempts: {e}"
+            ) from e
+        except MinimaxError:
+            # A response that arrived but violates the stream contract is not
+            # a transient transport failure. Retrying can rebill the full
+            # prompt and cannot repair the already-received response.
+            raise
         except urllib.error.HTTPError as e:
             detail = ""
             try:
@@ -366,11 +284,6 @@ def _kimi_chat_completion(
             f"Kimi unreachable after {MAX_RETRIES + 1} attempts; last error: {last_err}"
         )
 
-    try:
-        parsed = json.loads(body)
-    except json.JSONDecodeError as e:
-        raise MinimaxError(f"Non-JSON response from Kimi: {body[:500]}") from e
-
     if isinstance(parsed.get("error"), dict):
         err = parsed["error"]
         raise MinimaxError(
@@ -411,6 +324,118 @@ def _kimi_chat_completion(
     }
 
 
+def _read_kimi_stream(resp) -> dict:
+    """Collapse an Anthropic-compatible SSE response into one message.
+
+    Thinking and signature blocks are deliberately ignored. Only final text,
+    public response metadata, stop reason, and aggregate usage leave this
+    parser, matching the existing non-streaming return contract.
+    """
+    response_id = None
+    model = KIMI_DEFAULT_MODEL
+    stop_reason = None
+    text_parts: list[str] = []
+    usage_start: dict = {}
+    usage_end: dict = {}
+    saw_event = False
+    saw_message_stop = False
+    raw_lines: list[bytes] = []
+
+    for raw_line in resp:
+        if isinstance(raw_line, str):
+            raw = raw_line.encode("utf-8")
+        else:
+            raw = raw_line
+        if not saw_event:
+            raw_lines.append(raw)
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        payload_text = line[5:].strip()
+        if not payload_text or payload_text == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            raise MinimaxError(
+                f"Non-JSON SSE event from Kimi: {payload_text[:500]}"
+            ) from exc
+        saw_event = True
+        event_type = event.get("type")
+        if event_type == "error":
+            error = event.get("error") or event
+            error_type = str(error.get("type", "")).lower()
+            if error_type in {
+                "overloaded_error",
+                "rate_limit_error",
+                "internal_server_error",
+            }:
+                raise KimiTransientError(
+                    f"{error_type}: {error.get('message', 'provider error')}"
+                )
+            return {"error": error}
+        if event_type == "message_start":
+            message = event.get("message") or {}
+            response_id = message.get("id")
+            model = message.get("model") or model
+            usage_start = message.get("usage") or {}
+        elif event_type == "content_block_start":
+            block = event.get("content_block") or {}
+            if block.get("type") == "text" and block.get("text"):
+                text_parts.append(str(block["text"]))
+        elif event_type == "content_block_delta":
+            delta = event.get("delta") or {}
+            if delta.get("type") == "text_delta" and delta.get("text"):
+                text_parts.append(str(delta["text"]))
+        elif event_type == "message_delta":
+            delta = event.get("delta") or {}
+            stop_reason = delta.get("stop_reason") or stop_reason
+            usage_end = event.get("usage") or usage_end
+        elif event_type == "message_stop":
+            saw_message_stop = True
+
+    if not saw_event:
+        body = b"".join(raw_lines).decode("utf-8", errors="replace")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise MinimaxError(f"Non-JSON response from Kimi: {body[:500]}") from exc
+
+    if not saw_message_stop:
+        raise KimiTransientError(
+            "Incomplete SSE response from Kimi: missing message_stop"
+        )
+    if not stop_reason:
+        raise KimiTransientError(
+            "Incomplete SSE response from Kimi: missing stop_reason"
+        )
+
+    prompt_tokens = usage_start.get("prompt_tokens")
+    if prompt_tokens is None:
+        prompt_tokens = sum(
+            int(usage_start.get(field) or 0)
+            for field in (
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+        )
+    completion_tokens = usage_end.get(
+        "completion_tokens", usage_end.get("output_tokens", 0)
+    )
+    return {
+        "id": response_id,
+        "model": model,
+        "content": [{"type": "text", "text": "".join(text_parts)}],
+        "stop_reason": stop_reason,
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": (prompt_tokens or 0) + (completion_tokens or 0),
+        },
+    }
+
+
 def extract_assistant_text(response: dict) -> str:
     """Pull the assistant message content out of a chatcompletion_v2 response."""
     choices = response.get("choices") or []
@@ -427,3 +452,53 @@ def extract_token_usage(response: dict) -> dict:
         "completion_tokens": usage.get("completion_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
+
+
+def kimi_completion_from_openai_payload(payload: dict) -> dict:
+    """Translate an older shell worker payload through the streaming client."""
+    if not isinstance(payload, dict):
+        raise MinimaxError("Kimi request payload must be a JSON object")
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        raise MinimaxError("Kimi request payload requires a messages array")
+
+    raw_max_tokens = payload.get(
+        "max_tokens", payload.get("max_completion_tokens", DEFAULT_MAX_TOKENS)
+    )
+    try:
+        max_tokens = int(raw_max_tokens)
+    except (TypeError, ValueError):
+        max_tokens = DEFAULT_MAX_TOKENS
+    if max_tokens <= 0:
+        max_tokens = DEFAULT_MAX_TOKENS
+
+    temperature = payload.get("temperature", 0.2)
+    if not isinstance(temperature, (int, float)):
+        temperature = 0.2
+    return _kimi_chat_completion(
+        messages=messages,
+        model=KIMI_DEFAULT_MODEL,
+        max_tokens=max_tokens,
+        temperature=float(temperature),
+        timeout=DEFAULT_TIMEOUT_S,
+    )
+
+
+def _run_shell_kimi_bridge() -> int:
+    """stdin/stdout bridge used by historical shell worker wrappers."""
+    try:
+        payload = json.load(sys.stdin)
+        response = kimi_completion_from_openai_payload(payload)
+    except (json.JSONDecodeError, MinimaxError) as exc:
+        print(f"ERROR: Kimi API call failed: {exc}", file=sys.stderr)
+        return 1
+    json.dump(response, sys.stdout, separators=(",", ":"), ensure_ascii=False)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--kimi-openai-payload"]:
+        raise SystemExit(_run_shell_kimi_bridge())
+    print("usage: minimax_common.py --kimi-openai-payload", file=sys.stderr)
+    raise SystemExit(2)

@@ -1,4 +1,4 @@
-"""Render the session-start loop dashboard.
+"""Render the on-demand loop review dashboard.
 
 Ship 2 merges observer candidates and review items into one routable index
 space. Observer entries carry their severity + area. Review entries show the
@@ -104,7 +104,7 @@ def main() -> int:
     lines.append("  r N = REJECT item N (observer: archive; review: move to Archive/review-archive; conflict: keep existing)")
     lines.append("  d N = DEFER item N (increments counter; auto-archive on 3rd defer)")
     lines.append(
-        "Claude will call scripts/loop/loop-apply.sh with your choices before the next prompt."
+        "Codex will call scripts/loop/loop-apply.sh with your choices before the next prompt."
     )
     lines.append("")
 

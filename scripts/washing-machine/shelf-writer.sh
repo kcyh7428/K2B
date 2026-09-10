@@ -417,7 +417,7 @@ up: "[[index]]"
 
 # ${title} shelf
 
-Rows written by the Washing Machine classifier. Atomic append via scripts/washing-machine/shelf-writer.sh. Do not edit by hand; embed-index.py tracks row-hash idempotence.
+Rows written by the Washing Machine classifier. Atomic append via scripts/washing-machine/shelf-writer.sh. Do not edit by hand; Stage 1 does not run a local embedding index.
 
 ## Rows
 

@@ -51,13 +51,13 @@ def store(temp_env, tmp_path):
 
 
 @pytest.fixture
-def telegram_recorder(tmp_path, monkeypatch):
+def notification_recorder(tmp_path, monkeypatch):
     recorder = tmp_path / "recorder.sh"
     recorder.write_text("#!/bin/bash\necho \"$@\" >> \"$RECORDER_OUT\"\n")
     recorder.chmod(0o755)
     out = tmp_path / "out.txt"
     monkeypatch.setenv("RECORDER_OUT", str(out))
-    monkeypatch.setenv("K2B_ORCH_TELEGRAM_CMD", str(recorder))
+    monkeypatch.setenv("K2B_ORCH_NOTIFY_CMD", str(recorder))
     return out
 
 
@@ -75,7 +75,7 @@ def _spawn_worker(task_id):
 
 
 class TestWorkerEcho:
-    def test_worker_echo_done(self, store, telegram_recorder):
+    def test_worker_echo_done(self, store, notification_recorder):
         tid = store.add_task(
             assignee_profile="k2bi",
             command_key="test-echo-readonly",
@@ -99,12 +99,12 @@ class TestWorkerEcho:
         assert artifact.exists()
         assert "orchestrator-smoke-ok" in artifact.read_text()
 
-        messages = telegram_recorder.read_text().strip().splitlines()
+        messages = notification_recorder.read_text().strip().splitlines()
         assert len(messages) == 1
         assert "DONE" in messages[0]
         assert tid in messages[0]
 
-    def test_worker_pid_is_own(self, store, telegram_recorder):
+    def test_worker_pid_is_own(self, store, notification_recorder):
         tid = store.add_task(
             assignee_profile="k2bi",
             command_key="test-echo-readonly",
@@ -124,7 +124,7 @@ class TestWorkerEcho:
 
 
 class TestWorkerFailPaths:
-    def test_non_allowlisted_command(self, store, telegram_recorder):
+    def test_non_allowlisted_command(self, store, notification_recorder):
         tid = store.add_task(
             assignee_profile="k2bi",
             command_key="bad-command",
@@ -140,11 +140,11 @@ class TestWorkerFailPaths:
                 break
             time.sleep(0.1)
         assert t["status"] == "failed"
-        messages = telegram_recorder.read_text().strip().splitlines()
+        messages = notification_recorder.read_text().strip().splitlines()
         assert len(messages) == 1
         assert "FAILED" in messages[0]
 
-    def test_stale_heartbeat_treated_as_failed(self, store, telegram_recorder, tmp_path, monkeypatch):
+    def test_stale_heartbeat_treated_as_failed(self, store, notification_recorder, tmp_path, monkeypatch):
         # In-process test with mocked subprocess and time
         import threading as _threading
         from scripts.lib import orchestrator_worker as worker
@@ -214,7 +214,7 @@ class TestWorkerFailPaths:
         assert len(notified) == 1
         assert "FAILED" in notified[0]
 
-    def test_trusted_workspace_ignores_task_value(self, store, telegram_recorder, tmp_path, monkeypatch):
+    def test_trusted_workspace_ignores_task_value(self, store, notification_recorder, tmp_path, monkeypatch):
         # Set up a real temp workspace and point k2bi there
         real_ws = tmp_path / "real_k2bi"
         real_ws.mkdir()
@@ -271,7 +271,7 @@ class TestWorkerFailPaths:
         t = store2.get_task(tid)
         assert t["status"] == "done"
 
-    def test_worker_lock_held_and_released(self, store, telegram_recorder, tmp_path):
+    def test_worker_lock_held_and_released(self, store, notification_recorder, tmp_path):
         # In-process: verify lock file exists during run and is gone after
         from scripts.lib import orchestrator_worker as worker
         from scripts.lib import orchestrator_profiles as profiles
@@ -313,7 +313,7 @@ class TestWorkerFailPaths:
         assert event.is_set()
         assert not os.path.exists(lock_path), "worker lock should be gone after run"
 
-    def test_second_worker_blocked_when_lock_held(self, store, telegram_recorder, tmp_path):
+    def test_second_worker_blocked_when_lock_held(self, store, notification_recorder, tmp_path):
         from scripts.lib import orchestrator_worker as worker
         from scripts.lib import orchestrator_profiles as profiles
 

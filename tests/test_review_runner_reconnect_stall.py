@@ -10,7 +10,7 @@ log content and exit code.
 Notes:
 * `review_runner.KILL_GRACE_S` is patched down from 10s to 1s so the
   SIGTERM->SIGKILL grace doesn't dominate test wall-clock.
-* These tests do not depend on the real Codex CLI or codex-companion.mjs;
+* These tests do not depend on the real Codex CLI;
   the fake child is a bash one-liner.
 """
 

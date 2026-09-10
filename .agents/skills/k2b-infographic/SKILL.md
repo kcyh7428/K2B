@@ -5,12 +5,14 @@ description: "Build controlled, on-brand infographics by compositing text-free A
 
 # K2B Infographic Builder
 
+> **Host boundary:** SJM generation output stays machine-local and outside K2B-Vault. Durable vault sources/assets are written on Home only.
+
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -66,9 +68,9 @@ The real SJM logo lives at `~/Projects/K2B-Vault/Assets/images/sjm_logo.png` (do
 
 Before generating anything, agree the exact title, stage names, captions and any structured elements (badges, chips, KPIs, flags). The illustration step is cheap; the wording is the load-bearing part.
 
-### 2. Generate text-free panels on the Mac Mini
+### 2. Generate text-free panels on the current authorized Mac
 
-The Mini holds the GPTsAPI key in its shell profile. Run the remote generation through the Mini's existing `zsh` login context; do not parse `~/.zshrc` by hand.
+Use the machine-local GPTsAPI credential on the home or SJM Mac. Credentials are per-machine; if this Mac is not configured, stop and ask Keith to authorize login or supply that machine's credential. Never borrow a credential from another host.
 
 ```bash
 set -euo pipefail
@@ -77,13 +79,9 @@ file ~/Projects/K2B-Vault/Assets/images/sjm_logo.png | grep -q 'PNG image data' 
   || { echo "sjm_logo.png is missing or not a valid PNG" >&2; exit 1; }
 cp -f ~/Projects/K2B-Vault/Assets/images/sjm_logo.png /tmp/deckbuild/<slug>/  # refresh the local logo on every build
 
-PANEL_PATH="$(ssh macmini 'zsh -l' <<'REMOTE'
-set -euo pipefail
-: "${GPTSAPI_KEY:?GPTSAPI_KEY not loaded by Mini shell profile}"
+: "${GPTSAPI_KEY:?GPTSAPI_KEY is not configured on this Mac}"
 cd "$HOME/Projects/K2B"
-remote_dir="/tmp/deckbuild/<slug>"
-mkdir -p "$remote_dir"
-panel_path="$remote_dir/my-panel1.png"  # reruns reuse the same fetch path; version the slug if you want to keep variants
+panel_path="/tmp/deckbuild/<slug>/my-panel1.png"  # version the slug to keep variants
 
 N="No text, no words, no letters, no labels, no signage anywhere."
 P1="A warm clean editorial illustration. $N <scene description>. Emerald green and gold on a clean cream background. Simple flat hand-illustrated style."
@@ -91,12 +89,7 @@ P1="A warm clean editorial illustration. $N <scene description>. Emerald green a
 ./scripts/gptsapi-image.sh --prompt "$P1" --aspect-ratio 4:3 \
   --output "$panel_path" \
   --timeout 170 >/dev/null
-printf '%s\n' "$panel_path"
-REMOTE
-)"
-[ -n "${PANEL_PATH}" ] || { echo "remote panel path was empty" >&2; exit 1; }
-
-scp "macmini:${PANEL_PATH}" /tmp/deckbuild/<slug>/
+test -s "$panel_path" || { echo "panel generation produced no image" >&2; exit 1; }
 ```
 
 **Prompt template that consistently works** for SJM panels:
@@ -173,4 +166,4 @@ The build directory at `/tmp/deckbuild/<slug>/` is left in place between iterati
 
 ## Usage logging
 
-Append one line to `~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv` using the same four-column TSV pattern used across K2B skills and referenced by `k2b-usage-tracker`: `date<TAB>skill<TAB>run_id<TAB>summary`.
+Use `scripts/k2b-shared-append.py usage --skill k2b-infographic --summary "generated infographic: DESCRIPTION"`. It appends on Home and queues privately on source-only hosts.

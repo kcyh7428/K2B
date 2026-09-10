@@ -17,10 +17,15 @@ make_fixture() {
     "$root/.agents/skills/k2b-example" \
     "$root/.codex" \
     "$root/scripts/hooks" \
+    "$root/scripts/lib" \
+    "$root/scripts/loop" \
+    "$root/scripts/washing-machine/prompts" \
     "$root/plans" \
     "$root/docs/migration-exports" \
     "$root/.code-reviews" \
-    "$root/archive/claude"
+    "$root/archive/claude" \
+    "$root/vault/System/memory" \
+    "$root/vault/wiki"
 
   cat > "$root/AGENTS.md" <<'EOF'
 # Fixture authority
@@ -35,7 +40,17 @@ description: Fixture
 
 Codex runs this skill.
 EOF
-  printf '{"hooks":{}}\n' > "$root/.codex/hooks.json"
+  printf '%s\n' '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"scripts/hooks/session-start.sh"}]}]}}' > "$root/.codex/hooks.json"
+  printf '%s\n' '# Active Rules' 'Codex owns live instructions.' > "$root/vault/System/memory/active_rules.md"
+  printf '%s\n' '# Wiki Index' 'Current K2B knowledge.' > "$root/vault/wiki/index.md"
+  printf '%s\n' 'Codex renders current loop choices.' > "$root/scripts/loop/loop_render.py"
+  printf '%s\n' 'Codex owns final research reasoning.' > "$root/scripts/research-extract-prompt.md"
+  printf '%s\n' 'Bounded manual preference analysis.' > "$root/scripts/observer-prompt.md"
+  printf '%s\n' 'Do not create reminders automatically.' > "$root/scripts/washing-machine/prompts/washing-machine-classifier-v1.0.txt"
+  printf '%s\n' '{}' > "$root/.mcp.json"
+  printf '%s\n' '# Kimi provider client' > "$root/scripts/lib/minimax_common.py"
+  printf '%s\n' '# Kimi review client' > "$root/scripts/lib/minimax_review.py"
+  printf '%s\n' '# Review runner' > "$root/scripts/lib/review_runner.py"
   for hook in \
     session-start.sh \
     post-tool-skill-track.sh \
@@ -54,9 +69,13 @@ expect_violation() {
 
   rm -rf "$fixture"
   make_fixture "$fixture"
-  printf '\n%s\n' "$forbidden" >> "$fixture/$relative_path"
+  if [[ "$relative_path" == vault/System/memory/* ]]; then
+    printf '\n99. %s\n' "$forbidden" >> "$fixture/$relative_path"
+  else
+    printf '\n%s\n' "$forbidden" >> "$fixture/$relative_path"
+  fi
 
-  if bash "$SCANNER" "$fixture" >"$out" 2>&1; then
+  if K2B_VAULT_PATH="$fixture/vault" bash "$SCANNER" "$fixture" >"$out" 2>&1; then
     fail "scanner accepted $forbidden in $relative_path"
   fi
   grep -Fq "$relative_path" "$out" ||
@@ -107,7 +126,7 @@ echo "=== verify-codex-authority.test.sh ==="
 
 valid="$TMP_DIR/valid"
 make_fixture "$valid"
-bash "$SCANNER" "$valid" >/dev/null ||
+K2B_VAULT_PATH="$valid/vault" bash "$SCANNER" "$valid" >/dev/null ||
   fail "clean active-authority fixture should pass"
 echo "PASS: clean active-authority fixture"
 
@@ -120,10 +139,24 @@ for surface in \
   AGENTS.md \
   .agents/skills/k2b-example/SKILL.md \
   .codex/hooks.json \
+  .mcp.json \
   scripts/hooks/session-start.sh \
-  scripts/hooks/post-tool-skill-track.sh \
-  scripts/hooks/stop-observe.sh \
-  scripts/hooks/youtube-transcript-prefetch.sh
+  scripts/loop/loop_render.py \
+  scripts/research-extract-prompt.md \
+  scripts/observer-prompt.md \
+  scripts/washing-machine/prompts/washing-machine-classifier-v1.0.txt
+do
+  expect_violation "$surface" "CLAUDE_PROJECT_DIR"
+done
+
+printf '\n%s\n' '~/.claude/projects' >> "$valid/scripts/lib/minimax_common.py"
+if K2B_VAULT_PATH="$valid/vault" bash "$SCANNER" "$valid" >/dev/null 2>&1; then
+  fail "scanner accepted retired state in an operational provider module"
+fi
+echo "PASS: operational dependencies are scanned"
+
+for surface in \
+  vault/System/memory/active_rules.md
 do
   expect_violation "$surface" "CLAUDE_PROJECT_DIR"
 done
@@ -141,7 +174,15 @@ for forbidden in \
   "Telegram feedback path" \
   "Telegram ad-hoc URL flow" \
   "send the URL to the Telegram bot directly" \
-  "K2B_LLM_PROVIDER=minimax"
+  "K2B_LLM_PROVIDER=minimax" \
+  "deploy-to-mini.sh" \
+  "ssh macmini" \
+  ".pending-sync/" \
+  "pm2 restart k2b-remote" \
+  "Operations Console attention queue" \
+  "K2B_YT_REMOTE_HOST=macmini" \
+  "Stop hook captures observations" \
+  "scheduled cron task fires on Mac Mini"
 do
   expect_violation ".agents/skills/k2b-example/SKILL.md" "$forbidden"
 done
@@ -155,11 +196,11 @@ for path in \
   .code-reviews/old-review.md \
   archive/claude/immutable-history.md
 do
-  printf '%s\n' "CLAUDE_PROJECT_DIR ~/.claude/projects .claude/skills Claude Code desktop Telegram scheduler Primary workday capture path is Telegram Desktop Claude Code can still own orchestration Claude Code and Telegram compatibility You can still use Claude Code Telegram is unchanged Telegram feedback path Telegram ad-hoc URL flow send the URL to the Telegram bot directly K2B_LLM_PROVIDER=minimax" > "$historical/$path"
+  printf '%s\n' "CLAUDE_PROJECT_DIR ~/.claude/projects .claude/skills Claude Code desktop Telegram scheduler Primary workday capture path is Telegram Desktop Claude Code can still own orchestration Claude Code and Telegram compatibility You can still use Claude Code Telegram is unchanged Telegram feedback path Telegram ad-hoc URL flow send the URL to the Telegram bot directly K2B_LLM_PROVIDER=minimax deploy-to-mini.sh ssh macmini .pending-sync/ pm2 restart k2b-remote Operations Console attention queue K2B_YT_REMOTE_HOST=macmini Stop hook captures observations scheduled cron task fires on Mac Mini" > "$historical/$path"
 done
-bash "$SCANNER" "$historical" >/dev/null ||
+K2B_VAULT_PATH="$historical/vault" bash "$SCANNER" "$historical" >/dev/null ||
   fail "historical allowlist should not be treated as live authority"
 echo "PASS: historical prose remains outside live authority"
 
-bash "$SCANNER" "$REPO_ROOT"
+K2B_VAULT_PATH="$valid/vault" bash "$SCANNER" "$REPO_ROOT"
 echo "PASS: repository Codex authority is clean"

@@ -12,21 +12,21 @@ rules:
   - id: compile-all-indexes
     phrase: "Compile must update ALL indexes"
     canonical_home:
-      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
-      - ".claude/skills/k2b-compile/SKILL.md"
+      - "~/Projects/K2B-Vault/System/memory/active_rules.md"
+      - ".agents/skills/k2b-compile/SKILL.md"
     severity: warn
 
   - id: compile-4-index-taxonomy
     phrase: "subfolder, raw subfolder, master wiki/index.md, wiki/log.md"
     canonical_home:
-      - ".claude/skills/k2b-compile/SKILL.md"
+      - ".agents/skills/k2b-compile/SKILL.md"
       - "scripts/compile-index-update.py"
     severity: warn
 
   - id: rsync-hard-rule
     phrase: "NEVER manual rsync"
     canonical_home:
-      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
+      - "~/Projects/K2B-Vault/System/memory/active_rules.md"
     severity: warn
 
   - id: shipped-file-location
@@ -36,10 +36,10 @@ rules:
     # watchlist must be updated in the same change or audit-ownership.sh will
     # false-positive on every other occurrence of the phrase.
     canonical_home:
-      - ".claude/skills/k2b-ship/SKILL.md"
-      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/active_rules.md"
-      - "CLAUDE.md"
-      - "/Users/keithmbpm2/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory/self_improve_learnings.md"
+      - ".agents/skills/k2b-ship/SKILL.md"
+      - "~/Projects/K2B-Vault/System/memory/active_rules.md"
+      - "AGENTS.md"
+      - "~/Projects/K2B-Vault/System/memory/self_improve_learnings.md"
     severity: warn
 
   - id: wiki-log-direct-append

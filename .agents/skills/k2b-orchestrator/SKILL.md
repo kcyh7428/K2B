@@ -1,6 +1,6 @@
 ---
 name: k2b-orchestrator
-description: Dispatch and monitor K2Bi analyst tasks via the orchestrator board, run the Chat-1 "deep-research booster" (read the news on a domain, build a Kimi Deep Research prompt, pause for Keith's manual Kimi run, then validate-and-repair the returned source links), AND answer "where are we in the orchestrator" by rendering the Full Scope Tracker. Use when Keith says /orchestrator, "dispatch a k2bi task", "orchestrator board", "what's on the board", "show flights", "read the news on <domain>", "what's forming in <area>", "deep research on <topic-or-ticker>", "go deeper", "where are we in the orchestrator", "orchestrator status", "orchestrator scope", "how much does the orchestrator do", or pastes Kimi Deep Research output back for a waiting flight.
+description: Dispatch and monitor K2Bi analyst tasks via the orchestrator board, run the deep-research booster, and render the Full Scope Tracker. Use for explicit orchestrator, board, flight, scoped news, or deep-research requests.
 ---
 
 # K2B Orchestrator
@@ -10,9 +10,10 @@ description: Dispatch and monitor K2Bi analyst tasks via the orchestrator board,
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+- The orchestrator is Home-writer-only because SQLite, its WAL, the board, and result artifacts live in the synchronized vault. On SJM, do not run any orchestrator subcommand (including `list`); explain that the source-only workstation cannot open this store and use the Home Mac instead.
 
 Manage durable tasks that dispatch allowlisted analyst commands to the sibling K2Bi workspace. The orchestrator owns the control plane: task creation, preflight checks, worker spawn, heartbeats, result artifacts, and a board mirror.
 
@@ -41,7 +42,7 @@ Keith says any of:
 When Keith asks any "where are we" / status / scope / how-much question above, **render the canonical Full Scope Tracker -- do NOT recompute or synthesize it from memory.**
 
 1. Read `~/Projects/K2B-Vault/wiki/concepts/feature_k2b-orchestrator.md` and locate the section whose heading **contains "Full scope tracker"** (match leniently on those three words -- do not depend on the exact arrow glyph or whitespace). **Tie-break if more than one matches:** ignore any heading marked `draft` / `old` / `deprecated`; among the rest, use the LAST one in the file (newest). That section is the single source of truth: the condensed Stage 0->15 status map with the ✅/🖐/🟡/⛔/🔒 legend.
-2. **Fail loud, never fabricate.** If the file cannot be read, or no qualifying "Full scope tracker" heading is found (file renamed/moved, section removed, Syncthing lag, Mac Mini not yet synced), say plainly: "Full Scope Tracker source unavailable at `wiki/concepts/feature_k2b-orchestrator.md` -- not rendering from memory." and STOP. Do NOT improvise a tracker; a hallucinated status map is worse than no answer.
+2. **Fail loud, never fabricate.** If the file cannot be read, or no qualifying "Full scope tracker" heading is found (file renamed/moved, section removed, or Syncthing lag), say plainly: "Full Scope Tracker source unavailable at `wiki/concepts/feature_k2b-orchestrator.md` -- not rendering from memory." and STOP. Do NOT improvise a tracker; a hallucinated status map is worse than no answer.
 3. On success, show that table verbatim, then the "**Where we are now**" one-liner from the same section.
 4. ONLY after a successful render (step 3), you MAY append live flight state from `bash ~/Projects/K2B/scripts/k2b-orchestrator.sh list` (what's actually on the board right now) as a supplement -- the tracker table is the headline answer. If step 2 stopped, do NOT run this; emit nothing but the unavailable message.
 5. The tracker's Status column is updated on every orchestrator ship (`/ship` step 6). If it looks stale vs the feature note's Updates log, say so rather than guessing.
@@ -720,5 +721,5 @@ cat ~/Projects/K2B-Vault/System/orchestrator/board.md
 After completing the main task, log this skill invocation:
 
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-orchestrator\t$(echo $RANDOM | md5sum | head -c 8)\torchestrator operation" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-orchestrator --summary "orchestrator operation"
 ```

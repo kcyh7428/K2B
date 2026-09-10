@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for minimax_common.chat_completion retry/fail-fast paths.
-
-Added 2026-04-21 per Codex Tier 3 review feedback on the 1002/1008 additions
-(exhaustive review exposed the absence of regression coverage for these
-branches; they only fire under quota/rate-limit pressure where failures are
-hardest to diagnose).
-
-Coverage:
-- success (HTTP 200, base_resp.status_code=0)
-- 1002 retry-then-success
-- 1002 exhaustion (all attempts return 1002)
-- 1008 fail-fast (no retry)
-- malformed JSON after HTTP 200
-- HTTP 529 retry-then-success (baseline, unchanged behavior)
-- MM-API-Source: K2B header emission
-
-Run: python3 tests/test_minimax_common.py
-"""
+"""Regression tests for the Kimi client in the historical wrapper module."""
 from __future__ import annotations
 
 import json
@@ -33,16 +16,6 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import minimax_common  # noqa: E402
 
 
-def _mock_resp(body_dict: dict) -> MagicMock:
-    """Build a context-manager mock that urlopen() returns on success."""
-    body = json.dumps(body_dict).encode("utf-8")
-    resp = MagicMock()
-    resp.read.return_value = body
-    resp.__enter__.return_value = resp
-    resp.__exit__.return_value = False
-    return resp
-
-
 def _mock_http_error(code: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         url="https://api.minimaxi.com/v1/text/chatcompletion_v2",
@@ -53,197 +26,338 @@ def _mock_http_error(code: int) -> urllib.error.HTTPError:
     )
 
 
-SUCCESS_BODY = {
-    "base_resp": {"status_code": 0, "status_msg": "success"},
-    "choices": [{"message": {"content": "ok"}}],
-    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-}
-RATE_LIMIT_BODY = {"base_resp": {"status_code": 1002, "status_msg": "rate limited"}}
-QUOTA_BODY = {"base_resp": {"status_code": 1008, "status_msg": "quota exhausted"}}
+class _StreamingResponse:
+    def __init__(self, events: list[dict]):
+        self._lines = []
+        for event in events:
+            self._lines.extend(
+                [
+                    f"event:{event['type']}\n".encode(),
+                    f"data:{json.dumps(event)}\n".encode(),
+                    b"\n",
+                ]
+            )
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
 
 
-class TestChatCompletion(unittest.TestCase):
-    def setUp(self) -> None:
-        # Neutralize the real API key lookup + the backoff sleeps so the test
-        # suite runs in <1s regardless of the backoff ladder (10+20+40s).
-        self._provider_before = minimax_common.K2B_LLM_PROVIDER
+class TestProviderRouting(unittest.TestCase):
+    def test_non_kimi_provider_fails_before_network_or_credentials(self):
+        previous = minimax_common.K2B_LLM_PROVIDER
         minimax_common.K2B_LLM_PROVIDER = "minimax"
-        self.patchers = [
-            patch.object(minimax_common, "load_api_key", return_value="fake-key"),
-            patch("time.sleep", return_value=None),
+        try:
+            with patch.object(minimax_common, "load_kimi_api_key") as load_key:
+                with patch.object(
+                    minimax_common.urllib.request, "urlopen"
+                ) as network:
+                    with self.assertRaisesRegex(
+                        minimax_common.MinimaxError, "retired"
+                    ):
+                        minimax_common.chat_completion(
+                            "legacy-model", [{"role": "user", "content": "hi"}]
+                        )
+            load_key.assert_not_called()
+            network.assert_not_called()
+        finally:
+            minimax_common.K2B_LLM_PROVIDER = previous
+
+
+class TestKimiStreaming(unittest.TestCase):
+    def test_streaming_response_keeps_only_final_text_and_usage(self):
+        events = [
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg-test",
+                    "model": "kimi-k2.7-code",
+                    "usage": {
+                        "input_tokens": 0,
+                        "cache_creation_input_tokens": 3,
+                        "cache_read_input_tokens": 7,
+                    },
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "private reasoning"},
+            },
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "OK"},
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 11},
+            },
+            {"type": "message_stop"},
         ]
-        for p in self.patchers:
-            p.start()
-
-    def tearDown(self) -> None:
-        for p in self.patchers:
-            p.stop()
-        minimax_common.K2B_LLM_PROVIDER = self._provider_before
-
-    def _run(self):
-        return minimax_common.chat_completion(
-            "MiniMax-M2.7", [{"role": "user", "content": "hi"}]
-        )
-
-    def test_success_returns_parsed(self):
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            return_value=_mock_resp(SUCCESS_BODY),
-        ) as mock_u:
-            result = self._run()
-        self.assertEqual(result["base_resp"]["status_code"], 0)
-        self.assertEqual(mock_u.call_count, 1)
-
-    def test_1002_retry_then_success(self):
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            side_effect=[_mock_resp(RATE_LIMIT_BODY), _mock_resp(SUCCESS_BODY)],
-        ) as mock_u:
-            result = self._run()
-        self.assertEqual(result["base_resp"]["status_code"], 0)
-        self.assertEqual(mock_u.call_count, 2)
-
-    def test_1002_exhaustion_raises(self):
-        # MAX_RETRIES + 1 = 4 attempts total, all return 1002.
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            side_effect=[_mock_resp(RATE_LIMIT_BODY)] * 4,
-        ) as mock_u:
-            with self.assertRaises(minimax_common.MinimaxError) as ctx:
-                self._run()
-        self.assertIn("1002", str(ctx.exception))
-        self.assertEqual(mock_u.call_count, 4)
-
-    def test_1008_fail_fast_no_retry(self):
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            return_value=_mock_resp(QUOTA_BODY),
-        ) as mock_u:
-            with self.assertRaises(minimax_common.MinimaxError) as ctx:
-                self._run()
-        msg = str(ctx.exception)
-        self.assertIn("1008", msg)
-        self.assertIn("quota", msg.lower())
-        self.assertEqual(mock_u.call_count, 1)
-
-    def test_malformed_json_raises(self):
-        bad = MagicMock()
-        bad.read.return_value = b"this is not json {{"
-        bad.__enter__.return_value = bad
-        bad.__exit__.return_value = False
-        with patch.object(minimax_common.urllib.request, "urlopen", return_value=bad):
-            with self.assertRaises(minimax_common.MinimaxError) as ctx:
-                self._run()
-        self.assertIn("Non-JSON", str(ctx.exception))
-
-    def test_http_529_retry_then_success(self):
-        # Baseline: pre-existing HTTP 529 retry path must still work.
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            side_effect=[_mock_http_error(529), _mock_resp(SUCCESS_BODY)],
-        ) as mock_u:
-            result = self._run()
-        self.assertEqual(result["base_resp"]["status_code"], 0)
-        self.assertEqual(mock_u.call_count, 2)
-
-    def test_retry_diagnostics_go_to_stderr_not_stdout(self):
-        """Guard the `minimax-review.sh --json` contract.
-
-        Callers capture stdout as the final JSON payload. Retry diagnostics
-        on stdout would corrupt that payload when 1002/529/URLError retries
-        fire under real rate-limit conditions -- the exact scenario the
-        retry path is meant to recover from. Keep stdout clean; use stderr
-        for all retry logs.
-        """
-        import contextlib
-        import io
-
-        # Scenario: 1002 retry then success. Capture both streams.
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            side_effect=[_mock_resp(RATE_LIMIT_BODY), _mock_resp(SUCCESS_BODY)],
-        ):
-            stdout_buf = io.StringIO()
-            stderr_buf = io.StringIO()
-            with contextlib.redirect_stdout(stdout_buf), \
-                 contextlib.redirect_stderr(stderr_buf):
-                self._run()
-        self.assertEqual(stdout_buf.getvalue(), "",
-                         "1002 retry must not write to stdout")
-        self.assertIn("1002", stderr_buf.getvalue(),
-                      "1002 retry diagnostic must appear on stderr")
-
-        # Scenario: HTTP 529 retry then success. Same invariant.
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            side_effect=[_mock_http_error(529), _mock_resp(SUCCESS_BODY)],
-        ):
-            stdout_buf = io.StringIO()
-            stderr_buf = io.StringIO()
-            with contextlib.redirect_stdout(stdout_buf), \
-                 contextlib.redirect_stderr(stderr_buf):
-                self._run()
-        self.assertEqual(stdout_buf.getvalue(), "",
-                         "HTTP 529 retry must not write to stdout")
-        self.assertIn("529", stderr_buf.getvalue(),
-                      "HTTP 529 retry diagnostic must appear on stderr")
-
-        # Scenario: URLError (DNS/timeout/connectivity) retry then success.
-        # Same invariant -- stdout must remain empty so minimax-review.sh
-        # --json captures only the final JSON payload.
-        url_err = urllib.error.URLError("connection refused")
-        with patch.object(
-            minimax_common.urllib.request, "urlopen",
-            side_effect=[url_err, _mock_resp(SUCCESS_BODY)],
-        ):
-            stdout_buf = io.StringIO()
-            stderr_buf = io.StringIO()
-            with contextlib.redirect_stdout(stdout_buf), \
-                 contextlib.redirect_stderr(stderr_buf):
-                self._run()
-        self.assertEqual(stdout_buf.getvalue(), "",
-                         "URLError retry must not write to stdout")
-        self.assertIn("network error", stderr_buf.getvalue(),
-                      "URLError retry diagnostic must appear on stderr")
-
-    def test_mm_api_source_header_emitted(self):
-        captured: dict = {}
+        captured = {}
 
         def fake_urlopen(req, timeout=None):
-            captured["headers"] = dict(req.header_items())
-            return _mock_resp(SUCCESS_BODY)
+            captured["payload"] = json.loads(req.data)
+            return _StreamingResponse(events)
 
-        with patch.object(
-            minimax_common.urllib.request, "urlopen", side_effect=fake_urlopen
-        ):
-            self._run()
-        # urllib.request.Request normalizes header names to title-case on
-        # retrieval, so 'MM-API-Source' becomes 'Mm-api-source'. Compare
-        # case-insensitively so the test is resilient to casing changes.
-        hdrs_lower = {k.lower(): v for k, v in captured["headers"].items()}
-        self.assertEqual(hdrs_lower.get("mm-api-source"), "K2B")
-
-    def test_mm_api_source_disable_flag_drops_header(self):
-        """MM_API_SOURCE_DISABLE=1 must drop the header entirely.
-
-        Insurance for the case where a proxy or future API version rejects
-        unknown headers: operators can disable telemetry without patching
-        code. The main path still emits the header (see prior test); this
-        one proves the escape hatch works.
-        """
-        captured: dict = {}
-
-        def fake_urlopen(req, timeout=None):
-            captured["headers"] = dict(req.header_items())
-            return _mock_resp(SUCCESS_BODY)
-
-        with patch.dict(os.environ, {"MM_API_SOURCE_DISABLE": "1"}, clear=False):
+        with patch.object(minimax_common, "load_kimi_api_key", return_value="fake-key"):
             with patch.object(
                 minimax_common.urllib.request, "urlopen", side_effect=fake_urlopen
             ):
-                self._run()
-        hdrs_lower = {k.lower(): v for k, v in captured["headers"].items()}
-        self.assertNotIn("mm-api-source", hdrs_lower)
+                result = minimax_common._kimi_chat_completion(
+                    [{"role": "user", "content": "hi"}],
+                    model="kimi-custom-review-model",
+                    max_tokens=128,
+                    temperature=0.2,
+                    timeout=30,
+                )
+
+        self.assertTrue(captured["payload"]["stream"])
+        self.assertEqual(captured["payload"]["model"], "kimi-custom-review-model")
+        self.assertEqual(result["choices"][0]["message"]["content"], "OK")
+        self.assertNotIn("private reasoning", json.dumps(result))
+        self.assertEqual(result["choices"][0]["finish_reason"], "end_turn")
+        self.assertEqual(result["usage"], {
+            "prompt_tokens": 10,
+            "completion_tokens": 11,
+            "total_tokens": 21,
+        })
+
+    def test_incomplete_stream_retries_then_succeeds(self):
+        incomplete_events = [
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg-incomplete",
+                    "model": "kimi-k2.7-code",
+                    "usage": {"input_tokens": 1},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "partial"},
+            },
+        ]
+        success_events = [
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg-after-retry",
+                    "model": "kimi-k2.7-code",
+                    "usage": {"input_tokens": 1},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "complete"},
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 1},
+            },
+            {"type": "message_stop"},
+        ]
+        with patch.object(minimax_common, "load_kimi_api_key", return_value="fake-key"):
+            with patch.object(minimax_common.time, "sleep", return_value=None):
+                with patch.object(
+                    minimax_common.urllib.request,
+                    "urlopen",
+                    side_effect=[
+                        _StreamingResponse(incomplete_events),
+                        _StreamingResponse(success_events),
+                    ],
+                ) as mock_open:
+                    result = minimax_common._kimi_chat_completion(
+                        [{"role": "user", "content": "hi"}],
+                        max_tokens=128,
+                        temperature=0.2,
+                        timeout=30,
+                    )
+        self.assertEqual(mock_open.call_count, 2)
+        self.assertEqual(result["choices"][0]["message"]["content"], "complete")
+
+    def test_stream_requires_stop_reason(self):
+        events = [
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg-no-reason",
+                    "model": "kimi-k2.7-code",
+                    "usage": {"input_tokens": 1},
+                },
+            },
+            {"type": "message_stop"},
+        ]
+        with self.assertRaisesRegex(minimax_common.MinimaxError, "stop_reason"):
+            minimax_common._read_kimi_stream(_StreamingResponse(events))
+
+    def test_transient_stream_error_retries_then_succeeds(self):
+        overloaded = _StreamingResponse(
+            [
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": "busy",
+                    },
+                }
+            ]
+        )
+        success = _StreamingResponse(
+            [
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg-retry",
+                        "model": "kimi-k2.7-code",
+                        "usage": {"input_tokens": 1},
+                    },
+                },
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "OK"},
+                },
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 1},
+                },
+                {"type": "message_stop"},
+            ]
+        )
+        with patch.object(minimax_common, "load_kimi_api_key", return_value="fake-key"):
+            with patch.object(minimax_common.time, "sleep", return_value=None):
+                with patch.object(
+                    minimax_common.urllib.request,
+                    "urlopen",
+                    side_effect=[overloaded, success],
+                ) as mock_open:
+                    result = minimax_common._kimi_chat_completion(
+                        [{"role": "user", "content": "hi"}],
+                        max_tokens=128,
+                        temperature=0.2,
+                        timeout=30,
+                    )
+        self.assertEqual(mock_open.call_count, 2)
+        self.assertEqual(result["choices"][0]["message"]["content"], "OK")
+
+    def test_http_429_and_500_retry_then_succeed(self):
+        success_events = [
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg-http-retry",
+                    "model": "kimi-k2.7-code",
+                    "usage": {"input_tokens": 1},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "OK"},
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 1},
+            },
+            {"type": "message_stop"},
+        ]
+        for status in (429, 500):
+            with self.subTest(status=status):
+                with patch.object(
+                    minimax_common, "load_kimi_api_key", return_value="fake-key"
+                ):
+                    with patch.object(minimax_common.time, "sleep", return_value=None):
+                        with patch.object(
+                            minimax_common.urllib.request,
+                            "urlopen",
+                            side_effect=[
+                                _mock_http_error(status),
+                                _StreamingResponse(success_events),
+                            ],
+                        ) as mock_open:
+                            result = minimax_common._kimi_chat_completion(
+                                [{"role": "user", "content": "hi"}],
+                                max_tokens=128,
+                                temperature=0.2,
+                                timeout=30,
+                            )
+                self.assertEqual(mock_open.call_count, 2)
+                self.assertEqual(
+                    result["choices"][0]["message"]["content"], "OK"
+                )
+
+    def test_openai_payload_bridge_preserves_shell_worker_controls(self):
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return {"base_resp": {"status_code": 0}}
+
+        payload = {
+            "model": "ignored-old-model",
+            "messages": [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "hi"},
+            ],
+            "max_completion_tokens": 1234,
+            "temperature": 0.3,
+        }
+        with patch.object(
+            minimax_common, "_kimi_chat_completion", side_effect=fake_completion
+        ):
+            result = minimax_common.kimi_completion_from_openai_payload(payload)
+        self.assertEqual(result, {"base_resp": {"status_code": 0}})
+        self.assertEqual(captured["messages"], payload["messages"])
+        self.assertEqual(captured["model"], minimax_common.KIMI_DEFAULT_MODEL)
+        self.assertEqual(captured["max_tokens"], 1234)
+        self.assertEqual(captured["temperature"], 0.3)
+        self.assertEqual(captured["timeout"], minimax_common.DEFAULT_TIMEOUT_S)
+
+    def test_python_rejects_metered_kimi_host_without_explicit_opt_in(self):
+        with patch.object(minimax_common, "KIMI_API_HOST", "https://api.moonshot.cn"):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("K2B_ALLOW_METERED_KIMI_PLATFORM", None)
+                with self.assertRaisesRegex(minimax_common.MinimaxError, "pay-as-you-go"):
+                    minimax_common._validated_kimi_api_host()
+
+    def test_python_rejects_metered_kimi_host_trailing_dot_alias(self):
+        with patch.object(
+            minimax_common, "KIMI_API_HOST", "https://api.moonshot.cn./v1"
+        ):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("K2B_ALLOW_METERED_KIMI_PLATFORM", None)
+                with self.assertRaisesRegex(minimax_common.MinimaxError, "pay-as-you-go"):
+                    minimax_common._validated_kimi_api_host()
+
+    def test_python_allows_metered_kimi_host_with_explicit_opt_in(self):
+        with patch.object(minimax_common, "KIMI_API_HOST", "https://api.moonshot.cn/"):
+            with patch.dict(
+                os.environ,
+                {"K2B_ALLOW_METERED_KIMI_PLATFORM": "true"},
+                clear=False,
+            ):
+                self.assertEqual(
+                    minimax_common._validated_kimi_api_host(),
+                    "https://api.moonshot.cn",
+                )
+
+    def test_python_rejects_plaintext_kimi_host(self):
+        with patch.object(
+            minimax_common, "KIMI_API_HOST", "http://api.kimi.com/coding"
+        ):
+            with self.assertRaisesRegex(minimax_common.MinimaxError, "HTTPS"):
+                minimax_common._validated_kimi_api_host()
 
 
 if __name__ == "__main__":

@@ -3,18 +3,6 @@ name: k2b-improve
 description: Full K2B system health dashboard -- reviews self-improvement logs, preference profile, vault health, and skill eval status. This skill should be used when Keith says /improve, "how is K2B doing", "review learnings", "system health", "vault health", "show me errors", "open requests", or wants to audit K2B's overall state and improvement trajectory.
 ---
 
-> [!warning] DEPRECATED in Ship 2 of k2b-integrated-loop
-> The session-start dashboard surfaces observer candidates + review queue +
-> stale-research-without-delivery automatically, and Keith routes them with
-> `a N / r N / d N`. `/improve` was the pull-based equivalent -- the dashboard
-> is the push-based replacement. Run `/improve` directly only when Keith needs
-> the full health deep-dive (vault health, skill eval status, preference
-> profile) that the dashboard does not yet absorb. Before proceeding with the
-> legacy workflow, emit the sentence "DEPRECATED in Ship 2 of k2b-integrated-
-> loop -- the session-start dashboard covers the routine audit; continue only
-> if you need the full health deep-dive" and wait for Keith's explicit
-> go-ahead.
-
 # K2B Self-Improvement Dashboard
 
 ## Live K2B Authority
@@ -22,11 +10,11 @@ description: Full K2B system health dashboard -- reviews self-improvement logs, 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
-Single command for the full picture of how K2B is doing -- learnings, errors, requests, preferences, vault health, and skill eval status.
+On-demand command for the full picture of how K2B is doing -- learnings, errors, requests, preferences, vault health, and skill eval status. Stage 1 runs this report only when Keith asks for it.
 
 ## Memory & Data Paths
 
@@ -171,7 +159,7 @@ Present the full report as a structured summary Keith can scan in 30 seconds:
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-improve\t$(echo $RANDOM | md5sum | head -c 8)\treviewed system health" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-improve --summary "reviewed system health"
 ```
 
 ## Notes

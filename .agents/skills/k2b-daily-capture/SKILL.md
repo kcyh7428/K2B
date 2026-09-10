@@ -5,12 +5,14 @@ description: Dormant daily-note lane -- use only when Keith explicitly says /dai
 
 # K2B Daily Capture
 
+> **Host boundary:** On SJM, the synchronized K2B vault is read-only. This dormant writer may run only when explicitly requested on Home.
+
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -150,7 +152,7 @@ Before linking, glob the vault to confirm the target exists. If a person or proj
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-daily-capture\t$(echo $RANDOM | md5sum | head -c 8)\tcompiled daily note for YYYY-MM-DD" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-daily-capture --summary "compiled daily note for YYYY-MM-DD"
 ```
 
 ## Vault Redesign Awareness

@@ -205,7 +205,7 @@ ALLOW_MISSING_K2BI_ENV = "K2B_PLATE_ALLOW_MISSING_K2BI_VAULT"
 def missing_k2bi_planning_allowed() -> bool:
     if "K2BI_VAULT_PATH" in os.environ:
         return False
-    # The Mac Mini K2B runtime does not host K2Bi-Vault. Missing K2Bi planning
+    # Some read-only K2B contexts do not have K2Bi-Vault. Missing K2Bi planning
     # is allowed only when the caller explicitly opts into that incomplete
     # scan; local MacBook and explicit override paths fail closed.
     return os.environ.get(ALLOW_MISSING_K2BI_ENV) == "1"

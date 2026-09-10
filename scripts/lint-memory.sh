@@ -17,8 +17,7 @@
 #
 # Env:
 #   K2B_MEMORY_DIR  override the memory dir (default:
-#                   ~/Projects/K2B-Vault/System/memory, which is the symlink
-#                   target of ~/.claude/projects/*/memory)
+#                   ~/Projects/K2B-Vault/System/memory)
 
 set -u
 

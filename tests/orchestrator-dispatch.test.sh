@@ -11,6 +11,8 @@ trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 VAULT="$TMPDIR/vault"
 mkdir -p "$VAULT/raw/orchestrator-results" "$VAULT/System/orchestrator"
 DB="$TMPDIR/orch.sqlite"
+K2BI_VAULT="$TMPDIR/k2bi-vault"
+mkdir -p "$K2BI_VAULT/wiki/strategies" "$K2BI_VAULT/wiki/macro-themes"
 
 RECORDER_OUT="$TMPDIR/recorder_out.txt"
 touch "$RECORDER_OUT"
@@ -23,7 +25,9 @@ chmod +x "$RECORDER"
 
 export K2B_VAULT_PATH="$VAULT"
 export K2B_ORCH_DB="$DB"
-export K2B_ORCH_TELEGRAM_CMD="$RECORDER"
+export K2B_ORCH_NOTIFY_CMD="$RECORDER"
+export K2B_CAPTURE_WRITER_ROLE="home"
+export K2BI_VAULT_PATH="$K2BI_VAULT"
 
 PASS=0
 FAIL=0
@@ -39,6 +43,29 @@ report() {
 }
 
 CLI="bash $REPO/scripts/k2b-orchestrator.sh"
+
+# SJM must fail before SQLite, WAL, board, or result paths are created.
+SJM_VAULT="$TMPDIR/sjm-vault"
+SJM_DB="$TMPDIR/sjm.sqlite"
+set +e
+SJM_OUTPUT=$(K2B_CAPTURE_WRITER_ROLE=sjm-source-only \
+  K2B_VAULT_PATH="$SJM_VAULT" K2B_ORCH_DB="$SJM_DB" \
+  $CLI list 2>&1)
+SJM_RC=$?
+set -e
+[[ "$SJM_RC" -eq 78 ]] || { echo "FAIL: SJM orchestrator should exit 78"; exit 1; }
+[[ "$SJM_OUTPUT" == *"Home-writer-only"* ]] || { echo "FAIL: SJM refusal missing"; exit 1; }
+[[ ! -e "$SJM_DB" && ! -e "$SJM_VAULT" ]] || { echo "FAIL: SJM orchestrator wrote state"; exit 1; }
+
+set +e
+MINI_OUTPUT=$(env -u K2B_CAPTURE_WRITER_ROLE USER=fastshower \
+  K2B_VAULT_PATH="$SJM_VAULT" K2B_ORCH_DB="$SJM_DB" \
+  $CLI init 2>&1)
+MINI_RC=$?
+set -e
+[[ "$MINI_RC" -eq 78 ]] || { echo "FAIL: Mini orchestrator should exit 78"; exit 1; }
+[[ "$MINI_OUTPUT" == *"Home-writer-only"* ]] || { echo "FAIL: Mini refusal missing"; exit 1; }
+[[ ! -e "$SJM_DB" && ! -e "$SJM_VAULT" ]] || { echo "FAIL: Mini orchestrator wrote state"; exit 1; }
 
 # --- init ---
 $CLI init >/dev/null

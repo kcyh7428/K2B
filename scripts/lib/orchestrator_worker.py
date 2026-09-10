@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Worker runner: heartbeat, allowlisted-command run, artifact, Telegram."""
+"""Worker runner: heartbeat, allowlisted-command run, artifact, local notification."""
 
 import json
 import os

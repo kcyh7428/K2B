@@ -50,7 +50,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             cwd=repo,
             check=True,
         )
-        (repo / ".gitignore").write_text("/.code-reviews/\n/plugins/\n")
+        (repo / ".gitignore").write_text("/.code-reviews/\n/fake-bin/\n")
         scripts_dir = repo / "scripts"
         scripts_dir.mkdir()
         (scripts_dir / "kimi-review.sh").write_text(
@@ -73,15 +73,15 @@ class KimiProviderLabelTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
         (repo / "target.py").write_text("print('dirty')\n", encoding="utf-8")
 
-        plugin = repo / "plugins" / "codex"
-        (plugin / "scripts").mkdir(parents=True)
-        (plugin / "scripts" / "codex-companion.mjs").write_text(
-            "process.stdout.write('# Codex Review\\n');\n"
-            "process.stdout.write('APPROVE\\n');\n"
-            "process.stdout.write('[codex] Review output captured.\\n');\n"
-            "process.exit(0);\n",
+        plugin = repo / "fake-bin" / "codex"
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [ \"${1:-}\" = exec ]; then cat >/dev/null; fi\n"
+            "printf '# Codex Review\\nAPPROVE\\n[codex] Review output captured.\\n'\n",
             encoding="utf-8",
         )
+        plugin.chmod(0o755)
         return repo, plugin
 
     def _review_env(self) -> dict[str, str]:
@@ -200,12 +200,159 @@ class KimiProviderLabelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("kimi-k2.7-code", result.stdout)
 
-    def test_preflight_sources_zshrc_based_on_kimi_key_not_minimax_key(self) -> None:
-        text = (ROOT / "scripts" / "washing-machine" / "preflight.sh").read_text(
-            encoding="utf-8"
+    def test_minimax_common_uses_kimi_code_membership_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            env = os.environ.copy()
+            env["HOME"] = home
+            env["KIMI_API_KEY"] = "fake-kimi-key-for-common-sh"
+            env.pop("KIMI_API_HOST", None)
+            env.pop("MINIMAX_API_KEY", None)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        "source scripts/minimax-common.sh >/dev/null 2>&1 && "
+                        'printf "%s\\n" "$KIMI_API_HOST"'
+                    ),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout.strip(), "https://api.kimi.com/coding")
+
+    def test_minimax_common_rejects_payg_china_platform_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            env = os.environ.copy()
+            env["HOME"] = home
+            env["KIMI_API_KEY"] = "fake-kimi-key-for-common-sh"
+            env["KIMI_API_HOST"] = "https://api.moonshot.cn"
+            env.pop("K2B_ALLOW_METERED_KIMI_PLATFORM", None)
+            result = subprocess.run(
+                ["bash", "-c", "source scripts/minimax-common.sh"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pay-as-you-go Kimi Open Platform", result.stderr)
+
+    def test_minimax_common_normalizes_metered_host_and_rejects_http(self) -> None:
+        cases = [
+            ("https://API.MOONSHOT.CN:443/v1", "pay-as-you-go"),
+            ("https://api.moonshot.cn./v1", "pay-as-you-go"),
+            ("http://api.kimi.com/coding", "must use HTTPS"),
+        ]
+        for host, expected in cases:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as home:
+                env = os.environ.copy()
+                env["HOME"] = home
+                env["KIMI_API_KEY"] = "fake-kimi-key-for-common-sh"
+                env["KIMI_API_HOST"] = host
+                env.pop("K2B_ALLOW_METERED_KIMI_PLATFORM", None)
+                result = subprocess.run(
+                    ["bash", "-c", "source scripts/minimax-common.sh"],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(expected, result.stderr)
+
+    def test_minimax_common_does_not_source_zshrc_after_k2b_env_resolves_key(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            (home_path / ".k2b-env").write_text(
+                "export KIMI_API_KEY=fake-kimi-key-for-common-sh\n",
+                encoding="utf-8",
+            )
+            (home_path / ".k2b-env").chmod(0o600)
+            (home_path / ".zshrc").write_text(
+                "export ZSHRC_WAS_SOURCED=yes\n", encoding="utf-8"
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+            env.pop("KIMI_API_KEY", None)
+            env.pop("MINIMAX_API_KEY", None)
+            env.pop("K2B_ENV_FILE", None)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        "source scripts/minimax-common.sh >/dev/null 2>&1 && "
+                        'printf "%s\\n%s\\n" "$K2B_LLM_MODEL" "${ZSHRC_WAS_SOURCED:-no}"'
+                    ),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout.strip().splitlines(), ["kimi-k2.7-code", "no"])
+
+    def test_minimax_common_rejects_insecure_dedicated_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            env_file = Path(home) / ".k2b-env"
+            env_file.write_text(
+                "export KIMI_API_KEY=fake-kimi-key-for-common-sh\n",
+                encoding="utf-8",
+            )
+            env_file.chmod(0o644)
+            env = os.environ.copy()
+            env["HOME"] = home
+            env.pop("KIMI_API_KEY", None)
+            env.pop("K2B_ENV_FILE", None)
+            result = subprocess.run(
+                ["bash", "-c", "source scripts/minimax-common.sh"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("owned by the current user and mode 0600", result.stderr)
+
+    def test_python_kimi_loader_reads_private_dedicated_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            env_file = home_path / ".k2b-env"
+            env_file.write_text(
+                "export KIMI_API_KEY=fake-kimi-key-for-python-loader\n",
+                encoding="utf-8",
+            )
+            env_file.chmod(0o600)
+            env = os.environ.copy()
+            env["HOME"] = home
+            env["K2B_ENV_FILE"] = str(env_file)
+            env.pop("KIMI_API_KEY", None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from scripts.lib.minimax_common import load_kimi_api_key; "
+                        "print(len(load_kimi_api_key()))"
+                    ),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(len("fake-kimi-key-for-python-loader")))
+
+    def test_stage1_has_no_local_model_preflight(self) -> None:
+        self.assertFalse(
+            (ROOT / "scripts" / "washing-machine" / "preflight.sh").exists()
         )
-        self.assertIn('if [[ -z "${KIMI_API_KEY:-}" ]]; then', text)
-        self.assertNotIn('if [[ -z "${MINIMAX_API_KEY:-}" ]]; then', text)
 
     def test_direct_kimi_reviewer_rejects_minimax_provider_env(self) -> None:
         env = os.environ.copy()
@@ -236,7 +383,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             "--files",
             "target.py",
             "--wait",
-            "--codex-plugin",
+            "--codex-executable",
             str(plugin),
             "--primary",
             "kimi",
@@ -263,7 +410,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             "--files",
             "target.py",
             "--wait",
-            "--codex-plugin",
+            "--codex-executable",
             str(plugin),
             "--primary",
             "minimax",
@@ -296,7 +443,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             "--files",
             "target.py",
             "--wait",
-            "--codex-plugin",
+            "--codex-executable",
             str(plugin),
             "--primary",
             "codex",
@@ -317,7 +464,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             "--files",
             "target.py",
             "--wait",
-            "--codex-plugin",
+            "--codex-executable",
             str(plugin),
             "--primary",
             "kimi",
@@ -345,7 +492,7 @@ class KimiProviderLabelTests(unittest.TestCase):
             "--files",
             "target.py",
             "--wait",
-            "--codex-plugin",
+            "--codex-executable",
             str(plugin),
             "--primary",
             "kimi",

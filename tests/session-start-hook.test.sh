@@ -57,7 +57,7 @@ EOF
 out="$(run_hook "$home_dir" "$vault")"
 [[ "$out" == *"VAULT RULE TOKEN"* ]] || fail "vault active_rules.md was not loaded"
 [[ "$out" != *"DOTFILE RULE TOKEN"* ]] || fail "dotfile active_rules.md should not override vault memory"
-[[ "$out" == *"VAULT LEARNING TOKEN"* ]] || fail "vault self_improve_learnings.md was not loaded"
+[[ "$out" != *"VAULT LEARNING TOKEN"* ]] || fail "disabled learning watchlist should not be loaded"
 echo "PASS: vault memory preferred"
 
 root="$(mktmp)"
@@ -136,3 +136,20 @@ out="$(run_hook "$home_dir" "$vault")"
 [[ "$out" == *"K2B SESSION HOOK WARNING: K2B_VAULT_PATH is not a directory"* ]] || fail "non-directory vault path should warn"
 [[ "$out" != *"STALE DOTFILE RULE TOKEN"* ]] || fail "non-directory vault path should not fall back to dotfile memory"
 echo "PASS: non-directory vault path fails closed"
+
+for invalid_status in top-level-list counts-list; do
+  root="$(mktmp)"
+  home_dir="$root/home"
+  vault="$root/vault"
+  status_dir="$home_dir/.local/state/k2b"
+  mkdir -p "$status_dir" "$vault/System/memory"
+  if [ "$invalid_status" = "top-level-list" ]; then
+    printf '[]\n' > "$status_dir/capture-status.json"
+  else
+    printf '{"counts":[]}\n' > "$status_dir/capture-status.json"
+  fi
+  out="$(run_hook "$home_dir" "$vault")"
+  [[ "$out" == *"CAPTURE STATUS: unreadable local status (TypeError)"* ]] \
+    || fail "$invalid_status status should degrade to an unreadable summary"
+done
+echo "PASS: non-object capture status degrades safely"

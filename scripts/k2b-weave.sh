@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # k2b-weave.sh -- background cross-link weaver orchestrator
 #
-# See .claude/skills/k2b-weave/SKILL.md for the contract.
+# See .agents/skills/k2b-weave/SKILL.md for the contract.
 #
 # Usage:
 #   k2b-weave.sh run                    -- run a weaving pass (writes to vault)
@@ -47,18 +47,25 @@ readonly REJECTION_TTL_DAYS=30
 readonly MAX_RETRY_COUNT=3
 readonly SCOPE_FOLDERS=(people projects insights reference work concepts)
 
-# --- Auto-apply config ---
-# Effective gate = WEAVE_AUTO_APPLY=true (env kill-switch) AND the policy ledger's
-# k2b-weave/crosslink_apply autonomy entry has auto_eligible=true. Either disables it.
-# When the gate is closed, cmd_run falls back to the legacy digest+review path.
-WEAVE_AUTO_APPLY="${WEAVE_AUTO_APPLY:-true}"
-WEAVE_AUTO_APPLY_THRESHOLD="${WEAVE_AUTO_APPLY_THRESHOLD:-0.80}"
-readonly POLICY_LEDGER_FILE="$K2B_VAULT/wiki/context/policy-ledger.jsonl"
-
 # --- Logging ---
 
 log_info()  { echo "[weave] $*" >&2; }
 log_error() { echo "[weave:ERROR] $*" >&2; }
+
+require_home_writer() {
+  local role="${K2B_CAPTURE_WRITER_ROLE:-}"
+  if [[ -z "$role" ]]; then
+    if [[ "$(basename "$HOME")" == "keithmbpm2" ]]; then
+      role="home"
+    else
+      role="sjm-source-only"
+    fi
+  fi
+  if [[ "$role" != "home" ]]; then
+    log_error "shared-vault weave writes are home-writer-only"
+    return 2
+  fi
+}
 
 # --- Atomic write helper ---
 # Usage: atomic_write <target-path> <content>
@@ -715,58 +722,7 @@ find_page_by_slug() {
   return 1
 }
 
-# --- Auto-apply gate + helpers ---
-
-# True (0) iff the env kill-switch is on AND the policy ledger grants autonomy for
-# k2b-weave/crosslink_apply. Makes the previously documentation-only policy gate
-# executable, so a hands-off cron run honors it.
-auto_apply_enabled() {
-  [[ "$WEAVE_AUTO_APPLY" == "true" ]] || return 1
-  [[ -f "$POLICY_LEDGER_FILE" ]] || return 1
-  local eligible
-  eligible=$(jq -s -r '
-    map(select(.type == "autonomy" and .scope == "k2b-weave" and .action == "crosslink_apply"))
-    | (.[-1].auto_eligible // false) | tostring
-  ' "$POLICY_LEDGER_FILE" 2>/dev/null || echo false)
-  [[ "$eligible" == "true" ]]
-}
-
-# Drop proposals whose {from,to} pair is already excluded by ledger state
-# (applied/pending/deferred/held/permanently-rejected/rejected-in-TTL) or by an
-# existing wikilink. Enforced AFTER the worker returns so a re-proposed pair can
-# never override a prior decision under auto-apply (Codex plan-review finding R1).
-# Prints filtered proposals JSON on stdout.
-filter_excluded_proposals() {
-  local scored="$1"
-  local ledger_excl wikilink_excl combined
-  ledger_excl=$(get_ledger_exclusions)
-  wikilink_excl=$(build_wikilink_exclusions)
-  combined=$(jq -n --argjson a "$ledger_excl" --argjson b "$wikilink_excl" '$a + $b | unique')
-  # Collision-proof key: a JSON-encoded [from,to] array (no fragile separator byte).
-  jq -n --argjson scored "$scored" --argjson excl "$combined" '
-    def pkey(f; t): ([(f | ascii_downcase), (t | ascii_downcase)] | @json);
-    ($excl | map({ key: pkey(.from; .to), value: true }) | from_entries) as $exmap
-    | $scored
-    | map(select(($exmap[pkey(.from_slug; .to_slug)] // false) | not))
-  '
-}
-
-# Emit the open retry queue as a proposals array: ledger rows still in `apply-failed`
-# (non-permanent). These are deterministically retried each run regardless of whether
-# Kimi re-proposes them, so a one-off apply failure always progresses toward
-# apply-failed-permanent + alert instead of stalling forever (Codex review finding).
-load_retry_pairs() {
-  [[ -f "$LEDGER_FILE" ]] || { echo "[]"; return; }
-  jq -s '[ .[]
-    | select(.status == "apply-failed")
-    | { from_path: (.from_path // ""), to_path: (.to_path // ""),
-        from_slug, to_slug, confidence: (.confidence // 1),
-        rationale: (.rationale // ""), evidence_span: (.evidence_span // "") } ]' "$LEDGER_FILE"
-}
-
-# Record one apply outcome for a pair via the python upsert recorder. Echoes the
-# final ledger status (e.g. "applied", "held-low-confidence", "apply-failed-permanent").
-# Args: from_slug to_slug outcome [run_id from_path to_path confidence rationale evidence]
+# Record one reviewed apply outcome through the atomic ledger updater.
 record_apply_outcome() {
   local from_slug="$1" to_slug="$2" outcome="$3"
   local run_id="${4:-}" from_path="${5:-}" to_path="${6:-}" confidence="${7:-0}" rationale="${8:-}" evidence="${9:-}"
@@ -779,18 +735,6 @@ record_apply_outcome() {
     --confidence "$confidence" --rationale "$rationale" --evidence "$evidence"
 }
 
-# Auto-apply the top-N proposals directly (no digest, no human gate). Mutates the
-# ledger with final per-pair statuses. Prints a "applied=N held=M stale=K failed=J permanent=P"
-# summary line on stdout for the caller to log.
-# Sets the global AUTO_APPLY_SUMMARY and returns 0 on success, non-zero on a FATAL
-# error (filter failure or a record-write failure on an applied/held pair) so the
-# caller can fall back to writing a digest instead of logging a false success.
-# NOT run through command substitution -- $(...) clears errexit and would mask a
-# mid-function failure (Codex review finding).
-# True (0) iff the ledger can be written: parent dir is a writable directory AND the
-# ledger is either absent or a writable regular file. Probed BEFORE any page mutation
-# so an unwritable ledger aborts cleanly (no partial apply) instead of mutating pages
-# and then losing the durable retry/audit row (Codex review finding).
 ledger_writable() {
   local dir
   dir=$(dirname "$LEDGER_FILE")
@@ -801,217 +745,18 @@ ledger_writable() {
   return 0
 }
 
-# Deterministically re-attempt every open apply-failed pair, INDEPENDENT of the text
-# worker. Runs early in cmd_run (before the Kimi call) so a degraded worker -- token
-# overflow, missing wrapper, API failure, invalid schema -- can never stall the retry
-# queue. Best-effort: record failures are non-fatal (the apply-failed row persists and
-# is retried next run; apply_one_proposal is idempotent). Each call advances a stuck
-# pair's retry_count by exactly one, so it reaches apply-failed-permanent + alert in
-# bounded time regardless of Kimi's health. No threshold, no exclusion filter.
-process_retry_queue() {
-  local run_id="$1"
-  ledger_writable || { log_error "retry-queue: ledger not writable -- skipping retries this run"; return 0; }
-  local retry_only n_retry
-  retry_only=$(load_retry_pairs | jq 'unique_by([(.from_slug | ascii_downcase), (.to_slug | ascii_downcase)])')
-  n_retry=$(echo "$retry_only" | jq 'length')
-  (( n_retry == 0 )) && return 0
-  log_info "Retry queue: re-attempting $n_retry open apply-failed pair(s)"
-  local r_row r_from r_to r_fp r_tp r_conf r_rat r_ev r_rc r_final
-  while IFS= read -r r_row; do
-    [[ -z "$r_row" ]] && continue
-    r_from=$(echo "$r_row" | jq -r '.from_slug')
-    r_to=$(echo "$r_row" | jq -r '.to_slug')
-    r_fp=$(echo "$r_row" | jq -r '.from_path // ""')
-    r_tp=$(echo "$r_row" | jq -r '.to_path // ""')
-    r_conf=$(echo "$r_row" | jq -r '.confidence // 1')
-    r_rat=$(echo "$r_row" | jq -r '.rationale // ""')
-    r_ev=$(echo "$r_row" | jq -r '.evidence_span // ""')
-    r_rc=0
-    apply_one_proposal "$r_from" "$r_to" || r_rc=$?
-    case "$r_rc" in
-      0)
-        record_apply_outcome "$r_from" "$r_to" "applied" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev" >/dev/null \
-          || { log_error "retry: applied $r_from -> $r_to but FAILED to record (self-heals next run)"; notify_failure "weave retry: applied $r_from -> $r_to but ledger record failed"; }
-        ;;
-      2)
-        record_apply_outcome "$r_from" "$r_to" "stale" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev" >/dev/null \
-          || log_error "retry: failed to record stale $r_from -> $r_to"
-        ;;
-      3)
-        record_apply_outcome "$r_from" "$r_to" "failed-concurrency" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev" >/dev/null \
-          || log_error "retry: failed to record concurrency $r_from -> $r_to"
-        ;;
-      *)
-        r_final=$(record_apply_outcome "$r_from" "$r_to" "failed-hard" "$run_id" "$r_fp" "$r_tp" "$r_conf" "$r_rat" "$r_ev") \
-          || log_error "retry: failed to record hard-fail $r_from -> $r_to"
-        if [[ "$r_final" == "apply-failed-permanent" ]]; then
-          notify_failure "weave: $r_from -> $r_to hard-failed $MAX_RETRY_COUNT times; marked apply-failed-permanent"
-        fi
-        ;;
-    esac
-  done < <(echo "$retry_only" | jq -c '.[]')
-  return 0
-}
-
-# auto_apply_proposals sets two globals and returns 0 on success, non-zero on a fatal
-# abort. On abort, AUTO_APPLY_REMAINING holds the proposals that were NOT applied (so
-# the caller writes a digest of exactly those -- never re-queuing an already-applied
-# pair). NOT run through command substitution -- $(...) clears errexit (Codex finding).
-AUTO_APPLY_SUMMARY=""
-AUTO_APPLY_REMAINING="[]"
-auto_apply_proposals() {
-  local scored="$1" run_id="$2"
-  AUTO_APPLY_SUMMARY=""
-  AUTO_APPLY_REMAINING="$scored"   # default fallback set = everything, until we apply
-
-  # Preflight: if the ledger is unwritable, abort before mutating any page. The full
-  # scored set then falls back to a digest cleanly (nothing was applied).
-  if ! ledger_writable; then
-    log_error "auto-apply: ledger not writable ($LEDGER_FILE) -- aborting before any apply"
-    return 1
-  fi
-
-  # Open apply-failed pairs are retried deterministically in a SEPARATE loop after the
-  # new-proposal pass (below), bypassing the confidence threshold and the exclusion
-  # filter -- they are already-approved high-confidence pairs that failed to apply, so
-  # they must progress to apply-failed-permanent, never be held or dropped.
-  local retry_pairs
-  retry_pairs=$(load_retry_pairs)
-
-  local filtered before after dropped
-  # Fatal if the exclusion filter fails -- applying an unfiltered set could override
-  # a prior rejected/deferred/held decision.
-  if ! filtered=$(filter_excluded_proposals "$scored"); then
-    log_error "auto-apply: exclusion filter failed -- aborting auto-apply"
-    return 1
-  fi
-  before=$(echo "$scored" | jq 'length')
-  after=$(echo "$filtered" | jq 'length')
-  dropped=$(( before - after ))
-  (( dropped > 0 )) && log_info "Dropped $dropped already-excluded pair(s) before auto-apply"
-
-  # Pull apply-failed (retry) pairs OUT of the new-proposal set. apply-failed is not
-  # excluded by get_ledger_exclusions, so a below-threshold re-proposal of an open
-  # apply-failed pair would otherwise survive the filter and be rewritten as
-  # held-low-confidence -- stalling the retry counter and the permanent alert. Retry
-  # pairs are owned exclusively by the retry loop (no threshold, no held path).
-  local filtered_new
-  filtered_new=$(jq -n --argjson f "$filtered" --argjson r "$retry_pairs" '
-    def pkey: ([(.from_slug | ascii_downcase), (.to_slug | ascii_downcase)] | @json);
-    ([ $r[] | { key: pkey, value: true } ] | from_entries) as $rk
-    | [ $f[] | select(($rk[pkey] // false) | not) ]
-  ')
-  AUTO_APPLY_REMAINING="$filtered_new"   # excluded + retry pairs are not digest-fallback material
-
-  local applied=0 held=0 stale=0 failed=0 permanent=0 idx=0
-  local row from_slug to_slug from_path to_path conf rationale evidence rc final
-  while IFS= read -r row; do
-    [[ -z "$row" ]] && continue
-    from_slug=$(echo "$row" | jq -r '.from_slug')
-    to_slug=$(echo "$row" | jq -r '.to_slug')
-    from_path=$(echo "$row" | jq -r '.from_path // ""')
-    to_path=$(echo "$row" | jq -r '.to_path // ""')
-    conf=$(echo "$row" | jq -r '.confidence // 0')
-    rationale=$(echo "$row" | jq -r '.rationale // ""')
-    evidence=$(echo "$row" | jq -r '.evidence_span // ""')
-
-    # Below-threshold: record held-low-confidence, never apply. A failed record here
-    # is fatal -- abort with the un-applied remainder (this pair onward).
-    if ! awk -v c="$conf" -v t="$WEAVE_AUTO_APPLY_THRESHOLD" 'BEGIN { exit !(c >= t) }'; then
-      if ! record_apply_outcome "$from_slug" "$to_slug" "held" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
-        log_error "auto-apply: failed to record held pair $from_slug -> $to_slug -- aborting"
-        AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
-        return 1
-      fi
-      held=$(( held + 1 ))
-      idx=$(( idx + 1 ))
-      continue
-    fi
-
-    rc=0
-    apply_one_proposal "$from_slug" "$to_slug" || rc=$?
-    case "$rc" in
-      0)
-        # The link is now in place. If the audit row cannot be written, do NOT report
-        # a clean success: alert and abort. The fallback remainder starts AFTER this
-        # already-applied pair (idx+1) so we never re-queue an applied link; the page
-        # mutation is durable and wikilink-exclusion will keep it from re-proposing.
-        if ! record_apply_outcome "$from_slug" "$to_slug" "applied" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
-          log_error "auto-apply: applied $from_slug -> $to_slug but FAILED to record ledger row -- aborting"
-          notify_failure "weave: applied $from_slug -> $to_slug but could not write the ledger audit row (run $run_id)"
-          # INCLUDE the current pair (idx:) in the fallback. The link is on the page but
-          # has no audit row; the idempotent apply on the fallback digest will record
-          # `applied` on retry. Excluding it (idx+1) would leave a permanent audit gap
-          # because wikilink-exclusion drops the now-linked pair on future runs.
-          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
-          return 1
-        fi
-        applied=$(( applied + 1 ))
-        ;;
-      2)
-        # FROM page not found -- nothing mutated. Record is retry-irrelevant but still
-        # part of the audit trail; a failure here is fatal (abort with remainder).
-        if ! record_apply_outcome "$from_slug" "$to_slug" "stale" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
-          log_error "auto-apply: failed to record stale $from_slug -> $to_slug -- aborting"
-          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
-          return 1
-        fi
-        stale=$(( stale + 1 ))
-        log_info "Stale-renamed: $from_slug -> $to_slug (FROM page not found)"
-        ;;
-      3)
-        # Concurrency race -- page not mutated. The retry depends on this ledger row,
-        # so a failed record is fatal.
-        if ! record_apply_outcome "$from_slug" "$to_slug" "failed-concurrency" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence" >/dev/null; then
-          log_error "auto-apply: failed to record concurrency $from_slug -> $to_slug -- aborting"
-          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
-          return 1
-        fi
-        failed=$(( failed + 1 ))
-        log_info "Concurrency retry deferred to next run: $from_slug -> $to_slug"
-        ;;
-      *)
-        # Hard failure -- page not mutated. The retry counter and the permanent-failure
-        # alert DEPEND on this ledger write, so a failed record is fatal.
-        if ! final=$(record_apply_outcome "$from_slug" "$to_slug" "failed-hard" "$run_id" "$from_path" "$to_path" "$conf" "$rationale" "$evidence"); then
-          log_error "auto-apply: failed to record hard-fail $from_slug -> $to_slug -- aborting"
-          AUTO_APPLY_REMAINING=$(echo "$filtered_new" | jq -c ".[$idx:]")
-          return 1
-        fi
-        failed=$(( failed + 1 ))
-        if [[ "$final" == "apply-failed-permanent" ]]; then
-          permanent=$(( permanent + 1 ))
-          notify_failure "weave: $from_slug -> $to_slug hard-failed $MAX_RETRY_COUNT times; marked apply-failed-permanent"
-        fi
-        log_error "auto-apply failed for $from_slug -> $to_slug (rc=$rc, status=$final)"
-        ;;
-    esac
-    idx=$(( idx + 1 ))
-  done < <(echo "$filtered_new" | jq -c '.[]')
-
-  AUTO_APPLY_REMAINING="[]"   # full success -- nothing to fall back
-  AUTO_APPLY_SUMMARY=$(printf 'applied=%d held=%d stale=%d failed=%d permanent=%d dropped=%d' \
-    "$applied" "$held" "$stale" "$failed" "$permanent" "$dropped")
-  return 0
-}
-
 # --- Commands ---
 
 cmd_run() {
   local is_dry_run="${1:-false}"
-  acquire_lock
-  recover_ledger
+  if [[ "$is_dry_run" != "true" ]]; then
+    require_home_writer || return $?
+    acquire_lock
+    recover_ledger
+  fi
 
   local run_id
   run_id=$(date +%Y%m%d-%H%M)
-
-  # Retry the open apply-failed queue FIRST, before any Kimi-dependent work. This runs
-  # every real (non-dry) auto-apply run regardless of whether the worker later succeeds,
-  # so a degraded Kimi/token/schema condition can never stall a stuck pair's progress
-  # toward apply-failed-permanent.
-  if [[ "$is_dry_run" != "true" ]] && auto_apply_enabled; then
-    process_retry_queue "$run_id"
-  fi
 
   log_info "Scanning in-scope pages..."
   local pages_list
@@ -1022,8 +767,10 @@ cmd_run() {
 
   if (( page_count == 0 )); then
     log_info "No in-scope pages. Nothing to do."
-    append_metrics "$page_count" 0 0 0 0 "" "$run_id"
-    append_log_line "[weave] $run_id -- no in-scope pages"
+    if [[ "$is_dry_run" != "true" ]]; then
+      append_metrics "$page_count" 0 0 0 0 "" "$run_id"
+      append_log_line "[weave] $run_id -- no in-scope pages"
+    fi
     return 0
   fi
 
@@ -1045,8 +792,10 @@ cmd_run() {
   log_info "Input size: ${input_bytes} bytes, ~${estimated_tokens} tokens"
 
   if (( estimated_tokens > MAX_TOKENS_BUDGET )); then
-    notify_failure "weave: input ${estimated_tokens} est-tokens > budget ${MAX_TOKENS_BUDGET}. Full-body single-prompt has reached its ceiling. Ship the scaling fix tracked in wiki/concepts/feature_weave-embedding-prefilter.md (try summary-view bundling before embeddings). Do not just raise the cap again -- ~140 pages is Kimi's real context wall."
-    append_metrics "$page_count" 0 0 0 "$input_bytes" "token_budget_exceeded" "$run_id"
+    if [[ "$is_dry_run" != "true" ]]; then
+      notify_failure "weave: input ${estimated_tokens} est-tokens > budget ${MAX_TOKENS_BUDGET}. Full-body single-prompt has reached its ceiling. Ship the scaling fix tracked in wiki/concepts/feature_weave-embedding-prefilter.md (try summary-view bundling before embeddings). Do not just raise the cap again -- ~140 pages is Kimi's real context wall."
+      append_metrics "$page_count" 0 0 0 "$input_bytes" "token_budget_exceeded" "$run_id"
+    fi
     exit 1
   fi
 
@@ -1057,13 +806,17 @@ cmd_run() {
   local response
   local weave_worker="$SCRIPT_DIR/minimax-weave.sh"
   if [[ ! -x "$weave_worker" ]]; then
-    notify_failure "weave: missing minimax-weave.sh compatibility wrapper for Kimi"
-    append_metrics "$page_count" 0 0 0 "$input_bytes" "worker_wrapper_missing" "$run_id"
+    if [[ "$is_dry_run" != "true" ]]; then
+      notify_failure "weave: missing minimax-weave.sh compatibility wrapper for Kimi"
+      append_metrics "$page_count" 0 0 0 "$input_bytes" "worker_wrapper_missing" "$run_id"
+    fi
     exit 1
   fi
   if ! response=$(printf '%s' "$input_json" | "$weave_worker"); then
-    notify_failure "weave: ${K2B_TEXT_WORKER_NAME} call failed"
-    append_metrics "$page_count" 0 0 0 "$input_bytes" "$K2B_TEXT_WORKER_ERROR_KEY" "$run_id"
+    if [[ "$is_dry_run" != "true" ]]; then
+      notify_failure "weave: ${K2B_TEXT_WORKER_NAME} call failed"
+      append_metrics "$page_count" 0 0 0 "$input_bytes" "$K2B_TEXT_WORKER_ERROR_KEY" "$run_id"
+    fi
     exit 1
   fi
   end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
@@ -1071,10 +824,12 @@ cmd_run() {
 
   # Validate schema
   if ! validate_response_schema "$response"; then
-    mkdir -p "$(dirname "$ERRORS_FILE")"
-    printf '=== %s run=%s ===\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$run_id" "$response" >> "$ERRORS_FILE"
-    notify_failure "weave: ${K2B_TEXT_WORKER_NAME} returned invalid JSON schema. See $ERRORS_FILE"
-    append_metrics "$page_count" 0 0 "$duration_ms" "$input_bytes" "schema_violation" "$run_id"
+    if [[ "$is_dry_run" != "true" ]]; then
+      mkdir -p "$(dirname "$ERRORS_FILE")"
+      printf '=== %s run=%s ===\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$run_id" "$response" >> "$ERRORS_FILE"
+      notify_failure "weave: ${K2B_TEXT_WORKER_NAME} returned invalid JSON schema. See $ERRORS_FILE"
+      append_metrics "$page_count" 0 0 "$duration_ms" "$input_bytes" "schema_violation" "$run_id"
+    fi
     exit 1
   fi
 
@@ -1092,8 +847,10 @@ cmd_run() {
   if (( verified_count == 0 )); then
     # Retry queue already ran at the top of cmd_run, so a clean worker run is a true no-op.
     log_info "Clean run -- no verified proposals"
-    append_metrics "$page_count" "$(echo "$response" | jq 'length')" 0 "$duration_ms" "$input_bytes" "" "$run_id"
-    append_log_line "[weave] $run_id -- clean run, no proposals"
+    if [[ "$is_dry_run" != "true" ]]; then
+      append_metrics "$page_count" "$(echo "$response" | jq 'length')" 0 "$duration_ms" "$input_bytes" "" "$run_id"
+      append_log_line "[weave] $run_id -- clean run, no proposals"
+    fi
     return 0
   fi
 
@@ -1107,8 +864,6 @@ cmd_run() {
   local top_count
   top_count=$(echo "$scored" | jq 'length')
 
-  # Proposals that the legacy digest path writes. Default = everything; on an
-  # auto-apply fallback this is narrowed to only the un-applied remainder.
   local digest_proposals="$scored"
 
   if [[ "$is_dry_run" == "true" ]]; then
@@ -1117,40 +872,14 @@ cmd_run() {
     return 0
   fi
 
-  # --- Auto-apply path (gated): apply directly, no digest, no human review ---
-  # Called WITHOUT command substitution so a mid-function failure propagates; on a
-  # fatal failure we fall through to the digest path so nothing is silently lost.
-  if auto_apply_enabled; then
-    log_info "Auto-apply enabled (policy ledger grants k2b-weave/crosslink_apply autonomy)"
-    if auto_apply_proposals "$scored" "$run_id"; then
-      local summary="$AUTO_APPLY_SUMMARY"
-      local n_applied
-      n_applied=$(echo "$summary" | grep -oE 'applied=[0-9]+' | cut -d= -f2)
-
-      append_metrics "$page_count" "$(echo "$response" | jq 'length')" "$top_count" "$duration_ms" "$input_bytes" "" "$run_id"
-      append_log_line "[weave] $run_id -- auto-apply ($summary)"
-
-      mkdir -p "$K2B_VAULT/wiki/context"
-      printf '%s\tk2b-weave\t%s\tweave run: %s proposals, %s applied (auto)\n' "$(date +%Y-%m-%d)" "$(echo $RANDOM | md5sum 2>/dev/null | head -c 8 || echo $RANDOM)" "$top_count" "${n_applied:-0}" >> "$K2B_VAULT/wiki/context/skill-usage-log.tsv" 2>/dev/null || true
-
-      log_info "Done (auto-apply). $summary"
-      return 0
-    fi
-    log_error "auto-apply aborted mid-run -- falling back to digest so proposals are not lost"
-    notify_failure "weave: auto-apply aborted for run $run_id; wrote review digest as fallback"
-    # Only the un-applied remainder goes to the fallback digest -- never re-queue an
-    # already-applied pair.
-    digest_proposals="$AUTO_APPLY_REMAINING"
-    # fall through to the digest path below
-  fi
-
-  # --- Legacy digest path: write a review digest and wait for Keith ---
+  # Always write a review digest and wait for Keith. Stage 1 has no automatic
+  # application route, even if a retired environment variable or ledger row exists.
   local digest_count
   digest_count=$(echo "$digest_proposals" | jq 'length' 2>/dev/null || echo 0)
   if (( digest_count == 0 )); then
-    log_info "No proposals to write to a digest (nothing pending after auto-apply)."
+    log_info "No proposals to write to a digest."
     append_metrics "$page_count" "$(echo "$response" | jq 'length')" "$top_count" "$duration_ms" "$input_bytes" "" "$run_id"
-    append_log_line "[weave] $run_id -- auto-apply fallback, no remainder to digest"
+    append_log_line "[weave] $run_id -- no proposals to digest"
     return 0
   fi
   local today_short
@@ -1167,9 +896,9 @@ cmd_run() {
   append_metrics "$page_count" "$(echo "$response" | jq 'length')" "$top_count" "$duration_ms" "$input_bytes" "" "$run_id"
   append_log_line "[weave] $run_id -- $digest_count proposals in review/$(basename "$digest_path")"
 
-  # Skill usage log
-  mkdir -p "$K2B_VAULT/wiki/context"
-  printf '%s\tk2b-weave\t%s\tweave run: %s proposals, 0 applied\n' "$(date +%Y-%m-%d)" "$(echo $RANDOM | md5sum 2>/dev/null | head -c 8 || echo $RANDOM)" "$digest_count" >> "$K2B_VAULT/wiki/context/skill-usage-log.tsv" 2>/dev/null || true
+  K2B_VAULT_PATH="$K2B_VAULT" python3 "$SCRIPT_DIR/k2b-shared-append.py" \
+    usage --skill k2b-weave \
+    --summary "weave run: $digest_count proposals, 0 applied" >/dev/null
 
   log_info "Done. $digest_count proposals in $(basename "$digest_path")"
 }
@@ -1180,6 +909,7 @@ cmd_apply() {
     log_error "Digest not found: $digest_file"
     exit 1
   fi
+  require_home_writer || return $?
   acquire_lock
   recover_ledger
 
@@ -1352,7 +1082,7 @@ Usage:
   k2b-weave.sh apply <digest-file>    Apply decisions from a processed digest
   k2b-weave.sh status                 Show recent runs, ledger summary
 
-See .claude/skills/k2b-weave/SKILL.md for the contract.
+See .agents/skills/k2b-weave/SKILL.md for the contract.
 EOF
     ;;
   *) echo "Unknown command: $cmd. Run with --help for usage." >&2; exit 2 ;;

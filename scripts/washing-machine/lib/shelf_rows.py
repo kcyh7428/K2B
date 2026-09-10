@@ -8,8 +8,8 @@ Pipes inside values are escaped as ``\\|``. Keys never contain ``|`` or ``:``.
 Values may contain ``:``; partition is on the first ``:`` only.
 
 Plan: plans/2026-04-21_washing-machine-ship-1.md Commit 1.
-Consumed by shelf-writer.sh (serialize), embed-index.py (parse, Commit 2),
-retrieve.py (parse, Commit 2).
+Consumed by shelf-writer.sh and its fixture tests. The retired local embedding
+index/retrieval lane is outside Stage 1.
 """
 
 from __future__ import annotations

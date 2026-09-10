@@ -30,8 +30,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from orchestrator_store import _verify_theme_gate  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.lib.orchestrator_store import _verify_theme_gate  # noqa: E402
 
 LOCK_PATH = "/tmp/k2b-orch-macro-themes.lock"
 

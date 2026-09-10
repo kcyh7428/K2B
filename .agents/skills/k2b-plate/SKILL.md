@@ -10,11 +10,11 @@ description: Surface every pending item that needs Keith's attention across all 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
-Read every canonical pending-state source and emit a single dashboard so Keith knows what needs his attention without re-deriving it every session.
+Read every canonical pending-state source and emit a single on-demand dashboard so Keith knows what needs his attention.
 
 ## When to Trigger
 
@@ -28,7 +28,7 @@ Keith says any of:
 - "show me my plate"
 - "what's left"
 
-Do NOT auto-trigger on session start -- the session-start hook already surfaces review queue + observer items. `/plate` is for explicit "give me the strategic-overview view."
+Run `/plate` only when Keith asks for the strategic overview. Do not auto-trigger it or claim that another routine has already surfaced its queues.
 
 ## What it does
 
@@ -131,11 +131,11 @@ Codex does NOT show the raw script output verbatim by default. It renders into t
 After completing the main task, log this skill invocation:
 
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-plate\t$(echo $RANDOM | md5sum | head -c 8)\tsurfaced plate dashboard" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-plate --summary "surfaced plate dashboard"
 ```
 
 ## Notes
 
 - This skill is the **consumer** in the pending-discipline architecture (shipped 2026-05-16 via [[wiki/concepts/Shipped/feature_pending-discipline]]). Producers are: K2B Codex sessions (set `pending-action:` on feature notes when shipping with deferred MVP), me (write `raw/sessions/*_handoff_*.md` when drafting paste-ins), Keith (manual edits to `reminders.md`), K2Bi PM hat (writes Resume Card checkpoint).
 - If `/plate` output is missing something Keith expected to see, the bug is in the producer side (failed to write to the canonical home), not the reader. Fix at source per the Memory Layer Ownership doctrine in `AGENTS.md`.
-- This skill replaces nothing. It complements the existing loop dashboard (a N / r N / d N triage) and session-start hook (review queue + observer items).
+- This skill replaces nothing. It complements the on-demand loop triage (`a N / r N / d N`) by presenting the broader strategic overview.

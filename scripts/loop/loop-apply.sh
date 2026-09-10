@@ -9,12 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 VAULT_DEFAULT="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
-# Memory canonical home is the Syncthing-synced vault (per CLAUDE.md "Memory
-# Layer Ownership"). The Claude Code memory dir at
-# ~/.claude/projects/-Users-<user>-Projects-K2B/memory/ is just a symlink
-# pointing here. Reading the vault path directly avoids hardcoding the
-# encoded MacBook user "keithmbpm2" -- that name is baked into the symlink
-# folder and breaks every Telegram-routed apply on the Mini (R-2026-04-23-001).
+# The synchronized vault memory directory is the canonical learning store.
 MEM_DEFAULT="$VAULT_DEFAULT/System/memory"
 
 export K2B_LOOP_CANDIDATES="${K2B_LOOP_CANDIDATES:-$VAULT_DEFAULT/wiki/context/observer-candidates.md}"

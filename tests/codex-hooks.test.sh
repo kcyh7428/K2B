@@ -23,17 +23,6 @@ INVALID_FIXTURE="$TMP_DIR/hooks.invalid.json"
 cat > "$VALID_FIXTURE" <<'JSON'
 {
   "hooks": {
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/post-tool-skill-track.sh\"",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "hooks": [
@@ -41,28 +30,6 @@ cat > "$VALID_FIXTURE" <<'JSON'
             "type": "command",
             "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh\"",
             "timeout": 10
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/youtube-transcript-prefetch.sh\"",
-            "timeout": 180
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/stop-observe.sh\"",
-            "timeout": 5
           }
         ]
       }
@@ -121,17 +88,13 @@ data = json.loads(path.read_text())
 commands = []
 found_targets = set()
 expected_targets = {
-    "scripts/hooks/post-tool-skill-track.sh",
     "scripts/hooks/session-start.sh",
-    "scripts/hooks/stop-observe.sh",
-    "scripts/hooks/youtube-transcript-prefetch.sh",
 }
 expected_timeouts = {
-    "scripts/hooks/post-tool-skill-track.sh": 3,
     "scripts/hooks/session-start.sh": 10,
-    "scripts/hooks/stop-observe.sh": 5,
-    "scripts/hooks/youtube-transcript-prefetch.sh": 180,
 }
+if set(data.get("hooks", {})) != {"SessionStart"}:
+    raise SystemExit(f"clean-slate hooks must contain only SessionStart: {sorted(data.get('hooks', {}))}")
 for hook_entries in data.get("hooks", {}).values():
     for entry in hook_entries:
         for hook in entry.get("hooks", []):
@@ -181,10 +144,7 @@ run_hook_commands() {
   local target
   mkdir -p "$runtime_dir/vault/wiki/context" "$runtime_dir/vault/review" "$runtime_dir/vault/raw/research"
   for target in \
-    scripts/hooks/post-tool-skill-track.sh \
-    scripts/hooks/session-start.sh \
-    scripts/hooks/stop-observe.sh \
-    scripts/hooks/youtube-transcript-prefetch.sh
+    scripts/hooks/session-start.sh
   do
     mkdir -p "$stub_root/$(dirname "$target")"
     printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' > "$stub_root/$target"
@@ -275,40 +235,7 @@ mkdir -p "$OUTSIDE_GIT"
   env -u CLAUDE_PROJECT_DIR K2B_PROJECT_ROOT="$REPO_ROOT" bash -lc '
     K2B_PROJECT_ROOT="${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}"
     test -x "$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh"
-    test -x "$K2B_PROJECT_ROOT/scripts/hooks/post-tool-skill-track.sh"
-    test -x "$K2B_PROJECT_ROOT/scripts/hooks/stop-observe.sh"
-    test -x "$K2B_PROJECT_ROOT/scripts/hooks/youtube-transcript-prefetch.sh"
   '
 ) || fail "K2B_PROJECT_ROOT should resolve hook targets outside a git cwd"
 
-PREFETCH_ROOT="$TMP_DIR/prefetch-root"
-mkdir -p "$PREFETCH_ROOT/scripts/hooks"
-cp "$REPO_ROOT/scripts/hooks/youtube-transcript-prefetch.sh" "$PREFETCH_ROOT/scripts/hooks/"
-cat > "$PREFETCH_ROOT/scripts/yt-transcript.sh" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "CODEX TRANSCRIPT FIXTURE"
-SH
-chmod +x "$PREFETCH_ROOT/scripts/yt-transcript.sh"
-
-prefetch_out="$(
-  printf '%s\n' '{"hook_event_name":"UserPromptSubmit","turn_id":"turn_fixture","prompt":"review https://youtu.be/codex123"}' |
-    K2B_PROJECT_ROOT="$PREFETCH_ROOT" \
-    K2B_YT_REMOTE_HOST=none \
-    bash "$PREFETCH_ROOT/scripts/hooks/youtube-transcript-prefetch.sh"
-)"
-printf '%s\n' "$prefetch_out" | jq -e '
-  .hookSpecificOutput.hookEventName == "UserPromptSubmit" and
-  (.hookSpecificOutput.additionalContext | contains("CODEX TRANSCRIPT FIXTURE"))
-' >/dev/null || fail "Codex UserPromptSubmit prompt field was not prefetched"
-echo "PASS: Codex UserPromptSubmit prompt field"
-
-legacy_out="$(
-  printf '%s\n' '{"hook_event_name":"UserPromptSubmit","user_prompt":"review https://youtu.be/legacy123"}' |
-    K2B_PROJECT_ROOT="$PREFETCH_ROOT" \
-    K2B_YT_REMOTE_HOST=none \
-    bash "$PREFETCH_ROOT/scripts/hooks/youtube-transcript-prefetch.sh"
-)"
-[ -z "$legacy_out" ] || fail "legacy user_prompt field should not be treated as Codex prompt input"
-echo "PASS: legacy prompt field ignored"
-
-echo "PASS: hook command fixtures are provider-neutral"
+echo "PASS: clean-slate hook command is provider-neutral"

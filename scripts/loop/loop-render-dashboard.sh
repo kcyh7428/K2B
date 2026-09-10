@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render the K2B loop dashboard. Called from scripts/hooks/session-start.sh.
+# Render the K2B loop dashboard for explicit review.
 # Ship 2: reads observer-defers.jsonl so badges show "(deferred Nx)".
 set -euo pipefail
 

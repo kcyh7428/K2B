@@ -1,48 +1,13 @@
 {
   "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Skill",
-        "hooks": [
-            {
-              "type": "command",
-              "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/post-tool-skill-track.sh\"",
-              "timeout": 3
-            }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "matcher": "",
         "hooks": [
             {
               "type": "command",
-              "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh\"",
+              "command": "export PATH=\"/opt/homebrew/opt/node@24/bin:/opt/homebrew/opt/python@3.12/libexec/bin:/opt/homebrew/bin:$PATH\"; export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; export K2B_VAULT_PATH=\"${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh\"",
               "timeout": 10
-            }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/youtube-transcript-prefetch.sh\"",
-            "timeout": 180
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-            {
-              "type": "command",
-              "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/stop-observe.sh\"",
-              "timeout": 5
             }
         ]
       }

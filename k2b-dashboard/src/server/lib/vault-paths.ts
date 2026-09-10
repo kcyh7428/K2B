@@ -11,7 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: resolve(__dirname, '../../../.env') })
 
 // Auto-detect the project root by walking up until we find k2b-dashboard/package.json.
-// This works on MacBook (keithmbpm2), Mac Mini (fastshower), and anywhere else.
+// This works in either authorized Mac checkout and in test fixtures.
 function findProjectRoot(): string {
   // __dirname is either src/server/lib (dev) or dist/server/lib (prod).
   // Project root (K2B/) is 4 levels up in both cases.
@@ -32,11 +32,9 @@ function findVaultPath(projectRoot: string): string {
   const sibling = resolve(projectRoot, '..', 'K2B-Vault')
   if (existsSync(sibling)) return sibling
 
-  // Known host candidates (last-resort only; the sibling check above handles both)
+  // Current-user fallback (the sibling check above handles normal checkouts)
   const candidates = [
     join(homedir(), 'Projects', 'K2B-Vault'),
-    '/Users/fastshower/Projects/K2B-Vault',
-    '/Users/keithmbpm2/Projects/K2B-Vault',
   ]
   for (const c of candidates) {
     if (existsSync(c)) return c
@@ -72,8 +70,7 @@ export const paths = {
   wikiLog: join(VAULT, 'wiki', 'log.md'),
   wikiIndex: join(VAULT, 'wiki', 'index.md'),
 
-  // Memory (symlinked into the vault, but read via vault path so both
-  // MacBook and Mac Mini work without env-specific tweaks).
+  // Memory is read through the vault path on either authorized Mac.
   memory: join(VAULT, 'System', 'memory'),
   activeRules: join(VAULT, 'System', 'memory', 'active_rules.md'),
   learnings: join(VAULT, 'System', 'memory', 'self_improve_learnings.md'),
@@ -87,9 +84,6 @@ export const paths = {
   preferenceSignals: join(VAULT, 'wiki', 'context', 'preference-signals.jsonl'),
   preferenceProfile: join(VAULT, 'wiki', 'context', 'preference-profile.md'),
   skillUsageLog: join(VAULT, 'wiki', 'context', 'skill-usage-log.tsv'),
-
-  // k2b-remote store (read-only from dashboard side)
-  remoteDb: process.env.K2B_REMOTE_DB_PATH ?? join(PROJECT, 'k2b-remote', 'store', 'k2b-remote.db'),
 } as const
 
 export const config = {

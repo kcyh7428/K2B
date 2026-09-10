@@ -177,8 +177,8 @@ export function useAudioIntakeMutation() {
 export type IntakeStatus =
   | { status: 'done'; details?: unknown }
   | { status: 'error'; error: string; details?: unknown }
-  | { status: 'processing' }
-  | { status: 'pending-sync' }
+  | { status: 'staged'; action: 'process-on-home' }
+  | { status: 'not-found' }
 
 export async function fetchIntakeStatus(uuid: string): Promise<IntakeStatus> {
   const r = await fetch(`/api/intake/status/${uuid}`)

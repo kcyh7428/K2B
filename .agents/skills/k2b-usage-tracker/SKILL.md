@@ -1,11 +1,11 @@
 ---
 name: k2b-usage-tracker
-description: Track K2B skill usage and trigger automated actions when thresholds are hit. Use when Keith says "check usage", "how often have I used", "usage stats", "trigger after N uses", or when any other k2b skill needs to log its invocation. Also used by the session-start hook to check for threshold breaches.
+description: Manually inspect or append K2B skill usage. Use when Keith says "check usage", "how often have I used", "usage stats", or when an explicitly invoked skill needs to record its invocation.
 ---
 
 # K2B Usage Tracker
 
-Track skill invocations and fire automated actions when usage thresholds are hit.
+Track skill invocations and report threshold readiness. Stage 1 does not fire actions automatically.
 
 ## Files
 
@@ -19,7 +19,7 @@ Track skill invocations and fire automated actions when usage thresholds are hit
 - `/usage triggers` -- Show current trigger rules and status
 - `/usage add-trigger <skill> <threshold> "<action>"` -- Add a new trigger rule
 - `/usage remove-trigger <skill>` -- Remove a trigger rule
-- `/usage check` -- Check all triggers and fire any that are ready
+- `/usage check` -- Check all triggers and report any that are ready
 
 ## Usage Log Format
 
@@ -34,7 +34,7 @@ date	skill	session	notes
 
 Append a line to the TSV:
 ```bash
-echo -e "$(date +%Y-%m-%d)\t<skill-name>\t$(echo $RANDOM | md5sum | head -c 8)\t<description>" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill <skill-name> --summary "<description>"
 ```
 
 ## Trigger Rules Format
@@ -56,7 +56,7 @@ The triggers file uses a simple markdown table:
 
 ## Checking Triggers
 
-When `/usage check` is called (or on session start via hook):
+When Keith explicitly calls `/usage check`:
 
 1. Read `skill-usage-log.tsv`
 2. Read `usage-triggers.md`
@@ -64,9 +64,8 @@ When `/usage check` is called (or on session start via hook):
    a. Count uses of that skill since `Last Fired` date (or all uses if `never`)
    b. If count >= threshold:
       - Notify Keith: "Trigger ready: [skill] has been used [N] times since [date]. Action: [action]"
-      - Ask Keith if he wants to fire it now
-      - If yes, execute the action
-      - Update `Last Fired` to today's date in the triggers file
+      - Do not execute it automatically. Keith must explicitly request the action.
+      - Update `Last Fired` only after the requested action actually completes.
 4. If no triggers are ready, report "All triggers below threshold"
 
 ## Usage Stats
@@ -97,7 +96,7 @@ Every k2b-* skill should log its usage. The logging instruction is a single bash
 
 ```
 After completing the main task, log usage:
-echo -e "$(date +%Y-%m-%d)\t<SKILL-NAME>\t$(echo $RANDOM | md5sum | head -c 8)\t<brief-description>" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill <SKILL-NAME> --summary "<brief-description>"
 ```
 
 ## Notes

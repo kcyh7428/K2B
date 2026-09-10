@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMPDIR_BASE="${TMPDIR:-/tmp}/yt-whisper-$$"
 LANGUAGE=""
 
+# shellcheck source=lib/private-env.sh
+source "$SCRIPT_DIR/lib/private-env.sh"
+
 cleanup() {
   rm -rf "$TMPDIR_BASE"
 }
@@ -45,13 +48,11 @@ done
 # Resolve Groq API key
 GROQ_KEY="${GROQ_API_KEY:-}"
 if [[ -z "$GROQ_KEY" ]]; then
-  ENV_FILE="$SCRIPT_DIR/../k2b-remote/.env"
-  if [[ -f "$ENV_FILE" ]]; then
-    GROQ_KEY=$(grep -E '^GROQ_API_KEY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
-  fi
+  k2b_load_private_env "${K2B_ENV_FILE:-${HOME:-}/.k2b-env}" || exit 1
+  GROQ_KEY="${GROQ_API_KEY:-}"
 fi
 if [[ -z "$GROQ_KEY" ]]; then
-  echo "ERROR: GROQ_API_KEY not set and not found in k2b-remote/.env" >&2
+  echo "ERROR: GROQ_API_KEY not set in the environment or ~/.k2b-env" >&2
   exit 1
 fi
 

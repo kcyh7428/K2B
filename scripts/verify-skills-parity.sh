@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-skills-parity.sh -- guard Codex skill copies against stale drift.
+# verify-skills-parity.sh -- compatibility name for the live Codex skill guard.
 
 set -euo pipefail
 
@@ -15,13 +15,13 @@ while [[ $# -gt 0 ]]; do
       cat <<'USAGE'
 Usage: scripts/verify-skills-parity.sh [--root PATH]
 
-Checks:
-  - AGENTS.md and .codex/hooks.json exist
-  - every .claude/skills/k2b-*/SKILL.md has .agents/skills/k2b-*/SKILL.md
-  - frontmatter name and description match
-  - .agents skills do not reference stale Codex skills paths
-  - .agents skill files do not reference Claude-only skill paths, project memory, or CLAUDE_PROJECT_DIR
-  - .agents skills do not describe MiniMax M2.7 or Kimi K2.6 as the live text worker
+Checks the sole live K2B instruction and skill surfaces:
+  - AGENTS.md, .codex/hooks.json, and .agents/skills exist
+  - retired CLAUDE.md and .claude project state are absent
+  - every K2B skill has valid frontmatter whose name matches its directory
+  - live skills do not reference retired Claude or stale Codex skill paths
+  - live skills do not describe retired MiniMax or Kimi K2.6 as a live worker
+  - the live ship skill and ship-brief template retain their safety contracts
 USAGE
       exit 0
       ;;
@@ -32,7 +32,18 @@ USAGE
   esac
 done
 
-python3 - "$ROOT" <<'PY'
+PYTHON_BIN="${K2B_PYTHON:-python3}"
+if ! "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1; then
+  PROJECT_PYTHON="$HOME/Projects/K2B/venv/washing-machine/bin/python"
+  if [ -x "$PROJECT_PYTHON" ] && "$PROJECT_PYTHON" -c 'import yaml' >/dev/null 2>&1; then
+    PYTHON_BIN="$PROJECT_PYTHON"
+  else
+    echo "verify-skills-parity: PyYAML is required; install requirements-dev.txt" >&2
+    exit 2
+  fi
+fi
+
+"$PYTHON_BIN" - "$ROOT" <<'PY'
 from __future__ import annotations
 
 import re
@@ -42,51 +53,24 @@ from pathlib import Path
 import yaml
 
 root = Path(sys.argv[1])
-claude_dir = root / ".claude" / "skills"
 agents_dir = root / ".agents" / "skills"
-
 errors: list[str] = []
+
 STALE_CODEX_SKILL_RE = re.compile(r"(?i)(?:^|[~./\\`\"']|\s)\.?codex[/\\]skills")
 STALE_CLAUDE_SKILL_RE = re.compile(r"(?i)(?:^|[~./\\`\"']|\s)\.?claude[/\\]skills")
 STALE_CLAUDE_MEMORY_RE = re.compile(r"(?i)~[/\\]\.claude[/\\]projects[/\\][^\s`\"']*[/\\]memory")
-CLAUDE_CODEX_ONLY_PATH_RE = re.compile(r"(?i)(?:^|[~./\\`\"']|\s)(?:\.agents[/\\]skills|\.codex[/\\]hooks\.json)")
 MINIMAX_M2_RE = re.compile(r"(?i)(?:minimax(?:[- ]?m2\.7| model m2\.7)|\bm2\.7\b)")
 KIMI_K2_6_RE = re.compile(r"(?i)\bkimi(?:\s+k2)?\.?6\b|\bk2\.6\b")
 LIVE_WORKER_RE = re.compile(
-    r"(?i)(live|primary|current|active|main|default|preferred|chosen|worker|handles text|text worker|text routing|text calls|powered by|uses|utilizes|employs|relies on|routes to|delegates|backup|secondary|standby|reserve|spare|contingency)"
+    r"(?i)(live|primary|current|active|main|default|preferred|chosen|worker|"
+    r"handles text|text worker|text routing|text calls|powered by|uses|utilizes|"
+    r"employs|relies on|routes to|delegates|backup|secondary|standby|fallback)"
 )
-KIMI_K2_NEGATION_TOKENS = (
-    "historical",
-    "dead",
-    "subscription",
-    "lapsed",
-    "old",
-    "removed",
-    "legacy",
-    "retired",
-    "previous",
-    "no longer",
-    "not ",
-)
-MINIMAX_HISTORICAL_TOKENS = (
-    "historical",
-    "dead",
-    "subscription",
-    "lapsed",
-    "old",
-    "removed",
-    "legacy",
-    "retired",
-)
-MINIMAX_NEGATION_TOKENS = (
-    "no longer",
-    "do not",
-    "don't",
-    "never",
-    "not ",
+NEGATION_TOKENS = (
+    "historical", "dead", "disabled", "removed", "legacy", "retired",
+    "previous", "no longer", "do not", "don't", "never", "not ",
 )
 SHIP_BRIEF_MARKERS = (
-    "Prepare Keith-facing ship brief",
     "What you will notice",
     "What stays the same",
     "What is not included yet",
@@ -94,23 +78,17 @@ SHIP_BRIEF_MARKERS = (
     "Under the hood",
     "Risk / rollback",
 )
-AGENTS_SESSION_DISCIPLINE_MARKERS = (
-    "## Session Discipline",
-    "At the END of every K2B desktop session",
-    "Plain implementation requests without delivery command wording are not ship authorization",
-    "If shipping is blocked",
-    "explicitly declines to ship",
+AGENTS_MARKERS = (
+    "## Review and delivery",
+    "Plain implementation requests do not authorize",
+    "Same-family fallback does not count",
+    "Commit/push and activation are distinct states",
 )
-SHIP_CONTRACT_MARKERS = (
-    "Codex Desktop manual ship contract",
-    "already authorized",
-    "descriptive or architectural context",
-    "If the wording is ambiguous",
-    "first clause must be complete",
-    "list the done checks implied by X",
-    "concrete test command, file assertion, or live verification result",
-    "cannot produce inspectable evidence",
-    "Mixed-mode examples",
+SHIP_MARKERS = (
+    "Plain implementation wording is not delivery authority",
+    "explicit delivery wording",
+    "same-family review presented as independent",
+    "Activation on each Mac is a separate state",
 )
 
 
@@ -120,48 +98,6 @@ def read(path: Path) -> str:
     except OSError as exc:
         errors.append(f"read error: {path}: {exc}")
         return ""
-
-
-def check_agent_only_text(path: Path, text: str) -> None:
-    stale_path_match = STALE_CODEX_SKILL_RE.search(text)
-    if stale_path_match:
-        errors.append(f"stale Codex skills path in {path}: {stale_path_match.group(0)}")
-    stale_claude_match = STALE_CLAUDE_SKILL_RE.search(text)
-    if stale_claude_match:
-        errors.append(f"stale Claude skills path in {path}: {stale_claude_match.group(0)}")
-    stale_claude_memory_match = STALE_CLAUDE_MEMORY_RE.search(text)
-    if stale_claude_memory_match:
-        errors.append(f"stale Claude project memory path in {path}: {stale_claude_memory_match.group(0)}")
-    if "CLAUDE_PROJECT_DIR" in text:
-        errors.append(f"Claude-only CLAUDE_PROJECT_DIR reference in {path}")
-
-
-def check_ship_brief_markers(path: Path, text: str) -> None:
-    for marker in SHIP_BRIEF_MARKERS:
-        marker_re = re.escape(marker)
-        pattern = re.compile(
-            rf"(?im)^\s*(?:"
-            rf"#{{1,6}}\s+(?:\d+(?:\.\d+)*\s+)?{marker_re}\s*$|"
-            rf"\d+\.\s+\*\*{marker_re}\*\*"
-            rf")"
-        )
-        if not pattern.search(text):
-            errors.append(f"missing ship-brief marker in {path}: {marker}")
-
-
-def check_ship_brief_contract(path: Path, text: str) -> None:
-    if path.parent.name != "k2b-ship":
-        return
-    check_ship_brief_markers(path, text)
-    for marker in SHIP_CONTRACT_MARKERS:
-        if marker not in text:
-            errors.append(f"missing Codex ship contract marker in {path}: {marker}")
-
-
-def check_agents_session_discipline(path: Path, text: str) -> None:
-    for marker in AGENTS_SESSION_DISCIPLINE_MARKERS:
-        if marker not in text:
-            errors.append(f"missing Codex session discipline marker in {path}: {marker}")
 
 
 def frontmatter(path: Path, text: str) -> dict[str, object]:
@@ -177,119 +113,83 @@ def frontmatter(path: Path, text: str) -> dict[str, object]:
     except yaml.YAMLError as exc:
         errors.append(f"frontmatter parse error in {path}: {exc}")
         return {}
-    if parsed is None:
-        errors.append(f"frontmatter parse error in {path}: empty/null frontmatter")
-        return {}
     if not isinstance(parsed, dict):
-        errors.append(f"frontmatter parse error in {path}: expected mapping, got {type(parsed).__name__}")
+        errors.append(f"frontmatter parse error in {path}: expected mapping")
         return {}
     return {str(key): value for key, value in parsed.items()}
 
 
-if not claude_dir.is_dir():
-    errors.append(f"missing source skills directory: {claude_dir}")
+def require_markers(path: Path, text: str, markers: tuple[str, ...]) -> None:
+    for marker in markers:
+        if marker not in text:
+            errors.append(f"missing required marker in {path}: {marker}")
+
+
+agents_file = root / "AGENTS.md"
+hooks_file = root / ".codex" / "hooks.json"
+brief_file = root / "plans" / "templates" / "ship-brief.md"
+
+for required in (agents_file, hooks_file, brief_file):
+    if not required.is_file():
+        errors.append(f"missing live K2B surface: {required}")
 if not agents_dir.is_dir():
-    errors.append(f"missing Codex skills directory: {agents_dir}")
-if not (root / "AGENTS.md").is_file():
-    errors.append(f"missing Codex instruction surface: {root / 'AGENTS.md'}")
+    errors.append(f"missing live skills directory: {agents_dir}")
+if (root / "CLAUDE.md").exists():
+    errors.append(f"retired Claude instruction file present: {root / 'CLAUDE.md'}")
+if (root / ".claude").exists():
+    errors.append(f"retired Claude project tree present: {root / '.claude'}")
+
+if agents_file.is_file():
+    require_markers(agents_file, read(agents_file), AGENTS_MARKERS)
+if brief_file.is_file():
+    require_markers(brief_file, read(brief_file), SHIP_BRIEF_MARKERS)
+
+if agents_dir.is_dir():
+    skill_files = sorted(agents_dir.glob("k2b-*/SKILL.md"))
+    if not skill_files:
+        errors.append(f"no live K2B skills found under: {agents_dir}")
+    for skill_file in skill_files:
+        text = read(skill_file)
+        fm = frontmatter(skill_file, text)
+        expected_name = skill_file.parent.name
+        if fm.get("name") != expected_name:
+            errors.append(
+                f"frontmatter name mismatch in {skill_file}: "
+                f"expected={expected_name!r} actual={fm.get('name')!r}"
+            )
+        if not isinstance(fm.get("description"), str) or not fm.get("description", "").strip():
+            errors.append(f"frontmatter description missing in {skill_file}")
+
+    for path in sorted(p for p in agents_dir.rglob("*") if p.is_file()):
+        text = read(path)
+        for regex, label in (
+            (STALE_CODEX_SKILL_RE, "stale Codex skills path"),
+            (STALE_CLAUDE_SKILL_RE, "retired Claude skills path"),
+            (STALE_CLAUDE_MEMORY_RE, "retired Claude memory path"),
+        ):
+            match = regex.search(text)
+            if match:
+                errors.append(f"{label} in {path}: {match.group(0)}")
+        if "CLAUDE_PROJECT_DIR" in text:
+            errors.append(f"retired CLAUDE_PROJECT_DIR reference in {path}")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            lowered = line.lower()
+            if any(token in lowered for token in NEGATION_TOKENS):
+                continue
+            if LIVE_WORKER_RE.search(line) and (MINIMAX_M2_RE.search(line) or KIMI_K2_6_RE.search(line)):
+                errors.append(f"retired live-worker wording in {path}:{lineno}: {line.strip()}")
+
+ship_skill = agents_dir / "k2b-ship" / "SKILL.md"
+if not ship_skill.is_file():
+    errors.append(f"missing live ship skill: {ship_skill}")
 else:
-    check_agents_session_discipline(root / "AGENTS.md", read(root / "AGENTS.md"))
-if not (root / ".codex" / "hooks.json").is_file():
-    errors.append(f"missing Codex hook surface: {root / '.codex' / 'hooks.json'}")
-ship_brief_template = root / "plans" / "templates" / "ship-brief.md"
-if not ship_brief_template.is_file():
-    errors.append(f"missing ship-brief template: {ship_brief_template}")
-else:
-    check_ship_brief_markers(ship_brief_template, read(ship_brief_template))
-
-for source_skill in sorted(claude_dir.glob("k2b-*/SKILL.md")):
-    rel = source_skill.relative_to(claude_dir)
-    target_skill = agents_dir / rel
-    if not target_skill.exists():
-        errors.append(f"missing .agents skill for {rel}")
-        continue
-
-    source_text = read(source_skill)
-    target_text = read(target_skill)
-    claude_codex_only_match = CLAUDE_CODEX_ONLY_PATH_RE.search(source_text)
-    if claude_codex_only_match:
-        errors.append(f"Codex-only path in Claude skill {source_skill}: {claude_codex_only_match.group(0)}")
-
-    source_fm = frontmatter(source_skill, source_text)
-    target_fm = frontmatter(target_skill, target_text)
-    for key in ("name", "description"):
-        if key not in source_fm or key not in target_fm:
-            errors.append(
-                f"frontmatter missing in {rel}: {key} "
-                f"source_has={key in source_fm} target_has={key in target_fm}"
-            )
-            continue
-        if source_fm[key] != target_fm[key] or type(source_fm[key]) is not type(target_fm[key]):
-            errors.append(
-                f"frontmatter mismatch in {rel}: {key} "
-                f"source={source_fm[key]!r} target={target_fm[key]!r}"
-            )
-    expected_name = source_skill.parent.name
-    for side, skill_path, fm in (
-        ("source", source_skill, source_fm),
-        ("target", target_skill, target_fm),
-    ):
-        if "name" in fm and fm["name"] != expected_name:
-            errors.append(
-                f"frontmatter name does not match directory in {skill_path}: "
-                f"expected={expected_name!r} actual={fm['name']!r} side={side}"
-            )
-
-    check_agent_only_text(target_skill, target_text)
-    check_ship_brief_contract(source_skill, source_text)
-    check_ship_brief_contract(target_skill, target_text)
-
-    for lineno, line in enumerate(target_text.splitlines(), start=1):
-        if not MINIMAX_M2_RE.search(line):
-            continue
-        lowered = line.lower()
-        if any(token in lowered for token in MINIMAX_HISTORICAL_TOKENS):
-            continue
-        if any(token in lowered for token in MINIMAX_NEGATION_TOKENS):
-            continue
-        if LIVE_WORKER_RE.search(line):
-            errors.append(f"MiniMax M2.7 live-worker wording in {target_skill}:{lineno}: {line.strip()}")
-        if KIMI_K2_6_RE.search(line) and LIVE_WORKER_RE.search(line):
-            for match in KIMI_K2_6_RE.finditer(lowered):
-                context = lowered[max(0, match.start() - 80): match.end() + 80]
-                if any(token in context for token in KIMI_K2_NEGATION_TOKENS):
-                    break
-            else:
-                errors.append(
-                    f"Kimi K2.6 live-worker wording in {target_skill}:{lineno}: "
-                    f"{line.strip()}"
-                )
-
-for target_skill in sorted(agents_dir.glob("k2b-*/SKILL.md")):
-    rel = target_skill.relative_to(agents_dir)
-    if not (claude_dir / rel).exists():
-        errors.append(f"orphan .agents skill without .claude source: {rel}")
-
-for source_file in sorted(claude_dir.rglob("*")):
-    if not source_file.is_file() or source_file.name == "SKILL.md":
-        continue
-    rel = source_file.relative_to(claude_dir)
-    if not (agents_dir / rel).exists():
-        errors.append(f"missing .agents nested skill file for {rel}")
-
-for target_file in sorted(agents_dir.rglob("*")):
-    if not target_file.is_file() or target_file.name == "SKILL.md":
-        continue
-    rel = target_file.relative_to(agents_dir)
-    if not (claude_dir / rel).exists():
-        errors.append(f"orphan .agents nested skill file without .claude source: {rel}")
-    check_agent_only_text(target_file, read(target_file))
+    require_markers(ship_skill, read(ship_skill), SHIP_MARKERS)
 
 if errors:
     print("verify-skills-parity: FAILED")
-    for err in errors:
-        print(f"- {err}")
-    sys.exit(1)
+    for error in errors:
+        print(f"- {error}")
+    raise SystemExit(1)
 
 print("verify-skills-parity: ok")
 PY

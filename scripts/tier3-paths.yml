@@ -37,7 +37,6 @@ paths:
   - "AGENTS.md"
   - ".agents/skills/**"
   - ".codex/hooks.json"
-  - ".claude/skills/k2b-ship/SKILL.md"
 
   # Single-writer mutation helpers (bug here corrupts shared logs/indexes)
   - "scripts/wiki-log-append.sh"
@@ -49,23 +48,9 @@ paths:
   - "scripts/tier3-paths.yml"
   - "scripts/verify-skills-parity.sh"
 
-  # Deployment + git hooks (bug here wedges every machine)
-  - "scripts/deploy-to-mini.sh"
+  # Git and lifecycle hooks (bug here wedges a workstation)
   - ".githooks/**"
   - "scripts/hooks/**"
 
-  # Production services (bug here pages Keith at 3am)
-  - "k2b-remote/src/**"
+  # Optional local dashboard surface
   - "k2b-dashboard/src/**"
-
-  # Router watchdog -- single launchd-managed install on the Mac Mini; bugs
-  # here can corrupt mihomo selectors, leak the Telegram bot token, or
-  # wedge the alert pipeline (the only signal we have that the Mini is
-  # awake).
-  - "scripts/router-watchdog/**"
-  - "launchd/com.k2b.router-watchdog.plist"
-  - "launchd/com.k2b.router-private-vpn-watchdog.plist"
-  - "launchd/com.k2b.router-daily-rollup.plist"
-  - "launchd/com.k2b.router-node-score.plist"
-  - "launchd/com.k2b.router-leaf-optimizer.plist"
-  - "launchd/com.k2b.router-digest.plist"

@@ -88,37 +88,32 @@ class TestKimiDefaultModel(unittest.TestCase):
         )
         self.assertIn(f"Model id (default {EXPECTED_MODEL})", result.stdout)
 
-    def test_shell_kimi_translation_honors_max_completion_tokens(self) -> None:
+    def test_shell_kimi_worker_uses_streaming_python_bridge(self) -> None:
         env = os.environ.copy()
         env["K2B_LLM_PROVIDER"] = "kimi"
         env["MINIMAX_API_KEY"] = "fake-minimax-key"
         env["KIMI_API_KEY"] = "fake-kimi-key"
+        env["K2B_LLM_MODEL"] = "kimi-custom-shell-model"
 
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            fakebin = tmp / "bin"
-            fakebin.mkdir()
             body_path = tmp / "request.json"
-            fake_curl = fakebin / "curl"
-            fake_curl.write_text(
+            model_path = tmp / "model.txt"
+            fake_python = tmp / "python3"
+            fake_python.write_text(
                 f"""#!/usr/bin/env bash
 set -euo pipefail
-body=""
-while (($#)); do
-  case "$1" in
-    -d) body="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-printf '%s' "$body" > "$BODY_PATH"
-printf '%s\\n' '{{"id":"msg_test","model":"{EXPECTED_MODEL}","content":[{{"type":"text","text":"{{}}"}}],"usage":{{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}},"stop_reason":"end_turn"}}'
+cat > "$BODY_PATH"
+printf '%s' "$KIMI_DEFAULT_MODEL" > "$MODEL_PATH"
+printf '%s\\n' '{{"id":"msg_test","model":"{EXPECTED_MODEL}","choices":[{{"index":0,"message":{{"role":"assistant","content":"{{}}"}},"finish_reason":"end_turn"}}],"usage":{{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}},"base_resp":{{"status_code":0,"status_msg":"success"}}}}'
 """,
                 encoding="utf-8",
             )
-            fake_curl.chmod(0o755)
+            fake_python.chmod(0o755)
 
             env["BODY_PATH"] = str(body_path)
-            env["PATH"] = f"{fakebin}{os.pathsep}{env['PATH']}"
+            env["MODEL_PATH"] = str(model_path)
+            env["K2B_KIMI_PYTHON"] = str(fake_python)
             command = (
                 "source scripts/minimax-common.sh >/dev/null 2>&1 && "
                 "mm_api POST /v1/text/chatcompletion_v2 "
@@ -147,20 +142,19 @@ printf '%s\\n' '{{"id":"msg_test","model":"{EXPECTED_MODEL}","content":[{{"type"
                 check=True,
             )
 
-            translated = json.loads(body_path.read_text(encoding="utf-8"))
-            self.assertEqual(translated["max_tokens"], 1234)
-            self.assertEqual(translated["model"], EXPECTED_MODEL)
-            self.assertEqual(translated["system"], "System prompt line")
-            self.assertEqual(translated["temperature"], 0.2)
+            forwarded = json.loads(body_path.read_text(encoding="utf-8"))
+            self.assertEqual(forwarded["max_completion_tokens"], 1234)
+            self.assertEqual(forwarded["model"], "ignored")
+            self.assertEqual(forwarded["temperature"], 0.2)
             self.assertEqual(
-                translated["messages"],
+                forwarded["messages"],
                 [
+                    {"role": "system", "content": "System prompt line"},
                     {"role": "user", "content": "hi"},
                     {"role": "assistant", "content": "past"},
                 ],
             )
-            for msg in translated["messages"]:
-                self.assertNotEqual(msg.get("role"), "system")
+            self.assertEqual(model_path.read_text(), "kimi-custom-shell-model")
 
 
 if __name__ == "__main__":

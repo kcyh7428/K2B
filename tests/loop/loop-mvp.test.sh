@@ -46,7 +46,7 @@ if [ "$new_lids" != "3" ]; then
   echo "FAIL gate 1: expected 3 L-2026-04-23-00[123] entries, got $new_lids"
   exit 1
 fi
-source_tags=$(grep -c 'Source:\*\* observer-candidates (auto-applied 2026-04-23 via session-start dashboard)' "$TMP/self_improve_learnings.md" || true)
+source_tags=$(grep -c 'Source:\*\* observer-candidates (accepted 2026-04-23 through explicit loop review)' "$TMP/self_improve_learnings.md" || true)
 if [ "$source_tags" != "3" ]; then
   echo "FAIL gate 1: expected 3 Source: observer-candidates tags, got $source_tags"
   exit 1

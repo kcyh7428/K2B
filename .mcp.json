@@ -1,24 +1,12 @@
 {
   "mcpServers": {
-    "minimax": {
-      "command": "npx",
-      "args": ["-y", "minimax-mcp-js"],
-      "env": {
-        "MINIMAX_API_KEY": "${MINIMAX_API_KEY}",
-        "MINIMAX_API_HOST": "https://api.minimaxi.com",
-        "MINIMAX_MCP_BASE_PATH": "${HOME}/Projects/K2B-Vault/Assets",
-        "MINIMAX_RESOURCE_MODE": "local"
-      }
-    },
     "obsidian": {
-      "command": "uvx",
-      "args": ["mcp-obsidian"],
-      "env": {
-        "OBSIDIAN_API_KEY": "28f910d06b65def6955c4a7b2b2ae77e09d83145001767276b38f460e9b0c3d1"
-      }
+      "command": "bash",
+      "args": ["-c", "exec bash \"$HOME/Projects/K2B/scripts/run-obsidian-mcp.sh\""]
     },
     "hostinger": {
-      "command": "/Users/keithmbpm2/Projects/K2B/scripts/run-hostinger-mcp.sh"
+      "command": "bash",
+      "args": ["-c", "exec bash \"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}/scripts/run-hostinger-mcp.sh\""]
     }
   }
 }

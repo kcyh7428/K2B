@@ -2,6 +2,24 @@
 
 
 ---
+## 2026-09-10 -- Stage 1 two-Mac repair and clean-slate consolidation
+
+**Commit:** this commit -- feat: complete K2B Stage 1 two-Mac repair
+
+**What shipped:** K2B now has one explicit Stage 1 operating model: Home is the only synchronized-vault writer; SJM discovers and safely exports selected immutable Codex sources while keeping pending writes in private local state. Capture is catch-up capable, provenance-bound, replay-safe, and truthful about waiting, staged, failed, and reconciled work. The dashboard no longer claims a staged intake is processing without worker evidence. Kimi K2.7 remains the retained text worker/reviewer through the Kimi Code membership endpoint, with MiniMax routing rejected before credentials or network are touched. Per-machine credential launchers now fail closed on unsafe files.
+
+**Retirement:** Removed tracked Claude authority/skills, the Telegram bot/runtime, Mini deployment code, legacy dashboard v2, router-watchdog and Mini launchd residue, obsolete observer writers, and the old local sentence-transformer preflight/index/retrieval lane. Historical plans and prior DEVLOG entries remain evidence only. Personal app history, vault raw sources, credentials, K2Bi production state, and the retired Mac Mini were not touched.
+
+**Review:** Kimi returned useful findings on bounded cohorts, but repeated final attempts timed out, truncated, or returned empty output. Keith explicitly authorized GPT-5.6 Sol only after those failures. Sol approved the repaired capture, provider, dashboard, and operational cohorts; its first stable-cohort pass then found two high-severity blockers: the Codex reviewer still depended on a Claude-managed plugin, and the archive exporter missed common short/semantic credential forms. A follow-up caught quoted JSON keys and prefixed secret flags. All were fixed with focused regressions, and the native Codex CLI now owns Codex review. The final repaired-cohort Sol pass returned `APPROVE` with no blocker/high regression. These are same-family emergency reviews and are not represented as independent.
+
+**Verification:** `804 passed, 5 skipped, 5 subtests passed`; all 49 remaining shell integration suites passed; all 26 live K2B skills passed validation; dashboard intake tests 4/4; dashboard typecheck and production build passed; `npm audit --omit=dev` reported zero vulnerabilities; Codex authority and diff checks passed.
+
+**Activation:** Delivery is limited to the Home and SJM MacBook Pro checkouts. The reviewed commit, per-host activation receipts, live discovery/Kimi/scoped-source/Syncthing/recall canaries, and final acceptance state are recorded after the delivery gate. No Mac Mini deployment or pending-sync obligation is permitted.
+
+**Follow-ups:** Stage 2 will separately evaluate local-agent/model use on the 128 GB SJM Mac. It is intentionally absent from this ship.
+
+
+---
 ## 2026-07-27 -- Codex-only live authority
 
 **Commit:** `818ce66` feat: make Codex the sole live K2B authority

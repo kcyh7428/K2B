@@ -5,7 +5,7 @@
 # Architecture: each test builds a fresh temp git repo with:
 #   - a dirty file (to satisfy the classifier's "something changed" requirement)
 #   - a fake scripts/kimi-review.sh shim (inside the temp REPO_ROOT)
-#   - a fake codex plugin tree with a fake codex-companion.mjs (real .mjs)
+#   - a fake native Codex executable
 # then invokes the real runner at its actual K2B location.
 #
 # REPO_ROOT in the runner is computed from `git rev-parse --show-toplevel`
@@ -61,12 +61,12 @@ seed_repo() {
   git config user.email test@example.com
   git config user.name test
 
-  # Gitignore the runner's archive dir + fake plugin dir so their presence
+  # Gitignore the runner's archive dir + fake executable dir so their presence
   # doesn't trip the EISDIR guard (real K2B ships the same .gitignore entry
-  # for .code-reviews/ via adaptation A4; /plugins/ is test-fixture only).
+  # for .code-reviews/ via adaptation A4; /fake-bin/ is test-fixture only).
   cat > .gitignore <<EOF
 /.code-reviews/
-/plugins/
+/fake-bin/
 EOF
 
   # Seed scripts dir + Kimi shim (or leave scripts/kimi-review.sh missing if
@@ -116,41 +116,44 @@ EOF
   # Dirty file so the runner has something to review
   echo "dirty change" >> target.py
 
-  # Fake codex plugin tree (under /plugins/ which is gitignored)
-  local plugin="$d/plugins/codex"
-  mkdir -p "$plugin/scripts"
+  # Fake native Codex executable (under /fake-bin/ which is gitignored).
+  local plugin="$d/fake-bin/codex"
+  mkdir -p "$d/fake-bin"
   case "$codex_behavior" in
     approve)
-      cat > "$plugin/scripts/codex-companion.mjs" <<'EOF'
-process.stdout.write("# Codex Review\n");
-process.stdout.write("APPROVE\n");
-process.stdout.write("[codex] Review output captured.\n");
-process.exit(0);
+      cat > "$plugin" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "exec" ]; then cat >/dev/null; fi
+printf '# Codex Review\nAPPROVE\n[codex] Review output captured.\n'
+exit 0
 EOF
       ;;
     hang)
-      cat > "$plugin/scripts/codex-companion.mjs" <<'EOF'
-// Sleep forever; the runner's deadline must kill us.
-setInterval(() => {}, 60000);
+      cat > "$plugin" <<'EOF'
+#!/usr/bin/env bash
+while :; do sleep 60; done
 EOF
       ;;
     empty)
-      cat > "$plugin/scripts/codex-companion.mjs" <<'EOF'
-process.stdout.write("Hello world (no verdict marker)\n");
-process.exit(0);
+      cat > "$plugin" <<'EOF'
+#!/usr/bin/env bash
+printf 'Hello world (no verdict marker)\n'
+exit 0
 EOF
       ;;
     error)
-      cat > "$plugin/scripts/codex-companion.mjs" <<'EOF'
-process.stderr.write("codex error\n");
-process.exit(1);
+      cat > "$plugin" <<'EOF'
+#!/usr/bin/env bash
+printf 'codex error\n' >&2
+exit 1
 EOF
       ;;
     missing)
-      # Deliberately do NOT create the .mjs
+      # Deliberately do NOT create the executable.
       :
       ;;
   esac
+  [ "$codex_behavior" = "missing" ] || chmod +x "$plugin"
 
   echo "$plugin"
 }
@@ -164,7 +167,7 @@ test_primary_codex_approves() {
   cd "$d"
   local out
   if ! out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --focus "test" 2>&1); then
+      --codex-executable "$plugin" --focus "test" 2>&1); then
     fail "$t" "runner exited non-zero: $out"
     return
   fi
@@ -217,7 +220,7 @@ test_codex_hang_falls_back_to_kimi() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 3 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -289,7 +292,7 @@ test_both_fail_returns_exit_2() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 5 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -311,7 +314,7 @@ test_deadline_kill_after_n_seconds() {
   local start_ts=$(date +%s)
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 2 --heartbeat-interval 1 2>&1)
   local rc=$?
   local end_ts=$(date +%s)
@@ -349,7 +352,7 @@ test_quality_gate_no_verdict_forces_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -397,7 +400,7 @@ test_codex_unavailable_reason_eisdir() {
 
   local out
   out=$(python3 "$RUNNER" working-tree --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -442,11 +445,8 @@ for a in att:
 }
 
 # ---------- Test 7: plan scope runs Codex as PRIMARY (regression fix 2026-05-31) ----------
-# Codex reviews the plan file via the `task` subcommand (read-only sandbox,
-# --prompt-file). The old code hard-skipped plan scope to Kimi claiming
-# codex-companion.mjs needs a --path flag it "dropped" -- but no companion
-# version ever had --path, and `task` does not need it. Codex is primary again;
-# Kimi stays the fallback (see test 7b).
+# Codex reviews the plan through native ephemeral, read-only `codex exec`, with
+# the snapshotted prompt on stdin. Codex is primary; Kimi remains fallback.
 test_plan_scope_runs_codex_primary() {
   local t="test_plan_scope_runs_codex_primary"
   local d; d="$(mktmp)"
@@ -463,7 +463,7 @@ EOF
 
   local out
   out=$(python3 "$RUNNER" plan --plan plans/tiny.md --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -513,14 +513,13 @@ print(d.get('fallback_used'))
     fail "$t" "expected fallback_used False (Codex primary handled it), got $fallback_used"
     return
   fi
-  # Codex must be invoked via the `task` subcommand with a prompt file -- the
-  # only path that lets Codex review an arbitrary plan markdown file.
+  # Codex must be invoked through the native ephemeral, read-only plan path.
   if ! grep -q "REVIEWER_START reviewer=codex" "$log_path"; then
     fail "$t" "expected codex reviewer to start. log=$(cat "$log_path")"
     return
   fi
-  if ! grep -Eq "SPAWN argv=.*'task'.*'--prompt-file'" "$log_path"; then
-    fail "$t" "expected Codex spawned via task --prompt-file. log=$(cat "$log_path")"
+  if ! grep -Eq "SPAWN argv=.*'exec'.*'--ephemeral'.*'--sandbox'.*'read-only'.*'-'" "$log_path"; then
+    fail "$t" "expected native ephemeral read-only Codex plan review. log=$(cat "$log_path")"
     return
   fi
   if ! grep -q "# Codex Review" "$log_path"; then
@@ -568,7 +567,7 @@ EOF
 
   local out
   out=$(python3 "$RUNNER" plan --plan plans/tiny.md --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -613,12 +612,7 @@ print(d.get('fallback_used'))
   pass "$t"
 }
 
-# ---------- Test 7c: plan-scope Codex runs with ISOLATED task state ----------
-# Proves the runner relocates the companion's job store via CLAUDE_PLUGIN_DATA to
-# a per-job dir, removing the PRIMARY resume-discovery path (the job store) for
-# the plan-review `task`. This does NOT cover the documented residual where the
-# app-server thread is still findable by name prefix; see build_codex_cmd in
-# review_runner.py (Codex plan-review rounds 2-3 #2).
+# ---------- Test 7c: plan-scope Codex is native, ephemeral, and read-only ----
 test_plan_scope_isolates_codex_state() {
   local t="test_plan_scope_isolates_codex_state"
   local d; d="$(mktmp)"
@@ -633,17 +627,22 @@ test_plan_scope_isolates_codex_state() {
 Placeholder for plan-scope state-isolation test.
 EOF
 
-  # Fake codex echoes the CLAUDE_PLUGIN_DATA it was spawned with.
-  cat > "$plugin/scripts/codex-companion.mjs" <<'EOF'
-process.stdout.write("# Codex Review\n");
-process.stdout.write("CLAUDE_PLUGIN_DATA=[" + (process.env.CLAUDE_PLUGIN_DATA || "UNSET") + "]\n");
-process.stdout.write("APPROVE\n");
-process.exit(0);
+  # Fake Codex records argv and the stdin prompt without exposing secrets.
+  cat > "$plugin" <<'EOF'
+#!/usr/bin/env bash
+printf 'ARGV=%s\n' "$*"
+prompt="$(cat)"
+case "$prompt" in *BEGIN_PLAN_SNAPSHOT*END_PLAN_SNAPSHOT*) : ;; *) exit 9 ;; esac
+printf 'CLAUDE_PLUGIN_ROOT=%s\n' "${CLAUDE_PLUGIN_ROOT:-UNSET}"
+printf 'CLAUDE_PLUGIN_DATA=%s\n' "${CLAUDE_PLUGIN_DATA:-UNSET}"
+printf '# Codex Review\nAPPROVE\n'
+exit 0
 EOF
+  chmod +x "$plugin"
 
   local out
   out=$(python3 "$RUNNER" plan --plan plans/tiny.md --wait \
-      --codex-plugin "$plugin" --focus "test" \
+      --codex-executable "$plugin" --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -661,23 +660,14 @@ data = json.loads(text[start:end+1])
 print(data.get("log_path", ""))
 ')
 
-  if ! grep -q "CODEX_PLAN_ISOLATED_STATE" "$log_path"; then
-    fail "$t" "no CODEX_PLAN_ISOLATED_STATE marker. log=$(cat "$log_path")"
+  if ! grep -q -- 'ARGV=exec --ephemeral --sandbox read-only --cd' "$log_path"; then
+    fail "$t" "native ephemeral read-only argv missing. log=$(cat "$log_path")"
     return
   fi
-  # The env the child actually saw must point at the per-job isolated dir,
-  # not the default/unset store.
-  local seen
-  seen=$(grep -o 'CLAUDE_PLUGIN_DATA=\[[^]]*\]' "$log_path" | head -1)
-  case "$seen" in
-    *UNSET*)
-      fail "$t" "codex spawned without isolated CLAUDE_PLUGIN_DATA: $seen"
-      return ;;
-    *.code-reviews/*codex-plan-state*) : ;;
-    *)
-      fail "$t" "CLAUDE_PLUGIN_DATA not isolated per-job: $seen"
-      return ;;
-  esac
+  grep -q 'CLAUDE_PLUGIN_ROOT=UNSET' "$log_path" || {
+    fail "$t" "retired CLAUDE_PLUGIN_ROOT leaked to child"; return; }
+  grep -q 'CLAUDE_PLUGIN_DATA=UNSET' "$log_path" || {
+    fail "$t" "retired CLAUDE_PLUGIN_DATA leaked to child"; return; }
   pass "$t"
 }
 
@@ -700,7 +690,7 @@ EOF
   cd "$d"
   local out
   out=$(KIMI_API_KEY="inherited-sentinel-xyz" python3 "$RUNNER" diff \
-      --files target.py --wait --codex-plugin "$plugin" \
+      --files target.py --wait --codex-executable "$plugin" \
       --primary kimi --focus "test" 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -734,7 +724,7 @@ test_primary_kimi_diff_requires_files_before_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --wait \
-      --codex-plugin "$plugin" --primary kimi \
+      --codex-executable "$plugin" --primary kimi \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -771,7 +761,7 @@ test_no_fallback_stops_after_primary_failure() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi --no-fallback \
+      --codex-executable "$plugin" --primary kimi --no-fallback \
       --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
 
@@ -835,7 +825,7 @@ test_openai_builder_rejects_codex_primary() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex \
+      --codex-executable "$plugin" --primary codex \
       --builder-family openai --focus "test" 2>&1)
   local rc=$?
 
@@ -866,7 +856,7 @@ test_openai_builder_accepts_kimi_no_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi --no-fallback \
+      --codex-executable "$plugin" --primary kimi --no-fallback \
       --builder-family openai --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -930,7 +920,7 @@ test_kimi_builder_rejects_kimi_primary() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi --no-fallback \
+      --codex-executable "$plugin" --primary kimi --no-fallback \
       --builder-family kimi --focus "test" 2>&1)
   local rc=$?
 
@@ -954,7 +944,7 @@ test_kimi_builder_accepts_codex_no_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex --no-fallback \
+      --codex-executable "$plugin" --primary codex --no-fallback \
       --builder-family kimi --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1014,7 +1004,7 @@ test_other_builder_requires_no_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex \
+      --codex-executable "$plugin" --primary codex \
       --builder-family other --focus "test" 2>&1)
   local rc=$?
 
@@ -1038,7 +1028,7 @@ test_other_builder_requires_explicit_primary() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" \
+      --codex-executable "$plugin" \
       --builder-family other --no-fallback --focus "test" 2>&1)
   local rc=$?
 
@@ -1062,7 +1052,7 @@ test_other_builder_requires_reason() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex \
+      --codex-executable "$plugin" --primary codex \
       --builder-family other --no-fallback --focus "test" 2>&1)
   local rc=$?
 
@@ -1086,7 +1076,7 @@ test_other_builder_accepts_reason() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex \
+      --codex-executable "$plugin" --primary codex \
       --builder-family other --no-fallback \
       --other-reviewer-reason "human-built diff, Codex independent" \
       --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
@@ -1130,7 +1120,7 @@ test_skip_codex_rejects_codex_primary() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex --no-fallback \
+      --codex-executable "$plugin" --primary codex --no-fallback \
       --builder-family kimi --skip-codex "codex unavailable" \
       --focus "test" 2>&1)
   local rc=$?
@@ -1155,7 +1145,7 @@ test_skip_codex_requires_no_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi \
+      --codex-executable "$plugin" --primary kimi \
       --builder-family anthropic --skip-codex "codex unavailable" \
       --focus "test" 2>&1)
   local rc=$?
@@ -1180,7 +1170,7 @@ test_skip_codex_records_reason() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi --no-fallback \
+      --codex-executable "$plugin" --primary kimi --no-fallback \
       --builder-family anthropic --skip-codex "codex unavailable" \
       --focus "test" --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1292,7 +1282,7 @@ test_anthropic_builder_accepts_codex() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex \
+      --codex-executable "$plugin" --primary codex \
       --builder-family anthropic --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1344,7 +1334,7 @@ test_anthropic_builder_accepts_kimi() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi \
+      --codex-executable "$plugin" --primary kimi \
       --builder-family anthropic --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1396,7 +1386,7 @@ test_anthropic_builder_allows_fallback() {
   cd "$d"
   local out
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary codex \
+      --codex-executable "$plugin" --primary codex \
       --builder-family anthropic --focus "test" \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
@@ -1480,7 +1470,7 @@ EOF
   local out
   # Use --primary kimi to skip Codex
   out=$(python3 "$RUNNER" diff --files target.py --wait \
-      --codex-plugin "$plugin" --primary kimi \
+      --codex-executable "$plugin" --primary kimi \
       --deadline 10 --heartbeat-interval 1 2>&1)
   local rc=$?
   if [ "$rc" -ne 0 ]; then

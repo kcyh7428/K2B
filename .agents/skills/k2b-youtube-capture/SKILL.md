@@ -5,6 +5,8 @@ description: Dormant batch YouTube playlist lane -- use only when Keith explicit
 
 # K2B YouTube Capture (Batch Playlist Processor)
 
+> **Host boundary:** This dormant vault-writing lane may run only when explicitly requested on Home. It must not mutate the synchronized vault from SJM.
+
 > [!warning] Dormant lane
 > This skill has no logged live use in the recent K2B usage window. Do not use it for one-off YouTube URLs or fresh discovery. Use `k2b-research` for external video research and invoke this only when Keith explicitly asks for `/youtube` playlist processing.
 
@@ -209,7 +211,7 @@ Append to `~/Projects/K2B-Vault/wiki/context/youtube-processed.md`:
 
 #### 2h. Log Usage
 
-Append to skill-usage-log.tsv following the k2b-usage-tracker pattern.
+Use `scripts/k2b-shared-append.py usage --skill k2b-youtube-capture --summary "processed playlist: NAME"`. It appends on Home and queues privately on source-only hosts.
 
 ### 3. Summary
 

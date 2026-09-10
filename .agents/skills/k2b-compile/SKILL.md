@@ -1,22 +1,18 @@
 ---
 name: k2b-compile
 description: Compile raw sources into wiki knowledge pages -- reads raw captures, identifies affected wiki pages, shows Keith a summary, updates wiki on approval. The knowledge compilation engine that turns filing into digestion.
-triggers:
-  - /compile
-  - compile this
-  - digest this
-  - process raw
-scope: project
 ---
 
 # k2b-compile -- Knowledge Compilation Engine
+
+> **Host boundary:** On SJM, the synchronized K2B vault is read-only. Compilation that changes wiki pages or indexes must run on Home.
 
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -177,10 +173,10 @@ Groups multiple uncompiled sources:
 3. One approval for all; the approval gate stays with Codex.
 4. Process sequentially by calling the Kimi compile wrapper for each source.
 
-For unattended batches, register one bounded host job. The job writes an
-observable receipt containing the source set, wrapper exit status, updated
-paths, and completion time. Surface failures in the Operations Console
-attention queue; do not start an interactive agent session from a scheduler.
+Unattended batches are disabled in Stage 1. A separately authorized bounded
+job must write an observable receipt containing the source set, wrapper exit
+status, updated paths, and completion time. Keep failures in machine-local
+status; do not start an interactive agent session from a scheduler.
 
 ### deep
 Manual trigger for deeper analysis:
@@ -259,5 +255,5 @@ When a raw source contains content-worthy material:
 
 After completing compilation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-compile\t$(echo $RANDOM | md5sum | head -c 8)\tcompiled: SOURCE_FILE -> N wiki pages" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-compile --summary "compiled: SOURCE_FILE -> N wiki pages"
 ```

@@ -5,12 +5,14 @@ description: Generate K2B media assets through GPTsAPI and Higgsfield -- images,
 
 # K2B Media Generator
 
+> **Host boundary:** SJM may use its local credentials for a requested generation, but must keep results outside the synchronized K2B vault. Vault assets and metadata are Home-writer-only.
+
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background media work is disabled unless Keith explicitly requests a separately scoped job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
@@ -54,13 +56,19 @@ Use the bash wrapper for image generation:
 
 The wrapper submits an async `gpt-image-2` prediction, polls for completion for up to 120 seconds, downloads or decodes the returned image payload, and saves it to `K2B-Vault/Assets/images/`. Typical completion time is 30-45 seconds. Keep the active Codex session visibly updated during the wait.
 
-Loading `GPTSAPI_KEY` (agent / CLI runs). The wrapper reads `GPTSAPI_KEY` from its environment and does not source any `.env` itself. An agent or terminal session is a non-interactive shell that does NOT source `~/.zshrc`, so the key may be absent and the script exits `missing_gptsapi_key`. Before calling any `gptsapi-*` script from an agent/CLI session, load it from the approved K2B environment:
+Loading `GPTSAPI_KEY` (agent / CLI runs). The wrapper reads `GPTSAPI_KEY` from its environment and does not source any `.env` itself. An agent or terminal session is a non-interactive shell that does NOT source `~/.zshrc`, so the key may be absent and the script exits `missing_gptsapi_key`. Before calling any `gptsapi-*` script from an agent/CLI session, load it through the K2B private-environment validator:
 
-```
-if [ -z "${GPTSAPI_KEY:-}" ]; then set -a; . "$HOME/Projects/K2B/k2b-remote/.env" 2>/dev/null; set +a; fi
+```bash
+if [[ -z "${GPTSAPI_KEY:-}" ]]; then
+  K2B_PROJECT_ROOT="${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}"
+  source "$K2B_PROJECT_ROOT/scripts/lib/private-env.sh"
+  k2b_load_private_env "${K2B_ENV_FILE:-$HOME/.k2b-env}" || exit 1
+  export GPTSAPI_KEY
+fi
 ```
 
-`[ -n "${GPTSAPI_KEY:-}" ] || { echo "GPTSAPI_KEY not in k2b-remote/.env"; exit 1; }`
+`[ -n "${GPTSAPI_KEY:-}" ] || { echo "GPTSAPI_KEY not set in the environment or per-machine ~/.k2b-env"; exit 1; }`
+The validator fails closed unless the credential path is a regular, non-symlink file owned by the current user with exact mode `0600`. Never source `~/.k2b-env` or a shell startup file directly.
 Never echo the key. Same preamble for `gptsapi-speech.sh`, `gptsapi-transcribe.sh`, `gptsapi-vlm.sh`.
 
 **Image-to-image edit: GPTsAPI direct endpoint (experimental)**
@@ -257,11 +265,16 @@ If file is under 4 minutes AND under 20MB, skip splitting -- use the single file
 
 #### Step 5: Fallback to Groq Whisper (high-volume / cost-sensitive)
 ```bash
-GROQ_KEY=$(grep GROQ_API_KEY ~/Projects/K2B/k2b-remote/.env | cut -d= -f2)
+if [[ -z "${GROQ_API_KEY:-}" ]]; then
+  K2B_PROJECT_ROOT="${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}"
+  source "$K2B_PROJECT_ROOT/scripts/lib/private-env.sh"
+  k2b_load_private_env "${K2B_ENV_FILE:-$HOME/.k2b-env}" || exit 1
+fi
+[ -n "${GROQ_API_KEY:-}" ] || { echo "GROQ_API_KEY not set in the environment or ~/.k2b-env" >&2; exit 1; }
 
 curl -s --retry 2 --retry-delay 3 \
   https://api.groq.com/openai/v1/audio/transcriptions \
-  -H "Authorization: Bearer $GROQ_KEY" \
+  -H "Authorization: Bearer $GROQ_API_KEY" \
   -F "file=@<chunk-file>" \
   -F "model=whisper-large-v3" \
   -F "response_format=text"
@@ -493,7 +506,7 @@ Keith can clone his own voice for narration:
 
 After completing the main task, log the invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head -c 8)\tgenerated TYPE: DESCRIPTION" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-media-generator --summary "generated TYPE: DESCRIPTION"
 ```
 
 ## Notes
@@ -504,6 +517,6 @@ echo -e "$(date +%Y-%m-%d)\tk2b-media-generator\t$(echo $RANDOM | md5sum | head 
 - For batch generation, spread across days rather than burning quota in one session
 - Always print the Obsidian embed path so Keith can paste it into notes
 - API key error guidance, by command:
-  - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment. Get it from gptsapi.net dashboard." For agent/CLI runs the key must be in `k2b-remote/.env`; load it with the preamble in Integration Method (non-interactive shells do not source `~/.zshrc`).
+  - `/media image` (GPTsAPI default), `/media speech`, `/media transcribe` -- "Set `GPTSAPI_KEY` in your shell environment or the per-machine `~/.k2b-env`. Get it from gptsapi.net dashboard." Load it with the preamble in Integration Method (non-interactive shells do not source `~/.zshrc`).
   - `/media video`, `/media music` -- now run on **Higgsfield** (see the Higgsfield section). If a call fails with exit 2, the CLI is not authenticated on this machine: run `higgsfield auth login`. Exit 3 usually means out of credits: check `higgsfield account status`. MiniMax stays dead -- never set `MINIMAX_API_KEY` or call any MiniMax API for these.
-  - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in `~/Projects/K2B/k2b-remote/.env`."
+  - `/media transcribe` fallback to Groq -- "Set `GROQ_API_KEY` in the environment or per-machine `~/.k2b-env`."

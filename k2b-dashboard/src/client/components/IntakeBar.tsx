@@ -7,6 +7,7 @@ import {
   fetchIntakeStatus,
   IntakeStatus,
 } from '../hooks/api'
+import { shouldStopIntakePolling } from '../lib/intake-polling'
 
 type Mode = 'url' | 'audio' | 'text' | 'fireflies'
 
@@ -17,13 +18,13 @@ const POLL_TIMEOUT_MS = 120_000
 function formatStatus(s: IntakeStatus): string {
   switch (s.status) {
     case 'done':
-      return 'Done. Processed by Mac Mini.'
+      return 'Done. Processed into K2B.'
     case 'error':
       return `Error: ${s.error}`
-    case 'processing':
-      return 'Processing on Mac Mini...'
-    case 'pending-sync':
-      return 'Staged. Waiting for Syncthing to deliver to Mac Mini...'
+    case 'staged':
+      return 'Saved locally. Waiting for home-Mac processing; ask Codex to process it there if needed.'
+    case 'not-found':
+      return 'Waiting for the home-Mac result to finish syncing...'
   }
 }
 
@@ -60,12 +61,12 @@ export default function IntakeBar() {
       try {
         const result = await fetchIntakeStatus(uuid)
         setStatus(formatStatus(result))
-        if (result.status === 'done' || result.status === 'error') {
+        if (shouldStopIntakePolling(result.status)) {
           stopPolling()
           return
         }
         if (Date.now() - pollStart.current > POLL_TIMEOUT_MS) {
-          setStatus('Still waiting after 2 min. Check pm2 logs on Mac Mini.')
+          setStatus('Still waiting after 2 min. Ask Codex to inspect the local intake record.')
           stopPolling()
         }
       } catch (err) {
@@ -88,7 +89,7 @@ export default function IntakeBar() {
     try {
       const result = await intake.mutateAsync(body)
       if (result.status === 'staged' && result.uuid) {
-        setStatus('Staged. Watching for processing...')
+        setStatus('Saved locally. Watching for home-Mac processing...')
         setValue('')
         startPolling(result.uuid)
       } else if (result.status === 'ok') {
@@ -108,7 +109,7 @@ export default function IntakeBar() {
     try {
       const result = await audioIntake.mutateAsync({ file: stagedFile, note })
       if (result.status === 'staged' && result.uuid) {
-        setStatus('Staged. Watching for processing...')
+        setStatus('Saved locally. Watching for home-Mac processing...')
         setStagedFile(null)
         setNote('')
         startPolling(result.uuid)

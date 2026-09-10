@@ -481,16 +481,19 @@ class TestRenderBoard:
 
 
 class TestNotify:
-    def test_notify_calls_telegram_cmd(self, store, tmp_path):
+    def test_notify_calls_explicit_local_adapter(self, store, tmp_path, monkeypatch):
         recorder = tmp_path / "recorder.sh"
         recorder.write_text("#!/bin/bash\necho \"$@\" >> \"$RECORDER_OUT\"\n")
         recorder.chmod(0o755)
         out = tmp_path / "out.txt"
-        os.environ["RECORDER_OUT"] = str(out)
-        os.environ["K2B_ORCH_TELEGRAM_CMD"] = str(recorder)
+        monkeypatch.setenv("RECORDER_OUT", str(out))
+        monkeypatch.setenv("K2B_ORCH_NOTIFY_CMD", str(recorder))
         store.notify("hello-test")
         assert "hello-test" in out.read_text()
-        del os.environ["RECORDER_OUT"]
+
+    def test_notify_is_safe_noop_without_adapter(self, store, monkeypatch):
+        monkeypatch.delenv("K2B_ORCH_NOTIFY_CMD", raising=False)
+        store.notify("no external delivery")
 
 
 class TestWorkerLockStale:

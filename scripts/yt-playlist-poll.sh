@@ -34,7 +34,7 @@ build_cookies_file() {
 # YT_DLP_COOKIE_BROWSER controls --cookies-from-browser. Mirrors the
 # yt-transcript.sh helper exactly (Chrome > Firefox > Safari in auto order
 # because MacBook users typically sign in to YouTube on Chrome). On headless
-# Mac Mini, set YT_DLP_COOKIE_BROWSER=firefox explicitly -- Firefox cookies
+# another authorized host, set YT_DLP_COOKIE_BROWSER=firefox explicitly -- Firefox cookies
 # live in plain SQLite and don't need keychain access.
 build_cookie_browser() {
   local choice="${YT_DLP_COOKIE_BROWSER:-auto}"

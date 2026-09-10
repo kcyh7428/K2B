@@ -5,6 +5,8 @@ description: Capture learnings, errors, and feature requests to make K2B smarter
 
 # K2B Feedback Capture
 
+> **Host boundary:** On SJM, the synchronized K2B vault is read-only. Stop before changing memory, policy, or vault files and ask Keith to run the write on Home; only the usage helper may queue its small record locally.
+
 Capture corrections, errors, and feature requests in a single unified skill. Three subcommands, three files, one skill.
 
 ## Memory Paths
@@ -39,7 +41,7 @@ Capture a correction, preference, or best practice.
 1a. **Normalize relative dates first.** Before using the description anywhere (Learning body, Context body, any prose that lands in `self_improve_learnings.md`), pipe it through `scripts/normalize-dates.py` so "yesterday" / "3 days ago" / "last Monday" / "last week" get rewritten to ISO `YYYY-MM-DD`:
    ```bash
    ANCHOR="$(date +%Y-%m-%d)"
-   DESCRIPTION_NORMALIZED="$(printf '%s' "$DESCRIPTION" | /Users/keithmbpm2/Projects/K2B/scripts/normalize-dates.py "$ANCHOR")"
+   DESCRIPTION_NORMALIZED="$(printf '%s' "$DESCRIPTION" | "$HOME/Projects/K2B/scripts/normalize-dates.py" "$ANCHOR")"
    ```
    The anchor is today's date. Within a single `/learn` call, `date +%Y-%m-%d` returns the same value throughout, so relative phrases Keith types right now resolve consistently; the only edge case is a session that crosses midnight, where "yesterday" typed before midnight vs after midnight resolves to different calendar days -- acceptable for K2B's usage pattern. Use `$DESCRIPTION_NORMALIZED` for every downstream write in steps 2-6. Context strings passed in by Keith (the "Context:" field) go through the same pipe.
 2. Read `self_improve_learnings.md`.
@@ -94,15 +96,15 @@ Confidence is derived from the Reinforced count:
 | Reinforced | Confidence | Behavior |
 |------------|------------|----------|
 | 1 | low | Suggest but don't enforce. Mention when relevant. |
-| 2-5 | medium | Surfaced in session-start watch list. Apply when relevant. Can be overridden without comment. |
-| 6+ | high | Treat as core behavior. Auto-apply. Candidate for promotion to active rules. |
+| 2-5 | medium | Surface during an explicit `/improve` review. Apply when relevant. Can be overridden without comment. |
+| 6+ | high | Treat as a strong promotion candidate during an explicit review. Do not auto-promote or auto-apply it. |
 
 When updating `Reinforced`, always recalculate and update `Confidence`:
 - Set `low` for 1
 - Set `medium` for 2-5
 - Set `high` for 6+
 
-When confidence reaches `high`, the session-start hook automatically surfaces the learning so all skills apply it.
+Confidence changes prioritization only. A learning becomes an active rule only through Keith's explicit review and the normal promotion path.
 
 ## Command: /error [description]
 
@@ -154,7 +156,7 @@ When Keith corrects K2B during normal conversation ("no, do it like this", "that
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-feedback\t$(echo $RANDOM | md5sum | head -c 8)\tcaptured TYPE: DESCRIPTION" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-feedback --summary "captured TYPE: DESCRIPTION"
 ```
 
 ## Notes

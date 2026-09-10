@@ -1,22 +1,11 @@
 ---
 name: k2b-autoresearch
-description: Run the Karpathy autoresearch self-improvement loop on K2B skills. Iteratively improves a target SKILL.md using binary assertions, git-based memory, and the commit-before-test pattern. Use when Keith says /autoresearch, "improve this skill", "run the loop", "optimize skill", "self-improve", or wants to iteratively enhance any K2B skill's output quality.
+description: Run a bounded autoresearch self-improvement loop on a K2B skill using isolated patches, binary assertions, and explicit delivery authorization. Use when Keith says /autoresearch, "improve this skill", "run the loop", "optimize skill", "self-improve", or wants to iteratively enhance a K2B skill's output quality.
 ---
-
-> [!warning] DEPRECATED in Ship 2 of k2b-integrated-loop
-> The session-start dashboard surfaces candidate skill improvements as observer
-> candidates and you route them with `a N / r N / d N` keystrokes. Run
-> `/autoresearch` directly only when you need the full Karpathy loop (binary
-> assertions + git memory + commit-before-test) on a specific skill -- not the
-> shallow "what should we improve next" triage the dashboard now covers. Before
-> proceeding with the legacy workflow, emit the sentence "DEPRECATED in Ship 2
-> of k2b-integrated-loop -- the session-start dashboard covers the triage path;
-> continue only if you need the full Karpathy loop" and wait for Keith's
-> explicit go-ahead.
 
 # K2B Autoresearch
 
-The Karpathy loop adapted for K2B skills. Iteratively improves a target file using binary assertions and git-based memory.
+The Karpathy loop adapted for K2B skills. It improves one target through bounded, isolated experiments and binary assertions. Experiment history is stored as patches and evaluation records; the loop never creates delivery commits.
 
 ## Commands
 
@@ -35,20 +24,21 @@ The Karpathy loop adapted for K2B skills. Iteratively improves a target file usi
 ### Phase 0: Precondition Checks
 
 Before starting:
-1. Confirm we're in a git repo with a clean working tree (`git status`)
+1. Confirm the repository and target file. If the checkout contains unrelated work or the target is already modified, create an isolated temporary worktree from the current revision. Never overwrite or absorb pre-existing changes.
 2. Identify the target file: `.agents/skills/k2b-[name]/SKILL.md`
 3. Identify the eval file: `.agents/skills/k2b-[name]/eval/eval.json`
 4. If eval.json doesn't exist, CREATE it first (see Eval Creation below)
 5. Identify guard command (if any)
 6. Run the eval against current SKILL.md to establish baseline
 7. Log baseline as iteration 0 in results.tsv
+8. Create a machine-local temporary experiment directory. Record the starting revision, target hash, and a copy of the target there. Do not put experiment scratch files in the Vault.
 
 ### Phase 1: Review
 
 Before each iteration:
 1. Read the target SKILL.md
 2. Read last 10-20 entries from `eval/results.tsv`
-3. Run `git log --oneline -20` for the target file to see commit history
+3. Review prior `results.tsv`, `learnings.md`, and relevant delivered file history
 4. Read `eval/learnings.md` for accumulated patterns
 5. Understand: what's working, what's failing, what's been tried
 
@@ -79,19 +69,14 @@ Examples of TOO MANY changes:
 - Rewrite the entire workflow section AND add new formatting rules
 - Change the frontmatter instructions AND the cross-linking rules
 
-### Phase 4: Commit BEFORE Verification
+### Phase 4: Snapshot the Experiment
 
-This is critical. Commit the change BEFORE testing it.
-
-```bash
-git add .agents/skills/k2b-[name]/SKILL.md
-git commit -m "experiment(k2b-[name]): [brief description of change]"
-```
+Before verification, save the target-only diff to the machine-local experiment directory and assign it an ID such as `exp-003`. Record the parent experiment ID and target hash. Do not stage or commit the experiment.
 
 Rules:
-- NEVER use `git add -A` or `git add .`
-- Only add the specific target file
-- Commit message format: `experiment(scope): description`
+- Capture only the target file's patch; never include unrelated changes.
+- Keep scratch patches outside the repository and Vault.
+- A failed experiment must be reversible from its saved target snapshot without resetting the checkout.
 
 ### Phase 5: Verify
 
@@ -116,9 +101,11 @@ If a guard command is defined:
 ### Phase 6: Decide
 
 Compare pass rate to previous best:
-- **IMPROVED**: Keep the commit. Log as `keep`.
-- **SAME OR WORSE**: Revert. Use `git revert HEAD --no-edit`. Log as `discard`.
-- **CRASHED**: Log as `crash`. Revert. Attempt to fix in next iteration.
+- **IMPROVED**: Keep the target change in the isolated experiment worktree. Log as `keep`.
+- **SAME OR WORSE**: Restore only the target from the last kept snapshot. Log as `discard`.
+- **CRASHED**: Log as `crash`, restore only the target from the last kept snapshot, and try a different focused change.
+
+Never use `git reset`, `git checkout`, or `git revert` against Keith's active checkout to discard an experiment.
 
 ### Phase 7: Log to results.tsv
 
@@ -127,10 +114,10 @@ Append to `.agents/skills/k2b-[name]/eval/results.tsv`:
 Format (tab-separated):
 ```
 # metric_direction: higher_is_better
-iteration	commit	pass_rate	delta	guard	status	description
-0	abc1234	72.3	0.0	-	baseline	initial state
-1	def5678	80.0	+7.7	pass	keep	added explicit action item format
-2	ghi9012	73.3	-6.7	-	discard	removed content potential section
+iteration	experiment	pass_rate	delta	guard	status	description
+0	baseline-a1b2c3d	72.3	0.0	-	baseline	initial state
+1	exp-001	80.0	+7.7	pass	keep	added explicit action item format
+2	exp-002	73.3	-6.7	-	discard	removed content potential section
 ```
 
 Valid statuses: `baseline`, `keep`, `keep (reworked)`, `discard`, `crash`
@@ -147,7 +134,7 @@ After each iteration, update `eval/learnings.md`:
 Continue until:
 - Perfect score (100% pass rate) achieved
 - Keith interrupts
-- Bounded iteration count reached (if specified)
+- Bounded iteration count reached (default 10 when Keith does not specify one)
 - Every 5 iterations, print a brief progress summary
 
 **Stuck detection**: After 5+ consecutive discards:
@@ -199,7 +186,7 @@ Walk Keith through defining the autoresearch target:
 2. **Scope**: Confirm the target file path
 3. **Eval check**: Does eval.json exist? If not, create one together.
 4. **Guard**: "Any command that must always pass?" (optional)
-5. **Iterations**: "How many iterations? (unlimited, or a number like 10)"
+5. **Iterations**: "How many iterations?" Use 10 when Keith does not specify a bounded count.
 6. **Launch**: Confirm and start the loop
 
 ## /autoresearch status -- Dashboard
@@ -216,31 +203,31 @@ Show a summary table for all skills with eval infrastructure:
 
 Read from each skill's `eval/results.tsv` to populate this table.
 
-## Core Principles (from Karpathy)
+## Core Principles
 
-1. **Git IS the memory** -- every experiment commits, kept commits form the improvement chain
-2. **ONE change per iteration** -- isolation makes learning possible
-3. **Commit BEFORE test** -- so revert is clean
-4. **Binary assertions** -- no subjective scoring, no LLM-as-judge
-5. **Mechanical verification** -- assertions must be answerable by reading the output
-6. **Learnings accumulate** -- results.tsv + learnings.md + git history compound over time
-7. **Never stop, never ask** -- autonomous until interrupted or perfect
+1. **Patch memory, delivery history** -- experiment patches remain machine-local; Git commits are created only by the authorized delivery flow.
+2. **ONE change per iteration** -- isolation makes learning possible.
+3. **Snapshot before test** -- each trial is reversible without touching unrelated work.
+4. **Binary assertions** -- no subjective scoring or lenient interpretation.
+5. **Mechanical verification** -- assertions must be answerable by reading the output.
+6. **Learnings accumulate** -- `results.tsv`, `learnings.md`, and saved experiment IDs record what worked.
+7. **Bounded autonomy** -- stop at success, interruption, the iteration limit, or the stuck threshold.
 
 ## Usage Logging
 
 After completing the main task, log this skill invocation:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-autoresearch\t$(echo $RANDOM | md5sum | head -c 8)\tran autoresearch on SKILL" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-autoresearch --summary "ran autoresearch on SKILL"
 ```
 
 ## Post-Loop Handoff
 
 After the loop completes (perfect score, interrupted, or iteration limit):
 1. Report the summary (iterations run, kept, discarded, final pass rate)
-2. Prompt Keith: "Autoresearch created N commits. Run /ship to push + devlog?"
-3. Do NOT prompt /sync directly -- /ship handles the sync handoff in its step 12.
+2. Apply only the winning target patch to the original checkout after confirming it does not overlap pre-existing target changes. Leave it uncommitted unless Keith already used explicit delivery wording.
+3. If delivery was explicitly authorized, invoke `k2b-ship` after the completed loop and its required review. Otherwise report the uncommitted target and verification state.
 
-Autoresearch always creates commits (Phase 4: commit before test). These commits are local-only until /ship pushes them. Skipping /ship means no devlog entry, no wiki/log.md entry, and the Mac Mini stays stale.
+Autoresearch never creates commits itself. Commit, push, activation, and synchronization remain separate delivery actions governed by `k2b-ship` and require explicit delivery authorization.
 
 ## Notes
 

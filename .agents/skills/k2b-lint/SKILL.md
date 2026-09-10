@@ -1,30 +1,26 @@
 ---
 name: k2b-lint
 description: Vault health maintenance -- find and fix structural issues, keep indexes current, detect orphans and stale content.
-triggers:
-  - /lint
-  - vault health check
-  - check vault
-  - run lint
-scope: project
 ---
 
 # k2b-lint -- Vault Health Maintenance
+
+> **Host boundary:** On SJM, lint is report-only and must not repair or rewrite the synchronized vault. All fix modes run on Home.
 
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
-- Scheduled work must be a registered host job with an observable receipt; failures go to the Operations Console attention queue.
+- Background work is disabled unless Keith explicitly authorizes a named job with an observable receipt.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
-Subsumes the backlogged `feature_vault-housekeeping-agent`. Run weekly (scheduled) or on-demand via `/lint`.
+Subsumes the backlogged `feature_vault-housekeeping-agent`. In Stage 1, run it only on demand via `/lint`.
 
 ## Trigger
 
-When Keith says `/lint`, "check vault health", "run lint", or when scheduled weekly.
+When Keith says `/lint`, "check vault health", or "run lint".
 
 ## Lint Checks
 
@@ -159,10 +155,10 @@ Audits `MEMORY.md` and `active_rules.md` in the symlinked memory dir (`K2B-Vault
 
 - An `.md` pointer in `MEMORY.md` resolving to a missing file (common after renaming or deleting a memory file without updating the index).
 - `MEMORY.md` or `active_rules.md` growing past K2B's configured 200-line
-  visibility budget. Content past that point is not guaranteed to be surfaced
-  in the session-start context.
+  visibility budget. Content past that point is outside the intended memory
+  surface.
 
-Run (invoked by both manual `/lint` and the registered weekly host job):
+Run as part of the manual `/lint` flow:
 
 ```bash
 ~/Projects/K2B/scripts/lint-memory.sh
@@ -191,10 +187,10 @@ Run:
 
 Read-only, exits 0. Prints one line per flagged note: `filename (age N days, follow-up-delivery missing/null)`.
 
-Emit findings into the inline report's `## Content Pipeline` section and the structured artifact's `## Research Without Delivery (Check #14)` section. Also surfaced by the session-start loop dashboard (top 3 oldest).
+Emit findings into the inline report's `## Content Pipeline` section and the structured artifact's `## Research Without Delivery (Check #14)` section.
 
 Fix pathways Keith picks from when the lint flags a note:
-- `[l]ink feature` at the dashboard -> edit the note's frontmatter `follow-up-delivery:` to the feature slug.
+- Link feature -> edit the note's frontmatter `follow-up-delivery:` to the feature slug after Keith chooses that fix.
 - Mark purely informational -> set `follow-up-delivery: none`.
 - Parked indefinitely -> move to an archive folder.
 
@@ -238,7 +234,7 @@ Frontmatter carries the summary counts and per-check roll-up. Body groups findin
 ---
 type: lint-report
 date: 2026-04-11
-run-mode: manual  # or weekly, deep
+run-mode: manual  # or deep
 checks-run: 13
 auto-fixed: 3
 needs-review: 5
@@ -281,22 +277,9 @@ This section is the canonical entry point for downstream consumers like `/improv
 
 This structured file is the source of truth for `/improve` Sections 1b and 3 -- they read this file rather than re-running the queries. Section 3 reads `## Needs Review`; Section 1b reads `## Active Rules`.
 
-## Scheduled Execution
+## Stage 1 Scheduling State
 
-When run via the registered weekly host job:
-1. Run checks 1-11 + 13 (check 12 is skipped in weekly runs)
-2. Auto-fix what's safe
-3. Write structured report to `wiki/context/lint-report.md` (overwrite)
-4. Append lint summary via `scripts/wiki-log-append.sh /lint <lint-run-id> "<summary>"`
-5. Write an observable job receipt with counts, report path, exit status, and
-   completion time.
-6. If any "needs review" items or failures occur, add them to the Operations
-   Console attention queue.
-
-Checks 8-11 (orphan sources, sparse articles, backlink warnings, active rules
-staleness) and check 13 (memory integrity) run as part of the registered weekly
-host job.
-Check 12 (contradiction detection) only runs when Keith says `/lint deep` -- it is expensive and should not run automatically.
+There is no recurring lint job in Stage 1. Do not register or revive one from this skill. Scheduling lint would be a separate explicitly authorized change and must run on the home Mac, never SJM. Check 12 (contradiction detection) runs only when Keith says `/lint deep`; it is expensive and must not run automatically.
 
 When run manually (`/lint`):
 1. Run all checks
@@ -305,6 +288,8 @@ When run manually (`/lint`):
 4. Apply approved fixes
 5. Write structured report to `wiki/context/lint-report.md` (overwrite)
 6. Append via `scripts/wiki-log-append.sh /lint <lint-run-id> "<summary>"`
+
+On SJM, stop after the inline report. Do not apply fixes, overwrite `lint-report.md`, or append to `wiki/log.md` from the read-only synchronized vault.
 
 ## Rules
 
@@ -318,5 +303,5 @@ When run manually (`/lint`):
 
 After completing the main task:
 ```bash
-echo -e "$(date +%Y-%m-%d)\tk2b-lint\t$(echo $RANDOM | md5sum | head -c 8)\tlint: MODE SUMMARY" >> ~/Projects/K2B-Vault/wiki/context/skill-usage-log.tsv
+python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-lint --summary "lint: MODE SUMMARY"
 ```

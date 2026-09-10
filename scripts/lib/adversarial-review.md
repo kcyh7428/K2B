@@ -24,14 +24,17 @@ This review is for a personal-use second-brain system with a narrow deployment s
 ```yaml
 in-scope:
   - single-user, single-vault deployment (Keith's Obsidian vault)
-  - runs on macOS only (MacBook for dev, Mac Mini for production)
-  - MacBook-to-Mac-Mini sync, deploy, and Syncthing-backed vault or memory writes
-  - single-Mini rsync, build, pm2 restart, stale deploy state, and manual recovery
-  - concurrency: cron + occasional manual invocation on same machine
+  - two macOS laptops, home and SJM; code through Git and vault through Syncthing
+  - home is the sole semantic reconciler and shared-hub writer; SJM stages locally
+  - automatic local source discovery; user-requested interactive Codex and Kimi capture
+  - Kimi Code membership is not an unattended scripted batch-processing entitlement
+  - concurrency: local discovery plus user-requested capture; offline or sleeping counterpart
   - failure modes Keith could plausibly hit in normal operation, including delayed-tail issues such as weekly cron schedules, retention sweeps, and slow vault state drift
   - secrets in env files or macOS keychain
 
 out-of-scope:
+  - retired Mac Mini topology, Telegram and Claude runtimes; do not demand their restoration
+  - Stage 2 local inference, unrelated projects, and automatically enabled paid API fallback
   - multi-tenant isolation (no multi-tenant)
   - distributed-system race conditions across unrelated production nodes
   - blue-green / active-active release orchestration across multiple production tiers

@@ -135,7 +135,7 @@ if ! grep -qE '^### L-2026-04-23-001$' "$TMP4/Projects/K2B-Vault/System/memory/s
   exit 1
 fi
 
-echo "  PASS: R-2026-04-23-001 default memory path resolves under tmp HOME (Mini-portable)"
+echo "  PASS: R-2026-04-23-001 default memory path resolves under tmp HOME (host-portable)"
 
 # EOD capture regression: conflict items route through the same loop-apply
 # index, mutate canonical memory on accept, delete the pending JSON, and log.

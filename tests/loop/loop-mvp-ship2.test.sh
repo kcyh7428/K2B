@@ -29,7 +29,7 @@ SBX_REVIEW="$SBX_VAULT/review"
 SBX_READY="$SBX_REVIEW/Ready"
 SBX_ARCHIVE_OBS="$SBX_CTX/observations.archive"
 SBX_ARCHIVE_REVIEW="$SBX_VAULT/Archive/review-archive"
-SBX_MEM="$SBX_HOME/.claude/projects/-Users-keithmbpm2-Projects-K2B/memory"
+SBX_MEM="$SBX_VAULT/System/memory"
 mkdir -p "$SBX_CTX" "$SBX_REVIEW" "$SBX_READY" "$SBX_ARCHIVE_OBS" \
          "$SBX_ARCHIVE_REVIEW" "$SBX_MEM" "$SBX_VAULT/raw/research"
 
@@ -146,21 +146,20 @@ echo "$rejected_body" | grep -q "review-action: rejected" \
   || { echo "FAIL gate C: rejected file lacks review-action: rejected"; echo "$rejected_body"; exit 1; }
 echo "  gate C PASS: review accept/reject route via unified index"
 
-# --- Gate D: deprecation sentinel in all three skill bodies ---
+# --- Gate D: sole live skill authority ---
 
-DEPRECATED_MARK="DEPRECATED in Ship 2 of k2b-integrated-loop"
+[ ! -e "$ROOT/.claude" ] || {
+  echo "FAIL gate D: retired .claude project tree is still present"
+  exit 1
+}
 for skill in k2b-autoresearch k2b-improve k2b-review; do
-  body="$ROOT/.claude/skills/$skill/SKILL.md"
+  body="$ROOT/.agents/skills/$skill/SKILL.md"
   if [ ! -f "$body" ]; then
     echo "FAIL gate D: $body not found"
     exit 1
   fi
-  if ! grep -q "$DEPRECATED_MARK" "$body"; then
-    echo "FAIL gate D: deprecation sentinel missing in $skill/SKILL.md"
-    exit 1
-  fi
 done
-echo "  gate D PASS: deprecation sentinel present in 3 skill bodies"
+echo "  gate D PASS: .agents is the sole live skill authority"
 
 echo ""
 echo "BINARY MVP SHIP 2: SHIP (4/4 gates passed)"

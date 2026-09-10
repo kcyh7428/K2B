@@ -6,9 +6,9 @@ Reads git status + numstat from repo_root, applies first-match-wins rules,
 returns (tier, reason). See feature_adversarial-review-tiering.md.
 
 Rule order (first match wins):
-  1. Tier 0 -- all files under K2B-Vault/, DEVLOG.md, plans/, .claude/plans/
+  1. Tier 0 -- all files under K2B-Vault/, DEVLOG.md, or plans/
   2. Tier 3 -- any file matches glob in tier3-paths.yml allowlist
-  3. Tier 1 -- all files are .md under .claude/skills/, wiki/, CLAUDE.md, README.md
+  3. Tier 1 -- all files are .md under .agents/skills/, wiki/, AGENTS.md, README.md
   4. Tier 3 -- >3 files OR >200 LOC (insertions + deletions)
   5. Tier 2 -- default (real code or tests within budget)
 
@@ -68,7 +68,7 @@ def _matches_any_glob(path: str, patterns: list[str]) -> str | None:
     """
     for pat in patterns:
         if pat.endswith("/**"):
-            prefix = pat[:-2]  # "k2b-remote/src/**" -> "k2b-remote/src/"
+            prefix = pat[:-2]  # "scripts/lib/**" -> "scripts/lib/"
             if path.startswith(prefix):
                 return pat
         elif "**" in pat:
@@ -229,9 +229,9 @@ def _gather_working_tree_state(root: Path) -> dict:
     files: list[str] = []
     statuses: dict[str, str] = {}
 
-    # Porcelain collapses untracked directories to their name (e.g. `.claude/`)
+    # Porcelain collapses untracked directories to their name (e.g. `.agents/`)
     # in default mode. `git status -uall` would expand them but is banned by
-    # CLAUDE.md (memory issues on large repos). Instead we parse porcelain for
+    # large instruction files (memory issues on large repos). Instead we parse porcelain for
     # tracked changes and use `git ls-files --others --exclude-standard -z`
     # to enumerate every untracked FILE individually below.
     records = porcelain.split("\x00")
@@ -321,12 +321,11 @@ def _gather_working_tree_state(root: Path) -> dict:
 TIER_0_PREFIXES = (
     "K2B-Vault/",   # fork/mono-repo portability (dead code in primary K2B)
     "plans/",
-    ".claude/plans/",
 )
 TIER_0_EXACT = ("DEVLOG.md",)
 
-TIER_1_DOC_PREFIXES = (".claude/skills/", "wiki/")
-TIER_1_DOC_EXACT = ("CLAUDE.md", "README.md")
+TIER_1_DOC_PREFIXES = (".agents/skills/", "wiki/")
+TIER_1_DOC_EXACT = ("AGENTS.md", "README.md")
 
 
 def _is_tier_0_path(path: str) -> bool:
@@ -372,13 +371,13 @@ def classify_tier(
         if hit:
             return 3, f"tier-3: allowlist match '{hit}' for path {f}"
 
-    # Rule 3: Tier 1 -- all docs under skills/wiki/CLAUDE.md/README.md
+    # Rule 3: Tier 1 -- all docs under skills/wiki/AGENTS.md/README.md
     # IMPORTANT: must fire BEFORE the scale rule so large pure-docs commits
     # don't get Tier-3-scaled. See Codex Checkpoint 1 MEDIUM #3.
     if all(_is_tier_1_doc(f) for f in files):
         return 1, (
             f"tier-1: {len(files)} file(s), all .md docs under "
-            "skills/wiki/CLAUDE/README"
+            "skills/wiki/AGENTS/README"
         )
 
     # Rule 4: Tier 3 -- scale (>3 files or >200 LOC).
