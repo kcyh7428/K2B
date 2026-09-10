@@ -17,7 +17,40 @@ esac
 STATE_DIR="${K2B_DISCOVERY_STATE_DIR:-$HOME/.local/state/k2b}"
 RECEIPT_DIR="$STATE_DIR/capture-discovery-receipts"
 STATUS_FILE="$STATE_DIR/capture-status.json"
-DISCOVERY_COMMAND="${K2B_DISCOVERY_COMMAND:-$REPO_ROOT/scripts/eod-capture.py}"
+DISCOVERY_COMMAND_OVERRIDE="${K2B_DISCOVERY_COMMAND:-}"
+DISCOVERY_COMMAND="${DISCOVERY_COMMAND_OVERRIDE:-$REPO_ROOT/scripts/eod-capture.py}"
+
+select_python() {
+  local candidate=""
+  if [[ -n "${K2B_PYTHON:-}" ]]; then
+    candidate="$K2B_PYTHON"
+    if [[ ! -x "$candidate" ]]; then
+      echo "codex-discovery-job: K2B_PYTHON is not executable: $candidate" >&2
+      return 1
+    fi
+    if ! "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'; then
+      echo "codex-discovery-job: K2B_PYTHON must be Python 3.12 or newer" >&2
+      return 1
+    fi
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  for candidate in \
+    "$REPO_ROOT/venv/washing-machine/bin/python" \
+    /opt/homebrew/bin/python3 \
+    "$(command -v python3 2>/dev/null || true)"; do
+    [[ -n "$candidate" && -x "$candidate" ]] || continue
+    if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  echo "codex-discovery-job: Python 3.12 or newer is required" >&2
+  return 1
+}
+
+PYTHON_BIN="$(select_python)" || exit 2
 # This is an idempotent full-queue inventory refresh, not an extraction job.
 # Keeping the Stage 1 boundary visible on every run prevents older waiting
 # sources from disappearing from the status count as the calendar advances.
@@ -26,7 +59,7 @@ THROUGH="${K2B_DISCOVERY_THROUGH:-$(TZ=Asia/Hong_Kong date '+%Y-%m-%d')}"
 
 if [[ "$ROLE" == "sjm-source-only" ]]; then
   VAULT_PATH="${K2B_VAULT_PATH:-$HOME/Projects/K2B-Vault}"
-  if ! python3 - "$STATE_DIR" "$VAULT_PATH" <<'PY'
+  if ! "$PYTHON_BIN" - "$STATE_DIR" "$VAULT_PATH" <<'PY'
 import os
 import sys
 
@@ -67,29 +100,34 @@ if [[ ! -x "$DISCOVERY_COMMAND" ]]; then
   echo "codex-discovery-job: missing command: $DISCOVERY_COMMAND" >&2
   exit 2
 fi
+if [[ -n "$DISCOVERY_COMMAND_OVERRIDE" ]]; then
+  DISCOVERY_ARGV=("$DISCOVERY_COMMAND")
+else
+  DISCOVERY_ARGV=("$PYTHON_BIN" "$DISCOVERY_COMMAND")
+fi
 
-STARTED_AT="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
-RUN_ID="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+STARTED_AT="$("$PYTHON_BIN" -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
+RUN_ID="$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_hex(16))')"
 set +e
 K2B_CAPTURE_STATUS_FILE="$STATUS_FILE" \
 K2B_DISCOVERY_RUN_ID="$RUN_ID" \
 K2B_DISCOVERY_SINCE_EFFECTIVE="$SINCE" \
 K2B_DISCOVERY_THROUGH_EFFECTIVE="$THROUGH" \
 K2B_DISCOVERY_ROLE_EFFECTIVE="$ROLE" \
-  "$DISCOVERY_COMMAND" discover \
+  "${DISCOVERY_ARGV[@]}" discover \
     --since "$SINCE" \
     --through "$THROUGH" \
     --writer-role "$ROLE"
 DISCOVERY_RC=$?
 set -e
-FINISHED_AT="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
+FINISHED_AT="$("$PYTHON_BIN" -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
 
-RECEIPT_STAMP="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))')"
+RECEIPT_STAMP="$("$PYTHON_BIN" -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))')"
 RECEIPT_PATH="$RECEIPT_DIR/${RECEIPT_STAMP}.json"
 LAST_RUN_PATH="$STATE_DIR/capture-discovery-last-run.json"
 
 set +e
-python3 - "$RECEIPT_PATH" "$LAST_RUN_PATH" "$ROLE" "$STARTED_AT" "$FINISHED_AT" "$DISCOVERY_RC" "$STATUS_FILE" "$SINCE" "$THROUGH" "$RUN_ID" <<'PY'
+"$PYTHON_BIN" - "$RECEIPT_PATH" "$LAST_RUN_PATH" "$ROLE" "$STARTED_AT" "$FINISHED_AT" "$DISCOVERY_RC" "$STATUS_FILE" "$SINCE" "$THROUGH" "$RUN_ID" <<'PY'
 import json
 import os
 import sys

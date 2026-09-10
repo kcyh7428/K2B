@@ -180,4 +180,51 @@ set -e
 test "$rc" = "2"
 grep -q 'usage:' "$TMP/invalid.err"
 
+# The default Python entrypoint must run through the explicitly selected
+# Python 3.12+ binary, not the host's potentially old /usr/bin/env python3.
+DEFAULT_REPO="$TMP/default-repo"
+DEFAULT_STATE="$TMP/default-state"
+PYTHON_LOG="$TMP/python-argv.log"
+mkdir -p "$DEFAULT_REPO/scripts"
+cp "$ROOT/scripts/codex-discovery-job.sh" "$DEFAULT_REPO/scripts/"
+cat > "$DEFAULT_REPO/scripts/eod-capture.py" <<'PY'
+#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "discovery_run_id": os.environ["K2B_DISCOVERY_RUN_ID"],
+    "since": os.environ["K2B_DISCOVERY_SINCE_EFFECTIVE"],
+    "through": os.environ["K2B_DISCOVERY_THROUGH_EFFECTIVE"],
+    "writer_role": os.environ["K2B_DISCOVERY_ROLE_EFFECTIVE"],
+}
+Path(os.environ["K2B_CAPTURE_STATUS_FILE"]).write_text(json.dumps(payload))
+PY
+chmod +x "$DEFAULT_REPO/scripts/eod-capture.py"
+REAL_TEST_PYTHON="$(command -v python3)"
+cat > "$TMP/python312-wrapper" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$PYTHON_LOG"
+if [[ "\${1:-}" == "-c" && "\${2:-}" == *sys.version_info* ]]; then
+  exit 0
+fi
+exec "$REAL_TEST_PYTHON" "\$@"
+EOF
+chmod +x "$TMP/python312-wrapper"
+K2B_PYTHON="$TMP/python312-wrapper" \
+K2B_DISCOVERY_STATE_DIR="$DEFAULT_STATE" \
+K2B_DISCOVERY_SINCE="2026-09-10" \
+K2B_DISCOVERY_THROUGH="2026-09-10" \
+  "$DEFAULT_REPO/scripts/codex-discovery-job.sh" home > "$TMP/default-python.out"
+grep -q "$DEFAULT_REPO/scripts/eod-capture.py discover" "$PYTHON_LOG"
+python3 - "$DEFAULT_STATE/capture-discovery-last-run.json" <<'PY'
+import json
+import sys
+
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+assert receipt["exit_status"] == 0
+assert receipt["status_file_updated"] is True
+PY
+
 echo "PASS: codex discovery job writes observable machine-local receipts"
