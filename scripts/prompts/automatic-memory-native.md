@@ -45,6 +45,14 @@ publication authority or schedules. Empty worklists require no model extraction.
    completed prefix are context only: every extracted item's evidence event must
    have the work item's `completed_turn_id`. Facts from an earlier turn belong
    to that turn's earlier immutable worklist cursor and must not be redated.
+   The native record command also needs source binding beyond the generic
+   extractor example: copy `raw_source_sha256`, `transcript_sha256`,
+   `completed_cursor`, `completed_prefix_sha256`, `completed_prefix_mode`,
+   `completed_date`, `host_id`, and `session_id` unchanged from this source
+   bundle into the output JSON, set `review_state` to `reviewed`, and include
+   each item's exact `evidence_event_id`. For a genuinely empty extraction use
+   `items: []` and `reviewed_empty: true`; never use empty success for a budget
+   hold or failure. Do not invent source metadata or evidence IDs.
 3. Save that JSON to a private machine-local temporary file and call
    `scripts/eod-capture.py memory-record-extraction` with the returned work ID.
    Respect `waiting_retry` / `retry_backoff` and terminal `needs_attention`
