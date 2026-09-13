@@ -25,9 +25,15 @@ hold; record failures in the run receipt and do not continue extraction if the
 hold cannot be written. Notify when a hold is newly created or changes, not on
 every unchanged hourly check. A hold is not an extraction/success receipt.
 
-Before reading dialogue, check the returned bundle file's byte size. If it
-exceeds 48000 bytes, set the operator hold and report an input-budget exception;
-do not truncate evidence or silently claim it was processed. Extract at most 20
+Before reading dialogue, call `scripts/eod-capture.py memory-extraction-input`
+with the selected `--work-id`, configured `--state-root` and `--writer-role`.
+Read only the returned `input_path`, never the full source bundle. This view
+contains every event of the selected completed turn and bounded recent context;
+the full immutable source stays on disk for validation. Check the view file's
+byte size before reading it. If the command returns `input_budget_exceeded` or
+the view exceeds 48000 bytes, set the operator hold; do not truncate the current
+turn or silently claim it was processed. A large earlier conversation is not
+itself a hold: completed turns are processed as separate pieces. Extract at most 20
 durable items per source. If the complete source requires more, set the hold and
 do not record a partial extraction as success. Do not read other sessions, launch
 reviewers/subagents, run a test suite, or change code, live rules, credentials,
@@ -37,7 +43,7 @@ publication authority or schedules. Empty worklists require no model extraction.
    `scripts/eod-capture.py memory-worklist`. Use the explicit Home or
    `sjm-source-only` writer role, the host's local Codex sessions root, the
    machine-local automatic-memory state root, and an inclusive recovery range.
-2. For each returned source bundle, read the complete bounded dialogue and
+2. For each returned input view, read all `dialogue_events` and `context_events` and
    produce extraction JSON conforming to `scripts/prompts/eod-capture-extract.md`.
    Preserve exact evidence quotes and event identities. Record facts,
    Keith-authored decisions, explicit preferences, and open commitments. Do not
@@ -49,10 +55,15 @@ publication authority or schedules. Empty worklists require no model extraction.
    extractor example: copy `raw_source_sha256`, `transcript_sha256`,
    `completed_cursor`, `completed_prefix_sha256`, `completed_prefix_mode`,
    `completed_date`, `host_id`, and `session_id` unchanged from this source
-   bundle into the output JSON, set `review_state` to `reviewed`, and include
+   input view into the output JSON, set `review_state` to `reviewed`, and include
    each item's exact `evidence_event_id`. For a genuinely empty extraction use
    `items: []` and `reviewed_empty: true`; never use empty success for a budget
    hold or failure. Do not invent source metadata or evidence IDs.
+   `context_omitted_events` reports earlier context not shown, not lost current
+   evidence. Never extract old context again or infer a fact from an unresolved
+   "yes", "that", or similar reference. If an apparent durable decision needs
+   omitted context, establish an ambiguity hold for operator review; do not
+   guess or report reviewed-empty success for unresolved durable content.
 3. Save that JSON to a private machine-local temporary file and call
    `scripts/eod-capture.py memory-record-extraction` with the returned work ID.
    Respect `waiting_retry` / `retry_backoff` and terminal `needs_attention`

@@ -422,6 +422,18 @@ def _completed_at_date(value: object) -> str:
     return _parse_event_date(value)
 
 
+def _completed_at_iso(value: object) -> str:
+    """Accept native epoch seconds without changing persisted source identities."""
+    if type(value) in (int, float):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+        except (OSError, OverflowError, ValueError) as exc:
+            raise ValueError("invalid completed_at epoch seconds") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("invalid completed_at")
+    return value.strip()
+
+
 def parse_completed_dialogue(
     session_path: Path,
     *,
@@ -1711,9 +1723,10 @@ def _validate_modern_artifact_binding(
         value = data.get(field)
         if not isinstance(value, str) or not re.fullmatch(pattern, value):
             raise ValueError(f"{label} has invalid {field}")
-    completed_at = data.get("completed_at")
-    if not isinstance(completed_at, str) or not completed_at.strip():
-        raise ValueError(f"{label} has invalid completed_at")
+    try:
+        completed_at = _completed_at_iso(data.get("completed_at"))
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid completed_at") from exc
     try:
         completed_dt = datetime.fromisoformat(
             completed_at.strip().replace("Z", "+00:00")
@@ -2722,7 +2735,7 @@ def _reviewed_memory_bundle_result(
                 "host_id": filtered["host_id"],
                 "session_id": filtered["session_id"],
                 "completed_cursor": filtered["completed_cursor"],
-                "completed_at": filtered["completed_at"],
+                "completed_at": _completed_at_iso(filtered["completed_at"]),
                 "source_hash": filtered["completed_prefix_sha256"],
                 "transcript_hash": filtered["transcript_sha256"],
                 "origin": "interactive",
@@ -3202,7 +3215,7 @@ def build_memory_worklist(
             eligible.append(bundle)
     eligible.sort(
         key=lambda row: (
-            row["completed_at"],
+            datetime.fromisoformat(_completed_at_iso(row["completed_at"]).replace("Z", "+00:00")),
             row["host_id"],
             row["session_id"],
             row["completed_cursor"],
@@ -3309,6 +3322,70 @@ def build_memory_worklist(
         "parse_exception_counts": parse_exception_counts,
         "items": selected,
     }
+
+
+def prepare_memory_extraction_input(
+    *, state_root: Path, work_id: str, writer_role: str,
+) -> dict:
+    """Project one complete turn plus bounded context; keep source/receipts intact."""
+    role = _memory_writer_role(writer_role)
+    record = _read_memory_json(
+        _memory_work_path(state_root, work_id, "worklist"), "memory work record"
+    )
+    if (record.get("work_id") != work_id or record.get("writer_role") != role
+            or record.get("schema_version") != 1
+            or record.get("status") != "pending_extraction"):
+        raise ValueError("memory work record is invalid or belongs to another role")
+    source = _memory_work_path(state_root, work_id, "source-bundles")
+    if record.get("source_bundle_relpath") != str(source.relative_to(state_root)):
+        raise ValueError("memory source bundle path does not match work record")
+    bundle = _read_memory_json(source, "memory source bundle")
+    _validate_modern_artifact_binding(bundle, label="memory source", require_chunks=True)
+    if (_memory_work_id(bundle) != work_id
+            or bundle.get("completed_prefix_sha256") != record.get("completed_prefix_sha256")
+            or hashlib.sha256(bundle["transcript"].encode()).hexdigest() != bundle["transcript_sha256"]):
+        raise ValueError("memory source bundle does not match work record")
+    events = bundle["dialogue_events"]
+    current = [e for e in events if e["turn_id"] == bundle["completed_turn_id"]]
+    if not current:
+        raise ValueError("memory source has no completed-turn dialogue")
+    # This is an input view, never a replacement source bundle. All current-turn
+    # evidence is retained verbatim; prior turns remain separately eligible work.
+    view = {k: bundle[k] for k in (
+        "raw_source_sha256", "transcript_sha256", "completed_cursor",
+        "completed_prefix_sha256", "completed_prefix_mode", "completed_date",
+        "completed_at", "completed_turn_id", "host_id", "session_id",
+    )}
+    prior = events[:events.index(current[0])]
+    view.update(input_schema_version=1, work_id=work_id, dialogue_events=current,
+                context_events=[], context_omitted_events=len(prior))
+
+    def byte_size(value: dict) -> int:
+        return len((json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode())
+
+    size = byte_size(view)
+    if size > 48000:
+        return {"status": "input_budget_exceeded", "work_id": work_id,
+                "input_bytes": size, "limit_bytes": 48000}
+    # Add a contiguous suffix of whole prior events, never fragments or a
+    # misleading selection with holes. Context gets at most 16 KB of the cap.
+    context_bytes = 0
+    for event in reversed(prior):
+        event_bytes = len(_canonical_memory_json(event))
+        if context_bytes + event_bytes > 16000:
+            break
+        view["context_events"].insert(0, event)
+        view["context_omitted_events"] -= 1
+        if byte_size(view) > 48000:
+            view["context_events"].pop(0)
+            view["context_omitted_events"] += 1
+            break
+        context_bytes += event_bytes
+    target = _memory_work_path(state_root, work_id, "extraction-inputs")
+    _atomic_write_json(target, view)
+    return {"status": "ready", "work_id": work_id, "input_path": str(target),
+            "input_bytes": byte_size(view), "limit_bytes": 48000,
+            "context_omitted_events": view["context_omitted_events"]}
 
 
 def record_memory_extraction(
@@ -6224,6 +6301,13 @@ def main(argv: list[str] | None = None) -> int:
     memory_worklist.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
+    memory_input = sub.add_parser(
+        "memory-extraction-input",
+        help="prepare complete current-turn native input with bounded prior context",
+    )
+    memory_input.add_argument("--work-id", required=True)
+    memory_input.add_argument("--state-root", type=Path, default=_default_automatic_memory_state_root())
+    memory_input.add_argument("--writer-role", choices=("home", "sjm-source-only"), required=True)
     memory_record = sub.add_parser(
         "memory-record-extraction",
         help="validate and durably queue one native reviewed extraction",
@@ -6371,6 +6455,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, sort_keys=True))
         return 3 if result["status"] == "needs_attention" else 0
+
+    if args.cmd == "memory-extraction-input":
+        try:
+            result = prepare_memory_extraction_input(
+                state_root=args.state_root, work_id=args.work_id, writer_role=args.writer_role
+            )
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(f"eod-capture: memory input failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result["status"] == "ready" else 3
 
     if args.cmd == "memory-record-extraction":
         try:
