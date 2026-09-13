@@ -84,7 +84,1013 @@ def test_safe_session_id_keeps_rollout_id_but_adds_path_hash(tmp_path):
     assert ida != idb
 
 
-def test_strip_codex_session_keeps_user_text_and_truncates_tool_output(tmp_path):
+def _write_completed_dialogue_session(
+    path: Path,
+    *,
+    user_text: str,
+    assistant_text: str,
+    session_id: str = "session-fixed",
+    turn_id: str = "turn-1",
+    completed_at: str = "2026-09-05T10:00:00+08:00",
+    thread_source: str = "user",
+    source: object = "vscode",
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {
+            "type": "session_meta",
+            "ordinal": 0,
+            "payload": {
+                "id": session_id,
+                "session_id": session_id,
+                "cwd": "/Users/keithmbpm2/Projects/K2B",
+                "timestamp": "2026-09-05T09:00:00+08:00",
+                "thread_source": thread_source,
+                "source": source,
+            },
+        },
+        {
+            "type": "event_msg",
+            "ordinal": 1,
+            "payload": {"type": "task_started", "turn_id": turn_id},
+        },
+        {
+            "type": "response_item",
+            "ordinal": 2,
+            "payload": {
+                "id": "message-user-1",
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_text}],
+            },
+        },
+        {
+            "type": "response_item",
+            "ordinal": 3,
+            "payload": {
+                "id": "message-assistant-1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": assistant_text}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "ordinal": 4,
+            "timestamp": completed_at,
+            "payload": {
+                "type": "task_complete",
+                "turn_id": turn_id,
+                "completed_at": completed_at,
+            },
+        },
+    ]
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("boundary", [500, 4000, 8000])
+def test_completed_dialogue_parser_preserves_text_beyond_old_limits(
+    tmp_path: Path, boundary: int
+) -> None:
+    session = tmp_path / "rollout-long.jsonl"
+    marker = f"DECISION_AFTER_{boundary}"
+    user_text = ("padding " * (boundary // 8 + 2)) + marker
+    _write_completed_dialogue_session(
+        session,
+        user_text=user_text,
+        assistant_text="Acknowledged without changing attribution.",
+    )
+
+    parsed = eod_capture.parse_completed_dialogue(
+        session, source_host="home", max_chunk_chars=1024
+    )
+    latest = parsed["completed_prefixes"][-1]
+
+    assert marker in latest["transcript"]
+    assert "".join(chunk["text"] for chunk in latest["chunks"]) == latest["transcript"]
+    assert all(0 < len(chunk["text"]) <= 1024 for chunk in latest["chunks"])
+
+
+def test_completed_prefix_and_event_identities_survive_later_appends(tmp_path: Path) -> None:
+    session = tmp_path / "rollout-growing.jsonl"
+    _write_completed_dialogue_session(
+        session,
+        user_text="Keith confirms the first completed decision.",
+        assistant_text="Recorded as Keith's explicit decision.",
+    )
+    first = eod_capture.parse_completed_dialogue(session, source_host="home")
+    first_prefix = first["completed_prefixes"][0]
+    first_event_ids = [event["event_id"] for event in first_prefix["events"]]
+    original = session.read_text(encoding="utf-8")
+
+    session.write_text(
+        original
+        + json.dumps(
+            {
+                "type": "event_msg",
+                "ordinal": 5,
+                "payload": {"type": "task_started", "turn_id": "turn-2"},
+            }
+        )
+        + "\n"
+        + '{"type":"response_item","payload":',
+        encoding="utf-8",
+    )
+    with_incomplete_tail = eod_capture.parse_completed_dialogue(
+        session, source_host="home"
+    )
+
+    assert with_incomplete_tail["completed_cursor"] == first["completed_cursor"]
+    assert with_incomplete_tail["completed_prefixes"] == first["completed_prefixes"]
+
+    second_turn = [
+        {
+            "type": "event_msg",
+            "ordinal": 5,
+            "payload": {"type": "task_started", "turn_id": "turn-2"},
+        },
+        {
+            "type": "response_item",
+            "ordinal": 6,
+            "payload": {
+                "id": "message-user-2",
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "A later completed turn."}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "ordinal": 7,
+            "timestamp": "2026-09-06T10:00:00+08:00",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "turn-2",
+                "completed_at": "2026-09-06T10:00:00+08:00",
+            },
+        },
+    ]
+    session.write_text(
+        original + "".join(json.dumps(record) + "\n" for record in second_turn),
+        encoding="utf-8",
+    )
+    extended = eod_capture.parse_completed_dialogue(session, source_host="home")
+
+    assert len(extended["completed_prefixes"]) == 2
+    assert extended["completed_prefixes"][0] == first_prefix
+    assert [
+        event["event_id"] for event in extended["completed_prefixes"][0]["events"]
+    ] == first_event_ids
+    assert extended["completed_cursor"] != first["completed_cursor"]
+    assert extended["host_id"] == first["host_id"] == "host:home"
+    assert extended["session_id"] == first["session_id"] == "session-fixed"
+
+    mutated_text = session.read_text(encoding="utf-8").replace(
+        "Keith confirms the first completed decision.",
+        "Keith withdraws the first completed decision.",
+    )
+    session.write_text(mutated_text, encoding="utf-8")
+    mutated = eod_capture.parse_completed_dialogue(session, source_host="home")
+    assert mutated["completed_prefixes"][0]["cursor"] != first_prefix["cursor"]
+
+
+def test_local_and_transport_dialogue_share_roles_and_redaction(tmp_path: Path) -> None:
+    session = tmp_path / "rollout-shared-parser.jsonl"
+    _write_completed_dialogue_session(
+        session,
+        user_text="Keith says keep the user role explicit.",
+        assistant_text="I propose an alternative. API_KEY=fixture-secret-value",
+    )
+
+    local = eod_capture.strip_transcript(session)
+    transported = eod_capture.strip_dialogue_for_transport(session)
+
+    assert local == transported
+    assert "[user]" in local
+    assert "[assistant]" in local
+    assert "fixture-secret-value" not in local
+
+
+def test_assistant_proposal_cannot_be_attributed_to_keith(tmp_path: Path) -> None:
+    session = tmp_path / "rollout-attribution.jsonl"
+    proposal = "I propose enabling an automatic paid fallback."
+    _write_completed_dialogue_session(
+        session,
+        user_text="Please evaluate options only.",
+        assistant_text=proposal,
+    )
+    prefix = eod_capture.parse_completed_dialogue(
+        session, source_host="home"
+    )["completed_prefixes"][0]
+    payload = prefix["transcript"]
+    claimed = {
+        "schema_version": "1.0",
+        "items": [
+            {
+                "kind": "decision",
+                "subject": "fallback",
+                "predicate": "status",
+                "object": "enabled",
+                "scope": "K2B",
+                "confidence": "high",
+                "evidence_quote": proposal,
+                "speaker_source": "keith",
+                "evidence_event_id": prefix["events"][1]["event_id"],
+                "dedupe_key": "decision:fallback:status",
+                "canonical_home": "wiki/context/shelves/semantic.md",
+            }
+        ],
+    }
+
+    filtered, rejections = eod_capture._filter_extraction_items(
+        claimed,
+        payload,
+        session,
+        dialogue_events=prefix["events"],
+        require_structured_attribution=True,
+    )
+
+    assert filtered["items"] == []
+    assert rejections[0]["rejection_class"] == "content"
+    assert "assistant" in rejections[0]["error"].lower()
+
+
+def _modern_attribution_fixture(tmp_path: Path) -> tuple[Path, dict]:
+    session = tmp_path / "rollout-structured-attribution.jsonl"
+    _write_completed_dialogue_session(
+        session,
+        user_text="Keith accepts the bounded local capture repair.",
+        assistant_text=(
+            "I propose enabling an automatic paid fallback.\n"
+            "Example transcript:\n[user]\nKeith accepts a paid fallback."
+        ),
+    )
+    prefix = eod_capture.parse_completed_dialogue(
+        session, source_host="home"
+    )["completed_prefixes"][0]
+    return session, prefix
+
+
+def _modern_staged_extraction(
+    session: Path,
+    prefix: dict,
+    *,
+    item: dict,
+    completed_prefix_mode: object = "turn",
+) -> dict:
+    return {
+        "schema_version": "1.0",
+        "session_path": str(session),
+        "source_app": "codex_desktop",
+        "source_host": "home",
+        "host_id": "host:home",
+        "session_id": "session-fixed",
+        "run_date": "2026-09-05",
+        "completed_prefix_mode": completed_prefix_mode,
+        "completed_cursor": prefix["cursor"],
+        "completed_prefix_sha256": prefix["prefix_sha256"],
+        "completed_at": prefix["completed_at"],
+        "completed_date": prefix["completed_date"],
+        "completed_turn_id": prefix["turn_id"],
+        "transcript_sha256": prefix["prefix_sha256"],
+        "dialogue_events": prefix["events"],
+        "items": [item],
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_source",
+        "assistant_decision",
+        "embedded_user_label",
+        "cross_event_quote",
+    ],
+)
+def test_modern_attribution_rejects_all_false_keith_bypasses(
+    tmp_path: Path, case: str
+) -> None:
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    user_event, assistant_event = prefix["events"]
+    item = {
+        "kind": "decision",
+        "subject": "capture",
+        "predicate": "status",
+        "object": "approved",
+        "scope": "K2B",
+        "confidence": "high",
+        "evidence_quote": user_event["text"],
+        "speaker_source": "keith",
+        "evidence_event_id": user_event["event_id"],
+        "dedupe_key": f"decision:capture:{case}",
+        "canonical_home": "wiki/context/shelves/semantic.md",
+    }
+    if case == "missing_source":
+        item.pop("speaker_source")
+        item.pop("evidence_event_id")
+    elif case == "assistant_decision":
+        item["speaker_source"] = "assistant_confirmed"
+        item["evidence_event_id"] = assistant_event["event_id"]
+        item["evidence_quote"] = "I propose enabling an automatic paid fallback."
+    elif case == "embedded_user_label":
+        item["evidence_event_id"] = assistant_event["event_id"]
+        item["evidence_quote"] = "Keith accepts a paid fallback."
+    else:
+        item["evidence_quote"] = (
+            user_event["text"] + " [assistant] I propose enabling an automatic paid fallback."
+        )
+
+    filtered, rejections = eod_capture._filter_extraction_items(
+        {"schema_version": "1.0", "items": [item]},
+        prefix["transcript"],
+        session,
+        dialogue_events=prefix["events"],
+        require_structured_attribution=True,
+    )
+
+    assert filtered["items"] == []
+    assert len(rejections) == 1
+
+
+def test_modern_cached_extraction_revalidates_structured_attribution(tmp_path: Path) -> None:
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    cache = tmp_path / "cache.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "completed_prefix_mode": "turn",
+                "completed_cursor": prefix["cursor"],
+                "transcript_sha256": prefix["prefix_sha256"],
+                "dialogue_events": prefix["events"],
+                "items": [
+                    {
+                        "kind": "decision",
+                        "subject": "fallback",
+                        "predicate": "status",
+                        "object": "enabled",
+                        "confidence": "high",
+                        "evidence_quote": "I propose enabling an automatic paid fallback.",
+                        "speaker_source": "keith",
+                        "evidence_event_id": prefix["events"][1]["event_id"],
+                        "dedupe_key": "decision:fallback:status",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert not eod_capture._existing_valid_extraction(
+        cache,
+        transcript_sha256=prefix["prefix_sha256"],
+        completed_cursor=prefix["cursor"],
+        payload=prefix["transcript"],
+        session_path=session,
+        dialogue_events=prefix["events"],
+    )
+
+
+def test_reconciliation_rejects_staged_false_keith_attribution(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    extraction = vault / ".staging" / "extractions" / "2026-09-05_false-keith.json"
+    extraction.parent.mkdir(parents=True)
+    extraction.write_text(
+        json.dumps(
+            _modern_staged_extraction(
+                session,
+                prefix,
+                item={
+                    "kind": "decision",
+                    "subject": "fallback",
+                    "predicate": "status",
+                    "object": "enabled",
+                    "confidence": "high",
+                    "evidence_quote": "I propose enabling an automatic paid fallback.",
+                    "speaker_source": "keith",
+                    "evidence_event_id": prefix["events"][1]["event_id"],
+                    "dedupe_key": "decision:fallback:status",
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["auto_written"] == 0
+    assert summary["errors"] == 1
+    assert "decision:fallback:status" not in (
+        vault / "wiki" / "context" / "shelves" / "semantic.md"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("evidence_role", "expected_writes", "expected_errors"),
+    [("user", 1, 0), ("assistant", 0, 1)],
+)
+def test_fresh_structured_legacy_reconciliation_validates_speaker_evidence(
+    tmp_path: Path,
+    evidence_role: str,
+    expected_writes: int,
+    expected_errors: int,
+) -> None:
+    session = tmp_path / "rollout-legacy-attribution.jsonl"
+    _write_completed_dialogue_session(
+        session,
+        user_text="Keith accepts the canonical legacy capture decision.",
+        assistant_text="I propose an unaccepted automatic paid fallback.",
+    )
+    records = [
+        json.loads(line)
+        for line in session.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("type") != "event_msg"
+    ]
+    session.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    prefix = eod_capture.parse_completed_dialogue(
+        session, source_host="home"
+    )["completed_prefixes"][0]
+    event = next(item for item in prefix["events"] if item["role"] == evidence_role)
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    extraction = vault / ".staging" / "extractions" / "2026-09-05_legacy.json"
+    extraction.parent.mkdir(parents=True)
+    extraction.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "session_path": str(session),
+                "source_app": "codex_desktop",
+                "source_host": "home",
+                "host_id": "host:home",
+                "session_id": "session-fixed",
+                "run_date": "2026-09-05",
+                "completed_prefix_mode": "legacy_whole_source",
+                "completed_cursor": prefix["cursor"],
+                "completed_prefix_sha256": prefix["prefix_sha256"],
+                "completed_at": None,
+                "completed_date": "2026-09-05",
+                "completed_turn_id": "legacy",
+                "transcript_sha256": prefix["prefix_sha256"],
+                "dialogue_events": prefix["events"],
+                "items": [
+                    {
+                        "kind": "decision",
+                        "subject": "legacy capture",
+                        "predicate": "status",
+                        "object": "accepted",
+                        "confidence": "high",
+                        "evidence_quote": event["text"],
+                        "speaker_source": "keith",
+                        "evidence_event_id": event["event_id"],
+                        "dedupe_key": f"decision:legacy-capture:{evidence_role}",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["auto_written"] == expected_writes
+    assert summary["errors"] == expected_errors
+    assert (
+        vault / ".staging" / "reconciled" / extraction.name
+    ).exists() is (evidence_role == "user")
+
+
+def test_structured_legacy_preserves_full_event_for_multiple_fact_quotes(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    codex_root = tmp_path / ".codex" / "sessions"
+    session = _explicit_codex_session(
+        codex_root, "rollout-legacy-multiple-facts.jsonl", "2026-09-05"
+    )
+    user_text = (
+        "Keith decided alpha remains enabled, and Keith decided beta remains disabled."
+    )
+    _write_completed_dialogue_session(
+        session,
+        user_text=user_text,
+        assistant_text="I recorded both current facts.",
+    )
+    records = [
+        json.loads(line)
+        for line in session.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("type") != "event_msg"
+    ]
+    session.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+    def extract_two_facts(_payload: str, _session_path: Path) -> dict:
+        return {
+            "schema_version": "1.0",
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "alpha",
+                    "predicate": "status",
+                    "object": "enabled",
+                    "confidence": "high",
+                    "evidence_quote": "Keith decided alpha remains enabled",
+                    "speaker_source": "keith",
+                    "dedupe_key": "fact:alpha:status",
+                },
+                {
+                    "kind": "fact",
+                    "subject": "beta",
+                    "predicate": "status",
+                    "object": "disabled",
+                    "confidence": "high",
+                    "evidence_quote": "Keith decided beta remains disabled",
+                    "speaker_source": "keith",
+                    "dedupe_key": "fact:beta:status",
+                },
+            ],
+        }
+
+    written = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-09-05",
+        extract_func=extract_two_facts,
+        codex_root=codex_root,
+    )
+    assert len(written) == 1
+    staged = json.loads(written[0].read_text(encoding="utf-8"))
+    assert len(staged["dialogue_events"]) == 2
+    assert len({event["event_id"] for event in staged["dialogue_events"]}) == 2
+    assert {event["text"] for event in staged["dialogue_events"]} == {
+        "Keith decided alpha remains enabled",
+        "Keith decided beta remains disabled",
+    }
+    assert {item["evidence_event_id"] for item in staged["items"]} == {
+        event["event_id"] for event in staged["dialogue_events"]
+    }
+    source_events = eod_capture.parse_completed_dialogue(
+        session, source_host="home"
+    )["completed_prefixes"][0]["events"]
+    source_user_event = next(event for event in source_events if event["role"] == "user")
+    assert all("source_event_id" in event for event in staged["dialogue_events"])
+    assert {event["source_event_id"] for event in staged["dialogue_events"]} == {
+        source_user_event["event_id"]
+    }
+    for event in staged["dialogue_events"]:
+        expected_seed = json.dumps(
+            [event["source_event_id"], event["role"], event["text"]],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        assert event["event_id"] == "evidence:" + hashlib.sha256(
+            expected_seed.encode("utf-8")
+        ).hexdigest()
+    assert all(event["text"] != user_text for event in staged["dialogue_events"])
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["auto_written"] == 2
+    assert summary["errors"] == 0
+    semantic = (
+        vault / "wiki" / "context" / "shelves" / "semantic.md"
+    ).read_text(encoding="utf-8")
+    assert "fact:alpha:status" in semantic
+    assert "fact:beta:status" in semantic
+
+
+def _generated_legacy_slice_artifact(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, dict, dict[str, int]]:
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    codex_root = tmp_path / ".codex" / "sessions"
+    session = _explicit_codex_session(
+        codex_root, "rollout-legacy-slice-binding.jsonl", "2026-09-05"
+    )
+    user_text = "Keith confirmed legacy slice provenance remains durable."
+    _write_completed_dialogue_session(
+        session,
+        user_text=user_text,
+        assistant_text="Recorded as a source-backed fact.",
+    )
+    records = [
+        json.loads(line)
+        for line in session.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("type") != "event_msg"
+    ]
+    session.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    calls = {"count": 0}
+
+    def extract_fact(_payload: str, _session_path: Path) -> dict:
+        calls["count"] += 1
+        return {
+            "schema_version": "1.0",
+            "items": [
+                {
+                    "kind": "fact",
+                    "subject": "legacy slice provenance",
+                    "predicate": "status",
+                    "object": "durable",
+                    "confidence": "high",
+                    "evidence_quote": user_text,
+                    "speaker_source": "keith",
+                    "dedupe_key": "fact:legacy-slice-provenance:status",
+                }
+            ],
+        }
+
+    [artifact] = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-09-05",
+        extract_func=extract_fact,
+        codex_root=codex_root,
+    )
+    return vault, codex_root, session, {"extract": extract_fact, "artifact": artifact}, calls
+
+
+def test_generated_legacy_slice_cache_and_receipt_replay_without_reextracting(
+    tmp_path: Path,
+) -> None:
+    vault, codex_root, session, fixture, calls = _generated_legacy_slice_artifact(
+        tmp_path
+    )
+    artifact = fixture["artifact"]
+    eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+    receipt = vault / ".staging" / "reconciled" / artifact.name
+    before = (artifact.read_bytes(), receipt.read_bytes())
+
+    replay = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-09-05",
+        extract_func=fixture["extract"],
+        codex_root=codex_root,
+    )
+
+    assert replay == []
+    assert calls["count"] == 1
+    assert artifact.read_bytes() == before[0]
+    assert receipt.read_bytes() == before[1]
+
+
+def _tamper_legacy_slice_artifact(data: dict, case: str) -> None:
+    event = data["dialogue_events"][0]
+    if case == "slice_id":
+        event["event_id"] = "evidence:" + "f" * 64
+    elif case == "source_event_id":
+        event["source_event_id"] = "event:" + "e" * 64
+    elif case == "role":
+        event["role"] = "assistant"
+    elif case == "text":
+        event["text"] = "Keith confirmed a different legacy claim."
+    elif case == "missing_field":
+        event.pop("source_event_id", None)
+    elif case == "extra_field":
+        event["unexpected"] = True
+    elif case == "conflicting_duplicate":
+        conflicting = dict(event)
+        conflicting["text"] = "Keith confirmed conflicting duplicate evidence."
+        data["dialogue_events"].append(conflicting)
+    else:
+        raise AssertionError(f"unknown tamper case: {case}")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "slice_id",
+        "source_event_id",
+        "role",
+        "text",
+        "missing_field",
+        "extra_field",
+        "conflicting_duplicate",
+    ],
+)
+def test_generated_legacy_slice_cache_rejects_tampered_provenance(
+    tmp_path: Path, case: str
+) -> None:
+    vault, codex_root, session, fixture, calls = _generated_legacy_slice_artifact(
+        tmp_path
+    )
+    artifact = fixture["artifact"]
+    data = json.loads(artifact.read_text(encoding="utf-8"))
+    _tamper_legacy_slice_artifact(data, case)
+    artifact.write_text(json.dumps(data), encoding="utf-8")
+
+    written = eod_capture.run_job_a(
+        [session],
+        vault_path=vault,
+        run_date="2026-09-05",
+        extract_func=fixture["extract"],
+        codex_root=codex_root,
+    )
+
+    assert written == [artifact]
+    assert calls["count"] == 2
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "slice_id",
+        "source_event_id",
+        "role",
+        "text",
+        "missing_field",
+        "extra_field",
+        "conflicting_duplicate",
+    ],
+)
+def test_reconciliation_rejects_tampered_legacy_slice_provenance(
+    tmp_path: Path, case: str
+) -> None:
+    vault, _codex_root, _session, fixture, _calls = _generated_legacy_slice_artifact(
+        tmp_path
+    )
+    artifact = fixture["artifact"]
+    data = json.loads(artifact.read_text(encoding="utf-8"))
+    _tamper_legacy_slice_artifact(data, case)
+    artifact.write_text(json.dumps(data), encoding="utf-8")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["auto_written"] == 0
+    assert summary["errors"] == 1
+    assert not (vault / ".staging" / "reconciled" / artifact.name).exists()
+
+
+@pytest.mark.parametrize("case", ["role_array", "null_event"])
+def test_reconciliation_quarantines_malformed_legacy_event_types_without_losing_prior_receipt(
+    tmp_path: Path, case: str
+) -> None:
+    vault, _codex_root, _session, fixture, _calls = _generated_legacy_slice_artifact(
+        tmp_path
+    )
+    artifact = fixture["artifact"]
+    first = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+    receipt = vault / ".staging" / "reconciled" / artifact.name
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    before = (artifact.read_bytes(), receipt.read_bytes(), semantic.read_bytes())
+    assert first["auto_written"] == 1
+
+    malformed = json.loads(artifact.read_text(encoding="utf-8"))
+    if case == "role_array":
+        malformed["dialogue_events"][0]["role"] = []
+    else:
+        malformed["dialogue_events"] = [None]
+    malformed_path = artifact.with_name(f"{artifact.stem}__malformed-{case}.json")
+    malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["errors"] == 1
+    assert not (
+        vault / ".staging" / "reconciled" / malformed_path.name
+    ).exists()
+    assert artifact.read_bytes() == before[0]
+    assert receipt.read_bytes() == before[1]
+    assert semantic.read_bytes() == before[2]
+
+
+_JSON_TYPE_VALUES = {
+    "null": None,
+    "boolean": True,
+    "number": 7,
+    "string": "user",
+    "array": [],
+    "object": {},
+}
+
+
+@pytest.mark.parametrize("position", ["container", "event", "role"])
+@pytest.mark.parametrize("json_type", list(_JSON_TYPE_VALUES))
+def test_legacy_dialogue_event_json_type_matrix(
+    position: str, json_type: str
+) -> None:
+    event = {
+        "event_id": "event:home:session:message-user-1",
+        "turn_id": "legacy",
+        "role": "user",
+        "text": "Keith confirmed a valid legacy fact.",
+        "ordinal": 1,
+    }
+    data: dict = {"items": [], "dialogue_events": [event]}
+    value = _JSON_TYPE_VALUES[json_type]
+    expected_valid = (
+        (position == "container" and json_type == "array")
+        or (position == "event" and json_type == "object")
+        or (position == "role" and json_type == "string")
+    )
+    if position == "container":
+        data["dialogue_events"] = [event] if json_type == "array" else value
+    elif position == "event":
+        data["dialogue_events"] = [event] if json_type == "object" else [value]
+    else:
+        event["role"] = "user" if json_type == "string" else value
+
+    if expected_valid:
+        assert (
+            eod_capture._validate_legacy_evidence_slices(
+                data, label="matrix legacy extraction"
+            )
+            is False
+        )
+    else:
+        with pytest.raises(ValueError, match="legacy dialogue|legacy full event"):
+            eod_capture._validate_legacy_evidence_slices(
+                data, label="matrix legacy extraction"
+            )
+
+
+@pytest.mark.parametrize("position", ["container", "event", "role"])
+@pytest.mark.parametrize("json_type", list(_JSON_TYPE_VALUES))
+def test_modern_dialogue_event_json_types_fail_closed_at_reconciliation(
+    tmp_path: Path, position: str, json_type: str
+) -> None:
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    user_event = prefix["events"][0]
+    data = _modern_staged_extraction(
+        session,
+        prefix,
+        item={
+            "kind": "fact",
+            "subject": "capture",
+            "predicate": "status",
+            "object": "approved",
+            "confidence": "high",
+            "evidence_quote": user_event["text"],
+            "speaker_source": "keith",
+            "evidence_event_id": user_event["event_id"],
+            "dedupe_key": "fact:capture:modern-type-matrix",
+        },
+    )
+    artifact = vault / ".staging" / "extractions" / "2026-09-05_valid-modern.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps(data), encoding="utf-8")
+    first = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+    assert first["auto_written"] == 1
+    receipt = vault / ".staging" / "reconciled" / artifact.name
+    semantic = vault / "wiki" / "context" / "shelves" / "semantic.md"
+    before = (artifact.read_bytes(), receipt.read_bytes(), semantic.read_bytes())
+
+    mutated = json.loads(json.dumps(data))
+    value = _JSON_TYPE_VALUES[json_type]
+    expected_valid = (
+        (position == "container" and json_type == "array")
+        or (position == "event" and json_type == "object")
+        or (position == "role" and json_type == "string")
+    )
+    if not expected_valid:
+        if position == "container":
+            mutated["dialogue_events"] = value
+        elif position == "event":
+            mutated["dialogue_events"][0] = value
+        else:
+            mutated["dialogue_events"][0]["role"] = value
+
+    if expected_valid:
+        eod_capture._validate_modern_artifact_binding(mutated)
+    else:
+        with pytest.raises(ValueError, match="dialogue"):
+            eod_capture._validate_modern_artifact_binding(mutated)
+        malformed = artifact.with_name(f"2026-09-05_bad-modern-{position}-{json_type}.json")
+        malformed.write_text(json.dumps(mutated), encoding="utf-8")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+    assert summary["auto_written"] == 0
+    assert summary["errors"] == (0 if expected_valid else 1)
+    if not expected_valid:
+        assert not (vault / ".staging" / "reconciled" / malformed.name).exists()
+    assert artifact.read_bytes() == before[0]
+    assert receipt.read_bytes() == before[1]
+    assert semantic.read_bytes() == before[2]
+
+
+def test_modern_turn_binding_rejects_legacy_slice_identity(tmp_path: Path) -> None:
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    source_event = prefix["events"][0]
+    quote = source_event["text"]
+    seed = json.dumps(
+        [source_event["event_id"], source_event["role"], quote],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    slice_id = "evidence:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    item = {
+        "kind": "fact",
+        "subject": "capture",
+        "predicate": "status",
+        "object": "enabled",
+        "confidence": "high",
+        "evidence_quote": quote,
+        "speaker_source": "keith",
+        "evidence_event_id": slice_id,
+        "dedupe_key": "fact:capture:status",
+    }
+    data = _modern_staged_extraction(session, prefix, item=item)
+    data["dialogue_events"] = [
+        {
+            "event_id": slice_id,
+            "source_event_id": source_event["event_id"],
+            "role": source_event["role"],
+            "text": quote,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="dialogue event"):
+        eod_capture._validate_modern_artifact_binding(data)
+
+
+@pytest.mark.parametrize("bad_quote", [None, "", "   "])
+def test_reconciliation_rejects_modern_missing_or_empty_evidence_quote(
+    tmp_path: Path, bad_quote: str | None
+) -> None:
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    item = {
+        "kind": "fact",
+        "subject": "capture",
+        "predicate": "status",
+        "object": "enabled",
+        "confidence": "high",
+        "speaker_source": "keith",
+        "evidence_event_id": prefix["events"][0]["event_id"],
+        "dedupe_key": "fact:capture:status",
+    }
+    if bad_quote is not None:
+        item["evidence_quote"] = bad_quote
+    extraction = (
+        vault / ".staging" / "extractions" / "2026-09-05_bad-quote.json"
+    )
+    extraction.parent.mkdir(parents=True)
+    extraction.write_text(
+        json.dumps(_modern_staged_extraction(session, prefix, item=item)),
+        encoding="utf-8",
+    )
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["auto_written"] == 0
+    assert summary["errors"] == 1
+    assert not (vault / ".staging" / "reconciled" / extraction.name).exists()
+
+
+@pytest.mark.parametrize("bad_mode", [None, "future_mode", {"mode": "turn"}])
+def test_reconciliation_rejects_modern_provenance_with_invalid_mode(
+    tmp_path: Path, bad_mode: object
+) -> None:
+    vault = tmp_path / "vault"
+    _write_minimal_vault(vault)
+    session, prefix = _modern_attribution_fixture(tmp_path)
+    user_event = prefix["events"][0]
+    item = {
+        "kind": "decision",
+        "subject": "capture",
+        "predicate": "status",
+        "object": "approved",
+        "confidence": "high",
+        "evidence_quote": user_event["text"],
+        "speaker_source": "keith",
+        "evidence_event_id": user_event["event_id"],
+        "dedupe_key": "decision:capture:status",
+    }
+    data = _modern_staged_extraction(
+        session, prefix, item=item, completed_prefix_mode=bad_mode
+    )
+    if bad_mode is None:
+        data.pop("completed_prefix_mode")
+    extraction = vault / ".staging" / "extractions" / "2026-09-05_bad-mode.json"
+    extraction.parent.mkdir(parents=True)
+    extraction.write_text(json.dumps(data), encoding="utf-8")
+
+    summary = eod_capture.reconcile_extractions(vault, run_date="2026-09-05")
+
+    assert summary["auto_written"] == 0
+    assert summary["errors"] == 1
+    assert not (vault / ".staging" / "reconciled" / extraction.name).exists()
+
+
+def test_strip_codex_session_keeps_user_text_and_excludes_tool_output(tmp_path):
     session = tmp_path / "rollout.jsonl"
     long_output = "x" * 700
     session.write_text(
@@ -134,8 +1140,8 @@ def test_strip_codex_session_keeps_user_text_and_truncates_tool_output(tmp_path)
     stripped = eod_capture.strip_transcript(session)
 
     assert "my doctor's phone is 2830 3709" in stripped
-    assert "[truncated, 700 chars]" in stripped
     assert long_output not in stripped
+    assert "[tool_output]" not in stripped
 
 
 def test_strip_codex_session_handles_payload_as_message_item(tmp_path):
@@ -225,7 +1231,7 @@ def test_strip_transcript_rejects_malformed_json_line(tmp_path):
         eod_capture.strip_transcript(session)
 
 
-def test_strip_transcript_truncates_large_tool_call_arguments(tmp_path):
+def test_strip_transcript_excludes_tool_call_arguments(tmp_path):
     session = tmp_path / "tool-call.jsonl"
     long_arg = "x" * 700
     session.write_text(
@@ -247,7 +1253,7 @@ def test_strip_transcript_truncates_large_tool_call_arguments(tmp_path):
 
     stripped = eod_capture.strip_transcript(session)
 
-    assert "[truncated," in stripped
+    assert stripped == ""
     assert long_arg not in stripped
 
 
@@ -2843,6 +3849,7 @@ def test_reconcile_auto_writes_fact_and_skips_preference(tmp_path):
     assert summary["skipped_preferences"] == 1
     assert "Dr. Lo Hak Keung" in semantic
     assert "phone:2830 3709" in semantic
+    assert "speaker_source:keith" in semantic
     assert "plain English over jargon" not in semantic
     assert "plain English over jargon" not in learnings
     review_text = "\n".join(p.read_text(encoding="utf-8") for p in (vault / "review").glob("*.md"))

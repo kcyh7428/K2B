@@ -1,0 +1,680 @@
+{
+  "actions": [
+    {
+      "action": "builder-session",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-report.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-brief.md",
+      "modelEvidence": "gpt-5.6-sol",
+      "sessionId": "/root/checkpoint1_ingestion"
+    },
+    {
+      "action": "builder-continuation",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-report.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-resume-1.md",
+      "modelEvidence": "gpt-5.6-sol",
+      "sessionId": "/root/checkpoint1_ingestion"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-review.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-review.md",
+      "candidateFingerprint": "9b2ec0ad60958846cea16912171896d513a6514bb42e3f73110597dab3db045a",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "correction",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-correction-1.md"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-rereview.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-rereview.md",
+      "candidateFingerprint": "6a7e7760b42c7c3565ae3a394436e4c5499d0ac95d6cd16f390b5ee8299bcaa3",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "correction",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-residual-1.md"
+    },
+    {
+      "action": "builder-session",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-report.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-residual-1.md",
+      "modelEvidence": "gpt-5.6-sol",
+      "sessionId": "/root/checkpoint1_residual"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-review.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-review.md",
+      "candidateFingerprint": "36c3f3c7aa4a6c210244eadb000a7799b4188b12add3a39936a43cefcd6ed9df",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "correction",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-closure-fixes.md"
+    },
+    {
+      "action": "builder-continuation",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-report.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-closure-fixes.md",
+      "modelEvidence": "gpt-5.6-sol",
+      "sessionId": "/root/checkpoint1_residual"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-closure-rereview.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-closure-rereview.md",
+      "candidateFingerprint": "dd234bb3513236209ffb7f3000f5ee45e71704df147772710d12d518c42af226",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-quote-slice-review.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-quote-slice-review.md",
+      "candidateFingerprint": "d98d64277b69fc47b3c3c53561032cc9bd8e4a92ac6d9c4c7d19b24793c13ae6",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "correction",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-final-slice-correction.md"
+    },
+    {
+      "action": "builder-session",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-report.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-final-slice-correction.md",
+      "modelEvidence": "gpt-5.6-sol",
+      "sessionId": "/root/checkpoint1_slice_fix"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-slice-targeted-rereview.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-slice-targeted-rereview.md",
+      "candidateFingerprint": "7be5c80fc8640823395ebcc19407d950f8d16d44ee6c8d45d593f4e5b91bc9a7",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "correction",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-malformed-legacy-correction.md"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-malformed-legacy-response.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-malformed-legacy-request.md",
+      "candidateFingerprint": "f1e449deaa92e670b8c29fdfb8f7c1e8b950b0a3fd28a4cd23aeb86be8b060f6",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-coordinator-modern-boundary-closure.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-coordinator-modern-boundary-closure.md",
+      "candidateFingerprint": "ab7627820052458d1223c777e6770b4d48292e3aa88820a38943e00c27f205d0",
+      "reviewerFamily": "openai",
+      "verdict": "PASS"
+    },
+    {
+      "action": "canonical-gate",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-coordinator-modern-boundary-closure.md"
+    },
+    {
+      "action": "builder-session",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-report.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-brief.md",
+      "modelEvidence": "gpt-5.6-sol",
+      "sessionId": "/root/checkpoint2_memory"
+    },
+    {
+      "action": "review",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-astra-review-response.md",
+      "attemptArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-astra-review-request.md",
+      "candidateFingerprint": "e2d0a22b23ad8d16b20e8ad048aaaa05999dc45de12420e31378920b964a8781",
+      "reviewerFamily": "openai",
+      "verdict": "FINDINGS"
+    },
+    {
+      "action": "correction",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-correction.md"
+    },
+    {
+      "action": "canonical-gate",
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-report.md"
+    }
+  ],
+  "allowedPaths": [
+    "AGENTS.md",
+    "plans/2026-09-11_k2b-stage1-automatic-memory-repair.md",
+    "scripts/codex-discovery-job.sh",
+    "scripts/eod-capture.py",
+    "scripts/lib/automatic_memory.py",
+    "scripts/lib/automatic_memory_publisher.py",
+    "scripts/lib/eod_capture.py",
+    "scripts/prompts/automatic-memory-native.md",
+    "scripts/prompts/eod-capture-extract.md",
+    "tests/codex-discovery-job.test.sh",
+    "tests/test_automatic_memory_publisher.py",
+    "tests/test_eod_capture.py",
+    "tests/test_eod_capture_status.py",
+    "tests/test_automatic_memory.py"
+  ],
+  "attempts": [
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-brief.md",
+      "candidateFingerprint": null,
+      "evidence": "gpt-5.6-sol",
+      "kind": "builder-session",
+      "reviewerFamily": null,
+      "sessionId": "/root/checkpoint1_ingestion",
+      "status": "activated"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-resume-1.md",
+      "candidateFingerprint": null,
+      "evidence": "gpt-5.6-sol",
+      "kind": "builder-continuation",
+      "reviewerFamily": null,
+      "sessionId": "/root/checkpoint1_ingestion",
+      "status": "activated"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-review.md",
+      "candidateFingerprint": "9b2ec0ad60958846cea16912171896d513a6514bb42e3f73110597dab3db045a",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-review.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-rereview.md",
+      "candidateFingerprint": "6a7e7760b42c7c3565ae3a394436e4c5499d0ac95d6cd16f390b5ee8299bcaa3",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-rereview.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-residual-1.md",
+      "candidateFingerprint": null,
+      "evidence": "gpt-5.6-sol",
+      "kind": "builder-session",
+      "reviewerFamily": null,
+      "sessionId": "/root/checkpoint1_residual",
+      "status": "activated"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-review.md",
+      "candidateFingerprint": "36c3f3c7aa4a6c210244eadb000a7799b4188b12add3a39936a43cefcd6ed9df",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-review.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-closure-fixes.md",
+      "candidateFingerprint": null,
+      "evidence": "gpt-5.6-sol",
+      "kind": "builder-continuation",
+      "reviewerFamily": null,
+      "sessionId": "/root/checkpoint1_residual",
+      "status": "activated"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-closure-rereview.md",
+      "candidateFingerprint": "dd234bb3513236209ffb7f3000f5ee45e71704df147772710d12d518c42af226",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-closure-rereview.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-quote-slice-review.md",
+      "candidateFingerprint": "d98d64277b69fc47b3c3c53561032cc9bd8e4a92ac6d9c4c7d19b24793c13ae6",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-quote-slice-review.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-final-slice-correction.md",
+      "candidateFingerprint": null,
+      "evidence": "gpt-5.6-sol",
+      "kind": "builder-session",
+      "reviewerFamily": null,
+      "sessionId": "/root/checkpoint1_slice_fix",
+      "status": "activated"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-slice-targeted-rereview.md",
+      "candidateFingerprint": "7be5c80fc8640823395ebcc19407d950f8d16d44ee6c8d45d593f4e5b91bc9a7",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-slice-targeted-rereview.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-malformed-legacy-request.md",
+      "candidateFingerprint": "f1e449deaa92e670b8c29fdfb8f7c1e8b950b0a3fd28a4cd23aeb86be8b060f6",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-malformed-legacy-response.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-coordinator-modern-boundary-closure.md",
+      "candidateFingerprint": "ab7627820052458d1223c777e6770b4d48292e3aa88820a38943e00c27f205d0",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-coordinator-modern-boundary-closure.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "PASS"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-brief.md",
+      "candidateFingerprint": null,
+      "evidence": "gpt-5.6-sol",
+      "kind": "builder-session",
+      "reviewerFamily": null,
+      "sessionId": "/root/checkpoint2_memory",
+      "status": "activated"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-astra-review-request.md",
+      "candidateFingerprint": "e2d0a22b23ad8d16b20e8ad048aaaa05999dc45de12420e31378920b964a8781",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-astra-review-response.md",
+      "kind": "review",
+      "reviewerFamily": "openai",
+      "sessionId": null,
+      "status": "verdict",
+      "verdict": "FINDINGS"
+    }
+  ],
+  "checkpoint1IngestionClosure": {
+    "architectureVerdict": "PASS",
+    "diffFingerprint": "ab7627820052458d1223c777e6770b4d48292e3aa88820a38943e00c27f205d0",
+    "productionFileSha256": "fad00ee2f775b843e186d24562560843ec683d133ba863672560e5cf2e320679",
+    "reviewArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-coordinator-modern-boundary-closure.md",
+    "scope": "malformed-event closure and previously reviewed attribution/provenance invariants; runner feasibility excluded",
+    "tests": "307 capture/status; 38 focused; reviewer 66 focused"
+  },
+  "checkpoint2DeterministicStatus": {
+    "astraReview": "PASS",
+    "correctedCandidateFingerprint": "bdcd24931448cc29db488000835b1591bab0be5089adcb8543d7a0046c34ec42",
+    "correctedProductionFileSha256": "6bd4b8ffa8cb11b14ea6851b2e3c7f8aad1f2ae7b5ce9cf06f27939baa7ab00b",
+    "correctedTestFileSha256": "1529b7f5425c5743b1c2746dd1da93d229c45293e884fdcef04a5606e894925c",
+    "knownFindingsResolved": 3,
+    "reviewArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-coordinator-closure.md",
+    "reviewedCandidateFingerprint": "e2d0a22b23ad8d16b20e8ad048aaaa05999dc45de12420e31378920b964a8781",
+    "status": "foundation-implemented-tested-scoped-reviewed-pass-integration-pending",
+    "supervisoryClosure": "existing Astra audit reviewer independently passed 47 corrected module tests; coordinator independently passed 354 combined tests on unchanged hashes",
+    "tests": "47 focused checkpoint-2; 354 combined capture/status; target-Python discovery and syntax/diff checks pass"
+  },
+  "checkpoint2IntegrationSlice": {
+    "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-integration-slice.md",
+    "candidateFingerprint": "da2b5028d553faee809c9233eae463e17bc9e9cde28d5c3ae6f222f2a4cf4374",
+    "evidenceArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-integration-report.md",
+    "productionHashes": {
+      "scripts/lib/automatic_memory.py": "1610c5c8add88bf917b94853252c031d91514de6ccf63e5b9994c4892ee0fe2c",
+      "scripts/lib/eod_capture.py": "07dc033702311b0c955d2e5db398388ccd6fa09114413fa958b999ef5fe0ddfa",
+      "scripts/prompts/eod-capture-extract.md": "d935ffda067dcd022689131ee6e8a1a5da776a2acc6f7b15c042af9f9034a35d"
+    },
+    "finalNativeReview": {
+      "astra": "scoped PASS on receipt/retry and diagnostic ordering",
+      "kimiArtifact": ".code-reviews/2026-09-12T08-05-36Z_9c5aba.log",
+      "kimiVerdict": "APPROVE"
+    },
+    "finalCaptureArchitectureReview": {
+      "candidateProductionHash": "31f5c5e45fadb64ea2ae967733b8320836d6bb211be2abea11c21fc61c0ba314",
+      "focusedChecks": 12,
+      "verdict": "PASS"
+    },
+    "persistenceReview": {
+      "attempt": "2026-09-12T08-01-56Z_bdf5e8",
+      "status": "NO_VERDICT_REPEATED_OUTPUT_CAP_STOP",
+      "requiredNextAction": "explicitly authorized independent review alternative"
+    },
+    "externalSupervisoryReview": {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-home-integration-review.md",
+      "candidate": "1425056b7074d50c5274ffe1f171c390fb914eaa98fb5fca912d7a769d361189",
+      "findings": 3,
+      "reviewer": "Home GPT-6 coordinator",
+      "verdict": "FINDINGS"
+    },
+    "knownIntegrationFindingsResolved": 3,
+    "externalSupervisoryClosure": {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-home-integration-rereview.md",
+      "candidate": "da2b5028d553faee809c9233eae463e17bc9e9cde28d5c3ae6f222f2a4cf4374",
+      "scope": "three demonstrated integration findings only",
+      "verdict": "PASS"
+    },
+    "reviewNeed": "independent Kimi integration review in progress under Home coordinator; whole-cohort shipping review remains required before delivery",
+    "reviewRequestArtifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-home-integration-rereview-request.md",
+    "scope": "validated extraction adapter, durable public commands, injected public-flow tests, and Home-writer-only shared-recall publication preparation",
+    "status": "integration-findings-corrected-tested-supervisory-pass-kimi-review-in-progress",
+    "tests": "consolidated finding matrix plus 365 combined automatic-memory/capture/status pass; target-Python discovery, py_compile and diff checks pass"
+  },
+  "checkpoint2NativeIntegration": {
+    "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-native-integration-correction.md",
+    "candidateFingerprint": "c60e4826c4a40fc46fc72c2b6d334e6b3bfdb3f4f0d4a50cb8ee2216857f07db",
+    "independentKimiPredecessorReview": {
+      "artifact": ".minimax-reviews/2026-09-12T06-53-03Z_files.json",
+      "candidate": "da2b5028d553faee809c9233eae463e17bc9e9cde28d5c3ae6f222f2a4cf4374",
+      "disposition": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-kimi-integration-disposition.md",
+      "verdict": "NEEDS-ATTENTION"
+    },
+    "knownFindingsResolved": {
+      "finalAcceptedCapture": 5,
+      "finalAcceptedNative": 7,
+      "kimiPreFreeze": 4,
+      "preFreezeIntegrationFamilies": 5
+    },
+    "productionHashes": {
+      "scripts/lib/automatic_memory.py": "8615e01bc63964787ecc72c79b4433aeb6b51c66c7eeb84f982d00ded82ff3f3",
+      "scripts/lib/automatic_memory_publisher.py": "41daa90051b34a1333e4033841cfa29b54a17fc37d0e3896fb3f0f9b7e2b56eb",
+      "scripts/lib/eod_capture.py": "31f5c5e45fadb64ea2ae967733b8320836d6bb211be2abea11c21fc61c0ba314",
+      "scripts/prompts/automatic-memory-native.md": "e0274706ba776e45c2e4adb3e2f7fdaa30cbe12914292bd7afa3fef6ea7e79f4",
+      "scripts/prompts/eod-capture-extract.md": "d935ffda067dcd022689131ee6e8a1a5da776a2acc6f7b15c042af9f9034a35d"
+    },
+    "reviewNeed": "native orchestration and publisher have scoped Astra/Kimi approval and final capture architecture has scoped Astra PASS; independent capture/persistence Kimi review requires an explicit alternative after two truncated no-verdict packets; manager review counters remain 9/9",
+    "runnerState": "supported Home synthetic Automation completed once and is paused; production scope/cadence/quota/missed-run/SJM behavior and 15-minute target remain unverified",
+    "status": "implemented-tested-frozen-review-pending-not-activated",
+    "tests": "446 combined Python tests; 5 external reproducers; discovery, hooks, authority, py_compile and diff checks pass"
+  },
+  "checkpoint3RolloutPreparation": {
+    "artifact": "plans/2026-09-09_k2b-stage1-acceptance.md",
+    "removals": "none; replacement proof is incomplete",
+    "status": "prepared-not-activated-not-accepted",
+    "tests": "twenty literal source-backed fact/decision/preference/commitment items pass through worklist, extraction receipt, Home drain, real publisher with synthetic preflight, and fresh SJM-role cited recall",
+    "trial": "exact Home/SJM activation ordering and seven-day evidence/rollback protocol documented"
+  },
+  "commandRuns": [
+    {
+      "command": "py_compile + pytest capture/status + discovery shell + git diff check",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "6a7e7760b42c7c3565ae3a394436e4c5499d0ac95d6cd16f390b5ee8299bcaa3"
+    },
+    {
+      "command": "py_compile + pytest capture/status + discovery shell + git diff check",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "36c3f3c7aa4a6c210244eadb000a7799b4188b12add3a39936a43cefcd6ed9df"
+    },
+    {
+      "command": "py_compile + pytest capture/status + discovery shell + git diff check",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "dd234bb3513236209ffb7f3000f5ee45e71704df147772710d12d518c42af226"
+    },
+    {
+      "command": "AGENTS capture and authority gate including eod-capture-cron.test.sh",
+      "evidence": null,
+      "result": "FAIL",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "d98d64277b69fc47b3c3c53561032cc9bd8e4a92ac6d9c4c7d19b24793c13ae6"
+    },
+    {
+      "command": "py_compile + 252 capture/status tests + discovery + hooks + session hook + authority + diff check",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "d98d64277b69fc47b3c3c53561032cc9bd8e4a92ac6d9c4c7d19b24793c13ae6"
+    },
+    {
+      "command": "py_compile + 269 capture/status tests + discovery shell + diff check",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "7be5c80fc8640823395ebcc19407d950f8d16d44ee6c8d45d593f4e5b91bc9a7"
+    },
+    {
+      "command": "20 malformed matrix + 39 slice/replay + 289 capture/status + discovery + py_compile + diff check",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "f1e449deaa92e670b8c29fdfb8f7c1e8b950b0a3fd28a4cd23aeb86be8b060f6"
+    },
+    {
+      "command": "py_compile + pytest automatic-memory/capture/status + target-Python discovery + diff checks",
+      "evidence": null,
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "bdcd24931448cc29db488000835b1591bab0be5089adcb8543d7a0046c34ec42"
+    },
+    {
+      "command": "6 focused public-flow + 360 combined automatic-memory/capture/status + target-Python discovery + py_compile + diff checks",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-integration-report.md",
+      "result": "PASS",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "1425056b7074d50c5274ffe1f171c390fb914eaa98fb5fca912d7a769d361189"
+    },
+    {
+      "command": "coordinator integration reproducer + consolidated finding matrix + 365 combined automatic-memory/capture/status + py_compile + diff checks",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-integration-correction.md",
+      "result": "PASS_WITH_DOCUMENTED_REPRODUCER_ALTERNATIVE",
+      "retryKind": null,
+      "retryReason": null,
+      "tree": "da2b5028d553faee809c9233eae463e17bc9e9cde28d5c3ae6f222f2a4cf4374"
+    },
+    {
+      "command": "423 combined Python tests + 5 external reproducers + discovery/hooks/authority + py_compile + diff checks",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-native-integration-correction.md",
+      "result": "PASS_WITH_ENVIRONMENT_SPECIFIC_CRON_PROOF_RETAINED_SEPARATELY",
+      "retryKind": null,
+      "retryReason": "current sandbox denies sysmond/pgrep process enumeration; task-1 native runner proof retained",
+      "tree": "b2cf32ef42e930731cf016b7293d34a6bc92158728d6e2a74a0d2d85ecac3458"
+    },
+    {
+      "command": "446 combined Python tests + 5 external reproducers + discovery/hooks/authority + py_compile + diff checks",
+      "evidence": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-native-integration-correction.md",
+      "result": "PASS_WITH_ENVIRONMENT_SPECIFIC_CRON_PROOF_RETAINED_SEPARATELY",
+      "retryKind": null,
+      "retryReason": "current sandbox denies sysmond/pgrep process enumeration; task-1 native runner proof retained",
+      "tree": "c60e4826c4a40fc46fc72c2b6d334e6b3bfdb3f4f0d4a50cb8ee2216857f07db"
+    }
+  ],
+  "counters": {
+    "builderContinuationAttempts": 2,
+    "builderContinuations": 2,
+    "builderLaunchAttempts": 4,
+    "builderSessions": 4,
+    "canonicalGateRuns": 2,
+    "correctionPackets": 6,
+    "reviewInvocations": 9,
+    "reviewLaunchAttempts": 9
+  },
+  "currentCheckpoint": 2,
+  "limits": {
+    "builderContinuationAttempts": 2,
+    "builderContinuations": 2,
+    "builderLaunchAttempts": 4,
+    "builderSessions": 4,
+    "canonicalGateRuns": 2,
+    "correctionPackets": 6,
+    "reviewInvocations": 9,
+    "reviewLaunchAttempts": 9
+  },
+  "managerOwnedPaths": [
+    "plans/.stage1-automatic-memory-ship-state.json",
+    "plans/2026-09-11_k2b-stage1-automatic-memory-repair.md"
+  ],
+  "deliveryAuthorization20260913": {
+    "authority": "Keith explicitly answered do it to approval of the one-time Astra review exception and committing, pushing, installing and activating on both Macs",
+    "candidateFingerprint": "c60e4826c4a40fc46fc72c2b6d334e6b3bfdb3f4f0d4a50cb8ee2216857f07db",
+    "reviewException": "Accept existing scoped Astra PASS for the remaining capture/persistence partition only; Astra is same-family, not independent. Preserve Kimi publisher and native orchestration approvals and both persistence NO VERDICT records.",
+    "deliveryState": "authorized; Git delivery in progress; neither host activated; seven-day trial not started",
+    "countersPreserved": true
+  },
+  "phase": "stopped",
+  "productiveResidualRollover": {
+    "limit": 1,
+    "predecessorCandidate": "6a7e7760b42c7c3565ae3a394436e4c5499d0ac95d6cd16f390b5ee8299bcaa3",
+    "reason": "Astra findings-only re-review identified five concrete same-manifest residual defects after measurable checkpoint-1 progress.",
+    "used": 1
+  },
+  "resumeAuthority20260911": {
+    "candidate": "d98d64277b69fc47b3c3c53561032cc9bd8e4a92ac6d9c4c7d19b24793c13ae6",
+    "closureReviews": 2,
+    "reason": "Keith authorized one Astra closure review of the final quote-slice correction and one targeted re-review only if a concrete new defect is fixed."
+  },
+  "schemaVersion": 3,
+  "stoppedFrom": "correct",
+  "supervisorFinalCorrection20260912": {
+    "candidate": "c60e4826c4a40fc46fc72c2b6d334e6b3bfdb3f4f0d4a50cb8ee2216857f07db",
+    "predecessor": "b2cf32ef42e930731cf016b7293d34a6bc92158728d6e2a74a0d2d85ecac3458",
+    "reason": "Coordinator supplied the bounded final Astra/Kimi findings and authorized exact test-first corrections without resetting the preserved manager review counters."
+  },
+  "supervisorResume20260911MalformedLegacy": {
+    "candidate": "7be5c80fc8640823395ebcc19407d950f8d16d44ee6c8d45d593f4e5b91bc9a7",
+    "correctionPackets": 1,
+    "reason": "Keith authorized one narrow validation-boundary correction and one Astra closure review for the reproduced malformed legacy TypeErrors."
+  },
+  "transitions": [
+    {
+      "from": "plan",
+      "reason": "Approved Stage 1 automatic-memory repair resumed at checkpoint 1",
+      "to": "build"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-report.md",
+      "from": "build",
+      "to": "stabilize"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-final-review.md",
+      "from": "stabilize",
+      "to": "review"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-closure-fixes.md",
+      "from": "review",
+      "to": "correct"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-closure-rereview.md",
+      "from": "correct",
+      "to": "rereview"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-resume-card-blocked.md",
+      "from": "rereview",
+      "to": "stopped"
+    },
+    {
+      "from": "stopped",
+      "reason": "Supervisor-authorized malformed legacy validation correction",
+      "to": "correct"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-malformed-legacy-request.md",
+      "from": "correct",
+      "to": "rereview"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-1-astra-malformed-legacy-response.md",
+      "from": "rereview",
+      "to": "stopped"
+    },
+    {
+      "from": "stopped",
+      "reason": "Coordinator modern-boundary correction and scoped Astra PASS reconciled; begin approved checkpoint 2 deterministic interfaces",
+      "to": "build"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-report.md",
+      "from": "build",
+      "to": "stabilize"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-astra-review-request.md",
+      "from": "stabilize",
+      "to": "review"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-correction.md",
+      "from": "review",
+      "to": "correct"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-status-stopped.md",
+      "from": "correct",
+      "to": "stopped"
+    },
+    {
+      "from": "stopped",
+      "reason": "Keith resumed the same task for the bounded remaining checkpoint-2 integration after coordinator supervisory module closure; all prior counters preserved",
+      "to": "build"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-integration-report.md",
+      "from": "build",
+      "reason": "bounded integration slice implemented and tested; automatic review capacity remains 9/9",
+      "to": "stopped"
+    },
+    {
+      "from": "stopped",
+      "reason": "Home coordinator external supervisory review returned three reproduced integration findings without consuming or resetting the preserved 9/9 manager counter",
+      "to": "correct"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-integration-correction.md",
+      "from": "correct",
+      "reason": "all three integration findings corrected test-first; findings-only coordinator re-review externally owned",
+      "to": "stopped"
+    },
+    {
+      "from": "stopped",
+      "reason": "Coordinator authorized one consolidated correction for the actual Kimi NEEDS-ATTENTION findings and the remaining deterministic native orchestration residual",
+      "to": "correct"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-native-integration-correction.md",
+      "from": "correct",
+      "reason": "native orchestration candidate frozen after 423 combined tests and five external reproducers; final coordinator-owned reviews pending",
+      "to": "stopped"
+    },
+    {
+      "from": "stopped",
+      "reason": "Coordinator supplied bounded final Astra/Kimi findings and preserved accepted/rejected dispositions without resetting manager counters",
+      "to": "correct"
+    },
+    {
+      "artifact": ".superpowers/sdd/2026-09-11_k2b-stage1-automatic-memory-repair/task-2-native-integration-correction.md",
+      "from": "correct",
+      "reason": "final corrected candidate frozen after 446 combined tests and five external reproducers; native/publisher approved, source-unavailable closure pending, persistence review blocked after repeated no-verdict truncation",
+      "to": "stopped"
+    }
+  ]
+}

@@ -9,9 +9,21 @@ extraction.
 Extract only durable items from Keith's own words or explicit assistant-confirmed decisions:
 - fact
 - decision
+- preference
+- commitment
 - learning
 
-Do not extract preferences in Ship 1. If a sentence looks like a preference, omit it entirely.
+Role attribution is binding. Text under `[user]` is Keith-origin and may use
+`speaker_source: "keith"`. Text under `[assistant]` remains assistant-origin
+and may use only `speaker_source: "assistant_confirmed"`. An assistant proposal,
+suggestion, plan, or interpretation is not a Keith decision. Treat it as a
+decision only when Keith explicitly accepts it in later `[user]` dialogue, and
+cite Keith's acceptance as the evidence.
+
+Preferences and commitments require Keith-authored evidence. Do not turn an
+assistant suggestion, proposed task, or inferred taste into Keith's preference
+or commitment unless Keith explicitly states or accepts it in later `[user]`
+dialogue; cite that Keith event.
 
 Return this JSON shape:
 
@@ -19,7 +31,7 @@ Return this JSON shape:
   "schema_version": "1.0",
   "items": [
     {
-      "kind": "fact|decision|learning",
+      "kind": "fact|decision|preference|commitment|learning",
       "subtype": "person_contact|project_status|correction|other",
       "subject": "short canonical subject",
       "predicate": "short snake_case predicate such as phone, works_at, lives_in, or status",

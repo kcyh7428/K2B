@@ -1,6 +1,6 @@
 # K2B Stage 1 acceptance record — 2026-09-10
 
-Status: **activated and operationally verified on both Macs; final acceptance is blocked only by GitHub-origin authentication and Home automation registration**
+Status: **the 2026-09-10 manual-capture baseline is activated on both Macs; the 2026-09-12 automatic-memory extension is implemented and synthetically tested but is not committed, pushed, activated, or accepted**
 
 Scope is the Home MacBook Pro and SJM MacBook Pro only. The retired Mac Mini was not contacted. Stage 2 local-model work was not started.
 
@@ -72,3 +72,95 @@ All substantive Kimi findings that were returned were fixed and regression-teste
 2. Bring the Home Codex host control surface online and register/read back the matching daily 23:30 HKT Home discovery automation. Until then, Home discovery remains available as the verified deterministic manual entrypoint.
 
 No Stage 2 local-model work is included. These two control-plane blockers do not invalidate the live capture, Kimi, recall, Syncthing, authority, or replay canaries, but they prevent claiming completely closed Stage 1 acceptance.
+
+## Automatic-memory extension rollout preparation — 2026-09-12
+
+This section preserves the historical baseline evidence above while tracking the
+newly approved automatic-memory repair as a distinct delivery state.
+
+| State | Automatic-memory extension evidence |
+|---|---|
+| Proposed/approved | Approved Stage 1 plan in `2026-09-11_k2b-stage1-automatic-memory-repair.md` |
+| Implemented | Source-verifying adapter; durable local queue, acceptance, reconciliation, recall and status; Home-only injected publication boundary |
+| Tested | Synthetic public flow, twenty seeded items, offline retry, crash/replay, correction ordering, provisional/current recall and failed acceptance |
+| Architecture reviewed | Checkpoint-1 ingestion, deterministic memory foundation, publisher, native orchestration and final capture candidate have scoped Astra PASS verdicts |
+| Independently reviewed | Publisher and native orchestration have scoped Kimi APPROVE; capture/persistence review is blocked after two truncated no-verdict packets |
+| Committed/pushed | **No** — no delivery authority has been exercised for this extension |
+| Activated Home/SJM | **No** — existing manual/discovery behavior remains unchanged |
+| Accepted | **No** — live two-host proof and the seven-day unattended trial have not run |
+
+### Replacement proof: retain before removal
+
+| Existing mechanism | Replacement evidence now available | Removal decision |
+|---|---|---|
+| Completed-turn capture parser and source-bundle validation | Reused directly by the automatic adapter; local/transported attribution and malformed-input suites pass | Retain as the single parser boundary |
+| Machine-local discovery and status | Automatic-memory status is additive; native runner feasibility is still under test | Retain unchanged |
+| Manual `stage-reviewed` and semantic shelf recall | New durable recall works synthetically, but real Home publication and fresh-task parity have not passed | Retain until post-trial parity |
+| Legacy interactive extraction paths | No supported production automatic runner has yet completed the bounded trial | Keep dormant; do not schedule or delete |
+| Manual redacted SJM source transfer | Durable outbox/acceptance is tested with an injected boundary, not live two-host transport | Retain until live delivery/retry proof |
+| On-demand research, media, NotebookLM and email capabilities | Outside the replacement target | Retain |
+
+No redundant mechanism qualifies for deletion at this checkpoint.
+
+### Exact activation sequence after review and delivery authority
+
+1. Freeze and independently review the final cohort: bounded Astra integration
+   verdict, then the required Kimi adversarial shipping verdict. Correct concrete
+   findings test-first and rerun only invalidated gates.
+2. Request separate authority for commit/push and for activation. A reviewed
+   worktree is not an activation obligation.
+3. Before any Home shared-memory publication, verify the live K2B Syncthing
+   folder is idle with zero needed files/bytes and no errors, confirm Home owns
+   the write, and confirm no concurrent editor has the target note open. Obtain
+   the explicit publication authority and update the activated worker prompt;
+   the current reviewed native prompt intentionally stops after durable Home
+   reconciliation. Publish only through the designated Home writer and verify
+   counterpart arrival.
+4. Activate Home first with production defaults still disabled. Run one
+   synthetic queue/accept/reconcile/recall canary and verify immutable receipts,
+   cited current recall and duplicate-free replay.
+5. Preserve SJM's local `AGENTS.md`, hooks and private state adaptations; update
+   its reviewed Git checkout deliberately. Verify SJM cannot write the shared
+   vault, can retain provisional recall while Home is offline, and consumes the
+   Home-published redacted state after Syncthing convergence. Before authorizing
+   unattended SJM extraction, reconcile the current discover-only `AGENTS.md`
+   policy as an explicit reviewed policy change.
+6. Register supported native runners on each required host only after a
+   per-host synthetic Automation probe establishes host/worktree access,
+   observed cadence, quota reporting, missed-run behavior and durable receipts.
+   The SJM runner may only build its local worklist, record native extraction
+   results and retain the resulting machine-local outbox; it remains read-only
+   for the shared vault. The Home runner drains Home work plus that SJM outbox
+   through the established pull/ack boundary before Home reconciliation. Do not
+   substitute cron, launchd or a hidden app. Start with bounded eligible sources;
+   broad backlog ingestion remains disabled.
+7. Seed twenty reviewed facts/decisions/preferences/commitments through the live
+   path. In fresh tasks on both Macs, verify the exact current values, citations
+   and superseded history, plus late-message preservation, crash/replay,
+   old-SJM/new-Home ordering and offline recovery.
+
+### Seven-day unattended acceptance trial
+
+The trial starts only after authorized activation and a passing live canary. For
+seven consecutive days, retain immutable runner and reconciliation receipts and
+record:
+
+- scheduled versus actual start time and observed cadence;
+- eligible completed sources, exclusions and completed-prefix cursors;
+- extraction, quota, retry, exhaustion and malformed-output outcomes;
+- SJM offline queue age and successful Home drain after reconnection;
+- Home shared-state publication hash and confirmed SJM arrival;
+- fresh-task recall results for seeded current, superseded and ambiguous items;
+- any ordinary memory that incorrectly requires Keith review.
+
+Acceptance requires all twenty seeds to remain correctly cited on both Macs,
+late turns to survive, replay to stay duplicate-free, older offline corrections
+not to override newer source evidence, and no silent lost/false-success state.
+Any genuine ambiguity, exhausted quota or persistent failure must remain an
+explicit exception. The proposed 15-minute recall target is accepted only if the
+observed runner-to-SJM arrival distribution supports it; registration or a
+configured interval is not evidence of achieved cadence.
+
+If a trial invariant fails, pause the native runner, preserve queues and
+receipts, keep the existing manual paths available, and return to the reviewed
+candidate. Do not delete durable state or silently fall back to a paid provider.
