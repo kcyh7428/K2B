@@ -5,7 +5,7 @@ description: Default desktop path for creating or updating K2B vault notes with 
 
 # K2B Vault Writer
 
-> **Host boundary:** On SJM, the synchronized K2B vault is read-only. Stop before any vault mutation and ask Keith to run the write on Home; only the usage helper may queue its small record locally.
+> **Host boundary:** Ordinary wiki notes (`wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference`) save locally on either Mac through `scripts/vault-note-write.py` during active user-requested conversations -- no Home availability required. The helper's folder-index row and master-count updates are part of this explicit interactive exception. Policy/control state, MOCs, shared logs, raw capture, bulk compile and background memory remain Home-owned. On SJM, finish the ordinary save, report its local receipt, and state any Home-only follow-up separately; do not block the save, mutate those files, or invent a queue for them.
 
 Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
 
@@ -21,15 +21,39 @@ Use this skill as the default desktop route for "save this", "capture this", "up
 
 Before writing any note, review the lifecycle rules in [[context_k2b-note-lifecycle]] (`wiki/context/context_k2b-note-lifecycle.md`). That note is the single source of truth for origin tagging, review properties, promote destinations, and the content pipeline.
 
+## Ordinary Note Save Procedure (MANDATORY for wiki/ note create or update)
+
+For ordinary notes under `wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference`, do NOT rewrite the note body with Edit/Write or Obsidian patch tools. Instead:
+
+1. **Prepare a private draft outside the vault** (for example under `/tmp` or `~/.local/state/k2b/drafts`) with the complete replacement note via apply_patch. The note must be valid UTF-8 Markdown with closed YAML frontmatter containing the core fields `tags`, `date`, `type`, `origin`, `up`, plus a nonempty body. One note per draft, at most 2 MiB.
+2. **Read the current target** and compute its sha256 (`shasum -a 256`), or pass `missing` for a new note. Read its folder index. An existing row determines the owning table; for a new note with multiple eligible tables, supply `--section 'Exact existing heading'` (for example `Backlog` or `SJM Resorts`). Missing or ambiguous ownership fails before saving. Pick a one-line summary; `--status` is only for a Status-column table, never a section selector. Fields must not contain newlines or `|` delimiters.
+3. **Invoke the writer:**
+
+   ```bash
+   python3 "$HOME/Projects/K2B/scripts/vault-note-write.py" write \
+     --path wiki/work/work_example.md \
+     --content-file /absolute/private-draft.md \
+     --expected-sha256 <current-hash|missing> \
+     --summary 'one line' \
+     --source-ref 'conversation or source identifier' \
+     [--status active] [--section 'Existing heading']
+   ```
+
+   `write` runs only for the approved operators (keithmbpm2, keithcheung) and needs PyYAML. On SJM use `$HOME/Projects/K2B/venv/k2b-note-save/bin/python`; elsewhere use the available project interpreter if default Python lacks PyYAML. Nothing is installed automatically. Success reports local saving, synchronization unverified. A completed identical operation is a no-op; changed summary/status is a new index update even when note bytes match. A `partial` result names the failed index or receipt step: retain the original draft, expected hash and command, resolve the reported cause, then retry that exact command. A persistently malformed index needs correction on Home; retries do not repair arbitrary malformed Markdown. Exit 2 means an observed conflict copy or stale expected hash: stop, preserve both versions, and surface it to Keith. This can occur after the note was saved; a partial receipt with `failed_step: conflict` requires manual resolution before retry, not repeated automatic retries.
+4. **Never** bypass the writer for these notes: it holds the local writer and designated index locks, keeps durable private before/after recovery copies plus a receipt under `~/.local/state/k2b` (never in the vault), and refuses to overwrite `.sync-conflict-*.md` copies.
+5. **Logging:** on Home, append the save to `wiki/log.md` via `scripts/wiki-log-append.sh` as usual. On SJM, do NOT run `wiki-log-append.sh` (shared hubs are Home-owned); the writer's local receipt is the record, and the small usage record may queue via `scripts/k2b-shared-append.py usage`.
+
+A real Syncthing conflict copy preserves both versions; do not delete or hand-merge conflict files without Keith's decision.
+
 ## Vault Query Tools
 
 - **Dataview DQL** (structured frontmatter queries): `~/Projects/K2B/scripts/vault-query.sh dql '<TABLE query>'`
 - **Full-text search**: `mcp__obsidian__search` MCP tool or `vault-query.sh search "<term>"`
 - **Read file**: `mcp__obsidian__get_file_contents` or Read tool
 - **List files**: `mcp__obsidian__list_files_in_dir`
-- **Patch content**: `mcp__obsidian__patch_content` for surgical frontmatter or section updates
+- **Patch content**: for ordinary notes, apply_patch a private replacement draft and use the writer. Other Home-only mutable notes retain their designated tools.
 
-Use `mcp__obsidian__search` or `mcp__obsidian__list_files_in_dir` to verify wikilink targets exist. Use `mcp__obsidian__patch_content` for targeted frontmatter updates without rewriting entire files.
+Use filesystem search or the available read-only Obsidian tools to verify wikilink targets. Ordinary frontmatter changes use the same private-draft writer procedure as body changes.
 
 ## Before Writing Any Note
 
@@ -57,11 +81,11 @@ When progress is made on a project, person interaction occurs, or a decision evo
    - `## Updates` -- append a new dated entry (`### YYYY-MM-DD`) with bullet points of what changed
    - `## Related Notes` -- add wikilinks to any new related notes (meetings, decisions, insights)
    - For person notes: append new interactions under `## Key Interactions`
-4. **Use Edit tool** (not Write) to surgically update sections without touching unrelated content
+4. **For ordinary notes:** copy current content into a private draft, apply_patch only the intended sections there, and save the complete draft through the writer. For other permitted Home-only mutable notes, use their designated surgical writer.
 5. **Verify** wikilinks in new content point to existing notes (glob first)
 
 ### Update Rules
-- Never overwrite the entire file -- only edit changed sections
+- Preserve unrelated sections and history verbatim in the replacement draft; the helper atomically replaces the file after its checks.
 - Always append to `## Updates` -- never remove previous entries
 - When checking off milestones, preserve the original text and just change `[ ]` to `[x]`
 - Add the date to checked-off milestones: `- [x] KIRA AirTable migration (2026-03-23)`
@@ -106,7 +130,7 @@ K2B uses a 3-layer vault architecture (Karpathy model):
 |-----------|-----------------|------------|
 | Project | `wiki/projects/` | k2b-compile or direct |
 | Person | `wiki/people/` | k2b-compile or direct |
-| Concept | `wiki/concepts/` | k2b-compile |
+| Concept | `wiki/concepts/` | k2b-compile or direct |
 | Insight | `wiki/insights/` | k2b-compile or /insight |
 | Reference | `wiki/reference/` | k2b-compile |
 | Work (SJM) | `wiki/work/` | k2b-compile or direct |
@@ -149,7 +173,7 @@ ONLY items requiring Keith's judgment: `origin: k2b-generate` content suggestion
 ---
 tags: [type-tag, domain-tags...]
 date: YYYY-MM-DD
-type: project | work | person | insight | content-idea | moc | daily | reference | k2b-feature
+type: project | work | person | concept | insight | content-idea | moc | daily | reference | k2b-feature
 origin: keith | k2b-extract | k2b-generate
 up: "[[relevant MOC or Home]]"
 ---
@@ -221,12 +245,12 @@ content-potential: true | false
 3. **Project links**: `[[project_slug]]`
 4. **Decision links**: `[[YYYY-MM-DD_decision-topic]]`
 5. **MOC uplinks**: Every note must have an `up` field in frontmatter pointing to its parent MOC
-6. **Bidirectional**: When creating a note that references another note, add a backlink in the referenced note's Related Notes section if practical
-7. **Stub creation**: If a link target doesn't exist, create a minimal stub note with just frontmatter and a `> Stub -- to be populated` callout
+6. **Bidirectional**: Save an ordinary referenced note's backlink via its own private draft, current hash and writer invocation. Home-only targets are a separate follow-up on SJM.
+7. **Stub creation**: Create ordinary stubs through the same writer, with required frontmatter and a `> Stub -- to be populated` body. Do not create out-of-scope stubs on SJM.
 
 ## MOC Integration
 
-After creating any note, add its link to the relevant MOC under the appropriate section header. The five MOCs are:
+On Home, add the note's link to the relevant MOC through the existing permitted path after the sync/policy checks. On SJM, leave MOCs unchanged and report the missing MOC link as a Home-only follow-up, not a failed ordinary save. The five MOCs are:
 
 - `[[MOC_SJM-Work]]` -- SJM team, searches, decisions, meetings
 - `[[MOC_TalentSignals]]` -- Signal Monitoring, R2, Reverse Recruiter, RecruitClaw, clients
@@ -298,12 +322,15 @@ If you're updating an existing review note, preserve any `review-action` or `rev
 
 **Every note created or updated must also update the relevant index.md.** No exceptions.
 
-After writing or updating any vault note:
-1. **Read** the folder's `index.md` (e.g., `wiki/projects/index.md` or `raw/youtube/index.md`)
+For ordinary wiki notes the writer inserts or updates the owning folder-index row, refreshes the folder date/count and master counts through the designated compile helpers and lock. This interactive index exception applies on both Macs. It supports Summary, Status/Summary and people Role/Context tables, plus concept phase/backlog tables; non-summary concept metadata stays unchanged (new values use `-`). Existing rows determine ownership; new rows in multi-table indexes require `--section`. Shipped tables are excluded. Do not hand-edit these indexes during ordinary saves. A missing/malformed index fails explicitly; retry repairs only the interrupted operation once its reported cause is resolved.
+
+For notes outside the ordinary roots (raw captures, review items, context pages), the manual steps below still apply:
+
+1. **Read** the folder's `index.md` (e.g., `raw/youtube/index.md`)
 2. **If new note**: Add a row to the index table with `[[filename]]`, one-line summary, and date
 3. **If updated note**: Update the summary and date in the existing row if the summary changed
 4. **If note moved/deleted**: Remove the old index entry, add to new location's index
-5. **Update wiki/index.md** master catalog entry counts if wiki/ subfolder changed
+5. **Update wiki/index.md** master counts on Home through the designated helper. SJM cannot perform these non-ordinary writes; report a Home-only follow-up without inventing a queued record.
 
 Index format (one line per page, keep it short):
 ```markdown
@@ -339,12 +366,12 @@ After creating any note, run a cross-link pass to connect it to existing vault c
 1. **Scan the new note** for mentions of people, projects, work items, or concepts
 2. **For each mentioned entity**:
    - Glob to check if a page exists (e.g., `wiki/people/person_*.md`)
-   - If exists: add a wikilink in the new note AND add a dated backlink in the entity page's `## Updates` or `## Key Interactions` section
-   - If not exists: create a stub from template in wiki/{subfolder}/, add to index
-3. **Update `wiki/log.md` via helper:**
+   - If an ordinary entity page exists: if its wikilink is missing from the saved note, prepare another private draft and save that addition through the writer. Save the entity's dated backlink through its own writer invocation, preserving its history.
+   - If absent: create an ordinary stub through the writer and its index procedure. On SJM, out-of-scope targets remain Home-only follow-ups.
+3. **On Home only, update `wiki/log.md` via helper:**
    `scripts/wiki-log-append.sh /vault-writer <note-path> "created/updated: <summary>, linked: <targets>"`
 
-Helper is the only permitted writer for wiki/log.md. Do NOT `>>`-append directly.
+The helper is the only permitted writer for wiki/log.md. On SJM never invoke it: use the ordinary save's local receipt and the permitted usage queue. Do not append the shared log directly.
 
 This pass runs AFTER the note is written and validated, not during writing.
 
@@ -358,7 +385,7 @@ Before writing, editing, or deleting ANY vault note, check the policy ledger:
 2. **Filter** entries where `scope` matches this skill (`k2b-vault-writer`) or is `*` (global)
 3. **For each matching guard**: verify the action complies with the rule. If it doesn't, stop and adjust.
 4. **For each matching autonomy entry**: if `auto_eligible` is true AND the action matches, proceed without asking Keith. Otherwise, ask Keith for approval.
-5. **After Keith approves/rejects an autonomy action**: update the ledger entry's `approved`/`rejected` count. When `approved >= graduation_threshold` AND `rejected / (approved + rejected) < max_rejection_rate`, propose auto-eligibility to Keith. If Keith confirms, set `auto_eligible: true`.
+5. **After Keith approves/rejects an autonomy action, on Home only**: update the ledger entry's `approved`/`rejected` count through its designated writer. When graduation criteria are met, propose auto-eligibility for Keith's confirmation. On SJM leave the ledger unchanged and report that Home-only follow-up separately.
 
 The ledger is the executable form of K2B's learnings. Active rules and learnings are advisory text. The ledger is the gate.
 
@@ -387,7 +414,7 @@ After writing, confirm:
 - [ ] No em dashes in the content
 - [ ] File is saved in the correct folder
 - [ ] `origin` field is set (keith, k2b-extract, or k2b-generate)
-- [ ] Relevant MOC has been updated with a link to this note
+- [ ] Relevant MOC updated on Home, or explicitly reported as a Home-only follow-up on SJM
 
 ## Usage Logging
 

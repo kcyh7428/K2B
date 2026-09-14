@@ -16,7 +16,7 @@ The Mac Mini deployment lane is retired and outside this skill. A request that e
 1. Read `AGENTS.md` and inspect both Git working states.
 2. Preserve all uncommitted work. Before updating SJM, save and compare any local `AGENTS.md` and `.codex/hooks.json` adaptations; never overwrite them with a blind pull, checkout, or copy. Remove a divergence only after the incoming portable file is shown to preserve its behavior.
 3. Compare the common base and commits before proposing a Git update.
-4. Check Syncthing from each Mac. Require the K2B vault folder to be idle, with zero needed files, zero needed bytes, and no errors before editing a shared note.
+4. For direct edits to shared notes and shared hubs, check Syncthing from each Mac: require the K2B vault folder to be idle, with zero needed files, zero needed bytes, and no errors. Helper-based ordinary-note saves (`scripts/vault-note-write.py`) are the exception -- they are designed to complete locally on either Mac, including while Home is offline, and they refuse to overwrite real Syncthing conflict copies.
 5. Confirm no other session is editing the same shared note. Syncthing is replication, not locking or backup.
 
 ## Code synchronization
@@ -27,7 +27,11 @@ If either checkout is dirty or has diverged, stop before a destructive Git opera
 
 ## Vault synchronization
 
-Syncthing owns the vault transport. Home is the sole writer for the synchronized K2B vault. SJM must not edit ordinary notes or shared hubs directly. Only purpose-built source exports and small append records may queue under `~/.local/state/k2b/` for later Home reconciliation; other requested writes must be rerun on Home.
+Syncthing owns the vault transport. Ordinary wiki notes (`wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference`) may be saved locally on either Mac through `scripts/vault-note-write.py` during active user-requested conversations -- an urgent SJM save while Home is offline uses the local writer, not a Home task. Shared hubs (`wiki/log.md`, policy/control state, master compile indexes as batch operations, raw capture, background memory) remain Home-owned; SJM never appends Home shared logs directly and queues only its small records under `~/.local/state/k2b/`.
+
+A `.sync-conflict-*.md` copy means both versions exist and must be preserved. Do not delete, rename, or hand-merge conflict files; the writer refuses to overwrite a conflicted target, and the SessionStart hook warns on real conflict copies. Resolution is Keith's call after both versions have been read.
+
+Only purpose-built source exports and small append records may queue under `~/.local/state/k2b/` for later Home reconciliation; other requested writes must be rerun on Home.
 
 Verify counterpart arrival by content hash or a unique synthetic marker, then remove test artifacts only when that cleanup was part of the authorized test.
 

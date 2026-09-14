@@ -66,6 +66,8 @@ bash tests/codex-hooks.test.sh
 bash tests/session-start-hook.test.sh
 bash tests/verify-codex-authority.test.sh
 scripts/verify-codex-authority.sh
+python3 -m pytest tests/test_vault_note_write.py -q
+bash tests/vault-note-authority.test.sh
 ```
 
 Run focused tests before broader suites. Shell tests use `mktemp -d`, clean up through traps, and redirect real paths through `K2B_*` overrides. Python 3.12 is the target. TypeScript is strict and uses ES modules.
@@ -102,12 +104,18 @@ Run `scripts/verify-codex-authority.sh` whenever instructions, skills, hooks, or
 
 ## Synchronization and writers
 
-Syncthing is replication, not a lock or backup. Before editing a shared vault note, require the K2B vault folder to be idle, with zero needed files/bytes and no errors, and confirm no other session is editing the same note.
+Syncthing is replication, not a lock or backup. For direct edits to shared notes and shared hubs, require the K2B vault folder to be idle, with zero needed files/bytes and no errors, and confirm no other session is editing the same note. The helper-based ordinary-note path below is the bounded exception: it completes locally on either Mac, including while Home is offline, and it refuses to overwrite real Syncthing conflict copies.
 
-Home alone writes shared hubs:
+### Ordinary note saves (both Macs)
+
+Ordinary notes -- Markdown under `wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference` -- save locally on either Mac through `scripts/vault-note-write.py` during active user-requested conversations, without Home availability. The writer takes a local lock and the designated index lock, checks the expected content hash, refuses to overwrite a real Syncthing conflict copy, keeps durable private before/after recovery copies plus a small receipt under `~/.local/state/k2b` (never in the synchronized vault), updates the note's folder index row and master counts through the imported `compile-index-update.py` helpers, and reports `saved locally; synchronization unverified`. A `partial` result means the note saved but a later step failed: resolve the reported cause, then retry the original command. If `failed_step` is `conflict` (exit 2), stop and resolve it manually first; retrying alone cannot fix a conflict. The SessionStart hook warns only on real `.sync-conflict-*.md` copies, via the writer's read-only `conflicts` subcommand.
+
+The writer is not a broadened capture path: it rejects index.md targets, `Shipped/`, hidden or escaping paths, symlinks, non-regular files, control/policy paths and malformed indexes. Policy ledgers, shared hubs, automatic memory, raw capture and bulk compile keep their existing ownership; only `k2b-vault-writer` routes ordinary saves this way.
+
+Home alone writes shared hubs and performs background index maintenance. The ordinary interactive helper's folder-row/master-count update described above is the only two-Mac index exception:
 
 - `wiki/log.md` through `scripts/wiki-log-append.sh`
-- compile indexes through `scripts/compile-index-update.py`
+- background/bulk compile indexes through `scripts/compile-index-update.py`
 - observer candidates/defers through their designated locked writers
 - usage logs and policy/memory ledgers through their designated writer
 - semantic capture reconciliation through the home capture path
@@ -153,7 +161,7 @@ When this checkout runs on `GLPs-MacBook-Pro` as `keithcheung`:
 - Translate home-Mac example paths to these local paths. Use local file tools and ripgrep for Vault search; Obsidian is optional.
 - Syncthing connects SJM only to Keith's home MacBook Pro. Do not contact, configure, sync to, or deploy to the Mac Mini.
 - The Git remote named `home` is the home MacBook source. Code does not travel through Syncthing.
-- SJM is read-only for the entire synchronized `K2B-Vault`. A skill that would create, edit, move, or delete anything in that vault must stop and tell Keith to run the write on Home; do not invent a general pending-write format. Only purpose-built source exports, discovery receipts, and small records routed by `scripts/k2b-shared-append.py` may be queued under `~/.local/state/k2b/`.
+- SJM is read-only for the synchronized `K2B-Vault` except for one bounded path: ordinary notes -- Markdown under `wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference` -- may be saved locally during active user-requested conversations through `scripts/vault-note-write.py`, which takes the locks, checks hashes, preserves conflict copies and updates the folder/master indexes. For every other vault write, a skill must stop and tell Keith to run the write on Home; do not invent a general pending-write format. Only purpose-built source exports, discovery receipts, and small records routed by `scripts/k2b-shared-append.py` may be queued under `~/.local/state/k2b/`.
 - SJM unattended work is restricted to local conversation discovery and the explicitly approved native automatic-memory job/probe described above. The native worker may extract one bounded local completed source into its private outbox; it must not invoke Kimi, reconcile Home memory, edit the Vault, or start other dormant routines.
 - Scheduled discovery runs `scripts/codex-discovery-job.sh sjm-source-only`; home uses the same entrypoint with role `home`. Receipts and failure state remain under `~/.local/state/k2b/`.
 - The project hook remains SessionStart-only. Before an SJM code update, preserve its existing `AGENTS.md` and `.codex/hooks.json` adaptations and compare them with the incoming portable versions. The shared hook resolves paths from `$HOME`; remove a local divergence only after confirming the incoming file preserves the required SJM behavior.

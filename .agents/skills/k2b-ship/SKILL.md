@@ -57,3 +57,5 @@ Use the state words precisely: `prepared`, `reviewed`, `committed`, `pushed`, `a
 - No direct file copy as a substitute for Git code delivery.
 - No blanket clean-state claim beyond inspected hosts and surfaces.
 - No vault lane/status transition without its actual acceptance evidence.
+- No claiming cross-Mac arrival from a local `saved-local` result: an ordinary-note save reports `synchronization unverified` until the counterpart's copy is hash-verified when reachable; fixture proof is not arrival.
+- No deleting or hand-merging Syncthing `.sync-conflict-*.md` copies; both versions are preserved until Keith decides.

@@ -153,3 +153,78 @@ for invalid_status in top-level-list counts-list; do
     || fail "$invalid_status status should degrade to an unreadable summary"
 done
 echo "PASS: non-object capture status degrades safely"
+
+# --- Syncthing conflict-copy warning ---------------------------------------
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+mkdir -p "$home_dir" "$vault/wiki/work"
+printf -- '---\ntags: [work]\n---\n# conflict version\n' \
+  > "$vault/wiki/work/work_kingdee-hris-recovery.sync-conflict-20260914-120000.md"
+out="$(run_hook "$home_dir" "$vault")"
+[[ "$out" == *"VAULT CONFLICT: wiki/work/work_kingdee-hris-recovery.sync-conflict-20260914-120000.md"* ]] \
+  || fail "known conflict copy should produce a SessionStart warning"
+echo "PASS: conflict copy warns"
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+mkdir -p "$home_dir" "$vault/wiki/work"
+printf -- '---\ntags: [work]\n---\n# ordinary note\n' \
+  > "$vault/wiki/work/work_ordinary.md"
+out="$(run_hook "$home_dir" "$vault")"
+[[ "$out" != *"VAULT CONFLICT"* ]] \
+  || fail "no conflict copies should produce no conflict prose"
+echo "PASS: no conflict copies stays silent"
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/missing-vault"
+mkdir -p "$home_dir/.codex/memories"
+cat > "$home_dir/.codex/memories/active_rules.md" <<'EOF'
+# Active Rules
+
+DOTFILE FALLBACK RULE TOKEN
+EOF
+out="$(run_hook "$home_dir" "$vault")"
+[[ "$out" != *"VAULT CONFLICTS"* ]] \
+  || fail "missing vault should not run the conflict check or add unknown prose"
+echo "PASS: missing vault preserves existing hook contract"
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+mkdir -p "$home_dir" "$vault/wiki/work"
+chmod 000 "$vault"
+out="$(run_hook "$home_dir" "$vault" 2>/dev/null)"
+chmod 700 "$vault"
+[[ "$out" == *"VAULT CONFLICTS: unknown"* ]] \
+  || fail "unreadable vault should yield an unknown conflict summary, got: $out"
+echo "PASS: unreadable vault yields unknown, not a false all-clear"
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+bin_dir="$root/bin"
+mkdir -p "$home_dir" "$vault/wiki/work" "$bin_dir"
+REAL_PYTHON="$(command -v python3)"
+cat > "$bin_dir/python3" <<EOF
+#!/bin/bash
+for arg in "\$@"; do
+  if [ "\$arg" = "conflicts" ]; then
+    sleep 30
+    exit 0
+  fi
+done
+exec "$REAL_PYTHON" "\$@"
+EOF
+chmod +x "$bin_dir/python3"
+start=$SECONDS
+out="$(env PATH="$bin_dir:$PATH" HOME="$home_dir" \
+  K2B_PROJECT_ROOT="$REPO_ROOT" K2B_VAULT_PATH="$vault" bash "$SCRIPT" 2>/dev/null)"
+elapsed=$((SECONDS - start))
+[[ "$out" == *"VAULT CONFLICTS: unknown (conflict check timed out)"* ]] \
+  || fail "stalled conflict check should report a timeout unknown, got: $out"
+[ "$elapsed" -lt 20 ] || fail "hook should enforce a real deadline (elapsed ${elapsed}s)"
+echo "PASS: stalled conflict check is killed and reported unknown"

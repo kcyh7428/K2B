@@ -69,6 +69,39 @@ else
   output+="CAPTURE STATUS: disabled or not yet run on this Mac"$'\n\n'
 fi
 
+# Bounded, read-only Syncthing conflict-copy warning. Only real conflict
+# copies produce prose; the check never writes, locks, or contacts a host.
+# Enforce a real short execution deadline: kill the check if it stalls.
+if [ -d "$VAULT" ]; then
+  note_write_script="${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}/scripts/vault-note-write.py"
+  if [ -f "$note_write_script" ]; then
+    conflict_tmp="$(mktemp)"
+    conflict_deadline=$((SECONDS + 5))
+    python3 "$note_write_script" conflicts >"$conflict_tmp" 2>/dev/null &
+    conflict_pid=$!
+    while kill -0 "$conflict_pid" 2>/dev/null && [ "$SECONDS" -lt "$conflict_deadline" ]; do
+      sleep 1
+    done
+    if kill -0 "$conflict_pid" 2>/dev/null; then
+      kill "$conflict_pid" 2>/dev/null || true
+      wait "$conflict_pid" 2>/dev/null || true
+      conflict_summary="VAULT CONFLICTS: unknown (conflict check timed out)"
+    else
+      conflict_summary=""
+      if ! wait "$conflict_pid"; then
+        conflict_summary="VAULT CONFLICTS: unknown (conflict check failed)"
+      fi
+      if [ -z "$conflict_summary" ]; then
+        conflict_summary="$(head -n 12 "$conflict_tmp")"
+      fi
+    fi
+    rm -f "$conflict_tmp"
+    if [ -n "$conflict_summary" ]; then
+      output+="$conflict_summary"$'\n\n'
+    fi
+  fi
+fi
+
 if [ -n "$output" ]; then
   echo "$output"
 fi
