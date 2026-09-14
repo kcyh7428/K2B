@@ -2093,11 +2093,16 @@ def test_public_memory_flow_survives_offline_acceptance_and_replay(
             str(sjm_state),
             "--writer-role",
             "sjm-source-only",
+            "--automation-root",
+            str(tmp_path / "no-such-automations"),
         ]
     ) == 0
     status = json.loads(capsys.readouterr().out)
-    assert status["automatic_runner"] == "unverified"
-    assert status["production_activation"] == "disabled"
+    assert status["native_registration_state"] == "missing"
+    assert status["native_run_outcome"] == "unknown"
+    assert status["native_extraction_hold"] == "absent"
+    assert status["automatic_runner"] == "missing"
+    assert status["production_activation"] == "missing"
     assert status["outbox"]["counts"]["accepted"] == 1
 
 
@@ -3847,6 +3852,69 @@ def test_memory_status_reports_work_extraction_and_publication_stages(
     assert status["extraction_receipt_files"] == 1
     assert status["extraction_diagnostic_files"] == 1
     assert status["publication_receipt_files"] == 1
+
+
+def test_memory_status_observes_registration_without_claiming_success(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    automation = tmp_path / "automations"
+    job = automation / "k2b-automatic-memory-home"
+    job.mkdir(parents=True)
+    (job / "automation.toml").write_text(
+        'id="k2b-automatic-memory-home"\n'
+        'status="ACTIVE"\n'
+        'model="gpt-5.6-sol"\n'
+        'reasoning_effort="low"\n'
+        'rrule="FREQ=HOURLY;INTERVAL=1;BYMINUTE=33;BYSECOND=0"\n',
+        encoding="utf-8",
+    )
+    status = eod_capture.memory_status(
+        state, writer_role="home", automation_root=automation
+    )
+    assert status["native_registration_state"] == "active"
+    assert status["native_job_id"] == "k2b-automatic-memory-home"
+    assert status["native_configured_model"] == "gpt-5.6-sol"
+    assert status["native_configured_reasoning"] == "low"
+    assert status["native_schedule"] == "FREQ=HOURLY;INTERVAL=1;BYMINUTE=33;BYSECOND=0"
+    assert status["native_run_outcome"] == "unknown"
+    assert status["native_last_completed_at"] is None
+    assert status["native_extraction_hold"] == "absent"
+    # Legacy keys carry the same truthful observed registration label and
+    # never imply extraction success.
+    assert status["automatic_runner"] == "active"
+    assert status["production_activation"] == "active"
+
+
+def test_memory_status_fixture_never_reads_real_home_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_home = tmp_path / "home"
+    job = fake_home / ".codex" / "automations" / "k2b-automatic-memory-home"
+    job.mkdir(parents=True)
+    (job / "automation.toml").write_text(
+        'id="k2b-automatic-memory-home"\nstatus="ACTIVE"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    status = eod_capture.memory_status(tmp_path / "state", writer_role="home")
+    assert status["native_registration_state"] == "active"
+    assert status["native_job_id"] == "k2b-automatic-memory-home"
+
+
+def test_memory_status_registration_unknown_is_not_disabled(
+    tmp_path: Path,
+) -> None:
+    automation = tmp_path / "automations"
+    job = automation / "k2b-automatic-memory-home"
+    job.mkdir(parents=True)
+    (job / "automation.toml").write_text(
+        'id="some-other-job"\nstatus="ACTIVE"\n', encoding="utf-8"
+    )
+    status = eod_capture.memory_status(
+        tmp_path / "state", writer_role="home", automation_root=automation
+    )
+    assert status["native_registration_state"] == "unknown"
+    assert status["native_diagnostic"] is not None
 
 
 def test_native_automatic_memory_prompt_uses_public_flow_without_publication() -> None:

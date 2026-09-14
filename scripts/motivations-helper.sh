@@ -325,17 +325,138 @@ cmd_sync_building() {
   } | atomic_write "$MOT_FILE"
 }
 
+strict_day_epoch() {
+  # Echo epoch seconds for a strict YYYY-MM-DD calendar date; return 1 for
+  # anything else. Round-trips through date(1) so impossible dates
+  # (2026-02-31) and trailing garbage (2026-09-14garbage) are rejected
+  # instead of normalized.
+  local d="$1" back
+  case "$d" in
+    ????-??-??) ;;
+    *) return 1 ;;
+  esac
+  back="$(date -u -j -f "%Y-%m-%d" "$d" "+%Y-%m-%d" 2>/dev/null)" || return 1
+  [ "$back" = "$d" ] || return 1
+  date -u -j -f "%Y-%m-%d" "$d" "+%s" 2>/dev/null
+}
+
+observer_day_from_ts() {
+  # Validate the whole observer ISO timestamp before extracting a day:
+  # invalid time of day, invalid offset, trailing junk, date-only or
+  # timezone-naive values are rejected, not stripped at T. Offsets normalize
+  # to UTC so the 30-day UTC-calendar rule sees the UTC day. Standard-library
+  # Python datetime is used for the validation; no new dependency.
+  local ts="${1:-}"
+  [ -n "$ts" ] || return 1
+  python3 - "$ts" <<'PY' || return 1
+import re
+import sys
+from datetime import datetime, timezone
+
+raw = sys.argv[1]
+if raw.endswith(("Z", "z")):
+    raw = raw[:-1] + "+00:00"
+try:
+    parsed = datetime.fromisoformat(raw)
+except ValueError:
+    sys.exit(1)
+if parsed.tzinfo is None or parsed.utcoffset() is None:
+    sys.exit(1)
+# fromisoformat normalizes out-of-range offset components (+08:60 rolls into
+# +09:00); reject those instead of accepting the rollover.
+offset = re.search(r"([+-])(\d{2}):?(\d{2})(?::?(\d{2})(?:\.\d{1,6})?)?$", raw)
+if offset:
+    hours = int(offset.group(2))
+    minutes = int(offset.group(3))
+    seconds = int(offset.group(4) or 0)
+    if hours > 23 or minutes > 59 or seconds > 59:
+        sys.exit(1)
+sys.stdout.write(parsed.astimezone(timezone.utc).date().isoformat())
+PY
+}
+
 cmd_read() {
   if [[ "${K2B_MOTIVATIONS_ENABLED:-true}" != "true" ]]; then
     return 0
   fi
-  local out
-  out=$(
-    emit_section '## Building' "$MOT_FILE"
-    emit_section '## Emerging Interests' "$MOT_FILE"
-    emit_section '## Questions' "$Q_FILE"
-  )
-  [ -n "$out" ] && printf '%s\n' "$out"
+  local today today_epoch
+  if [ -n "${K2B_MOTIVATIONS_TODAY:-}" ]; then
+    if ! today_epoch="$(strict_day_epoch "$K2B_MOTIVATIONS_TODAY")"; then
+      echo "motivations-helper: invalid K2B_MOTIVATIONS_TODAY (want strict YYYY-MM-DD): ${K2B_MOTIVATIONS_TODAY}" >&2
+      exit 2
+    fi
+    today="$K2B_MOTIVATIONS_TODAY"
+  else
+    today="$(date -u '+%Y-%m-%d')"
+    if ! today_epoch="$(strict_day_epoch "$today")"; then
+      echo "motivations-helper: cannot resolve today's date" >&2
+      exit 2
+    fi
+  fi
+
+  # Building is derived at read time from the current concepts index, never
+  # from cached Building prose; the source label keeps it honest.
+  local building_body=""
+  if [ -f "$CONCEPTS_INDEX" ]; then
+    building_body="$(extract_building_from_concepts || true)"
+  fi
+  {
+    printf -- '## Building\n\n'
+    printf -- '*(derived at read time from wiki/concepts/index.md; not live deployment truth)*\n\n'
+    if [ -n "$building_body" ]; then
+      printf -- '%s\n' "$building_body"
+    else
+      printf -- '- *(Building unavailable: no In Progress or Next Up rows in the concepts index)*\n'
+    fi
+    printf -- '\n'
+  }
+
+  # Emerging Interests are observer-inferred: the whole section is gated by
+  # the section-level observer timestamp. Dates mentioned inside an interest
+  # are content, not observer evidence, and never grant freshness. All
+  # inferred content (bullets, continuation lines, prose) is omitted when the
+  # observer timestamp is missing, invalid, future-dated or older than 30
+  # calendar days.
+  if [ -f "$MOT_FILE" ]; then
+    local observer_ts observer_day observer_epoch age=""
+    observer_ts="$(extract_existing_frontmatter_field 'last-observer-update' "$MOT_FILE")"
+    observer_day="$(observer_day_from_ts "$observer_ts" 2>/dev/null || true)"
+    if [ -n "$observer_day" ]; then
+      observer_epoch="$(strict_day_epoch "$observer_day")"
+      age=$(( (today_epoch - observer_epoch) / 86400 ))
+    fi
+    if [ -z "$observer_day" ]; then
+      printf -- '## Emerging Interests\n\n'
+      printf -- '- *(observer-inferred interests omitted: observer timestamp missing or invalid)*\n'
+    elif [ "$age" -lt 0 ] || [ "$age" -gt 30 ]; then
+      printf -- '## Emerging Interests\n\n'
+      printf -- '- *(observer-inferred interests omitted: observer context from %s is not current)*\n' "$observer_day"
+    else
+      emit_bounded_emerging "$MOT_FILE"
+    fi
+  fi
+
+  # Keith's explicit questions are never filtered or rewritten.
+  emit_section '## Questions' "$Q_FILE"
+}
+
+emit_bounded_emerging() {
+  # Print the Emerging Interests section exactly as stored, stopping before
+  # the next heading so later sections cannot leak into the inferred view.
+  local file="$1" found=0 line
+  while IFS= read -r line; do
+    if [ "$found" -eq 0 ]; then
+      case "$line" in
+        "## Emerging Interests"*) found=1; printf -- '%s\n' "$line" ;;
+        *) continue ;;
+      esac
+      continue
+    fi
+    case "$line" in
+      \#*) break ;;
+      *) printf -- '%s\n' "$line" ;;
+    esac
+  done < "$file"
 }
 
 sub="${1:-}"; shift || true

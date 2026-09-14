@@ -509,26 +509,11 @@ echo "## 🧠 Memory flags"
 echo ""
 requests="$MEMORY/self_improve_requests.md"
 errors="$MEMORY/self_improve_errors.md"
-mem_has=0
-if [[ -f "$requests" ]]; then
-  open_rids=$(quiet grep -E '^## R-' "$requests" | head -5 || true)
-  if [[ -n "$open_rids" ]]; then
-    echo "**Open R-IDs (top 5):**"
-    echo "$open_rids" | sed 's/^## /- /'
-    echo ""
-    mem_has=1
-  fi
-fi
-if [[ -f "$errors" ]]; then
-  recent_eids=$(quiet grep -E '^## E-2026-' "$errors" | head -3 || true)
-  if [[ -n "$recent_eids" ]]; then
-    echo "**Recent E-IDs (top 3):**"
-    echo "$recent_eids" | sed 's/^## /- /'
-    echo ""
-    mem_has=1
-  fi
-fi
-[[ $mem_has -eq 0 ]] && echo "_(no R-IDs or E-IDs surfaced)_" && echo ""
+quiet python3 "$REPO_ROOT/scripts/plate-memory-flags.py" \
+  --requests "$requests" \
+  --errors "$errors" \
+  --today "$(TZ=Asia/Hong_Kong date +%Y-%m-%d)" \
+  || echo "_(memory flags unavailable)_"
 
 # --- Section 6: Next Up + Backlog top 3 ---
 

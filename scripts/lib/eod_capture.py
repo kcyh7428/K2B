@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Callable, Iterable
 
 import automatic_memory
+import native_job_status
 
 
 # Canonical K2B timezone. See wiki/context/context_timezone-convention.md.
@@ -4161,12 +4162,44 @@ def memory_status(
     *,
     writer_role: str,
     memory_path: Path | None = None,
+    automation_root: Path | None = None,
 ) -> dict:
     role = _memory_writer_role(writer_role)
+    try:
+        native = native_job_status.read_native_job_status(
+            writer_role=role,
+            state_root=state_root,
+            automation_root=automation_root,
+        )
+    except PermissionError:
+        raise
+    except Exception as exc:  # unavailable evidence is unknown, not disabled
+        native = {
+            "job_id": native_job_status.JOB_IDS.get(role),
+            "registration_state": "unknown",
+            "configured_model": None,
+            "configured_reasoning": None,
+            "schedule": None,
+            "last_completed_at": None,
+            "last_run_outcome": "unknown",
+            "extraction_hold": "unknown",
+            "diagnostic": f"native status unavailable: {exc.__class__.__name__}",
+        }
     result = {
         "writer_role": role,
-        "automatic_runner": "unverified",
-        "production_activation": "disabled",
+        # Legacy keys kept for additive compatibility: both now carry the
+        # truthful observed registration label, never extraction success.
+        "automatic_runner": native["registration_state"],
+        "production_activation": native["registration_state"],
+        "native_job_id": native["job_id"],
+        "native_registration_state": native["registration_state"],
+        "native_configured_model": native["configured_model"],
+        "native_configured_reasoning": native["configured_reasoning"],
+        "native_schedule": native["schedule"],
+        "native_last_completed_at": native["last_completed_at"],
+        "native_run_outcome": native["last_run_outcome"],
+        "native_extraction_hold": native["extraction_hold"],
+        "native_diagnostic": native["diagnostic"],
         "outbox": automatic_memory.outbox_status(state_root),
         "worklist_files": len(list((state_root / "worklist").glob("*.json"))),
         "extraction_receipt_files": len(
@@ -6407,6 +6440,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     memory_status_parser.add_argument("--memory-path", type=Path)
     memory_status_parser.add_argument(
+        "--automation-root",
+        type=Path,
+        help="observe native job registration under this automations root",
+    )
+    memory_status_parser.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
     memory_drain = sub.add_parser(
@@ -6632,6 +6670,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.state_root,
                 writer_role=args.writer_role,
                 memory_path=args.memory_path,
+                automation_root=args.automation_root,
             )
         except (OSError, ValueError, RuntimeError, PermissionError) as exc:
             print(f"eod-capture: memory status failed: {_sanitize_log_value(exc)}", file=sys.stderr)
