@@ -71,9 +71,14 @@ The Kimi-authored fixes require independent Codex review per AGENTS.md.
 
 ## Verified evidence
 
-- Focused hook test: 17 PASS, 0 FAIL (this worktree, 2026-09-18,
-  including the post-review broken-python3 degradation case and the
-  stalled-import distinct-deadline case).
+- Focused hook test: 17 PASS, 0 FAIL on both Home and SJM after all fixes
+  (2026-09-18). The test harness mirrors the real hook PATH and pins
+  LC_ALL=C for its internal hash comparison so it runs identically on both
+  hosts.
+- Two-host activation verified: session-start.sh SHA-256
+  adfb35cf03a6c27645f8f902689346977ec4060bc9f925dfb034cc0765f1d197
+  identical in /Users/keithmbpm2/Projects/K2B and
+  /Users/keithcheung/Projects/K2B; verify-codex-authority.sh passes on both.
 - `scripts/verify-codex-authority.sh`: PASS (exit 0).
 - `tests/codex-hooks.test.sh`: 3 PASS (exit 0).
 - `git diff --check`: clean.
