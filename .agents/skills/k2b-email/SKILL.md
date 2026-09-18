@@ -1,6 +1,6 @@
 ---
 name: k2b-email
-description: Handle Gmail operations via the gws CLI -- reading, searching, triaging, drafting, and sending (only after explicit confirmation of a specific draft). Use when Keith mentions email, inbox, draft, reply, forward, send, triage, or references a specific email/thread. Also use when any other K2B skill needs to create a Gmail draft or read email content.
+description: Operate Keith's Signhub Gmail mailbox via gws when he asks to search or read that mailbox, triage its inbox, create or update a Gmail draft, or send a specifically confirmed Gmail draft. Also applies to follow-ups in an established Gmail workflow. Writing or polishing an email in chat, company correspondence, and references to previous discussions do not by themselves select Gmail.
 ---
 
 # K2B Email
@@ -15,6 +15,18 @@ description: Handle Gmail operations via the gws CLI -- reading, searching, tria
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
 
 Manage Keith's Gmail via the `gws` CLI tool. Authenticated as **keith.cheung@signhub.io**.
+
+## Source and action selection
+
+Use this workflow only when the user explicitly requests Gmail or the ongoing
+conversation has already established this mailbox as the source. A request such
+as "draft an email to Amy" or "check our previous conversation" is not a mailbox
+operation. Follow the company-context recall guidance in `AGENTS.md` and deliver
+the requested writing in chat. Do not search Gmail or create a Gmail draft merely
+because the result is an email. An explicit read/search request authorizes that
+read/search, not creating a draft or sending. If a mailbox operation is requested
+but the account is unclear, resolve the account before accessing it; SJM company
+correspondence must not default to the Signhub account.
 
 ## Auth & Account
 
@@ -201,26 +213,26 @@ Combine with spaces for AND: `from:bruno subject:chef newer_than:7d`
 
 ## Workflow Patterns
 
-### "Check my email" / "What's new"
+### Check the established Gmail inbox
 1. `gws gmail +triage` to see unread summary
 2. If Keith asks about a specific one, `gws gmail +read --id <ID> --headers`
 
-### "Draft a reply to X"
+### Create a reply draft in Gmail to X
 1. Find the message: `gws gmail +triage --query 'from:X'` to get message ID
 2. Read the original: `gws gmail +read --id <ID> --headers`
 3. Draft the response content with Keith
 4. Create draft via MIME upload (see Create a Draft above)
 5. Tell Keith: "Draft created in your Gmail drafts folder"
 
-### "Forward X to Y"
+### Prepare a Gmail forward to Y
 1. Same as draft reply, but set the To: to the new recipient
 2. Include original message content in the body
 
-### "Search for emails about Z"
+### Search the established Gmail mailbox for emails about Z
 1. `gws gmail +triage --query 'Z'` for a quick scan
 2. Or `gws gmail users messages list --params '{"userId": "me", "q": "Z"}'` for IDs
 
-### "Send X to Y" (two-turn flow)
+### Send from the established Gmail mailbox (two-turn flow)
 1. Create the draft per "Create a Draft" above. Record the `id` Gmail returned.
 2. Reply to Keith with the draft body and the draft ID. Example:
    ```

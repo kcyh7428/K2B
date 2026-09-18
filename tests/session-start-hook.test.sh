@@ -149,10 +149,129 @@ for invalid_status in top-level-list counts-list; do
     printf '{"counts":[]}\n' > "$status_dir/capture-status.json"
   fi
   out="$(run_hook "$home_dir" "$vault")"
-  [[ "$out" == *"CAPTURE STATUS: unreadable local status (TypeError)"* ]] \
+  [[ "$out" == *"CAPTURE INVENTORY: unreadable local status (TypeError)"* ]] \
     || fail "$invalid_status status should degrade to an unreadable summary"
 done
 echo "PASS: non-object capture status degrades safely"
+
+# --- Relevant startup text and native status are separate from inventory ---
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+mkdir -p "$home_dir" "$vault/System/memory"
+cat > "$vault/System/memory/active_rules.md" <<'EOF'
+# Active Rules
+
+**Cap: 12 rules.** OLD PROMOTION WORKFLOW
+
+Last promoted: OLD PROMOTION HISTORY
+
+Last audited: OLD AUDIT HISTORY
+Wrapped audit prose remains historical.
+
+## Current behavior
+
+1. Keep this rule.
+   Keep this continuation too.
+
+Keep this unnumbered instruction.
+EOF
+rules_before="$(shasum -a 256 "$vault/System/memory/active_rules.md")"
+out="$(run_hook "$home_dir" "$vault")"
+[[ "$out" != *"OLD PROMOTION"* && "$out" != *"OLD AUDIT"* ]] \
+  || fail "historical audit/promotion metadata should not be injected"
+[[ "$out" == *"Keep this rule."* && "$out" == *"Keep this continuation too."* && "$out" == *"Keep this unnumbered instruction."* ]] \
+  || fail "current rule paragraphs and continuations must survive filtering"
+[[ "$(shasum -a 256 "$vault/System/memory/active_rules.md")" == "$rules_before" ]] \
+  || fail "startup must not mutate rule history"
+[[ "$out" == *"no local legacy inventory"* && "$out" != *"disabled or not yet run"* ]] \
+  || fail "missing legacy inventory must not claim native extraction is disabled"
+echo "PASS: history stays on disk and missing inventory is not native status"
+
+# Both registrations are fixtures; the read-only hook selects the actual local
+# operator's role. The status adapter's role isolation has its own unit tests.
+for job_id in k2b-automatic-memory-home k2b-automatic-memory-sjm; do
+  mkdir -p "$home_dir/.codex/automations/$job_id"
+  printf 'id="%s"\nstatus="ACTIVE"\n' "$job_id" \
+    > "$home_dir/.codex/automations/$job_id/automation.toml"
+done
+mkdir -p "$home_dir/.local/state/k2b/automatic-memory"
+printf '{"created_at":"2026-09-18T00:00:00Z"}\n' \
+  > "$home_dir/.local/state/k2b/automatic-memory/extraction-hold.json"
+out="$(run_hook "$home_dir" "$vault")"
+if [[ "$(id -un)" == "keithcheung" || "$(id -un)" == "keithmbpm2" ]]; then
+  [[ "$out" == *"registration=active"* && "$out" == *"outcome=unknown"* && "$out" == *"extraction hold=present"* ]] \
+    || fail "native registration, completion evidence and hold must remain distinct: $out"
+else
+  [[ "$out" == *"AUTOMATIC MEMORY: unknown local evidence"* ]] \
+    || fail "unsupported operator must not select a native job"
+fi
+echo "PASS: native registration does not claim completion or coverage"
+
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+stub_root="$root/project"
+mkdir -p "$home_dir" "$vault/System/memory" "$stub_root/scripts/lib"
+cat > "$stub_root/scripts/lib/native_job_status.py" <<'EOF'
+import time
+def read_native_job_status(**kwargs):
+    time.sleep(30)
+EOF
+start=$SECONDS
+out="$(env HOME="$home_dir" K2B_PROJECT_ROOT="$stub_root" K2B_VAULT_PATH="$vault" bash "$SCRIPT")"
+elapsed=$((SECONDS - start))
+[[ "$out" == *"AUTOMATIC MEMORY: unknown local evidence (TimeoutError)"* ]] \
+  || fail "stalled native observation should report unknown"
+[ "$elapsed" -lt 6 ] || fail "native status observation must have a short deadline"
+echo "PASS: stalled native status is bounded and remains unknown"
+
+# A stalled module import must also be bounded and reported distinctly: it
+# is a reader problem, not unknown job evidence, and it must not consume
+# the whole SessionStart timeout.
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+stub_root="$root/project"
+mkdir -p "$home_dir" "$vault/System/memory" "$stub_root/scripts/lib"
+cat > "$stub_root/scripts/lib/native_job_status.py" <<'EOF'
+import time
+time.sleep(30)
+def read_native_job_status(**kwargs):
+    return {}
+EOF
+start=$SECONDS
+out="$(env HOME="$home_dir" K2B_PROJECT_ROOT="$stub_root" K2B_VAULT_PATH="$vault" bash "$SCRIPT")"
+elapsed=$((SECONDS - start))
+[[ "$out" == *"AUTOMATIC MEMORY: status reader slow (import deadline)"* ]] \
+  || fail "stalled native status import should report a slow reader, not unknown evidence"
+[ "$elapsed" -lt 8 ] || fail "stalled native status import must have a short deadline"
+echo "PASS: stalled native status import is bounded and distinct"
+
+# A broken or missing python3 must not abort the hook: the rest of the
+# startup output (index, rules, conflict warning) must still be produced.
+root="$(mktmp)"
+home_dir="$root/home"
+vault="$root/vault"
+stub_bin="$root/bin"
+mkdir -p "$home_dir" "$vault/System/memory" "$vault/wiki" "$stub_bin"
+cat > "$vault/System/memory/active_rules.md" <<'EOF'
+# Active Rules
+
+BROKEN-PYTHON RULE TOKEN
+EOF
+cat > "$vault/wiki/index.md" <<'EOF'
+BROKEN-PYTHON INDEX TOKEN
+EOF
+printf '#!/bin/sh\nexit 1\n' > "$stub_bin/python3"
+chmod +x "$stub_bin/python3"
+out="$(env PATH="$stub_bin:/usr/bin:/bin" HOME="$home_dir" K2B_PROJECT_ROOT="$REPO_ROOT" K2B_VAULT_PATH="$vault" /bin/bash "$SCRIPT")"
+[[ "$out" == *"BROKEN-PYTHON RULE TOKEN"* && "$out" == *"BROKEN-PYTHON INDEX TOKEN"* ]] \
+  || fail "broken python3 must not abort index and rules output"
+[[ "$out" == *"CAPTURE INVENTORY: unavailable"* ]] \
+  || fail "broken python3 must degrade to an explicit unavailable summary"
+echo "PASS: broken python3 degrades without aborting the hook"
 
 # --- Syncthing conflict-copy warning ---------------------------------------
 
