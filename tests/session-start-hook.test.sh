@@ -24,7 +24,13 @@ fail() {
 
 run_hook() {
   local home_dir="$1" vault="$2"
+  # Mirror the real SessionStart hook environment: the registered hook
+  # command prepends the Homebrew python path so the native status adapter
+  # (Python 3.11+ tomllib) is importable on hosts whose default python3 is
+  # older. Without this, the native-status assertions below would degrade
+  # to ModuleNotFoundError in the test harness only.
   env -u CLAUDE_PROJECT_DIR \
+    PATH="/opt/homebrew/opt/python@3.12/libexec/bin:/opt/homebrew/bin:$PATH" \
     HOME="$home_dir" \
     K2B_PROJECT_ROOT="$REPO_ROOT" \
     K2B_VAULT_PATH="$vault" \
@@ -177,13 +183,13 @@ Wrapped audit prose remains historical.
 
 Keep this unnumbered instruction.
 EOF
-rules_before="$(shasum -a 256 "$vault/System/memory/active_rules.md")"
+rules_before="$(LC_ALL=C shasum -a 256 "$vault/System/memory/active_rules.md")"
 out="$(run_hook "$home_dir" "$vault")"
 [[ "$out" != *"OLD PROMOTION"* && "$out" != *"OLD AUDIT"* ]] \
   || fail "historical audit/promotion metadata should not be injected"
 [[ "$out" == *"Keep this rule."* && "$out" == *"Keep this continuation too."* && "$out" == *"Keep this unnumbered instruction."* ]] \
   || fail "current rule paragraphs and continuations must survive filtering"
-[[ "$(shasum -a 256 "$vault/System/memory/active_rules.md")" == "$rules_before" ]] \
+[[ "$(LC_ALL=C shasum -a 256 "$vault/System/memory/active_rules.md")" == "$rules_before" ]] \
   || fail "startup must not mutate rule history"
 [[ "$out" == *"no local legacy inventory"* && "$out" != *"disabled or not yet run"* ]] \
   || fail "missing legacy inventory must not claim native extraction is disabled"
