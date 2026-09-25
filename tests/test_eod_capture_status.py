@@ -2869,6 +2869,72 @@ def test_backlog_validates_receipts_instead_of_counting_filenames(tmp_path):
     assert observed["pending_turns"] == 2
 
 
+def test_backlog_reads_queued_receipt_without_a_writable_lock(tmp_path):
+    root = tmp_path / "sessions"
+    _modern_session(root, "2026-09-13", "locked-read")
+    state = tmp_path / "state"
+    work = eod_capture.build_memory_worklist(state_root=state, codex_root=root,
+        since="2026-09-13", through="2026-09-13", writer_role="home", limit=1)["items"][0]
+    bundle = json.loads(Path(work["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Locked read"), writer_role="home")
+    args = dict(state_root=state, codex_root=root, since="2026-09-13",
+                through="2026-09-13", writer_role="home")
+    lock = state / ".outbox.lock"
+    assert lock.is_file()
+    before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+              for p in state.rglob("*") if p.is_file()}
+    # Deny both opening the existing lock and creating any new one.
+    lock.chmod(0o444)
+    state.chmod(0o555)
+    try:
+        observed = eod_capture.memory_backlog(**args)
+    finally:
+        state.chmod(0o755)
+        lock.chmod(0o644)
+    assert observed["extracted_turns"] == 1
+    assert observed["pending_turns"] == 0
+    assert observed["invalid_receipts"] == 0
+    assert observed["unverified_turns"] == 0
+    assert observed["complete"] is True
+    assert observed["status"] == "ok"
+    after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+             for p in state.rglob("*") if p.is_file()}
+    assert after == before
+
+
+def test_backlog_reports_unreadable_evidence_as_unverified_not_invalid(tmp_path):
+    root = tmp_path / "sessions"
+    _modern_session(root, "2026-09-13", "unreadable-envelope")
+    state = tmp_path / "state"
+    work = eod_capture.build_memory_worklist(state_root=state, codex_root=root,
+        since="2026-09-13", through="2026-09-13", writer_role="home", limit=1)["items"][0]
+    bundle = json.loads(Path(work["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Unreadable"), writer_role="home")
+    args = dict(state_root=state, codex_root=root, since="2026-09-13",
+                through="2026-09-13", writer_role="home")
+    [envelope] = (state / "outbox").glob("*.json")
+    envelope.chmod(0o000)
+    try:
+        observed = eod_capture.memory_backlog(**args)
+    finally:
+        envelope.chmod(0o644)
+    # Inaccessible evidence is unverified: not corrupt, and not pending work.
+    assert observed["unverified_turns"] == 1
+    assert observed["invalid_receipts"] == 0
+    assert observed["extracted_turns"] == 0
+    assert observed["pending_turns"] == 0
+    assert observed["complete"] is False
+    assert observed["status"] == "needs_attention"
+    # A readable but tampered envelope is still corrupt evidence.
+    envelope.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    observed = eod_capture.memory_backlog(**args)
+    assert observed["invalid_receipts"] == 1
+    assert observed["pending_turns"] == 1
+    assert observed["unverified_turns"] == 0
+
+
 def _native_run_fixture(tmp_path, *, count=2, role="sjm-source-only"):
     root = tmp_path / "sessions"
     for index in range(count):

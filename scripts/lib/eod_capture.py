@@ -3039,6 +3039,7 @@ def _validate_memory_extraction_receipt(
     bundle: dict,
     *,
     reviewed_sha256: str | None = None,
+    read_only: bool = False,
 ) -> dict:
     receipt_path = _memory_work_path(
         state_root, work_id, "extraction-receipts"
@@ -3149,9 +3150,19 @@ def _validate_memory_extraction_receipt(
         ):
             raise RuntimeError("memory extraction receipt delivery is invalid")
         try:
-            envelope = automatic_memory.load_outbox_envelope(
-                state_root, delivery["delivery_id"]
-            )
+            if read_only:
+                # A read-only audit must not need a writable lock. Outbox
+                # updates are fsync plus os.replace, so a reader observes a
+                # complete old-or-new envelope file. Reuse the internal
+                # loader to skip the locking wrapper while keeping every
+                # durable envelope check below unchanged.
+                envelope = automatic_memory._load_outbox_envelope(
+                    state_root, delivery["delivery_id"]
+                )[1]
+            else:
+                envelope = automatic_memory.load_outbox_envelope(
+                    state_root, delivery["delivery_id"]
+                )
         except (OSError, ValueError, RuntimeError) as exc:
             raise RuntimeError(
                 "memory extraction receipt durable delivery is invalid"
@@ -4549,6 +4560,19 @@ def record_native_memory_run(
             "receipt_path": str(path)}
 
 
+def _evidence_access_denied(exc: BaseException) -> bool:
+    """True when a bounded failure chain carries a real permission denial."""
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def memory_backlog(
     *, state_root: Path, codex_root: Path, since: str, through: str,
     writer_role: str, max_scan_seconds: float = 60,
@@ -4575,7 +4599,7 @@ def memory_backlog(
     timed_out = 0
     pending, extracted = [], []
     seen: set[str] = set()
-    invalid_receipts = source_errors = parse_exceptions = 0
+    invalid_receipts = source_errors = parse_exceptions = unverified_turns = 0
     for path in sorted(root.rglob("*.jsonl")):
         if time.monotonic() >= deadline:
             complete = False
@@ -4633,20 +4657,31 @@ def memory_backlog(
                     bundle = _read_memory_json(bundle_path, "source bundle")
                     if _memory_work_id(bundle) != work_id:
                         raise RuntimeError("source bundle identity conflicts")
-                    _validate_memory_extraction_receipt(state_root, work_id, bundle)
-                except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+                    _validate_memory_extraction_receipt(
+                        state_root, work_id, bundle, read_only=True
+                    )
+                except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+                    if _evidence_access_denied(exc):
+                        # A read-only audit cannot read this evidence at all.
+                        # It is unverified, not corrupt, and not pending work.
+                        unverified_turns += 1
+                        complete = False
+                        continue
                     invalid_receipts += 1
                 else:
                     extracted.append(completed_at)
                     continue
             pending.append(completed_at)
+    if unverified_turns:
+        complete = False
     return {
-        "status": "needs_attention" if invalid_receipts or source_errors or parse_exceptions or not complete else "ok",
+        "status": "needs_attention" if invalid_receipts or source_errors or parse_exceptions or unverified_turns or not complete else "ok",
         "complete": complete,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "writer_role": role, "since": since, "through": through,
         "eligible_turns": len(seen), "extracted_turns": len(extracted),
         "pending_turns": len(pending), "invalid_receipts": invalid_receipts,
+        "unverified_turns": unverified_turns,
         "source_errors": source_errors, "parse_exceptions": parse_exceptions,
         "timed_out_sources": timed_out,
         "oldest_pending_at": min(pending, default=None),
