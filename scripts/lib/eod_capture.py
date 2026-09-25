@@ -51,6 +51,15 @@ MAX_MEMORY_EXTRACTION_ATTEMPTS = 3
 MIN_EVIDENCE_QUOTE_CHARS = 10
 DEFAULT_DIALOGUE_CHUNK_CHARS = 4000
 INTERACTIVE_THREAD_SOURCES = {"cli", "codex_app", "desktop", "user", "vscode"}
+
+
+class DialogueParseTimeout(RuntimeError):
+    """A bounded dialogue parse exceeded the caller's monotonic deadline.
+
+    Raised inside the record reader so one very large session file cannot
+    block far past a scan budget. Callers turn it into an honest partial
+    result, never into "no backlog".
+    """
 MEMORY_WORK_ID_RE = re.compile(r"^work:[0-9a-f]{64}$")
 SJM_MEMORY_SSH_ALIAS = "sjm-ai"
 SJM_MEMORY_REMOTE_PYTHON_REL = "Projects/K2B/venv/washing-machine/bin/python"
@@ -290,11 +299,15 @@ def _event_to_text(event: dict) -> str:
     return f"[{label}]\n{_truncate(text, head=500, limit=1000)}"
 
 
-def _read_complete_jsonl_records(session_path: Path) -> list[tuple[int, dict, bytes]]:
+def _read_complete_jsonl_records(
+    session_path: Path, *, deadline: float | None = None
+) -> list[tuple[int, dict, bytes]]:
     """Read complete JSONL records, ignoring only an unterminated partial tail."""
     records: list[tuple[int, dict, bytes]] = []
     with session_path.open("rb") as handle:
         for line_no, raw_line in enumerate(handle, 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise DialogueParseTimeout("bounded dialogue parse exceeded its deadline")
             if not raw_line.strip():
                 continue
             try:
@@ -440,11 +453,17 @@ def parse_completed_dialogue(
     *,
     source_host: str,
     max_chunk_chars: int = DEFAULT_DIALOGUE_CHUNK_CHARS,
+    deadline: float | None = None,
 ) -> dict:
     """Parse one source once into stable, lossless completed-turn prefixes."""
     if source_host not in {"home", "sjm"}:
         raise ValueError(f"unsupported source host: {source_host}")
-    records = _read_complete_jsonl_records(session_path)
+    records = _read_complete_jsonl_records(session_path, deadline=deadline)
+    def check_deadline() -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DialogueParseTimeout("bounded dialogue parse exceeded its deadline")
+
+    check_deadline()
     meta: dict = {}
     for _line_no, event, _raw in records:
         if event.get("type") == "session_meta" and isinstance(event.get("payload"), dict):
@@ -485,6 +504,7 @@ def parse_completed_dialogue(
     completed_prefixes: list[dict] = []
 
     def add_message(line_no: int, event: dict, turn_id: str) -> None:
+        check_deadline()
         message = _message_item(event)
         if message is None:
             return
@@ -512,6 +532,7 @@ def parse_completed_dialogue(
     def make_prefix(
         events: list[dict], *, turn_id: str, completed_at: object, mode: str
     ) -> dict:
+        check_deadline()
         transcript = "\n\n".join(
             f"[{item['role']}]\n{item['text']}" for item in events
         ).strip()
@@ -570,6 +591,7 @@ def parse_completed_dialogue(
             completed_events.extend(legacy_events)
         pending = []
         for line_no, event, _raw in records[first_marker_index:]:
+            check_deadline()
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
             event_kind = payload.get("type") if event.get("type") == "event_msg" else None
             if event_kind == "task_started":
@@ -617,6 +639,7 @@ def parse_completed_dialogue(
                 )
             )
 
+    check_deadline()
     result["completed_prefixes"] = completed_prefixes
     if completed_prefixes:
         result["completed_cursor"] = completed_prefixes[-1]["cursor"]
@@ -2870,6 +2893,16 @@ def _read_memory_json(path: Path, label: str) -> dict:
     return value
 
 
+def _read_memory_json_list(path: Path, label: str) -> list:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} is unreadable or malformed") from exc
+    if not isinstance(value, list):
+        raise RuntimeError(f"{label} must be an array")
+    return value
+
+
 def _memory_instant(now: str | None, label: str) -> datetime:
     raw = now or datetime.now(timezone.utc).isoformat()
     if not isinstance(raw, str) or not raw.strip():
@@ -4155,6 +4188,470 @@ def recall_memory(
         provisional_outbox=provisional_root,
         read_only=role == "sjm-source-only",
     )
+
+
+MEMORY_RUN_MAX_TURNS = 12
+MEMORY_RUN_MAX_INPUT_BYTES = 240000
+MEMORY_RUN_MAX_SECONDS = 1200
+MEMORY_RUN_PER_TURN_BYTES = 48000
+MEMORY_RUN_DEFER_REASONS = ("byte_budget", "time_budget", "turn_budget")
+# The prompt stops selecting new turns after 18 minutes, so a time_budget
+# deferral is only honest once that selection cutoff has actually elapsed.
+MEMORY_RUN_SELECTION_CUTOFF_SECONDS = 1080
+# Fixed, sanitized reason codes allowed into a canonical receipt. Any other
+# reason text is normalized to "redacted_reason" so free text is never stored.
+CANONICAL_EXCEPTION_REASONS = {
+    "quota_exhausted", "retry_backoff", "reviewed_empty", "per_turn_failure",
+}
+
+
+class _MemoryRunError(Exception):
+    """One failed native run step, identified by a stable diagnostic token.
+
+    The token is chosen at the raise site and never carries transcript,
+    credential, path or free-text error content, so it is safe to persist as
+    the durable diagnostic of a failed run receipt.
+    """
+
+    def __init__(self, diagnostic: str) -> None:
+        super().__init__(diagnostic)
+        self.diagnostic = diagnostic
+
+
+def _memory_diagnostic_token(value: object) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+    return (token or "unspecified")[:80]
+
+
+def _memory_run_receipt_path(state_root: Path, finished: datetime) -> Path:
+    directory = state_root / "native-run-receipts"
+    base = finished.strftime("%Y%m%dT%H%M%S%fZ")
+    for suffix in ("", *(f"-{index}" for index in range(1, 100))):
+        candidate = directory / f"{base}{suffix}.json"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("native run receipt directory is saturated")
+
+
+def record_failed_native_memory_run(
+    *, state_root: Path, writer_role: str, started_at: str,
+    diagnostic: str = "run_evidence_invalid", work_ids: list[str] | None = None,
+) -> dict:
+    """Write durable failed run evidence once the role and start are valid.
+
+    Used for receipt validation failures and for canonical command JSON the
+    caller cannot read. It never fabricates success and never persists
+    transcript, credential or free-text error content, only a stable token.
+    """
+    role = _memory_writer_role(writer_role)
+    started = _memory_instant(started_at, "run start")
+    finished = datetime.now(timezone.utc)
+    if started > finished:
+        raise ValueError("run start is in the future")
+    selected = list(dict.fromkeys(
+        item for item in work_ids
+        if isinstance(item, str) and MEMORY_WORK_ID_RE.fullmatch(item)
+    ))[:100] if isinstance(work_ids, list) else []
+    token = _memory_diagnostic_token(diagnostic)
+    data = {
+        "schema_version": 1, "automation_id": native_job_status.JOB_IDS[role],
+        "writer_role": role, "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "commands": {
+            "memory_worklist": {"status": "idle", "selected": 0},
+            # Dedicated run-level failure evidence. A bookkeeping or
+            # command-JSON failure can happen after a genuinely completed
+            # extraction, so this receipt carries no per-turn extraction
+            # command and never claims an invented failure count.
+            "native_run_bookkeeping": {"status": "failed"},
+        },
+        "selected_work_ids": selected, "exceptions": [], "diagnostic": token,
+    }
+    _, _, outcome, _ = native_job_status._classify_receipt(
+        data, job_id=data["automation_id"], writer_role=role)
+    if outcome != "failed":
+        raise RuntimeError("failed native run evidence violates the receipt contract")
+    path = _memory_run_receipt_path(state_root, finished)
+    _atomic_write_json(path, data)
+    return {"status": "failed", "outcome": "failed", "diagnostic": token,
+            "completed": None, "failed": None, "receipt_path": str(path)}
+
+
+def _normalize_run_exception(item: dict) -> dict:
+    """Copy one exception into a receipt-safe canonical shape.
+
+    Free-text channels are closed here: a retry reason outside the fixed code
+    set becomes "redacted_reason", and a hold work_id must match the real
+    worklist syntax. Historical readers keep their existing compatibility.
+    """
+    if "reason" in item:
+        reason = item["reason"]
+        return {**item, "reason": reason if reason in CANONICAL_EXCEPTION_REASONS
+                else "redacted_reason"}
+    if item.get("type") == "input_budget_exceeded":
+        work_id = item.get("work_id")
+        if not isinstance(work_id, str) or MEMORY_WORK_ID_RE.fullmatch(work_id) is None:
+            raise _MemoryRunError("exception_work_id_invalid")
+    return dict(item)
+
+
+def _validated_run_exceptions(exceptions: object) -> list:
+    """Accept only structured, schema-v1 exception or hold entries.
+
+    Free-text strings are rejected: they could carry transcript or credential
+    content, and the receipt must stay sanitized. Any malformed entry fails
+    the run rather than being dropped.
+    """
+    if exceptions is None:
+        return []
+    if not isinstance(exceptions, list) or len(exceptions) > native_job_status.MAX_EXCEPTION_ITEMS:
+        raise _MemoryRunError("exceptions_malformed")
+    validated = []
+    for item in exceptions:
+        if not isinstance(item, dict) or native_job_status._classify_exception(item) is None:
+            raise _MemoryRunError("exceptions_malformed")
+        validated.append(_normalize_run_exception(item))
+    return validated
+
+
+def _build_native_run_receipt(
+    *, state_root: Path, role: str, started: datetime, finished: datetime,
+    work_ids: object, deferred_work_ids: object, deferred_reason: str,
+    exceptions: object, drain_result: dict | None, publication_result: dict | None,
+) -> tuple[dict, dict]:
+    """Assemble and validate one canonical run receipt."""
+    if deferred_reason not in MEMORY_RUN_DEFER_REASONS:
+        raise _MemoryRunError("deferred_reason_invalid")
+    if not isinstance(work_ids, list) or not all(isinstance(item, str) for item in work_ids):
+        raise _MemoryRunError("selected_work_ids_malformed")
+    # Duplicate IDs are idempotent: a repeated --work-id never aborts the receipt.
+    selected_ids = list(dict.fromkeys(work_ids))
+    if len(selected_ids) > 100:
+        raise _MemoryRunError("selected_work_ids_over_limit")
+    if deferred_work_ids is None:
+        deferred_ids: list[str] = []
+    elif isinstance(deferred_work_ids, list) and all(
+            isinstance(item, str) for item in deferred_work_ids):
+        deferred_ids = list(dict.fromkeys(deferred_work_ids))
+    else:
+        raise _MemoryRunError("deferred_work_ids_malformed")
+    if len(deferred_ids) > 100:
+        raise _MemoryRunError("deferred_work_ids_over_limit")
+    validated_exceptions = _validated_run_exceptions(exceptions)
+
+    source_host = "home" if role == "home" else "sjm"
+    prepared: dict[str, Path] = {}
+    for path in sorted((state_root / "extraction-inputs").glob("work:*.json")):
+        try:
+            stat = path.stat()
+        except OSError:
+            raise _MemoryRunError("prepared_view_unreadable")
+        if not (started.timestamp() <= stat.st_mtime <= finished.timestamp()):
+            continue
+        if path.is_symlink() or not path.is_file():
+            continue
+        prepared[path.stem] = path
+    # Input preparation is persisted before dialogue is shown. Include every
+    # view touched during this run even if the model forgets to pass its ID.
+    # A view written by another writer role in this state root is not this
+    # run's evidence; never count a concurrent producer's turn.
+    for work_id in list(prepared):
+        try:
+            record = _read_memory_json(
+                _memory_work_path(state_root, work_id, "worklist"), "memory work record")
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if record.get("writer_role") != role:
+            prepared.pop(work_id)
+
+    deferred_pending: list[str] = []
+    for work_id in deferred_ids:
+        if work_id in selected_ids:
+            raise _MemoryRunError("deferred_work_also_selected")
+        try:
+            record = _read_memory_json(
+                _memory_work_path(state_root, work_id, "worklist"), "memory work record")
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise _MemoryRunError("deferred_view_not_in_current_run") from exc
+        if record.get("writer_role") != role:
+            raise _MemoryRunError("deferred_view_wrong_role")
+        view = prepared.get(work_id)
+        # A stale view from an earlier run, or another producer's view, must
+        # never be subtracted from this run's byte accounting.
+        if view is None or view.is_symlink() or not view.is_file():
+            raise _MemoryRunError("deferred_view_not_in_current_run")
+        receipt_path = _memory_work_path(state_root, work_id, "extraction-receipts")
+        if receipt_path.exists() or receipt_path.is_symlink():
+            raise _MemoryRunError("deferred_work_already_extracted")
+        deferred_pending.append(work_id)
+
+    attempted = sorted(set(selected_ids) | set(prepared))
+    input_bytes = 0
+    for work_id in attempted:
+        view = prepared.get(work_id) or _memory_work_path(
+            state_root, work_id, "extraction-inputs")
+        if view.is_file():
+            input_bytes += view.stat().st_size
+    if deferred_reason == "byte_budget" and deferred_pending and input_bytes <= MEMORY_RUN_MAX_INPUT_BYTES:
+        # A byte-budget deferral must be the view that crossed the budget.
+        raise _MemoryRunError("deferred_view_within_byte_budget")
+    # A time/turn deferral must name a boundary that was actually reached,
+    # otherwise excluding fresh unread work could report a false completion.
+    if deferred_pending and deferred_reason == "time_budget":
+        if (finished - started).total_seconds() < MEMORY_RUN_SELECTION_CUTOFF_SECONDS:
+            raise _MemoryRunError("deferred_time_boundary_not_reached")
+    if deferred_pending and deferred_reason == "turn_budget":
+        attempted_non_deferred = len(set(selected_ids) | (set(prepared) - set(deferred_pending)))
+        if attempted_non_deferred < MEMORY_RUN_MAX_TURNS:
+            raise _MemoryRunError("deferred_turn_boundary_not_reached")
+    for work_id in deferred_pending:
+        input_bytes -= prepared[work_id].stat().st_size
+        prepared.pop(work_id)
+    attempted = sorted((set(selected_ids) | set(prepared)) - set(deferred_pending))
+
+    completed = failed = queued = 0
+    outcomes: list[dict] = []
+    unattributed: list[str] = []
+    for work_id in attempted:
+        try:
+            bundle = _read_memory_json(
+                _memory_work_path(state_root, work_id, "source-bundles"), "source bundle")
+            if bundle.get("source_host") != source_host:
+                raise _MemoryRunError("wrong_host_run_evidence")
+            if _memory_work_id(bundle) != work_id:
+                raise _MemoryRunError("run_source_identity_conflict")
+            view = prepared.get(work_id) or _memory_work_path(
+                state_root, work_id, "extraction-inputs")
+            if not view.is_file() or view.stat().st_size > MEMORY_RUN_PER_TURN_BYTES:
+                raise _MemoryRunError("run_input_evidence_missing")
+            receipt = _validate_memory_extraction_receipt(state_root, work_id, bundle)
+            completed += 1
+            queued += receipt["result"]["status"] == "queued"
+            outcomes.append({"work_id": work_id, "outcome": receipt["result"]["status"]})
+        except _MemoryRunError as exc:
+            if work_id in selected_ids:
+                # The caller asserted this turn was processed; missing
+                # evidence is a genuine extraction failure.
+                failed += 1
+                outcomes.append({"work_id": work_id, "outcome": "failed",
+                                 "diagnostic": exc.diagnostic})
+            else:
+                unattributed.append(work_id)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+            if work_id in selected_ids:
+                failed += 1
+                outcomes.append({"work_id": work_id, "outcome": "failed"})
+            else:
+                unattributed.append(work_id)
+
+    elapsed = (finished - started).total_seconds()
+    exceeded = (len(attempted) > MEMORY_RUN_MAX_TURNS
+                or input_bytes > MEMORY_RUN_MAX_INPUT_BYTES
+                or elapsed > MEMORY_RUN_MAX_SECONDS)
+    commands = {
+        "memory_worklist": {"status": "ready" if attempted else "idle",
+                            "selected": len(attempted)},
+        "memory_record_extraction": {
+            "status": "failed" if failed else ("queued" if queued else "reviewed_empty"),
+            "completed": completed, "failed": failed,
+            "deferred": len(deferred_pending), "unattributed_pending": len(unattributed),
+        },
+        "batch_budget": {"status": "exceeded" if exceeded else "bounded"},
+    }
+    if role == "home":
+        if not isinstance(drain_result, dict) or not isinstance(publication_result, dict):
+            raise _MemoryRunError("home_command_json_required")
+        delivery_failures = 0
+        for key in ("local_delivery", "sjm_delivery"):
+            delivery = drain_result.get(key)
+            if not isinstance(delivery, dict):
+                raise _MemoryRunError("home_drain_delivery_missing")
+            for name, count in delivery.items():
+                if name.endswith("failed") or name in {"offline", "exhausted"}:
+                    if type(count) is not int or count < 0:
+                        raise _MemoryRunError("home_drain_failure_count_malformed")
+                    delivery_failures += count
+        commands["memory_home_drain"] = {
+            "status": drain_result.get("status"), "failed": delivery_failures,
+        }
+        commands["memory_publish"] = {"status": publication_result.get("status")}
+    elif drain_result is not None or publication_result is not None:
+        raise PermissionError("SJM cannot record Home publication")
+    data = {
+        "schema_version": 1, "automation_id": native_job_status.JOB_IDS[role],
+        "writer_role": role, "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(), "commands": commands,
+        "selected_work_ids": selected_ids, "attempted_work_ids": attempted,
+        "exceptions": validated_exceptions,
+        "hold_created": any(native_job_status._classify_exception(item) == "action"
+                            for item in validated_exceptions),
+        "work_outcomes": outcomes, "deferred_work_ids": deferred_pending,
+        "pending_prepared_work_ids": unattributed,
+        "budget": {"input_bytes": input_bytes, "elapsed_seconds": elapsed,
+                   "exceeded": exceeded, "deferred_reason": deferred_reason},
+    }
+    return data, {"completed": completed, "failed": failed,
+                  "deferred": len(deferred_pending), "unattributed": len(unattributed)}
+
+
+def record_native_memory_run(
+    *, state_root: Path, writer_role: str, started_at: str,
+    work_ids: list[str], drain_result: dict | None = None,
+    publication_result: dict | None = None,
+    deferred_work_ids: list[str] | None = None,
+    deferred_reason: str = "byte_budget",
+    exceptions: list | None = None,
+) -> dict:
+    """Write a canonical run receipt from validated per-turn durable evidence.
+
+    Pass every selected work ID, including interrupted/failed items. A
+    selected turn without a valid extraction receipt records a failed run. A
+    prepared-but-unread turn declared with deferred_work_ids is a normal
+    batch-boundary stop: it stays pending and never becomes a failure. Any
+    other prepared-but-unaccounted turn makes the outcome ambiguous instead
+    of failed. Validation failures after a valid start still leave durable
+    failed run evidence. Command outputs are compacted here, not summarized
+    by the native model.
+    """
+    role = _memory_writer_role(writer_role)
+    started = _memory_instant(started_at, "run start")
+    finished = datetime.now(timezone.utc)
+    if started > finished:
+        raise ValueError("run start is in the future")
+
+    def failed_evidence(diagnostic: str) -> dict:
+        return record_failed_native_memory_run(
+            state_root=state_root, writer_role=role, started_at=started.isoformat(),
+            diagnostic=diagnostic,
+            work_ids=work_ids if isinstance(work_ids, list) else None)
+
+    try:
+        data, counts = _build_native_run_receipt(
+            state_root=state_root, role=role, started=started, finished=finished,
+            work_ids=work_ids, deferred_work_ids=deferred_work_ids,
+            deferred_reason=deferred_reason, exceptions=exceptions,
+            drain_result=drain_result, publication_result=publication_result)
+    except _MemoryRunError as exc:
+        return failed_evidence(exc.diagnostic)
+    except PermissionError:
+        raise
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+        return failed_evidence("run_evidence_invalid")
+    _, _, outcome, diagnostic = native_job_status._classify_receipt(
+        data, job_id=data["automation_id"], writer_role=role)
+    if outcome is None:
+        return failed_evidence("run_receipt_contract_unsatisfied")
+    path = _memory_run_receipt_path(state_root, finished)
+    _atomic_write_json(path, data)
+    return {"status": "recorded", "outcome": outcome, "diagnostic": diagnostic,
+            "completed": counts["completed"], "failed": counts["failed"],
+            "deferred": counts["deferred"], "pending_prepared": counts["unattributed"],
+            "receipt_path": str(path)}
+
+
+def memory_backlog(
+    *, state_root: Path, codex_root: Path, since: str, through: str,
+    writer_role: str, max_scan_seconds: float = 60,
+) -> dict:
+    """Read source coverage without creating worklists or success receipts.
+
+    An extraction is counted only after its persisted artifact and delivery
+    binding validate, using the same validator as worklist replay. The
+    deadline is enforced inside single-file parsing too, so one very large
+    session file yields an honest partial result instead of an overrun.
+    """
+    if (isinstance(max_scan_seconds, bool)
+            or not isinstance(max_scan_seconds, (int, float))
+            or not math.isfinite(max_scan_seconds) or max_scan_seconds < 0):
+        raise ValueError("max_scan_seconds must be a finite nonnegative number")
+    role = _memory_writer_role(writer_role)
+    dates = set(_date_range(since, through))
+    root = _resolve_codex_root(codex_root)
+    if not root.is_dir():
+        raise ValueError("Codex source root is unavailable")
+    source_host = "home" if role == "home" else "sjm"
+    deadline = time.monotonic() + max_scan_seconds
+    complete = True
+    timed_out = 0
+    pending, extracted = [], []
+    seen: set[str] = set()
+    invalid_receipts = source_errors = parse_exceptions = 0
+    for path in sorted(root.rglob("*.jsonl")):
+        if time.monotonic() >= deadline:
+            complete = False
+            break
+        if path.is_symlink() or not path.resolve().is_relative_to(root):
+            source_errors += 1
+            continue
+        if not _is_k2b_scope(path):
+            continue
+        try:
+            before = path.stat()
+            parsed = parse_completed_dialogue(
+                path, source_host=source_host, deadline=deadline)
+            after = path.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                source_errors += 1
+                continue
+        except DialogueParseTimeout:
+            # Honest partial: the scan budget, not the backlog, ran out.
+            timed_out += 1
+            complete = False
+            break
+        except (OSError, ValueError):
+            source_errors += 1
+            continue
+        if (not parsed.get("eligible") or parsed.get("provenance_status") != "known_user"
+            or parsed.get("thread_source") not in INTERACTIVE_THREAD_SOURCES):
+            continue
+        parse_exceptions += sum(d.get("completed_date") in dates
+                                for d in parsed.get("parse_diagnostics", []))
+        for prefix in parsed.get("completed_prefixes", []):
+            if (prefix.get("mode") != "turn" or prefix.get("completed_date") not in dates
+                or not prefix.get("transcript")):
+                continue
+            identity = dict(host_id=parsed["host_id"], session_id=parsed["session_id"],
+                completed_cursor=prefix["cursor"], completed_prefix_sha256=prefix["prefix_sha256"],
+                transcript_sha256=prefix["prefix_sha256"])
+            work_id = _memory_work_id(identity)
+            if work_id in seen:
+                continue
+            seen.add(work_id)
+            try:
+                completed_at = datetime.fromisoformat(
+                    _completed_at_iso(prefix["completed_at"]).replace("Z", "+00:00")
+                ).astimezone(timezone.utc).isoformat()
+            except (ValueError, KeyError, TypeError, OverflowError):
+                parse_exceptions += 1
+                continue
+            receipt_path = _memory_work_path(state_root, work_id, "extraction-receipts")
+            if receipt_path.exists() or receipt_path.is_symlink():
+                try:
+                    bundle_path = _memory_work_path(state_root, work_id, "source-bundles")
+                    if receipt_path.is_symlink() or bundle_path.is_symlink():
+                        raise RuntimeError("unsafe extraction evidence")
+                    bundle = _read_memory_json(bundle_path, "source bundle")
+                    if _memory_work_id(bundle) != work_id:
+                        raise RuntimeError("source bundle identity conflicts")
+                    _validate_memory_extraction_receipt(state_root, work_id, bundle)
+                except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+                    invalid_receipts += 1
+                else:
+                    extracted.append(completed_at)
+                    continue
+            pending.append(completed_at)
+    return {
+        "status": "needs_attention" if invalid_receipts or source_errors or parse_exceptions or not complete else "ok",
+        "complete": complete,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "writer_role": role, "since": since, "through": through,
+        "eligible_turns": len(seen), "extracted_turns": len(extracted),
+        "pending_turns": len(pending), "invalid_receipts": invalid_receipts,
+        "source_errors": source_errors, "parse_exceptions": parse_exceptions,
+        "timed_out_sources": timed_out,
+        "oldest_pending_at": min(pending, default=None),
+        "latest_extracted_source_at": max(extracted, default=None),
+    }
 
 
 def memory_status(
@@ -6447,6 +6944,26 @@ def main(argv: list[str] | None = None) -> int:
     memory_status_parser.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
+    memory_backlog_parser = sub.add_parser(
+        "memory-backlog", help="read eligible source coverage and validated extraction lag")
+    memory_backlog_parser.add_argument("--since", required=True)
+    memory_backlog_parser.add_argument("--through", required=True)
+    memory_backlog_parser.add_argument("--codex-root", type=Path, required=True)
+    memory_backlog_parser.add_argument("--state-root", type=Path,
+                                       default=_default_automatic_memory_state_root())
+    memory_backlog_parser.add_argument("--writer-role", choices=("home", "sjm-source-only"), required=True)
+    memory_backlog_parser.add_argument("--max-scan-seconds", type=float, default=60)
+    memory_run_parser = sub.add_parser("memory-record-run", help="record canonical native run evidence")
+    memory_run_parser.add_argument("--state-root", type=Path, default=_default_automatic_memory_state_root())
+    memory_run_parser.add_argument("--writer-role", choices=("home", "sjm-source-only"), required=True)
+    memory_run_parser.add_argument("--started-at", required=True)
+    memory_run_parser.add_argument("--work-id", action="append", default=[])
+    memory_run_parser.add_argument("--deferred-work-id", action="append", default=[])
+    memory_run_parser.add_argument("--deferred-reason",
+                                   choices=MEMORY_RUN_DEFER_REASONS, default="byte_budget")
+    memory_run_parser.add_argument("--exceptions-json", type=Path)
+    memory_run_parser.add_argument("--drain-json", type=Path)
+    memory_run_parser.add_argument("--publication-json", type=Path)
     memory_drain = sub.add_parser(
         "memory-home-drain",
         help="durably accept and reconcile bounded Home and optional SJM deliveries",
@@ -6663,6 +7180,55 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(result, sort_keys=True))
         return 0
+
+    if args.cmd == "memory-record-run":
+        try:
+            exceptions = (_read_memory_json_list(args.exceptions_json, "exceptions JSON")
+                          if args.exceptions_json else None)
+            drain_result = (_read_memory_json(args.drain_json, "drain JSON")
+                            if args.drain_json else None)
+            publication_result = (_read_memory_json(args.publication_json, "publication JSON")
+                                  if args.publication_json else None)
+        except (OSError, ValueError, RuntimeError) as exc:
+            # A valid start/role must still leave durable failed run evidence,
+            # never an evidence gap the status reader cannot distinguish from
+            # "the job never ran".
+            try:
+                failed = record_failed_native_memory_run(
+                    state_root=args.state_root, writer_role=args.writer_role,
+                    started_at=args.started_at, diagnostic="command_json_unreadable",
+                    work_ids=args.work_id)
+            except (OSError, ValueError, RuntimeError, TypeError):
+                failed = None
+            print(f"eod-capture: run command JSON failed: {_sanitize_log_value(exc)}",
+                  file=sys.stderr)
+            if failed is not None:
+                print(json.dumps(failed, sort_keys=True))
+            return 2
+        try:
+            result = record_native_memory_run(state_root=args.state_root,
+                writer_role=args.writer_role, started_at=args.started_at, work_ids=args.work_id,
+                deferred_work_ids=args.deferred_work_id, deferred_reason=args.deferred_reason,
+                exceptions=exceptions, drain_result=drain_result,
+                publication_result=publication_result)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"eod-capture: run receipt failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        if result.get("outcome") == "completed":
+            return 0
+        return 2 if result.get("status") == "failed" else 3
+
+    if args.cmd == "memory-backlog":
+        try:
+            result = memory_backlog(state_root=args.state_root, codex_root=args.codex_root,
+                since=args.since, through=args.through, writer_role=args.writer_role,
+                max_scan_seconds=args.max_scan_seconds)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"eod-capture: memory backlog failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 3 if result["status"] == "needs_attention" else 0
 
     if args.cmd == "memory-status":
         try:

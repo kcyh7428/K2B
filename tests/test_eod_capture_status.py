@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -2828,6 +2828,467 @@ def test_memory_worklist_is_bounded_stable_and_excludes_worker_sources(
     assert item["work_id"].startswith("work:")
     assert Path(item["source_bundle_path"]).is_file()
     assert Path(item["work_record_path"]).is_file()
+
+
+def test_backlog_counts_unseen_turns_without_creating_work_or_receipts(tmp_path):
+    root = tmp_path / "sessions"
+    _modern_session(root, "2026-09-13", "first")
+    _modern_session(root, "2026-09-14", "second")
+    _modern_session(root, "2026-09-12", "before-window")
+    state = tmp_path / "state"
+    result = eod_capture.memory_backlog(state_root=state, codex_root=root,
+        since="2026-09-13", through="2026-09-14", writer_role="home")
+    assert result["eligible_turns"] == 2
+    assert result["pending_turns"] == 2
+    assert result["oldest_pending_at"] == "2026-09-13T02:00:00+00:00"
+    assert not state.exists()
+
+
+def test_backlog_validates_receipts_instead_of_counting_filenames(tmp_path):
+    root = tmp_path / "sessions"
+    _modern_session(root, "2026-09-13", "first")
+    _modern_session(root, "2026-09-14", "second")
+    state = tmp_path / "state"
+    work = eod_capture.build_memory_worklist(state_root=state, codex_root=root,
+        since="2026-09-13", through="2026-09-14", writer_role="home", limit=1)["items"][0]
+    bundle = json.loads(Path(work["source_bundle_path"]).read_text())
+    result = eod_capture.record_memory_extraction(state_root=state, work_id=work["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Reviewed fact"), writer_role="home")
+    args = dict(state_root=state, codex_root=root, since="2026-09-13",
+                through="2026-09-14", writer_role="home")
+    before = {str(p): p.read_bytes() for p in state.rglob("*") if p.is_file()}
+    observed = eod_capture.memory_backlog(**args)
+    assert observed["extracted_turns"] == 1
+    assert observed["pending_turns"] == 1
+    assert observed["latest_extracted_source_at"] == "2026-09-13T02:00:00+00:00"
+    assert before == {str(p): p.read_bytes() for p in state.rglob("*") if p.is_file()}
+    Path(result["receipt_path"]).write_text("{}")
+    observed = eod_capture.memory_backlog(**args)
+    assert observed["status"] == "needs_attention"
+    assert observed["invalid_receipts"] == 1
+    assert observed["pending_turns"] == 2
+
+
+def _native_run_fixture(tmp_path, *, count=2, role="sjm-source-only"):
+    root = tmp_path / "sessions"
+    for index in range(count):
+        _modern_session(root, f"2026-09-{13 + index}", f"native-run-{index}")
+    state = tmp_path / "state"
+    # Record the run start before preparing any view, as the prompt requires.
+    started = datetime.now(timezone.utc)
+    work = eod_capture.build_memory_worklist(state_root=state, codex_root=root,
+        since="2026-09-13", through=f"2026-09-{12 + count}", writer_role=role,
+        limit=count)["items"]
+    for item in work:
+        eod_capture.prepare_memory_extraction_input(
+            state_root=state, work_id=item["work_id"], writer_role=role)
+    return state, work, started
+
+
+def _record_native_run(state, started, work_ids, **kwargs):
+    return eod_capture.record_native_memory_run(
+        state_root=state, writer_role="sjm-source-only",
+        started_at=started.isoformat(), work_ids=work_ids, **kwargs)
+
+
+def test_native_run_receipt_requires_every_selected_extraction(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path)
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[0]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Real fact"), writer_role="sjm-source-only")
+    # An omitted but prepared turn is ambiguous evidence, never a manufactured
+    # extraction failure.
+    result = _record_native_run(state, started, [work[0]["work_id"]])
+    assert result["outcome"] == "unknown"
+    assert result["failed"] == 0
+    assert result["pending_prepared"] == 1
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["pending_prepared_work_ids"] == [work[1]["work_id"]]
+    assert data["commands"]["memory_record_extraction"]["unattributed_pending"] == 1
+    # Recording the second extraction completes the batch.
+    bundle = json.loads(Path(work[1]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[1]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Second fact"), writer_role="sjm-source-only")
+    result = _record_native_run(state, started, [item["work_id"] for item in work])
+    assert result["outcome"] == "completed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["schema_version"] == 1
+    assert data["commands"]["memory_record_extraction"]["completed"] == 2
+    assert "Real fact" not in Path(result["receipt_path"]).read_text()
+
+
+def test_native_run_receipt_fails_selected_turn_without_extraction(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path, count=1)
+    result = _record_native_run(state, started, [work[0]["work_id"]])
+    assert result["outcome"] == "failed"
+    assert result["failed"] == 1
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_native_run_receipt_defers_unread_turn_at_time_boundary(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path)
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[0]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Fact one"), writer_role="sjm-source-only")
+    # A time_budget deferral is only honest once the 18-minute cutoff elapsed.
+    cutoff_started = started - timedelta(minutes=19)
+    result = _record_native_run(state, cutoff_started, [work[0]["work_id"]],
+        deferred_work_ids=[work[1]["work_id"]], deferred_reason="time_budget")
+    assert result["outcome"] == "completed"
+    assert result["failed"] == 0
+    assert result["deferred"] == 1
+    assert result["pending_prepared"] == 0
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["deferred_work_ids"] == [work[1]["work_id"]]
+    assert data["commands"]["memory_record_extraction"]["unattributed_pending"] == 0
+    assert data["budget"]["exceeded"] is False
+    assert data["commands"]["batch_budget"]["status"] == "bounded"
+    # The deferred turn keeps no extraction receipt.
+    assert not eod_capture._memory_work_path(
+        state, work[1]["work_id"], "extraction-receipts").exists()
+
+
+@pytest.mark.parametrize("minutes", [0, 5])
+def test_native_run_receipt_rejects_premature_time_deferral(tmp_path, minutes):
+    state, work, started = _native_run_fixture(tmp_path)
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[0]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Fact one"), writer_role="sjm-source-only")
+    result = _record_native_run(state, started - timedelta(minutes=minutes),
+        [work[0]["work_id"]], deferred_work_ids=[work[1]["work_id"]],
+        deferred_reason="time_budget")
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == "deferred_time_boundary_not_reached"
+    assert Path(result["receipt_path"]).is_file()
+    assert not eod_capture._memory_work_path(
+        state, work[1]["work_id"], "extraction-receipts").exists()
+
+
+def test_native_run_receipt_defers_turn_at_turn_budget_boundary(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path, count=13)
+    for item in work[:12]:
+        bundle = json.loads(Path(item["source_bundle_path"]).read_text())
+        eod_capture.record_memory_extraction(state_root=state, work_id=item["work_id"],
+            reviewed=_reviewed_memory_item(bundle, value="Batch fact"),
+            writer_role="sjm-source-only")
+    result = _record_native_run(state, started, [item["work_id"] for item in work[:12]],
+        deferred_work_ids=[work[12]["work_id"]], deferred_reason="turn_budget")
+    assert result["outcome"] == "completed"
+    assert result["completed"] == 12
+    assert result["deferred"] == 1
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["commands"]["batch_budget"]["status"] == "bounded"
+    assert not eod_capture._memory_work_path(
+        state, work[12]["work_id"], "extraction-receipts").exists()
+
+
+def test_native_run_receipt_rejects_premature_turn_deferral(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path)
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[0]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Fact one"), writer_role="sjm-source-only")
+    result = _record_native_run(state, started, [work[0]["work_id"]],
+        deferred_work_ids=[work[1]["work_id"]], deferred_reason="turn_budget")
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == "deferred_turn_boundary_not_reached"
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_native_run_receipt_defers_turn_at_byte_budget_boundary(tmp_path, monkeypatch):
+    state, work, started = _native_run_fixture(tmp_path)
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[0]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Fact one"), writer_role="sjm-source-only")
+    first_bytes = eod_capture._memory_work_path(
+        state, work[0]["work_id"], "extraction-inputs").stat().st_size
+    monkeypatch.setattr(eod_capture, "MEMORY_RUN_MAX_INPUT_BYTES", first_bytes + 1)
+    result = _record_native_run(state, started, [work[0]["work_id"]],
+        deferred_work_ids=[work[1]["work_id"]], deferred_reason="byte_budget")
+    assert result["outcome"] == "completed"
+    assert result["deferred"] == 1
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["budget"]["input_bytes"] == first_bytes
+    assert data["budget"]["exceeded"] is False
+
+
+@pytest.mark.parametrize("case,diagnostic,reason", [
+    ("selected", "deferred_work_also_selected", "time_budget"),
+    ("stale", "deferred_view_not_in_current_run", "time_budget"),
+    ("extracted", "deferred_work_already_extracted", "time_budget"),
+    ("wrong_role", "deferred_view_wrong_role", "time_budget"),
+    ("within_budget", "deferred_view_within_byte_budget", "byte_budget"),
+    ("bad_reason", "deferred_reason_invalid", "overtime"),
+])
+def test_native_run_receipt_rejects_invalid_deferral(tmp_path, case, diagnostic, reason):
+    state, work, started = _native_run_fixture(tmp_path)
+    target, other = work[1]["work_id"], work[0]["work_id"]
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=other,
+        reviewed=_reviewed_memory_item(bundle, value="Kept fact"), writer_role="sjm-source-only")
+    selected = [other]
+    view = eod_capture._memory_work_path(state, target, "extraction-inputs")
+    if case == "selected":
+        selected = [target]
+    elif case == "stale":
+        stale = started.timestamp() - 120
+        os.utime(view, (stale, stale))
+    elif case == "extracted":
+        target_bundle = json.loads(Path(work[1]["source_bundle_path"]).read_text())
+        eod_capture.record_memory_extraction(state_root=state, work_id=target,
+            reviewed=_reviewed_memory_item(target_bundle, value="Deferred fact"),
+            writer_role="sjm-source-only")
+    elif case == "wrong_role":
+        record_path = eod_capture._memory_work_path(state, target, "worklist")
+        record = json.loads(record_path.read_text())
+        record["writer_role"] = "home"
+        record_path.write_text(json.dumps(record))
+    result = _record_native_run(state, started, selected,
+        deferred_work_ids=[target], deferred_reason=reason)
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == diagnostic
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_native_run_receipt_is_idempotent_for_duplicate_work_ids(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path, count=1)
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work[0]["work_id"],
+        reviewed=_reviewed_memory_item(bundle, value="Only fact"), writer_role="sjm-source-only")
+    work_id = work[0]["work_id"]
+    result = _record_native_run(state, started, [work_id, work_id])
+    assert result["outcome"] == "completed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["selected_work_ids"] == [work_id]
+    assert data["commands"]["memory_record_extraction"]["completed"] == 1
+
+
+def test_home_run_without_command_json_leaves_failed_evidence(tmp_path):
+    state = tmp_path / "state"
+    result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
+        started_at=datetime.now(timezone.utc).isoformat(), work_ids=[])
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == "home_command_json_required"
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_home_run_records_valid_drain_and_publication(tmp_path):
+    state = tmp_path / "state"
+    result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
+        started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
+        drain_result={"status": "reconciled", "local_delivery": {"reconciled": 0},
+                      "sjm_delivery": {"failed": 0}},
+        publication_result={"status": "not_attempted"})
+    assert result["outcome"] == "completed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["commands"]["memory_home_drain"]["status"] == "reconciled"
+    assert data["commands"]["memory_publish"]["status"] == "not_attempted"
+
+
+@pytest.mark.parametrize("drain", [
+    {"status": "reconciled", "local_delivery": "nope", "sjm_delivery": {"failed": 0}},
+    {"status": "reconciled", "local_delivery": {"failed": None}, "sjm_delivery": {"failed": 0}},
+    {"status": "reconciled", "local_delivery": {"failed": -1}, "sjm_delivery": {"failed": 0}},
+    {"status": "reconciled", "local_delivery": {"failed": True}, "sjm_delivery": {"failed": 0}},
+    {"status": "reconciled", "local_delivery": {}, "sjm_delivery": {"failed": 2 ** 70}},
+])
+def test_home_run_rejects_malformed_drain_json_with_durable_evidence(tmp_path, drain):
+    state = tmp_path / "state"
+    result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
+        started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
+        drain_result=drain, publication_result={"status": "not_attempted"})
+    assert result["outcome"] == "failed"
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_native_run_receipt_persists_validated_hold_exception(tmp_path):
+    state, work, started = _native_run_fixture(tmp_path, count=1)
+    work_id = work[0]["work_id"]
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work_id,
+        reviewed=_reviewed_memory_item(bundle, value="Held fact"), writer_role="sjm-source-only")
+    hold = {"type": "input_budget_exceeded", "work_id": work_id}
+    result = _record_native_run(state, started, [work_id], exceptions=[hold])
+    assert result["outcome"] == "completed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["exceptions"] == [hold]
+    assert data["hold_created"] is True
+
+
+@pytest.mark.parametrize("bad_work_id", [
+    "work:example", "work:" + "A" * 64, "work:" + "a" * 63, "work:" + "a" * 65,
+])
+def test_native_run_receipt_rejects_hold_work_id_outside_worklist_syntax(tmp_path, bad_work_id):
+    result = eod_capture.record_native_memory_run(state_root=tmp_path / "state",
+        writer_role="sjm-source-only", started_at=datetime.now(timezone.utc).isoformat(),
+        work_ids=[], exceptions=[{"type": "input_budget_exceeded", "work_id": bad_work_id}])
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == "exception_work_id_invalid"
+    assert Path(result["receipt_path"]).is_file()
+    assert bad_work_id not in Path(result["receipt_path"]).read_text()
+    assert bad_work_id not in json.dumps(result)
+
+
+@pytest.mark.parametrize("reason", [
+    "sk-live-secret-token-value", "Keith's passphrase is hunter2",
+])
+def test_native_run_receipt_redacts_free_text_exception_reason(tmp_path, reason):
+    result = eod_capture.record_native_memory_run(state_root=tmp_path / "state",
+        writer_role="sjm-source-only", started_at=datetime.now(timezone.utc).isoformat(),
+        work_ids=[], exceptions=[{"reason": reason,
+                                  "status": "resolved_with_reviewed_empty"}])
+    assert result["outcome"] == "completed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["exceptions"] == [{"reason": "redacted_reason",
+                                   "status": "resolved_with_reviewed_empty"}]
+    assert reason not in Path(result["receipt_path"]).read_text()
+
+
+def test_native_run_receipt_keeps_fixed_reason_code(tmp_path):
+    result = eod_capture.record_native_memory_run(state_root=tmp_path / "state",
+        writer_role="sjm-source-only", started_at=datetime.now(timezone.utc).isoformat(),
+        work_ids=[], exceptions=[{"reason": "quota_exhausted",
+                                  "status": "resolved_with_reviewed_empty"}])
+    assert result["outcome"] == "completed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["exceptions"] == [{"reason": "quota_exhausted",
+                                   "status": "resolved_with_reviewed_empty"}]
+
+
+@pytest.mark.parametrize("bad", [
+    [{"type": "input_budget_exceeded"}],
+    [{"status": "bogus"}],
+    [{"type": "input_budget_exceeded", "work_id": 7}],
+    ["free text that must never be persisted"],
+    "not-a-list",
+])
+def test_native_run_receipt_rejects_malformed_exceptions(tmp_path, bad):
+    result = eod_capture.record_native_memory_run(state_root=tmp_path / "state",
+        writer_role="sjm-source-only", started_at=datetime.now(timezone.utc).isoformat(),
+        work_ids=[], exceptions=bad)
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == "exceptions_malformed"
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_native_run_receipt_flags_budget_overrun_without_failure(tmp_path):
+    result = eod_capture.record_native_memory_run(state_root=tmp_path / "state",
+        writer_role="sjm-source-only", work_ids=[],
+        started_at=(datetime.now(timezone.utc) - timedelta(minutes=21)).isoformat())
+    assert result["outcome"] == "unknown"
+    assert result["failed"] == 0
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["budget"]["exceeded"] is True
+    assert data["commands"]["batch_budget"]["status"] == "exceeded"
+
+
+def test_cli_records_failed_evidence_when_command_json_is_unreadable(tmp_path, capsys):
+    state, work, started = _native_run_fixture(tmp_path, count=1, role="home")
+    work_id = work[0]["work_id"]
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(state_root=state, work_id=work_id,
+        reviewed=_reviewed_memory_item(bundle, value="Completed fact"), writer_role="home")
+    unreadable = tmp_path / "drain.json"
+    unreadable.write_text("{not json", encoding="utf-8")
+    code = eod_capture.main([
+        "memory-record-run", "--state-root", str(state), "--writer-role", "home",
+        "--started-at", started.isoformat(), "--work-id", work_id,
+        "--drain-json", str(unreadable), "--publication-json", str(unreadable)])
+    assert code == 2
+    receipts = sorted((state / "native-run-receipts").glob("*.json"))
+    assert len(receipts) == 1
+    data = json.loads(receipts[0].read_text())
+    assert data["diagnostic"] == "command_json_unreadable"
+    # A run-bookkeeping failure never invents per-turn outcomes.
+    assert data["selected_work_ids"] == [work_id]
+    assert "memory_record_extraction" not in data["commands"]
+    assert data["commands"]["native_run_bookkeeping"]["status"] == "failed"
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "failed"
+    assert printed["outcome"] == "failed"
+    assert printed["completed"] is None and printed["failed"] is None
+    # The genuinely completed per-turn extraction evidence is retained.
+    assert eod_capture._memory_work_path(state, work_id, "extraction-receipts").is_file()
+    validated = eod_capture._validate_memory_extraction_receipt(state, work_id, bundle)
+    assert validated["result"]["status"] in {"queued", "reviewed_empty"}
+
+
+def test_backlog_rejects_invalid_scan_budget(tmp_path):
+    args = dict(state_root=tmp_path / "state", codex_root=tmp_path / "sessions",
+                since="2026-09-13", through="2026-09-13", writer_role="home")
+    for value in (-1, float("inf"), float("nan"), True):
+        with pytest.raises(ValueError):
+            eod_capture.memory_backlog(**args, max_scan_seconds=value)
+
+
+def test_parse_completed_dialogue_enforces_deadline(tmp_path):
+    root = tmp_path / "sessions"
+    source = _modern_session(root, "2026-09-13", "bounded")
+    with pytest.raises(eod_capture.DialogueParseTimeout):
+        eod_capture.parse_completed_dialogue(
+            source, source_host="home", deadline=eod_capture.time.monotonic() - 1)
+
+
+def test_parse_deadline_also_covers_processing_after_json_read(tmp_path, monkeypatch):
+    source = _modern_session(tmp_path / "sessions", "2026-09-13", "slow-processing")
+    records = eod_capture._read_complete_jsonl_records(source)
+    monkeypatch.setattr(eod_capture, "_read_complete_jsonl_records",
+                        lambda *args, **kwargs: records)
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(eod_capture.time, "monotonic", lambda: next(ticks, 2))
+    with pytest.raises(eod_capture.DialogueParseTimeout):
+        eod_capture.parse_completed_dialogue(source, source_host="home", deadline=1)
+
+
+@pytest.mark.parametrize("work_ids", [[{}], [None], ["private dialogue text"]])
+def test_failed_run_receipt_sanitizes_malformed_work_ids(tmp_path, work_ids):
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path / "state", writer_role="sjm-source-only",
+        started_at=datetime.now(timezone.utc).isoformat(), work_ids=work_ids)
+    assert result["outcome"] == "failed"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["selected_work_ids"] == []
+    assert "private dialogue text" not in json.dumps(data)
+
+
+def test_backlog_reports_single_source_timeout_as_partial(tmp_path, monkeypatch):
+    root = tmp_path / "sessions"
+    _modern_session(root, "2026-09-13", "timeout-a")
+    _modern_session(root, "2026-09-14", "timeout-b")
+
+    def timeout(path, *, source_host, deadline=None):
+        raise eod_capture.DialogueParseTimeout("bounded")
+
+    monkeypatch.setattr(eod_capture, "parse_completed_dialogue", timeout)
+    result = eod_capture.memory_backlog(state_root=tmp_path / "state", codex_root=root,
+        since="2026-09-13", through="2026-09-14", writer_role="home", max_scan_seconds=60)
+    assert result["complete"] is False
+    assert result["timed_out_sources"] == 1
+    assert result["status"] == "needs_attention"
+
+
+def test_backlog_bounds_one_oversized_source_as_partial(tmp_path):
+    root = tmp_path / "sessions"
+    source = _modern_session(root, "2026-09-13", "oversized")
+    with source.open("a", encoding="utf-8") as handle:
+        for index in range(120000):
+            handle.write(json.dumps(
+                {"type": "event_msg", "ordinal": 1000 + index,
+                 "payload": {"type": "noop", "index": index}}) + "\n")
+    result = eod_capture.memory_backlog(state_root=tmp_path / "state", codex_root=root,
+        since="2026-09-13", through="2026-09-13", writer_role="home",
+        max_scan_seconds=0.05)
+    assert result["complete"] is False
+    assert result["timed_out_sources"] == 1
+    assert result["status"] == "needs_attention"
+
+
+def test_backlog_scan_budget_reports_incomplete_not_zero_backlog(tmp_path):
+    root = tmp_path / "sessions"
+    _modern_session(root, "2026-09-13", "a")
+    result = eod_capture.memory_backlog(state_root=tmp_path / "state", codex_root=root,
+        since="2026-09-13", through="2026-09-13", writer_role="home", max_scan_seconds=0)
+    assert result["status"] == "needs_attention"
+    assert result["complete"] is False
 
 
 def test_memory_worklist_selects_each_completed_prefix_inside_requested_range(

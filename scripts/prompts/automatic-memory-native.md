@@ -8,11 +8,24 @@ metered API, scripted Kimi batch service, or any unrelated project.
 
 The registered job must declare its host, project, writer role, approved local
 source root, private state root, inclusive start date and per-run limit. Missing
-configuration is a stop, not permission to guess paths. Initial production jobs
-run hourly, select at most one completed source, and use 2026-09-13 through the
-current HKT date (including missed dates). Do not widen that range or backfill
+configuration is a stop, not permission to guess paths. The repaired production
+jobs run every six hours, with at most 12 completed turns, 240000 cumulative
+input-view bytes and 20 minutes per host per run, whichever comes first. These
+runs use only the signed-in native Codex product, never DeepSeek or another paid
+API, with no paid fallback. The 2026-09-25 DeepSeek handoff was a bounded
+engineering lane for the repair itself, not a change to scheduled extraction.
+Use 2026-09-13 through the current HKT date (including missed dates). Do not widen that range or backfill
 earlier history. Use Home's Python 3.12 or SJM's project
 `venv/washing-machine/bin/python`, never a provider wrapper.
+
+The machine-local automatic-memory state root belongs to this native job alone
+while a batch runs: do not run an interactive or second native batch against the
+same state root. Record the UTC start time BEFORE preparing or reading the first
+view; the receipt's prepared-view discovery window starts at that instant. That
+window is current-run evidence, not proof of exclusive ownership: the receipt can
+bound which prepared views it accounts for, but it cannot prove that a
+concurrent producer prepared nothing, so one owner and start-before-prepare
+discipline are required.
 
 Before worklist selection, check `<state-root>/extraction-hold.json`. If present
 or unreadable/malformed, do not select or extract another source; the hold needs
@@ -23,7 +36,7 @@ selection without progress, create this private hold with UTC timestamp, work
 ID when known, reason, and operator-action requirement. Preserve any existing
 hold; record failures in the run receipt and do not continue extraction if the
 hold cannot be written. Notify when a hold is newly created or changes, not on
-every unchanged hourly check. A hold is not an extraction/success receipt.
+every unchanged check. A hold is not an extraction/success receipt.
 
 Before reading dialogue, call `scripts/eod-capture.py memory-extraction-input`
 with the selected `--work-id`, configured `--state-root` and `--writer-role`.
@@ -39,8 +52,22 @@ do not record a partial extraction as success. Do not read other sessions, launc
 reviewers/subagents, run a test suite, or change code, live rules, credentials,
 publication authority or schedules. Empty worklists require no model extraction.
 
-1. Prepare at most the configured number of completed user-origin sources with
-   `scripts/eod-capture.py memory-worklist`. Use the explicit Home or
+Record the UTC start time ONCE before the loop; never reset it when selecting
+another turn. Stop selecting new turns after 18 minutes to leave time for
+drain/publication and the canonical receipt inside the 20-minute total budget.
+
+1. Select one completed user-origin turn with
+   `scripts/eod-capture.py memory-worklist --limit 1`. After recording its extraction,
+   repeat steps 1–3 while under all three batch limits. Inspect each input view's
+   byte size before reading it. If reading the next view would exceed the cumulative
+   budget, leave it pending; do not mark it reviewed-empty or create an operator hold
+   for this normal batch boundary. Track every attempted work ID, including failures;
+   record each selected-but-unread turn separately as a deferred ID with the reason
+   that stopped selection (`byte_budget`, `time_budget`, or `turn_budget`); declare
+   `time_budget` only after the 18-minute selection cutoff and `turn_budget` only
+   after 12 attempted turns, or the receipt fails instead of completing.
+   Stop on empty work, a hold, retry/needs-attention, or a normal batch boundary.
+   Use the explicit Home or
    `sjm-source-only` writer role, the host's local Codex sessions root, the
    machine-local automatic-memory state root, and an inclusive recovery range.
 2. For each returned input view, read all `dialogue_events` and `context_events` and
@@ -72,7 +99,7 @@ publication authority or schedules. Empty worklists require no model extraction.
    persistent failure, genuine ambiguity, exhausted quota, or required user
    action.
 4. On Home only, run `scripts/eod-capture.py memory-home-drain --writer-role home
-   --pull-sjm` with the configured bounded limit and machine-local state root.
+   --pull-sjm --limit 24` with the configured machine-local state root.
    The command may use only the established `sjm-ai` connection and must report
    Home/SJM downtime honestly.
 
@@ -85,15 +112,40 @@ publication authority or schedules. Empty worklists require no model extraction.
    publication is waiting/failed, never published; do not bypass checks or edit
    shared memory/index/log files yourself. SJM must never run this step.
 
-Preserve compact command JSON receipts and UTC start/finish timestamps under
-the host's private automatic-memory state root, with the native task/run id
-when available. Record selected work IDs, extraction outcomes, reconciliation,
-publication or waiting state, and exceptions, not full transcripts. A command
-exit code alone is not success: inspect its JSON status. Use worklist exception
-statuses and prior native run receipts to identify exhausted retries or repeated
-selection without progress; establish the operator hold instead of increasing
-limits. `memory-status` exposes aggregate persisted-state counts, not a complete
-pending/exhausted inventory or unseen backlog size, and its runtime flags do not
-inspect native scheduler activation. Never infer total backlog or activation
-from those fields. Do not claim shared arrival, an achieved cadence or seven-day acceptance
-without their actual evidence. Ordinary successful or unchanged runs stay quiet.
+Save actual drain and publication command JSON to private files. When publication
+is correctly not attempted, use the explicit status `not_attempted` and reason
+`no_new_reconciliation_or_pending_publication`. Generate the canonical run receipt
+with `scripts/eod-capture.py memory-record-run --writer-role <role> --state-root
+<state> --started-at <UTC-start>` and one `--work-id` for each attempted turn.
+Pass each selected-but-unread boundary deferral with `--deferred-work-id` and its
+`--deferred-reason`; the helper requires the view to be inside this run's window,
+in the current writer role, and without an existing extraction receipt, so a
+stale or already-extracted view is never subtracted from the byte budget. A
+`byte_budget` deferral must be the view that crossed the cumulative byte budget.
+Record unexpected command failures and holds as structured schema-v1 entries in
+a private JSON array passed with `--exceptions-json`; free text is rejected and
+malformed exceptions fail the run instead of completing it. The helper discovers
+input views prepared since the original start time, and a prepared-but-unaccounted
+turn makes the outcome ambiguous rather than failed, so a prepared turn cannot
+silently vanish from the receipt; it cannot prove that a concurrent producer
+prepared nothing. On Home also supply `--drain-json <actual-drain-output>` and
+`--publication-json <actual-publication-output>`. Do not handwrite
+native-run-receipts: the helper validates per-turn extraction artifacts, writes
+integer schema version 1, and leaves durable failed evidence with a sanitized
+diagnostic when command JSON is unreadable or the evidence is malformed. Never
+omit a failed attempted work ID to manufacture a successful batch.
+
+Run `memory-backlog --writer-role <role> --state-root <state> --codex-root <root>
+--since 2026-09-13 --through <current-HKT-date>` after the batch. Add
+`--max-scan-seconds <n>` only when a bounded scan genuinely needs longer; the
+budget is enforced inside single large session files too, so an incomplete scan
+reports `complete: false` with `status: needs_attention` and never "no backlog".
+Save its aggregate JSON beside the run receipt; it validates extraction evidence
+without selecting or extracting work. Report pending turns and oldest pending time
+when attention is needed. If pending work remains with no completed extraction, or
+backlog age exceeds 24 hours after initial catch-up, flag the capacity/hold problem
+once and when it changes; do not claim current recall from an ACTIVE registration.
+`memory-status` observes registration, latest run evidence, holds and persisted
+state; `memory-backlog` measures source coverage. Neither proves shared arrival.
+Do not claim achieved cadence or seven-day acceptance without actual evidence.
+Ordinary successful or unchanged runs stay quiet.

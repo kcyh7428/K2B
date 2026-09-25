@@ -17,6 +17,138 @@ import native_job_status  # noqa: E402
 _UNSET: object = object()
 
 
+@pytest.mark.parametrize("schema,exception", [
+    (1, {"type": "task_complete_turn_id_mismatch", "count": 3,
+         "state": "unchanged_from_prior_run", "actionable": False}),
+    ("1.0", {"stage": "memory_worklist", "status": "non_blocking_parse_exceptions",
+             "details": {"task_complete_turn_id_mismatch": 2}}),
+])
+def test_deployed_native_receipt_formats_preserve_actual_completion(tmp_path, schema, exception):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json", exceptions=[exception])
+    data = json.loads(path.read_text())
+    data["schema_version"] = schema
+    path.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(
+        writer_role="home", state_root=state, automation_root=tmp_path / "jobs")
+    assert result["last_run_outcome"] == "completed"
+    assert result["last_completed_at"] == "2026-09-13T22:36:57+00:00"
+
+
+@pytest.mark.parametrize("field,value", [("count", -1), ("count", True), ("actionable", "false")])
+def test_deployed_parse_exception_rejects_malformed_evidence(tmp_path, field, value):
+    exception = {"type": "task_complete_turn_id_mismatch", "count": 3,
+                 "state": "unchanged_from_prior_run", "actionable": False}
+    exception[field] = value
+    state = tmp_path / "state"
+    _home_receipt(state, "run.json", exceptions=[exception])
+    result = native_job_status.read_native_job_status(
+        writer_role="home", state_root=state, automation_root=tmp_path / "jobs")
+    assert result["last_run_outcome"] == "unknown"
+
+
+def test_batch_cannot_claim_completion_with_only_one_extracted_turn(tmp_path):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json")
+    data = json.loads(path.read_text())
+    data["commands"]["memory_worklist"]["selected"] = 12
+    data["commands"]["memory_record_extraction"]["completed"] = 1
+    path.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(
+        writer_role="home", state_root=state, automation_root=tmp_path / "jobs")
+    assert result["last_run_outcome"] == "unknown"
+
+
+def _home_status(state, tmp_path):
+    return native_job_status.read_native_job_status(
+        writer_role="home", state_root=state, automation_root=tmp_path / "jobs")
+
+
+@pytest.mark.parametrize("status,expected", [("bounded", "completed"), ("exceeded", "unknown")])
+def test_batch_budget_boundary_is_validated_without_failure(tmp_path, status, expected):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json")
+    data = json.loads(path.read_text())
+    data["commands"]["memory_record_extraction"]["completed"] = 1
+    data["commands"]["batch_budget"] = {"status": status}
+    path.write_text(json.dumps(data))
+    assert _home_status(state, tmp_path)["last_run_outcome"] == expected
+
+
+@pytest.mark.parametrize("budget", [{"status": "bogus"}, {"status": 1}, [], "bounded", None])
+def test_malformed_batch_budget_never_completes(tmp_path, budget):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json")
+    data = json.loads(path.read_text())
+    data["commands"]["memory_record_extraction"]["completed"] = 1
+    data["commands"]["batch_budget"] = budget
+    path.write_text(json.dumps(data))
+    assert _home_status(state, tmp_path)["last_run_outcome"] == "unknown"
+
+
+def test_missing_batch_budget_key_is_still_readable(tmp_path):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json")
+    data = json.loads(path.read_text())
+    data["commands"]["memory_record_extraction"]["completed"] = 1
+    path.write_text(json.dumps(data))
+    assert _home_status(state, tmp_path)["last_run_outcome"] == "completed"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("deferred", -1), ("deferred", True), ("deferred", None),
+    ("unattributed_pending", "1"), ("unattributed_pending", 2 ** 70),
+])
+def test_malformed_batch_counters_never_complete(tmp_path, field, value):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json")
+    data = json.loads(path.read_text())
+    extraction = data["commands"]["memory_record_extraction"]
+    extraction["completed"] = 1
+    extraction[field] = value
+    path.write_text(json.dumps(data))
+    assert _home_status(state, tmp_path)["last_run_outcome"] == "unknown"
+
+
+def test_unattributed_prepared_work_is_ambiguous_not_failed(tmp_path):
+    state = tmp_path / "state"
+    path = _home_receipt(state, "run.json")
+    data = json.loads(path.read_text())
+    extraction = data["commands"]["memory_record_extraction"]
+    extraction.update(completed=1, deferred=0, unattributed_pending=1)
+    path.write_text(json.dumps(data))
+    assert _home_status(state, tmp_path)["last_run_outcome"] == "unknown"
+
+
+@pytest.mark.parametrize("exception,expected", [
+    ({"type": "input_budget_exceeded", "work_id": "work:example"}, "completed"),
+    ({"reason": "quota", "status": "resolved_with_reviewed_empty"}, "completed"),
+    ({"type": "input_budget_exceeded"}, "unknown"),
+    ({"type": "input_budget_exceeded", "work_id": 3}, "unknown"),
+    ({"type": "input_budget_exceeded", "work_id": "work:example",
+      "operator_action_required": "yes"}, "unknown"),
+    ("free text must not be classified", None),
+])
+def test_receipt_exception_channel(tmp_path, exception, expected):
+    state = tmp_path / "state"
+    _home_receipt(state, "run.json", exceptions=[exception])
+    result = _home_status(state, tmp_path)
+    if expected is None:
+        # Plain free-text strings are read as informational, never as failure.
+        assert result["last_run_outcome"] == "completed"
+        return
+    assert result["last_run_outcome"] == expected
+
+
+def test_hold_exception_is_visible_in_run_diagnostics(tmp_path):
+    state = tmp_path / "state"
+    _home_receipt(state, "run.json",
+                  exceptions=[{"type": "input_budget_exceeded", "work_id": "work:example"}])
+    result = _home_status(state, tmp_path)
+    assert result["last_run_outcome"] == "completed"
+    assert "operator action" in (result["diagnostic"] or "")
+
+
 def _job_dir(root: Path, job_id: str = "k2b-automatic-memory-home") -> Path:
     job = root / job_id
     job.mkdir(parents=True, exist_ok=True)

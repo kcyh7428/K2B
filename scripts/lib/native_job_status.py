@@ -368,6 +368,25 @@ def _classify_exception(item: object) -> str | None:
     if type(action_required) is not bool:
         return None
     keys = set(item)
+    # Two informational shapes emitted by the deployed native workers.
+    # Match these narrowly; arbitrary failure objects must remain unknown.
+    if keys == {"type", "count", "state", "actionable"}:
+        if (item["type"] != "task_complete_turn_id_mismatch"
+            or type(item["count"]) is not int or item["count"] < 0
+            or item["state"] != "unchanged_from_prior_run"
+            or type(item["actionable"]) is not bool):
+            return None
+        return "action" if item["actionable"] else "info"
+    if keys == {"stage", "status", "details"}:
+        details = item["details"]
+        if (item["stage"] != "memory_worklist"
+            or item["status"] != "non_blocking_parse_exceptions"
+            or not isinstance(details, dict)
+            or set(details) != {"task_complete_turn_id_mismatch"}
+            or type(details["task_complete_turn_id_mismatch"]) is not int
+            or details["task_complete_turn_id_mismatch"] < 0):
+            return None
+        return "info"
     if "reason" in keys and keys <= {"reason", "status", "operator_action_required"}:
         reason = item.get("reason")
         if not isinstance(reason, str) or not reason:
@@ -402,7 +421,11 @@ def _classify_receipt(
     """
     if not isinstance(data, dict):
         return None, None, None, "run receipt is malformed"
-    if type(data.get("schema_version")) is not int or data.get("schema_version") != 1:
+    schema = data.get("schema_version")
+    legacy_schema = schema == "1.0"
+    if legacy_schema:
+        schema = 1  # Read-only compatibility; never rewrite historical evidence.
+    if type(schema) is not int or schema != 1:
         return None, None, None, "run receipt schema is unsupported"
 
     identity = [data.get(key) for key in RECEIPT_ID_KEYS if data.get(key) is not None]
@@ -432,6 +455,8 @@ def _classify_receipt(
         return attempt_at, None, UNKNOWN, "run receipt has no valid finished timestamp"
 
     diagnostics: list[str] = []
+    if legacy_schema:
+        diagnostics.append("legacy string schema normalized for reading")
     saw_terminal = False
     verdict = "ok"
     for name, command in commands.items():
@@ -453,13 +478,36 @@ def _classify_receipt(
             if status not in COMMAND_NONTERMINAL_STATUSES:
                 verdict = "ambiguous"
     worklist = commands.get("memory_worklist")
+    extraction = commands.get("memory_record_extraction")
     if isinstance(worklist, dict):
         selected = worklist.get("selected")
         if "selected" in worklist and (type(selected) is not int or selected < 0):
             return None, None, None, "run receipt selected count is malformed"
         needs_extraction = (isinstance(selected, int) and selected > 0) or worklist.get("status") in {"ready", "ready_with_exceptions"}
-        extraction = commands.get("memory_record_extraction")
         if needs_extraction and (not isinstance(extraction, dict) or _evaluate_command("memory_record_extraction", extraction) != "ok") and verdict != "failed":
+            verdict = "ambiguous"
+        if isinstance(selected, int) and selected > 1 and verdict != "failed":
+            completed = extraction.get("completed") if isinstance(extraction, dict) else None
+            if type(completed) is not int or completed != selected:
+                verdict = "ambiguous"
+    # Batch-boundary counters are optional, but a malformed counter can never
+    # claim completion. Prepared-but-unaccounted work is ambiguous evidence,
+    # never a manufactured extraction failure.
+    if isinstance(extraction, dict):
+        for field in ("deferred", "unattributed_pending"):
+            if field not in extraction:
+                continue
+            value = extraction[field]
+            if type(value) is not int or value < 0:
+                return None, None, None, "run receipt batch counters are malformed"
+            if field == "unattributed_pending" and value > 0 and verdict != "failed":
+                verdict = "ambiguous"
+    if "batch_budget" in commands:
+        budget_command = commands["batch_budget"]
+        if (not isinstance(budget_command, dict)
+                or budget_command.get("status") not in ("bounded", "exceeded")):
+            return None, None, None, "run receipt batch budget is malformed"
+        if budget_command["status"] == "exceeded" and verdict != "failed":
             verdict = "ambiguous"
     if verdict == "failed":
         outcome = "failed"
