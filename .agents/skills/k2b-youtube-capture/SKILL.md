@@ -8,7 +8,7 @@ description: Dormant batch YouTube playlist lane -- use only when Keith explicit
 > **Host boundary:** This dormant vault-writing lane may run only when explicitly requested on Home. It must not mutate the synchronized vault from SJM.
 
 > [!warning] Dormant lane
-> This skill has no logged live use in the recent K2B usage window. Do not use it for one-off YouTube URLs or fresh discovery. Use `k2b-research` for external video research and invoke this only when Keith explicitly asks for `/youtube` playlist processing.
+> This skill has no logged live use in the recent K2B usage window. Do not use it for one-off YouTube URLs or fresh discovery. Use `k2b-youtube-transcribe` for one-off transcription, `k2b-research` for external video research, and this skill only when Keith explicitly asks for `/youtube` playlist processing.
 
 Turn videos Keith saved to a K2B category playlist into `raw/youtube/` vault notes, analyzed with the playlist's specific `prompt_focus`.
 
@@ -69,7 +69,7 @@ Use `mcp__YouTube_Transcript_MCP_Server__get_video_info` to get title, channel, 
 
 #### 2b. Get Transcript (Cascade)
 
-The cascade logic lives in `scripts/yt-transcript.sh` so the batch playlist flow (this skill) and the Codex `UserPromptSubmit` transcript-prefetch hook share one code path. Call it and read the method from stderr:
+The cascade logic lives in `scripts/yt-transcript.sh`. Call it and read the method from stderr. The live Codex hook is SessionStart-only; there is no automatic prompt-time prefetch.
 
 ```bash
 TRANSCRIPT=$(~/Projects/K2B/scripts/yt-transcript.sh "<video-url>" 2>/tmp/yt-transcript-err.txt)
@@ -85,19 +85,9 @@ The helper tries these tiers in order:
 
 Exit 0 means a transcript is on stdout. Exit 1 means `METHOD: failed` and no transcript -- create a minimal note with `transcript_method: failed` and the video metadata only, and flag it for manual review.
 
-Set `transcript_method:` in the note's frontmatter to the helper's reported method (`captions-en`, `captions-zh`, `groq-whisper`, or `failed`).
+Set `transcript_method:` in the note's frontmatter to the helper's reported method (`captions-en`, `captions-zh`, `groq-whisper`, `groq-whisper-current-dlp` when the optional public fallback is enabled, or `failed`).
 
-**Tier 2b -- OpenAI Whisper (paid fallback, only if Groq fails):**
-
-The unified helper does not include OpenAI Whisper -- Groq has been reliable enough that the paid fallback hasn't been needed since 2026-04. If Groq starts failing, restore the fallback in `yt-transcript.sh` rather than duplicating it here:
-
-```bash
-WHISPER_KEY=$(grep OPENAI_API_KEY ~/.zshrc 2>/dev/null | head -1 | sed "s/export OPENAI_API_KEY=//;s/'//g")
-curl -s --retry 1 https://api.openai.com/v1/audio/transcriptions \
-  -H "Authorization: Bearer $WHISPER_KEY" \
-  -F "file=@<chunk-or-file>" -F "model=whisper-1" \
-  -F "language=zh" -F "response_format=text"
-```
+The one-off public-audio recovery route is documented in `k2b-youtube-transcribe`. It is opt-in and does not change this dormant batch lane. Do not add a paid OpenAI API fallback.
 
 #### 2c. Dedup Check
 
@@ -154,7 +144,7 @@ origin: k2b-extract
 source: "[{title}]({url})"
 channel: {channel_name}
 playlist: {playlist_name}
-transcript_method: {youtube-api|groq-whisper|openai-whisper|failed}
+transcript_method: {captions-en|captions-zh|groq-whisper|groq-whisper-current-dlp|failed}
 up: "{playlist up link}"
 ---
 ```
@@ -227,7 +217,7 @@ The following subcommands existed briefly and were all retired 2026-04-14 along 
 - **`/youtube recommend`** / **`/youtube morning`** / **`/youtube cleanup`** -- these belonged to the 6-hour agent loop in `k2b-remote`. The whole loop, the taste model, the channel affinity scoring, and the nudge pipeline were deleted. Fresh-video discovery is now `/research videos "<query>"` via NotebookLM.
 - **`/youtube <url>`** (direct URL screening) -- the Telegram bot's `handleDirectYouTubeUrl` path was deleted in the same cleanup. To capture a single URL to the vault today, paste it into a K2B category playlist in YouTube and run `/youtube <playlist-name>`.
 
-  For ad-hoc Q&A on a single URL (summarise, fact-check, explain), paste the URL into the active Codex session. The registered `UserPromptSubmit` hook pre-fetches the transcript through `scripts/yt-transcript.sh` before Codex answers, avoiding a duplicate fetch path. This path does NOT save to the vault -- it is disposable triage. For vault capture, still use the playlist flow.
+  For ad-hoc Q&A or transcription of a single URL, paste it into the active Codex session and use `k2b-youtube-transcribe`. It runs interactively and does not save to the vault. For vault capture, still use the playlist flow.
 - **`/youtube status`** -- check `wiki/context/youtube-processed.md` directly.
 
 If Keith asks for any of these commands, point him at `/research videos "<query>"` (for discovery) or the batch `/youtube` flow (for saved videos). The retired feature's spec is at [[Shipped/2026-04-08_feature_youtube-agent]].
@@ -236,7 +226,7 @@ If Keith asks for any of these commands, point him at `/research videos "<query>
 
 - If yt-dlp is not installed: `brew install yt-dlp`
 - If video is >2 hours: warn Keith and ask for confirmation before processing
-- If audio file is >25MB (Whisper limit): warn Keith. For long videos, prefer YouTube Transcript MCP. If no captions, suggest splitting audio with ffmpeg.
-- If Whisper API fails (key invalid, quota exceeded, model not found): try model cascade (whisper-1 → gpt-4o-transcribe → gpt-4o-mini-transcribe), then try key from ~/.zshrc. If all fail, create note with `transcript_method: failed` and flag.
+- For long videos, `yt-transcribe-whisper.sh` splits audio into 240-second chunks. Check each chunk and the final transcript for completeness; flag an actual Groq size or quota error rather than assuming a file over 25 MB cannot be transcribed.
+- If Groq Whisper fails (key invalid, quota exceeded, model not found), record the observed failure and flag the item. Do not search shell files for keys or switch to a paid API.
 - If playlist URL returns no results: skip silently and move to the next playlist.
 - If `/youtube <name>` matches no playlist: list available names from `youtube-playlists.md` and stop.

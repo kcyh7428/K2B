@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Unified YouTube-URL -> transcript helper.
-# Cascade: local yt-dlp auto-subs (en -> zh) -> local Groq Whisper (via yt-transcribe-whisper.sh). Remote-host retry is intentionally unavailable in the two-Mac Stage 1 topology.
+# Cascade: local yt-dlp auto-subs (en -> zh) -> local Groq Whisper.
+# K2B_YT_CURRENT_DLP_FALLBACK=1 adds temporary current yt-dlp public-audio
+# recovery after the installed downloader fails. Remote-host retry is unavailable.
 #
 # Usage: yt-transcript.sh <youtube-url> [--language <lang>]
 #
 # stdout: transcript text (success) or empty (failure)
 # stderr: progress messages; final line is always "METHOD: <tier>" where
-#         tier is one of: captions-en | captions-zh | groq-whisper | failed
+#         tier is one of: captions-en | captions-zh | groq-whisper |
+#         groq-whisper-current-dlp | failed
 # exit:   0 on success, 1 on total failure
 #
 # Cookies: YouTube's bot-detection returns "Sign in to confirm you're not a bot"
@@ -45,6 +48,7 @@ ensure_path_tool() {
 }
 ensure_path_tool yt-dlp /opt/homebrew/bin /usr/local/bin || true
 ensure_path_tool ffmpeg /opt/homebrew/bin /usr/local/bin || true
+ensure_path_tool deno /opt/homebrew/bin /usr/local/bin || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMPDIR_BASE=""
@@ -173,7 +177,7 @@ except subprocess.TimeoutExpired:
     except ProcessLookupError:
         pass
     try:
-        proc.wait(timeout=0.5)
+        proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -376,14 +380,57 @@ fi
 # problem; if we hid it, the user sees only "all transcript methods failed".
 # Use an || branch to capture exit status while letting stderr pass.
 set +e
-OUTPUT=$(run_command_with_timeout "${K2B_YT_WHISPER_TIMEOUT:-600}" "$WHISPER_HELPER" "${WHISPER_ARGS[@]}")
+OUTPUT=$(run_command_with_timeout "${K2B_YT_WHISPER_TIMEOUT:-600}" "$WHISPER_HELPER" "${WHISPER_ARGS[@]}" 2>"$TMPDIR_BASE/whisper-stderr")
 WHISPER_EXIT=$?
 set -e
+cat "$TMPDIR_BASE/whisper-stderr" >&2
 
-if [[ $WHISPER_EXIT -eq 0 && -n "$OUTPUT" ]]; then
+whisper_returned_api_error() {
+  printf '%s' "$1" | python3 -c 'import json,sys
+text = sys.stdin.read().strip()
+if text.lower().rstrip(".") in {"quota exceeded", "rate limit", "rate limit exceeded", "unauthorized", "too many requests", "invalid api key"} or (len(text) < 200 and text.lower().startswith("error: ")):
+    raise SystemExit(0)
+try:
+    data = json.loads(text)
+except (ValueError, UnicodeDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(data, dict) and "error" in data else 1)'
+}
+
+WHISPER_API_ERROR=0
+if [[ $WHISPER_EXIT -eq 0 && -n "$OUTPUT" ]] && whisper_returned_api_error "$OUTPUT"; then
+  WHISPER_API_ERROR=1
+  echo "WARN: Groq returned an API error instead of transcript text" >&2
+fi
+if [[ $WHISPER_EXIT -eq 0 && -n "$OUTPUT" && $WHISPER_API_ERROR -eq 0 ]]; then
   printf '%s\n' "$OUTPUT"
   echo "METHOD: groq-whisper" >&2
   exit 0
+fi
+if [[ $WHISPER_EXIT -ne 0 && -f "$TMPDIR_BASE/whisper-stderr" ]] &&
+   grep -q 'TRANSCRIPTION_ERROR: groq-' "$TMPDIR_BASE/whisper-stderr"; then
+  WHISPER_API_ERROR=1
+fi
+
+# Explicit interactive opt-in. This rescue keeps the release and audio private
+# to a temporary directory and never reads browser or cookie credentials.
+if [[ "${K2B_YT_CURRENT_DLP_FALLBACK:-0}" == "1" && $WHISPER_API_ERROR -eq 0 ]]; then
+  echo "Installed downloader failed. Trying current yt-dlp without login..." >&2
+  CURRENT_HELPER="$SCRIPT_DIR/yt-transcribe-current-dlp.sh"
+  CURRENT_ARGS=("$URL")
+  if [[ -n "$LANGUAGE_HINT" ]]; then
+    CURRENT_ARGS+=(--language "$LANGUAGE_HINT")
+  fi
+  set +e
+  OUTPUT=$(run_command_with_timeout "${K2B_YT_CURRENT_FALLBACK_TIMEOUT:-1200}" \
+    /bin/bash "$CURRENT_HELPER" "${CURRENT_ARGS[@]}")
+  CURRENT_EXIT=$?
+  set -e
+  if [[ $CURRENT_EXIT -eq 0 && -n "$OUTPUT" ]]; then
+    printf '%s\n' "$OUTPUT"
+    echo "METHOD: groq-whisper-current-dlp" >&2
+    exit 0
+  fi
 fi
 
 echo "All transcript methods failed for $URL" >&2

@@ -61,18 +61,29 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 Detect URL type and handle accordingly:
 
 **YouTube URLs:**
-1. Fetch transcript with the shared K2B helper, not the transcript MCP:
+1. Follow `k2b-youtube-transcribe` for a single video's transcript. Start with its public-first, no-login command and use the shared helper, not the transcript MCP:
    ```bash
    set -euo pipefail
    ERRFILE=$(mktemp -t yt-transcript-err.XXXXXX.log)
-   trap 'rm -f "$ERRFILE"' EXIT INT TERM
-   TRANSCRIPT=$(K2B_YT_REMOTE_FALLBACK=0 ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE")
-   METHOD=$(grep "^METHOD:" "$ERRFILE" | tail -1 | awk '{print $2}')
+   trap 'rm -f "$ERRFILE"' EXIT
+   trap 'exit 130' INT TERM
+   if TRANSCRIPT=$(K2B_YT_COOKIES_FILE=none YT_DLP_COOKIE_BROWSER=none K2B_YT_CURRENT_DLP_FALLBACK=1 ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE"); then
+     :
+   else
+     cat "$ERRFILE" >&2
+     echo "No verified transcript; stop before analysis" >&2
+     exit 1
+   fi
+   METHOD=$(awk '$1 == "METHOD:" { method = $2 } END { print method }' "$ERRFILE")
+   if [[ -z "$TRANSCRIPT" || -z "$METHOD" || "$METHOD" == "failed" ]]; then
+     echo "No verified transcript; stop before analysis" >&2
+     exit 1
+   fi
    ```
-   This helper tries local captions (`no cookies -> cookie file -> browser cookies`) and local Groq Whisper fallback. Remote-host retry is disabled in the two-Mac Stage 1 topology.
-   Expected methods are `captions-en`, `captions-zh`, `groq-whisper`, and `failed`.
+   This invocation tries public captions, then local Groq Whisper, then temporary current yt-dlp plus Groq when the installed downloader fails. It does not use YouTube login, browser cookies, a remote host, or a paid API route.
+   Expected methods are `captions-en`, `captions-zh`, `groq-whisper`, `groq-whisper-current-dlp`, and `failed`.
    This `METHOD=` parsing pattern is for explicit shell use of `yt-transcript.sh`; the Codex hook path only consumes stdout, not stderr.
-   If `yt-transcript.sh` exits non-zero or returns empty stdout, fall back to the transcript MCP only as a last resort and note why the shared helper failed.
+   If `yt-transcript.sh` exits non-zero or returns empty stdout, inspect stderr for the concrete failure before trying the transcript MCP as a last resort.
 2. Analyze the full transcript
 3. Extract key concepts, techniques, tools mentioned
 4. Map each to K2B applicability
@@ -1667,6 +1678,6 @@ python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-rese
 - No em dashes, no AI cliches, no sycophancy
 - Be specific in recommendations -- "improve the meeting processor" is useless, "add an explicit instruction for formatting action items with owner names in brackets" is actionable
 - External findings should be filtered for relevance -- don't dump every search result
-- When scanning YouTube videos, use `K2B_YT_REMOTE_FALLBACK=0 ~/Projects/K2B/scripts/yt-transcript.sh` first. Do not use a remote host. Transcript MCP tools are a fallback only if the local helper is unavailable.
+- When scanning one YouTube video, follow the public-first command and failure gate in URL Mode above. Inspect the helper's stderr before using a transcript connector as a last resort.
 - When scanning GitHub repos, focus on README, key source files, and patterns
 - Always cross-link findings to existing vault notes where relevant

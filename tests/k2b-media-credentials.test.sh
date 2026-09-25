@@ -45,7 +45,8 @@ cat > "$TEST_ROOT/bin/curl" <<'EOF'
 config="$(cat)"
 [[ "$config" == *'Authorization: Bearer test-groq'* ]] || exit 91
 [[ "$*" != *test-groq* ]] || exit 92
-echo 'test transcript'
+[[ " $* " == *' response_format=json '* ]] || exit 95
+printf '%s\n200' '{"text":"test transcript"}'
 EOF
 cat > "$TEST_ROOT/bin/npx" <<'EOF'
 #!/usr/bin/env bash
@@ -82,6 +83,8 @@ if env -u GROQ_API_KEY \
 fi
 rg -q 'regular, non-symlink file owned by the current user with mode 0600' "$TEST_ROOT/err" || \
   fail "Whisper did not explain the credential-file rejection"
+rg -q 'TRANSCRIPTION_ERROR: groq-key' "$TEST_ROOT/err" || \
+  fail "Whisper did not mark credential-file rejection as a non-download failure"
 
 LINK_ENV="$TEST_ROOT/link.env"
 ln -s "$VALID_ENV" "$LINK_ENV"

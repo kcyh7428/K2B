@@ -48,11 +48,15 @@ done
 # Resolve Groq API key
 GROQ_KEY="${GROQ_API_KEY:-}"
 if [[ -z "$GROQ_KEY" ]]; then
-  k2b_load_private_env "${K2B_ENV_FILE:-${HOME:-}/.k2b-env}" || exit 1
+  if ! k2b_load_private_env "${K2B_ENV_FILE:-${HOME:-}/.k2b-env}"; then
+    echo "TRANSCRIPTION_ERROR: groq-key" >&2
+    exit 1
+  fi
   GROQ_KEY="${GROQ_API_KEY:-}"
 fi
 if [[ -z "$GROQ_KEY" ]]; then
   echo "ERROR: GROQ_API_KEY not set in the environment or ~/.k2b-env" >&2
+  echo "TRANSCRIPTION_ERROR: groq-key" >&2
   exit 1
 fi
 
@@ -100,14 +104,33 @@ transcribe_chunk() {
   # from stdin; `header = "Authorization: Bearer $TOKEN"` is quoted per curl's
   # config file syntax (interior double quotes, no shell interpolation inside
   # the file format -- we substitute before piping).
-  printf 'header = "Authorization: Bearer %s"\n' "$GROQ_KEY" | \
-  curl -s --retry 2 --retry-delay 3 \
+  if ! printf 'header = "Authorization: Bearer %s"\n' "$GROQ_KEY" | \
+  curl -sS --retry 2 --retry-delay 3 --write-out '\n%{http_code}' \
     --config - \
     https://api.groq.com/openai/v1/audio/transcriptions \
     -F "file=@${chunk_file}" \
     -F "model=whisper-large-v3" \
-    -F "response_format=text" \
-    "${lang_args[@]+"${lang_args[@]}"}"
+    -F "response_format=json" \
+    "${lang_args[@]+"${lang_args[@]}"}" | \
+  python3 -c 'import json,sys
+try:
+    body, status_text = sys.stdin.read().rsplit("\n", 1)
+    status = int(status_text)
+    result = json.loads(body)
+    if not 200 <= status < 300 or "error" in result:
+        details = result.get("error", {})
+        message = details.get("message", "request failed") if isinstance(details, dict) else str(details)
+        raise ValueError(f"Groq HTTP {status}: {str(message)[:300]}")
+    transcript = result["text"]
+    if not isinstance(transcript, str) or not transcript.strip():
+        raise ValueError("missing or empty transcript text")
+except (ValueError, KeyError, TypeError, IndexError) as exc:
+    print(f"ERROR: Groq returned no valid transcript: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+print(transcript.strip())'; then
+    echo "TRANSCRIPTION_ERROR: groq-api" >&2
+    return 1
+  fi
 }
 
 if [[ "$DURATION" -le "$MAX_DURATION" ]]; then
