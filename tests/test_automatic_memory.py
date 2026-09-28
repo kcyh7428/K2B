@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import sys
 from copy import deepcopy
@@ -858,3 +859,866 @@ def test_impossible_delivery_state_combinations_are_rejected(
         automatic_memory.accept_home_envelope(tmp_path, envelope)
 
     assert not list((tmp_path / "inbox").glob("*.json"))
+
+
+def _correction_candidate(target: dict, source: dict, relation: str = "supersedes") -> dict:
+    return {
+        "relation": relation,
+        "target_item_id": target["item_id"],
+        "source_item_id": source["item_id"],
+        "topic_ref": "wiki/projects/project_atlas.md",
+        "field": "deadline",
+        "evidence_refs": [target["item_id"], source["item_id"]],
+    }
+
+
+def _reviewed_correction_proposal(
+    memory: Path, target: dict, source: dict, relation: str = "supersedes"
+) -> dict:
+    candidate = _correction_candidate(target, source, relation)
+    receipt = automatic_memory.create_review_receipt(
+        memory,
+        candidate,
+        reviewer="codex_conversation",
+        model="gpt-5-codex",
+        reviewed_at="2026-09-28T10:00:00+00:00",
+    )
+    return {**candidate, "review_receipt_id": receipt["receipt_id"]}
+
+
+def test_correction_proposal_validation_and_documented_disposition(tmp_path: Path) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    old_env = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.old.aaaa", session_id="s-old", cursor="turn:old")
+    )
+    new_env = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-new",
+            completed_at="2026-09-11T12:00:00+08:00",
+            cursor="turn:new",
+            key="memory.decision.new.bbbb",
+            kind="decision",
+            value="Use the Hengqin office.",
+            event_id="event-new",
+            quote="Use the Hengqin office.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, old_env)
+    automatic_memory.apply_reviewed_envelope(memory, new_env)
+    old = automatic_memory._version(old_env["bundle"], old_env["bundle"]["items"][0])
+    new = automatic_memory._version(new_env["bundle"], new_env["bundle"]["items"][0])
+
+    proposal = _reviewed_correction_proposal(memory, old, new)
+    v1_bytes = memory.read_bytes()
+    result = automatic_memory.apply_corrections(
+        memory, [proposal], recovery_dir=tmp_path / "recovery"
+    )
+    assert {
+        key: result[key]
+        for key in ("applied", "duplicates", "corrections", "schema_version")
+    } == {
+        "applied": 1,
+        "duplicates": 0,
+        "corrections": 1,
+        "schema_version": 2,
+    }
+    # The first correction apply on a v1 file performs a recoverable migration:
+    # the exact pre-migration bytes are preserved with their before/after hashes.
+    assert result["migration"]["status"] == "migrated"
+    assert result["migration"]["before_sha256"] == hashlib.sha256(v1_bytes).hexdigest()
+    assert (
+        Path(result["migration"]["recovery_path"]).read_bytes() == v1_bytes
+    )
+    assert automatic_memory.apply_corrections(memory, [proposal]) == {
+        "applied": 0,
+        "duplicates": 1,
+        "corrections": 1,
+        "schema_version": 2,
+    }
+
+    recalled = automatic_memory.recall(memory, "memory.fact.old.aaaa")
+    assert recalled["status"] == "superseded"
+    assert recalled["citation"]["event_id"] == "event-user-1"
+    assert recalled["original_item_id"] == old["item_id"]
+    assert recalled["replacement"] == {
+        "key": "memory.decision.new.bbbb",
+        "kind": "decision",
+        "item_id": new["item_id"],
+        "value": "Use the Hengqin office.",
+        "citation": new["citation"],
+    }
+    # The replacement key is independently recallable as current.
+    assert automatic_memory.recall(memory, "memory.decision.new.bbbb")["status"] == "current"
+
+
+def test_correction_apply_on_v1_requires_recoverable_migration(tmp_path: Path) -> None:
+    """A v1 file must never be upgraded to v2 without a recovery copy/hashes."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+    old_env = automatic_memory.make_envelope(_bundle(key="memory.fact.old.aaaa"))
+    new_env = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-new",
+            completed_at="2026-09-11T12:00:00+08:00",
+            cursor="turn:new",
+            key="memory.decision.new.bbbb",
+            kind="decision",
+            value="Use the Hengqin office.",
+            event_id="event-new",
+            quote="Use the Hengqin office.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, old_env)
+    automatic_memory.apply_reviewed_envelope(memory, new_env)
+    old = automatic_memory._version(old_env["bundle"], old_env["bundle"]["items"][0])
+    new = automatic_memory._version(new_env["bundle"], new_env["bundle"]["items"][0])
+    assert json.loads(memory.read_text(encoding="utf-8"))["schema_version"] == 1
+    proposal = _reviewed_correction_proposal(memory, old, new)
+    before = memory.read_bytes()
+
+    # Read-only proposal/review paths stay v1-compatible.
+    proposed = automatic_memory.propose_corrections(
+        memory, [_correction_candidate(old, new) | {"review_receipt_id": proposal["review_receipt_id"]}]
+    )
+    assert proposed["schema_version"] == 1
+    assert proposed["proposals"][0]["status"] == "eligible"
+
+    # Without an explicit recovery directory the apply fails closed: no silent
+    # v2 write, no recovery copy, byte-identical unchanged file.
+    with pytest.raises(automatic_memory.ValidationError, match="recovery_dir"):
+        automatic_memory.apply_corrections(memory, [proposal])
+    assert memory.read_bytes() == before
+    assert json.loads(memory.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert not (memory.parent / "recovery").exists()
+
+    # An explicit recoverable migration preserves the exact before bytes and
+    # records before/after hashes before the correction lands.
+    applied = automatic_memory.apply_corrections(
+        memory, [proposal], recovery_dir=memory.parent / "recovery"
+    )
+    assert applied["applied"] == 1
+    assert applied["migration"]["status"] == "migrated"
+    before_sha = hashlib.sha256(before).hexdigest()
+    assert applied["migration"]["before_sha256"] == before_sha
+    recovery = Path(applied["migration"]["recovery_path"])
+    assert recovery.read_bytes() == before
+    assert automatic_memory.verify_recovery_copy(recovery, before_sha)["matches"] is True
+    # The recorded post-migration hash is the correction-free v2 state the
+    # recovery copy can restore, not the later corrected file.
+    assert (
+        applied["migration"]["after_sha256"]
+        == automatic_memory._expected_post_migration_sha256(before)
+    )
+    after = memory.read_bytes()
+    assert json.loads(after)["schema_version"] == 2
+    assert len(json.loads(after)["corrections"]) == 1
+
+
+def test_correction_proposal_with_unknown_ids_or_unbound_evidence_fails_closed(
+    tmp_path: Path,
+) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    old_env = automatic_memory.make_envelope(_bundle(key="memory.fact.a.aaaa"))
+    new_env = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-new",
+            completed_at="2026-09-11T12:00:00+08:00",
+            cursor="turn:new",
+            key="memory.decision.b.bbbb",
+            kind="decision",
+            value="A decision.",
+            event_id="event-new",
+            quote="A decision.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, old_env)
+    automatic_memory.apply_reviewed_envelope(memory, new_env)
+    old = automatic_memory._version(old_env["bundle"], old_env["bundle"]["items"][0])
+    new = automatic_memory._version(new_env["bundle"], new_env["bundle"]["items"][0])
+    before = memory.read_bytes()
+
+    unknown = _reviewed_correction_proposal(memory, old, new)
+    unknown["source_item_id"] = "item:" + "0" * 64
+    with pytest.raises(automatic_memory.ValidationError):
+        automatic_memory.apply_corrections(memory, [unknown])
+
+    unbound = _reviewed_correction_proposal(memory, old, new)
+    unbound["evidence_refs"] = [new["item_id"]]
+    with pytest.raises(automatic_memory.ValidationError, match="evidence"):
+        automatic_memory.apply_corrections(memory, [unbound])
+
+    flagged_only = _reviewed_correction_proposal(memory, old, new)
+    flagged_only["reviewed"] = True
+    with pytest.raises(automatic_memory.ValidationError):
+        automatic_memory.apply_corrections(memory, [flagged_only])
+    assert memory.read_bytes() == before
+
+def test_correction_requires_later_event_and_speaking_authority(tmp_path: Path) -> None:
+    """A durable relation may not let older or weaker evidence overrule Keith."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+
+    def apply(bundle: dict) -> dict:
+        envelope = automatic_memory.make_envelope(bundle)
+        automatic_memory.apply_reviewed_envelope(memory, envelope)
+        return automatic_memory._version(envelope["bundle"], envelope["bundle"]["items"][0])
+
+    older_assistant = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-old-assistant",
+            completed_at="2026-09-20T10:00:00+08:00",
+            cursor="turn:old-assistant",
+            key="memory.fact.atlas.aaaa",
+            value="An assistant claimed the Atlas deadline is 5 October.",
+            event_id="event-old-assistant",
+            quote="An assistant claimed the Atlas deadline is 5 October.",
+            speaker_source="assistant_confirmed",
+        )
+    )
+    keith_decision = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-keith-decision",
+            completed_at="2026-09-22T10:00:00+08:00",
+            cursor="turn:keith-decision",
+            key="memory.decision.atlas.bbbb",
+            kind="decision",
+            value="Use the 8 October Atlas deadline.",
+            event_id="event-keith-decision",
+            quote="Use the 8 October Atlas deadline.",
+        )
+    )
+    later_assistant = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-later-assistant",
+            completed_at="2026-09-24T10:00:00+08:00",
+            cursor="turn:later-assistant",
+            key="memory.fact.atlas.cccc",
+            value="The assistant suggested 9 October.",
+            event_id="event-later-assistant",
+            quote="The assistant suggested 9 October.",
+            speaker_source="assistant_confirmed",
+        )
+    )
+    later_keith = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-later-keith",
+            completed_at="2026-09-26T10:00:00+08:00",
+            cursor="turn:later-keith",
+            key="memory.decision.atlas.dddd",
+            kind="decision",
+            value="Move the Atlas deadline to 10 October.",
+            event_id="event-later-keith",
+            quote="Move the Atlas deadline to 10 October.",
+        )
+    )
+    before = memory.read_bytes()
+
+    def reviewed(target: dict, source: dict, relation: str = "supersedes") -> dict:
+        candidate = _correction_candidate(target, source, relation)
+        receipt = automatic_memory.create_review_receipt(
+            memory,
+            candidate,
+            reviewer="codex_conversation",
+            model="gpt-5-codex",
+            reviewed_at="2026-09-28T10:00:00+00:00",
+        )
+        return {**candidate, "review_receipt_id": receipt["receipt_id"]}
+
+    # An older assistant claim may not be made to supersede a newer decision.
+    with pytest.raises(automatic_memory.ValidationError, match="later"):
+        reviewed(keith_decision, older_assistant)
+    assert memory.read_bytes() == before
+
+    # A later but weaker speaker may not overrule Keith's decision.
+    with pytest.raises(automatic_memory.ValidationError, match="authority"):
+        reviewed(keith_decision, later_assistant)
+    assert memory.read_bytes() == before
+
+    # Keith's own later correction still applies and can itself be corrected.
+    applied = automatic_memory.apply_corrections(
+        memory,
+        [reviewed(keith_decision, later_keith)],
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert applied["applied"] == 1
+    assert automatic_memory.recall(memory, "memory.decision.atlas.bbbb")["status"] == "superseded"
+    final_keith = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-final-keith",
+            completed_at="2026-09-28T10:00:00+08:00",
+            cursor="turn:final-keith",
+            key="memory.decision.atlas.eeee",
+            kind="decision",
+            value="Keep the Atlas deadline at 8 October.",
+            event_id="event-final-keith",
+            quote="Keep the Atlas deadline at 8 October.",
+        )
+    )
+    applied = automatic_memory.apply_corrections(
+        memory,
+        [reviewed(later_keith, final_keith)],
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert applied["applied"] == 1
+    recall = automatic_memory.recall(memory, "memory.decision.atlas.bbbb")
+    assert recall["status"] == "superseded"
+    assert recall["replacement"]["item_id"] == final_keith["item_id"]
+
+    # Keith's later retraction of the assistant claim is a legitimate relation.
+    applied = automatic_memory.apply_corrections(
+        memory,
+        [reviewed(older_assistant, final_keith, relation="retracts")],
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert applied["applied"] == 1
+    assert automatic_memory.recall(memory, "memory.fact.atlas.aaaa")["status"] == "retracted"
+
+
+def test_retraction_cancelled_by_later_supersession_resolves_terminal_state(
+    tmp_path: Path,
+) -> None:
+    """A retraction that is itself superseded stops retracting its target.
+
+    ``B`` retracts ``A``; a later accepted ``C`` supersedes ``B``.  Recall of
+    ``A`` must follow the whole chain to its terminal state instead of stopping
+    at ``A -> B``, while the historical correction records are preserved.
+    """
+
+    memory = tmp_path / "home-state" / "memory.json"
+
+    def apply(bundle: dict) -> dict:
+        envelope = automatic_memory.make_envelope(bundle)
+        automatic_memory.apply_reviewed_envelope(memory, envelope)
+        return automatic_memory._version(
+            envelope["bundle"], envelope["bundle"]["items"][0]
+        )
+
+    original = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-chain-a",
+            completed_at="2026-09-20T10:00:00+08:00",
+            cursor="turn:chain-a",
+            key="memory.fact.atlas.aaaa",
+            value="The Atlas deadline is 5 October 2026.",
+            event_id="event-chain-a",
+            quote="The Atlas deadline is 5 October 2026.",
+        )
+    )
+    retraction = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-chain-b",
+            completed_at="2026-09-22T10:00:00+08:00",
+            cursor="turn:chain-b",
+            key="memory.fact.atlas.bbbb",
+            value="Retract the 5 October Atlas deadline claim.",
+            event_id="event-chain-b",
+            quote="Retract the 5 October Atlas deadline claim.",
+        )
+    )
+    replacement = apply(
+        _bundle(
+            host_id="home",
+            session_id="s-chain-c",
+            completed_at="2026-09-26T10:00:00+08:00",
+            cursor="turn:chain-c",
+            key="memory.decision.atlas.cccc",
+            kind="decision",
+            value="Keep the Atlas deadline at 8 October 2026.",
+            event_id="event-chain-c",
+            quote="Keep the Atlas deadline at 8 October 2026.",
+        )
+    )
+
+    def reviewed(target: dict, source: dict, relation: str) -> dict:
+        candidate = _correction_candidate(target, source, relation)
+        receipt = automatic_memory.create_review_receipt(
+            memory,
+            candidate,
+            reviewer="codex_conversation",
+            model="gpt-5-codex",
+            reviewed_at="2026-09-28T10:00:00+00:00",
+        )
+        return {**candidate, "review_receipt_id": receipt["receipt_id"]}
+
+    retract_proposal = reviewed(original, retraction, "retracts")
+    supersede_proposal = reviewed(retraction, replacement, "supersedes")
+
+    applied = automatic_memory.apply_corrections(
+        memory, [retract_proposal], recovery_dir=tmp_path / "recovery"
+    )
+    assert applied["applied"] == 1
+    assert (
+        automatic_memory.recall(memory, "memory.fact.atlas.aaaa")["status"]
+        == "retracted"
+    )
+
+    applied = automatic_memory.apply_corrections(
+        memory, [supersede_proposal], recovery_dir=tmp_path / "recovery"
+    )
+    assert applied["applied"] == 1
+
+    recall_a = automatic_memory.recall(memory, "memory.fact.atlas.aaaa")
+    assert recall_a["status"] == "current"
+    assert recall_a["value"] == "The Atlas deadline is 5 October 2026."
+    assert recall_a["citation"]["event_id"] == "event-chain-a"
+
+    recall_b = automatic_memory.recall(memory, "memory.fact.atlas.bbbb")
+    assert recall_b["status"] == "superseded"
+    assert recall_b["replacement"]["item_id"] == replacement["item_id"]
+    assert (
+        automatic_memory.recall(memory, "memory.decision.atlas.cccc")["status"]
+        == "current"
+    )
+
+    # The relation history is retained, and re-applying is idempotent.
+    state = json.loads(memory.read_text(encoding="utf-8"))
+    assert len(state["corrections"]) == 2
+    again = automatic_memory.apply_corrections(memory, [supersede_proposal])
+    assert again["applied"] == 0 and again["duplicates"] == 1
+    assert (
+        automatic_memory.recall(memory, "memory.fact.atlas.aaaa")["status"]
+        == "current"
+    )
+    assert len(json.loads(memory.read_text(encoding="utf-8"))["corrections"]) == 2
+
+
+def test_forged_inline_review_is_rejected_and_receipt_is_required(tmp_path: Path) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    old_env = automatic_memory.make_envelope(_bundle(key="memory.fact.a.aaaa"))
+    new_env = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-new",
+            completed_at="2026-09-11T12:00:00+08:00",
+            cursor="turn:new",
+            key="memory.decision.b.bbbb",
+            kind="decision",
+            value="A decision.",
+            event_id="event-new",
+            quote="A decision.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, old_env)
+    automatic_memory.apply_reviewed_envelope(memory, new_env)
+    old = automatic_memory._version(old_env["bundle"], old_env["bundle"]["items"][0])
+    new = automatic_memory._version(new_env["bundle"], new_env["bundle"]["items"][0])
+    before = memory.read_bytes()
+
+    # A caller-authored inline review object grants no authority.
+    inline = _correction_candidate(old, new)
+    inline["review"] = {
+        "reviewer": "codex_conversation",
+        "model": "gpt-5-codex",
+        "reviewed_at": "2026-09-28T10:00:00+00:00",
+        "candidate_sha256": automatic_memory._sha256_hex(_correction_candidate(old, new)),
+        "evidence_sha256": sorted(
+            automatic_memory._evidence_sha256(item["item_id"], item)
+            for item in (old, new)
+        ),
+    }
+    with pytest.raises(automatic_memory.ValidationError):
+        automatic_memory.apply_corrections(memory, [inline])
+    assert memory.read_bytes() == before
+
+    # A receipt id with no matching receipt file also fails closed.
+    dangling = {**_correction_candidate(old, new), "review_receipt_id": "review:" + "a" * 64}
+    with pytest.raises(automatic_memory.ValidationError, match="receipt"):
+        automatic_memory.apply_corrections(memory, [dangling])
+    assert memory.read_bytes() == before
+
+    # The read-only review path creates a receipt that makes the proposal valid.
+    receipt = automatic_memory.create_review_receipt(
+        memory,
+        _correction_candidate(old, new),
+        reviewer="codex_conversation",
+        model="gpt-5-codex",
+        reviewed_at="2026-09-28T10:00:00+00:00",
+    )
+    assert receipt["receipt_id"].startswith("review:")
+    assert (memory.parent / "review-receipts" / f"{receipt['receipt_id']}.json").is_file()
+    applied = automatic_memory.apply_corrections(
+        memory,
+        [{**_correction_candidate(old, new), "review_receipt_id": receipt["receipt_id"]}],
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert applied["applied"] == 1
+    assert memory.read_bytes() != before
+
+
+def test_review_receipt_tolerates_append_only_capture_but_not_changed_evidence(
+    tmp_path: Path,
+) -> None:
+    """Capture is append-only: an unrelated append must not void a receipt."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+    old_env = automatic_memory.make_envelope(_bundle(key="memory.fact.a.aaaa"))
+    new_env = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-new",
+            completed_at="2026-09-11T12:00:00+08:00",
+            cursor="turn:new",
+            key="memory.decision.b.bbbb",
+            kind="decision",
+            value="A decision.",
+            event_id="event-new",
+            quote="A decision.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, old_env)
+    automatic_memory.apply_reviewed_envelope(memory, new_env)
+    old = automatic_memory._version(old_env["bundle"], old_env["bundle"]["items"][0])
+    new = automatic_memory._version(new_env["bundle"], new_env["bundle"]["items"][0])
+    candidate = _correction_candidate(old, new)
+    receipt = automatic_memory.create_review_receipt(
+        memory,
+        candidate,
+        reviewer="codex_conversation",
+        model="gpt-5-codex",
+        reviewed_at="2026-09-28T10:00:00+00:00",
+    )
+    receipt_path = memory.parent / "review-receipts" / f"{receipt['receipt_id']}.json"
+    snapshot_hash = receipt["records_snapshot_sha256"]
+
+    # An unrelated record arrives after the review.  Its evidence hashes do not
+    # include the referenced items, so the reviewed candidate is still valid.
+    unrelated = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-other",
+            completed_at="2026-09-12T12:00:00+08:00",
+            cursor="turn:other",
+            key="memory.fact.c.cccc",
+            value="Another fact.",
+            event_id="event-other",
+            quote="Another fact.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, unrelated)
+    snapshot_after = automatic_memory._records_snapshot_sha256(
+        automatic_memory._load_memory(memory)["records"]
+    )
+    assert snapshot_after != snapshot_hash
+    applied = automatic_memory.apply_corrections(
+        memory,
+        [{**candidate, "review_receipt_id": receipt["receipt_id"]}],
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert applied["applied"] == 1
+    # The audit snapshot hash is retained verbatim on the stored receipt.
+    stored = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert stored["records_snapshot_sha256"] == snapshot_hash
+
+    # A receipt whose evidence hashes no longer bind the referenced items still
+    # fails closed, even though the snapshot gate is gone.
+    forged = deepcopy(receipt)
+    forged["evidence_sha256"] = sorted(
+        f"{index:064x}" for index in range(1, len(receipt["evidence_sha256"]) + 1)
+    )
+    forged["receipt_id"] = automatic_memory._sha256_id(
+        "review", {key: forged[key] for key in forged if key != "receipt_id"}
+    )
+    (memory.parent / "review-receipts" / f"{forged['receipt_id']}.json").write_text(
+        json.dumps(forged, sort_keys=True), encoding="utf-8"
+    )
+    with pytest.raises(automatic_memory.ValidationError, match="evidence hashes"):
+        automatic_memory.validate_correction_proposal(
+            automatic_memory._load_memory(memory)["records"],
+            {**candidate, "review_receipt_id": forged["receipt_id"]},
+            receipt_store=memory.parent / "review-receipts",
+        )
+
+    # A mutated candidate also fails: the receipt binds the relation fields.
+    mutated = _correction_candidate(old, new)
+    mutated["field"] = "delivery_status"
+    with pytest.raises(automatic_memory.ValidationError):
+        automatic_memory.validate_correction_proposal(
+            automatic_memory._load_memory(memory)["records"],
+            {**mutated, "review_receipt_id": receipt["receipt_id"]},
+            receipt_store=memory.parent / "review-receipts",
+        )
+
+
+def test_migration_recovery_preserves_exact_bytes_and_restores_explicitly(
+    tmp_path: Path,
+) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    envelope = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+    )
+    automatic_memory.apply_reviewed_envelope(memory, envelope)
+    before_bytes = memory.read_bytes()
+    assert json.loads(before_bytes)["schema_version"] == 1
+
+    migrated = automatic_memory.migrate_memory_state_v2(memory, tmp_path / "recovery")
+    assert migrated["status"] == "migrated"
+    recovery = Path(migrated["recovery_path"])
+    # The recovery copy is the exact pre-migration bytes, not a reserialization.
+    assert recovery.read_bytes() == before_bytes
+    assert hashlib.sha256(recovery.read_bytes()).hexdigest() == migrated["before_sha256"]
+
+    verified = automatic_memory.verify_recovery_copy(recovery, migrated["before_sha256"])
+    assert verified["matches"] is True
+    assert (
+        automatic_memory.verify_recovery_copy(recovery, "f" * 64)["matches"] is False
+    )
+
+    # Migration itself never auto-restores: the live file stays v2.
+    assert json.loads(memory.read_text(encoding="utf-8"))["schema_version"] == 2
+
+    # An explicit, hash-checked restore reproduces the original bytes.
+    target = tmp_path / "restore" / "memory.json"
+    restored = automatic_memory.restore_memory_from_recovery(
+        recovery, target, expected_sha256=migrated["before_sha256"]
+    )
+    assert restored["status"] == "restored"
+    assert target.read_bytes() == before_bytes
+    with pytest.raises(automatic_memory.ValidationError):
+        automatic_memory.restore_memory_from_recovery(
+            recovery, target, expected_sha256="0" * 64
+        )
+
+
+def test_migration_refuses_stale_or_corrupt_existing_recovery_copy(
+    tmp_path: Path,
+) -> None:
+    """An existing recovery slot is durable evidence, checked before any v2 write."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+    envelope = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+    )
+    automatic_memory.apply_reviewed_envelope(memory, envelope)
+    before_bytes = memory.read_bytes()
+    before_sha = hashlib.sha256(before_bytes).hexdigest()
+    assert json.loads(before_bytes)["schema_version"] == 1
+
+    # Pre-seed the before_sha-named slot with bytes that do not hash to the live
+    # state, standing in for a stale, corrupt or replaced recovery copy.
+    recovery_dir = tmp_path / "recovery"
+    recovery_dir.mkdir(parents=True)
+    recovery = recovery_dir / f"{memory.name}.{before_sha}.v1.json"
+    foreign_bytes = before_bytes.replace(b"legacy.aaaa", b"legacy.bbbb")
+    assert hashlib.sha256(foreign_bytes).hexdigest() != before_sha
+    recovery.write_bytes(foreign_bytes)
+
+    # Migration must fail closed: no v2 write, and the invalid copy is untouched.
+    with pytest.raises(automatic_memory.StateCorruptionError, match="recovery copy"):
+        automatic_memory.migrate_memory_state_v2(memory, recovery_dir)
+    assert memory.read_bytes() == before_bytes
+    assert json.loads(memory.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert recovery.read_bytes() == foreign_bytes
+
+    # Idempotence with a valid existing copy: an identical slot is not rewritten.
+    recovery.write_bytes(before_bytes)
+    recovery_mtime = recovery.stat().st_mtime_ns
+    migrated = automatic_memory.migrate_memory_state_v2(memory, recovery_dir)
+    assert migrated["status"] == "migrated"
+    assert migrated["before_sha256"] == before_sha
+    assert Path(migrated["recovery_path"]) == recovery
+    assert recovery.read_bytes() == before_bytes
+    assert recovery.stat().st_mtime_ns == recovery_mtime
+    assert json.loads(memory.read_text(encoding="utf-8"))["schema_version"] == 2
+
+
+def test_restore_over_existing_state_requires_verified_post_migration_hash(
+    tmp_path: Path,
+) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    envelope = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+    )
+    automatic_memory.apply_reviewed_envelope(memory, envelope)
+    before_bytes = memory.read_bytes()
+    migrated = automatic_memory.migrate_memory_state_v2(memory, tmp_path / "recovery")
+    recovery = Path(migrated["recovery_path"])
+    assert migrated["after_sha256"] == hashlib.sha256(memory.read_bytes()).hexdigest()
+
+    # Overwriting an existing memory file without the recorded post-migration
+    # hash fails closed instead of silently reverting live state.
+    with pytest.raises(automatic_memory.ValidationError, match="post-migration"):
+        automatic_memory.restore_memory_from_recovery(
+            recovery, memory, expected_sha256=migrated["before_sha256"]
+        )
+    assert memory.read_bytes() != before_bytes
+    assert json.loads(memory.read_text(encoding="utf-8"))["schema_version"] == 2
+
+    with pytest.raises(automatic_memory.ValidationError, match="lowercase SHA-256"):
+        automatic_memory.restore_memory_from_recovery(
+            recovery,
+            memory,
+            expected_sha256=migrated["before_sha256"],
+            expected_target_sha256="not-a-hash",
+        )
+
+    # A stale or wrong post-migration hash is refused.
+    with pytest.raises(automatic_memory.ValidationError, match="newer live state"):
+        automatic_memory.restore_memory_from_recovery(
+            recovery,
+            memory,
+            expected_sha256=migrated["before_sha256"],
+            expected_target_sha256="0" * 64,
+        )
+    assert memory.read_bytes() != before_bytes
+
+    # The exact post-migration hash permits the deliberate restore.
+    restored = automatic_memory.restore_memory_from_recovery(
+        recovery,
+        memory,
+        expected_sha256=migrated["before_sha256"],
+        expected_target_sha256=migrated["after_sha256"],
+    )
+    assert restored["status"] == "restored"
+    assert memory.read_bytes() == before_bytes
+
+
+def test_restore_never_clobbers_state_written_after_migration(tmp_path: Path) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    envelope = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+    )
+    automatic_memory.apply_reviewed_envelope(memory, envelope)
+    migrated = automatic_memory.migrate_memory_state_v2(memory, tmp_path / "recovery")
+    recovery = Path(migrated["recovery_path"])
+
+    # A newer record is accepted after the migration.
+    newer = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-newer",
+            completed_at="2026-09-20T10:00:00+08:00",
+            cursor="turn:newer",
+            key="memory.decision.newer.bbbb",
+            kind="decision",
+            value="Newer accepted decision.",
+            event_id="event-newer",
+            quote="Newer accepted decision.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, newer)
+    live_after_append = memory.read_bytes()
+    assert hashlib.sha256(live_after_append).hexdigest() != migrated["after_sha256"]
+
+    # The post-migration hash no longer describes live state, so the restore is
+    # refused rather than replacing newer accepted records.
+    with pytest.raises(automatic_memory.ValidationError, match="newer live state"):
+        automatic_memory.restore_memory_from_recovery(
+            recovery,
+            memory,
+            expected_sha256=migrated["before_sha256"],
+            expected_target_sha256=migrated["after_sha256"],
+        )
+    assert memory.read_bytes() == live_after_append
+    assert len(automatic_memory.memory_snapshot(memory)["records"]) == 2
+
+
+def test_restore_refuses_after_hash_not_bound_to_the_recovery_copy(
+    tmp_path: Path,
+) -> None:
+    """Naming the target's current hash must not authorise discarding newer data.
+
+    A caller can read the live target and supply its hash as the "post-migration"
+    value.  The restore must instead derive the permitted after-hash from the
+    recovery copy itself, so only the unmodified post-migration state can be
+    overwritten.
+    """
+
+    memory = tmp_path / "home-state" / "memory.json"
+    envelope = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+    )
+    automatic_memory.apply_reviewed_envelope(memory, envelope)
+    migrated = automatic_memory.migrate_memory_state_v2(memory, tmp_path / "recovery")
+    recovery = Path(migrated["recovery_path"])
+
+    newer = automatic_memory.make_envelope(
+        _bundle(
+            host_id="home",
+            session_id="s-newer",
+            completed_at="2026-09-20T10:00:00+08:00",
+            cursor="turn:newer",
+            key="memory.decision.newer.bbbb",
+            kind="decision",
+            value="Newer accepted decision.",
+            event_id="event-newer",
+            quote="Newer accepted decision.",
+        )
+    )
+    automatic_memory.apply_reviewed_envelope(memory, newer)
+    live = memory.read_bytes()
+
+    with pytest.raises(automatic_memory.ValidationError, match="derived from the recovery copy"):
+        automatic_memory.restore_memory_from_recovery(
+            recovery,
+            memory,
+            expected_sha256=migrated["before_sha256"],
+            expected_target_sha256=hashlib.sha256(live).hexdigest(),
+        )
+    assert memory.read_bytes() == live
+    assert len(automatic_memory.memory_snapshot(memory)["records"]) == 2
+
+    # The genuine, recovery-derived post-migration hash is still accepted while
+    # the target is unmodified.
+    unmodified = tmp_path / "unmodified" / "memory.json"
+    automatic_memory.apply_reviewed_envelope(
+        unmodified,
+        automatic_memory.make_envelope(
+            _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+        ),
+    )
+    migrated_unmodified = automatic_memory.migrate_memory_state_v2(
+        unmodified, tmp_path / "recovery-unmodified"
+    )
+    restored = automatic_memory.restore_memory_from_recovery(
+        Path(migrated_unmodified["recovery_path"]),
+        unmodified,
+        expected_sha256=migrated_unmodified["before_sha256"],
+        expected_target_sha256=migrated_unmodified["after_sha256"],
+    )
+    assert restored["status"] == "restored"
+
+
+def test_recall_snapshot_reads_raw_v1_and_v2_file_forms(tmp_path: Path) -> None:
+    memory = tmp_path / "home-state" / "memory.json"
+    envelope = automatic_memory.make_envelope(
+        _bundle(key="memory.fact.legacy.aaaa", session_id="s-legacy", cursor="turn:l")
+    )
+    automatic_memory.apply_reviewed_envelope(memory, envelope)
+
+    raw_v1 = json.loads(memory.read_text(encoding="utf-8"))
+    assert set(raw_v1) == {"schema_version", "records"}
+    assert raw_v1["schema_version"] == 1
+    recalled = automatic_memory.recall_snapshot(raw_v1, "memory.fact.legacy.aaaa")
+    assert recalled["status"] == "current"
+    assert recalled["value"] == "The SJM office is in Macau."
+    # Reading a published file form must not mutate the caller's object.
+    assert set(raw_v1) == {"schema_version", "records"}
+    assert (
+        automatic_memory.recall_snapshot(raw_v1, "memory.fact.absent.zzzz")["status"]
+        == "missing"
+    )
+
+    # A migrated v2 file form is accepted through the same entry point.
+    automatic_memory.migrate_memory_state_v2(memory, tmp_path / "recovery")
+    raw_v2 = json.loads(memory.read_text(encoding="utf-8"))
+    assert raw_v2["schema_version"] == 2
+    assert automatic_memory.recall_snapshot(raw_v2, "memory.fact.legacy.aaaa")[
+        "status"
+    ] == "current"
+
+    # A malformed file form still fails closed rather than being coerced.
+    with pytest.raises(automatic_memory.StateCorruptionError):
+        automatic_memory.recall_snapshot(
+            {"schema_version": 1, "records": raw_v1["records"], "extra": []},
+            "memory.fact.legacy.aaaa",
+        )

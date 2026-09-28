@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import getpass
 import hashlib
 import json
 import math
@@ -4201,6 +4202,210 @@ def recall_memory(
     )
 
 
+CORRECTION_PROPOSAL_SCHEMA_VERSION = 1
+
+
+def _correction_receipt_store(state_root: Path) -> Path:
+    """Machine-local review-receipt store.
+
+    The receipt store must never default to "beside the memory file": an SJM
+    validation runs against a Syncthing-delivered snapshot that lives inside
+    the vault, and writing a receipt there would violate SJM read-only.  Rooting
+    the store in the machine-local state root keeps every writer (Home or SJM)
+    out of the vault.
+    """
+
+    return Path(state_root).expanduser() / "review-receipts"
+
+
+def read_correction_proposals(path: Path) -> list:
+    """Load a reviewed correction proposal file; never trust a caller flag."""
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"schema_version", "proposals"}
+        or data["schema_version"] != CORRECTION_PROPOSAL_SCHEMA_VERSION
+        or not isinstance(data["proposals"], list)
+        or not data["proposals"]
+    ):
+        raise ValueError(
+            "correction proposal file must contain schema_version 1 and a non-empty proposals array"
+        )
+    return data["proposals"]
+
+
+def validate_memory_corrections(
+    state_root: Path,
+    *,
+    writer_role: str,
+    proposals: list,
+    memory_path: Path | None = None,
+) -> dict:
+    """Read-only proposal validation; SJM may validate against a delivered snapshot."""
+
+    role = _memory_writer_role(writer_role)
+    target = memory_path or state_root / "memory.json"
+    return automatic_memory.propose_corrections(
+        target,
+        proposals,
+        read_only=role == "sjm-source-only",
+        receipt_store=_correction_receipt_store(state_root),
+    )
+
+
+def review_memory_correction(
+    state_root: Path,
+    *,
+    writer_role: str,
+    proposal: dict,
+    reviewer: str,
+    model: str,
+    reviewed_at: str | None = None,
+    memory_path: Path | None = None,
+) -> dict:
+    """Read-only creation of a private review receipt for one candidate relation.
+
+    Any known writer role may prepare a receipt because the shared memory file
+    is only read.  The receipt is written to the machine-local store beside the
+    memory file; it is what later makes an apply proposal authoritative.
+    """
+
+    _memory_writer_role(writer_role)
+    target = memory_path or state_root / "memory.json"
+    return automatic_memory.create_review_receipt(
+        target,
+        proposal,
+        reviewer=reviewer,
+        model=model,
+        reviewed_at=reviewed_at,
+        receipt_store=_correction_receipt_store(state_root),
+    )
+
+
+CORRECTION_APPLY_AUTHORITY_NAME = "correction-apply-authority.json"
+# The single authorized Home machine identity and the machine-local paths the
+# durable memory state must occupy.  These are the ownership facts the
+# activation boundary verifies; they are not a caller-supplied role flag.
+HOME_MAC_USER = "keithmbpm2"
+HOME_MAC_HOME = Path("/Users/keithmbpm2")
+HOME_MEMORY_STATE_SUBDIR = Path(".local") / "state" / "k2b" / "automatic-memory"
+HOME_VAULT_SUBDIR = Path("Projects") / "K2B-Vault"
+
+
+def _live_correction_preflight(state_root: Path, target: Path) -> dict:
+    """Fail-closed Home-only gate for a durable correction/migration write.
+
+    A caller-supplied ``--writer-role home`` is not authority: any SJM caller
+    can pass it and point ``--memory-path`` at the Syncthing-delivered
+    snapshot inside the vault.  This boundary ignores the CLI role and instead
+    verifies the actual host, that the target is the machine-local Home memory
+    state (never inside the synchronized vault), and that a separately
+    provisioned activation file exists.  This implementation never creates or
+    enables that file, so the default command fails closed everywhere,
+    including Home, until an explicit activation step is performed.
+
+    Python tests pass a synthetic ``preflight`` to exercise the durable write
+    against isolated roots, mirroring the publication adapter's ``preflight``
+    injection; the CLI exposes no such bypass.
+    """
+
+    home = Path.home().resolve()
+    if getpass.getuser() != HOME_MAC_USER or home != HOME_MAC_HOME:
+        raise PermissionError("durable memory correction is allowed only on the Home Mac")
+    configured_vault = (home / HOME_VAULT_SUBDIR).resolve()
+    machine_state_root = (home / HOME_MEMORY_STATE_SUBDIR).resolve()
+    resolved_target = Path(target).resolve()
+    resolved_state = Path(state_root).resolve()
+    if resolved_target.is_relative_to(configured_vault):
+        raise PermissionError(
+            "durable correction target must remain machine-local, outside the vault"
+        )
+    if (
+        resolved_state != machine_state_root
+        or resolved_target != machine_state_root / "memory.json"
+    ):
+        raise PermissionError(
+            "durable correction is authorized only for the machine-local Home memory state"
+        )
+    authority_path = machine_state_root / CORRECTION_APPLY_AUTHORITY_NAME
+    try:
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PermissionError(
+            "correction apply activation is absent or malformed"
+        ) from exc
+    if (
+        not isinstance(authority, dict)
+        or authority.get("schema_version") != 1
+        or authority.get("enabled") is not True
+        or authority.get("memory_root") != str(machine_state_root)
+        or authority.get("vault_root") != str(configured_vault)
+    ):
+        raise PermissionError("correction apply ownership is not activated")
+    return {"memory_root": str(machine_state_root), "vault_root": str(configured_vault)}
+
+
+def apply_memory_corrections(
+    state_root: Path,
+    *,
+    writer_role: str,
+    proposals: list,
+    memory_path: Path | None = None,
+    recovery_dir: Path | None = None,
+    preflight: Callable[[Path, Path], dict] | None = None,
+) -> dict:
+    """Home-only durable correction append through the shared memory lock.
+
+    A correction apply on a schema-v1 file is the first v2 write, so it must be
+    preceded by a recoverable migration.  This path supplies a private recovery
+    directory under the machine-local state root by default, so a live Home
+    apply always preserves the exact pre-migration bytes and hashes instead of
+    silently upgrading the file.
+
+    The ``writer_role`` argument is a first, cheap guard only.  The real
+    authority is the injected (production-default) ``preflight`` boundary that
+    verifies the actual host, target ownership and separately provisioned
+    activation, so claiming ``home`` here cannot turn an SJM write into a
+    shared-memory write.
+    """
+
+    if _memory_writer_role(writer_role) != "home":
+        raise PermissionError("durable correction application requires the Home writer")
+    target = memory_path or state_root / "memory.json"
+    check = preflight or _live_correction_preflight
+    # Fail closed before the memory file (or its recovery dir) is touched.
+    check(state_root, target)
+    recovery = recovery_dir or state_root / "recovery"
+    return automatic_memory.apply_corrections(
+        target,
+        proposals,
+        receipt_store=_correction_receipt_store(state_root),
+        recovery_dir=recovery,
+    )
+
+
+def migrate_memory_to_v2(
+    state_root: Path,
+    *,
+    writer_role: str,
+    recovery_dir: Path | None = None,
+    memory_path: Path | None = None,
+    preflight: Callable[[Path, Path], dict] | None = None,
+) -> dict:
+    """Home-only lossless migration; records before/after hashes and a recovery copy."""
+
+    if _memory_writer_role(writer_role) != "home":
+        raise PermissionError("memory schema migration requires the Home writer")
+    target = memory_path or state_root / "memory.json"
+    check = preflight or _live_correction_preflight
+    # The migration is itself a durable write, so it shares the same
+    # fail-closed Home ownership boundary as correction application.
+    check(state_root, target)
+    recovery = recovery_dir or state_root / "recovery"
+    return automatic_memory.migrate_memory_state_v2(target, recovery)
+
+
 MEMORY_RUN_MAX_TURNS = 12
 MEMORY_RUN_MAX_INPUT_BYTES = 240000
 MEMORY_RUN_MAX_SECONDS = 1200
@@ -4774,8 +4979,9 @@ def publish_shared_recall(
     # Publish the validated redacted state, not a second lossy projection, so
     # the same recall entry point works against the Syncthing-delivered copy on
     # SJM while retaining source history and citations.
+    published_state = automatic_memory._memory_state_to_json(snapshot)
     json_content = json.dumps(
-        snapshot, ensure_ascii=False, indent=2, sort_keys=True
+        published_state, ensure_ascii=False, indent=2, sort_keys=True
     ) + "\n"
     lines = [
         "---",
@@ -4789,19 +4995,48 @@ def publish_shared_recall(
         "",
     ]
     for recalled in recalls:
-        lines.extend(
-            [
-                f"## {recalled['key']}",
-                "",
-                f"- Status: {recalled['status']}",
-                f"- Value: {recalled['value'] if recalled['value'] is not None else 'unresolved'}",
-                f"- Citation: {json.dumps(recalled.get('citation'), ensure_ascii=False, sort_keys=True)}",
-                "",
-            ]
-        )
+        lines.extend(_render_recall_lines(recalled))
     write_func("System/memory/automatic-memory-current.json", json_content)
     write_func("wiki/context/context_automatic-memory-recall.md", "\n".join(lines))
     return {"status": "published_by_injected_home_writer", "records": len(recalls)}
+
+
+def _render_recall_lines(recalled: dict) -> list[str]:
+    """Render one recall result, keeping superseded/retracted dispositions honest."""
+
+    status = recalled["status"]
+    if status == "superseded":
+        replacement = recalled.get("replacement") or {}
+        value_text = (
+            "superseded by "
+            f"{replacement.get('key', 'unknown')}: "
+            f"{replacement.get('value', 'unknown')}"
+        )
+    elif status == "retracted":
+        value_text = "retracted (no replacement value)"
+    elif recalled["value"] is not None:
+        value_text = str(recalled["value"])
+    else:
+        value_text = "unresolved"
+    lines = [
+        f"## {recalled['key']}",
+        "",
+        f"- Status: {status}",
+        f"- Value: {value_text}",
+        f"- Citation: {json.dumps(recalled.get('citation'), ensure_ascii=False, sort_keys=True)}",
+    ]
+    if status == "superseded" and recalled.get("replacement"):
+        lines.append(
+            "- Replacement: "
+            + json.dumps(recalled["replacement"], ensure_ascii=False, sort_keys=True)
+        )
+    if recalled.get("alternatives"):
+        lines.append(
+            "- Alternatives: "
+            + json.dumps(recalled["alternatives"], ensure_ascii=False, sort_keys=True)
+        )
+    lines.append("")
+    return lines
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -7027,7 +7262,132 @@ def main(argv: list[str] | None = None) -> int:
     memory_publish.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
+    memory_correction_validate = sub.add_parser(
+        "memory-correction-validate",
+        help="read-only validation of reviewed correction proposals against durable state",
+    )
+    memory_correction_validate.add_argument(
+        "--state-root", type=Path, default=_default_automatic_memory_state_root()
+    )
+    memory_correction_validate.add_argument("--memory-path", type=Path)
+    memory_correction_validate.add_argument("--proposals", type=Path, required=True)
+    memory_correction_validate.add_argument(
+        "--writer-role", choices=("home", "sjm-source-only"), required=True
+    )
+    memory_correction_review = sub.add_parser(
+        "memory-correction-review",
+        help="read-only creation of a private review receipt for one candidate relation",
+    )
+    memory_correction_review.add_argument(
+        "--state-root", type=Path, default=_default_automatic_memory_state_root()
+    )
+    memory_correction_review.add_argument("--memory-path", type=Path)
+    memory_correction_review.add_argument("--proposal", type=Path, required=True)
+    memory_correction_review.add_argument("--reviewer", required=True)
+    memory_correction_review.add_argument("--model", required=True)
+    memory_correction_review.add_argument("--reviewed-at")
+    memory_correction_review.add_argument(
+        "--writer-role", choices=("home", "sjm-source-only"), required=True
+    )
+    memory_correction_apply = sub.add_parser(
+        "memory-correction-apply",
+        help="Home-only durable append of reviewed correction proposals",
+    )
+    memory_correction_apply.add_argument(
+        "--state-root", type=Path, default=_default_automatic_memory_state_root()
+    )
+    memory_correction_apply.add_argument("--memory-path", type=Path)
+    memory_correction_apply.add_argument("--proposals", type=Path, required=True)
+    memory_correction_apply.add_argument(
+        "--writer-role", choices=("home", "sjm-source-only"), required=True
+    )
+    memory_migrate = sub.add_parser(
+        "memory-migrate-v2",
+        help="Home-only lossless v1 to v2 migration with a private recovery copy",
+    )
+    memory_migrate.add_argument(
+        "--state-root", type=Path, default=_default_automatic_memory_state_root()
+    )
+    memory_migrate.add_argument("--memory-path", type=Path)
+    memory_migrate.add_argument("--recovery-dir", type=Path)
+    memory_migrate.add_argument(
+        "--writer-role", choices=("home", "sjm-source-only"), required=True
+    )
     args = parser.parse_args(argv)
+
+    if args.cmd == "memory-correction-review":
+        try:
+            proposal = json.loads(Path(args.proposal).read_text(encoding="utf-8"))
+            receipt = review_memory_correction(
+                args.state_root,
+                memory_path=args.memory_path,
+                writer_role=args.writer_role,
+                proposal=proposal,
+                reviewer=args.reviewer,
+                model=args.model,
+                reviewed_at=args.reviewed_at,
+            )
+        except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
+            print(
+                f"eod-capture: memory correction review failed: {_sanitize_log_value(exc)}",
+                file=sys.stderr,
+            )
+            return 2
+        print(json.dumps(receipt, sort_keys=True))
+        return 0
+
+    if args.cmd == "memory-correction-validate":
+        try:
+            proposals = read_correction_proposals(args.proposals)
+            result = validate_memory_corrections(
+                args.state_root,
+                memory_path=args.memory_path,
+                writer_role=args.writer_role,
+                proposals=proposals,
+            )
+        except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
+            print(
+                f"eod-capture: memory correction validation failed: {_sanitize_log_value(exc)}",
+                file=sys.stderr,
+            )
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0
+
+    if args.cmd == "memory-correction-apply":
+        try:
+            proposals = read_correction_proposals(args.proposals)
+            result = apply_memory_corrections(
+                args.state_root,
+                memory_path=args.memory_path,
+                writer_role=args.writer_role,
+                proposals=proposals,
+            )
+        except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
+            print(
+                f"eod-capture: memory correction apply failed: {_sanitize_log_value(exc)}",
+                file=sys.stderr,
+            )
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0
+
+    if args.cmd == "memory-migrate-v2":
+        try:
+            result = migrate_memory_to_v2(
+                args.state_root,
+                memory_path=args.memory_path,
+                writer_role=args.writer_role,
+                recovery_dir=args.recovery_dir,
+            )
+        except (OSError, ValueError, RuntimeError, PermissionError) as exc:
+            print(
+                f"eod-capture: memory migration failed: {_sanitize_log_value(exc)}",
+                file=sys.stderr,
+            )
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0
 
     if args.cmd == "memory-worklist":
         try:

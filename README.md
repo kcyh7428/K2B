@@ -11,13 +11,22 @@ Git carries project code. Syncthing replicates `K2B-Vault` directly between the 
 
 ## Daily experience
 
-Most K2B work is intentionally conversational and manual:
+K2B runs on Codex, which is the primary interface and sole live instruction
+authority. Routine recall and continuation stay conversational, but the capture
+and memory lane is not manual-only:
 
 1. Talk with Codex on either Mac.
 2. Local discovery finds eligible Codex session files directly and leaves the source immutable.
-3. During a requested session, Codex processes queued conversations with retained Kimi assistance within its interactive entitlement.
-4. The home writer commits accepted knowledge to the vault.
-5. Syncthing makes the result available on the other Mac for later recall.
+3. Reviewed knowledge enters durable memory through the approved native or interactive path. Kimi remains available for interactive extraction within its membership entitlement; scripted batch extraction is not authorized.
+4. The home writer reconciles accepted knowledge into durable memory and publishes the shared recall artifacts.
+5. Syncthing makes the result available on the other Mac for exact-key recall.
+
+A bounded resume-brief helper (`scripts/k2b-context.py`) gathers source-linked
+evidence for a continuation request, validates a draft produced by the current
+Codex conversation, and renders a brief with sources and freshness. It performs
+no provider calls and never writes the vault. It is prepared and tested in this
+checkout but is **not deployed or scheduled**; activation is a separate
+decision recorded in `plans/2026-09-28_k2b-reliable-resume-spec.md`.
 
 Missed days are handled by range-based discovery rather than a yesterday-only schedule. Replaying an already reconciled source is idempotent. `python3 scripts/eod-capture.py status --since 2026-07-26` reports source/receipt evidence without claiming that another host is healthy.
 
@@ -102,6 +111,7 @@ bash tests/codex-discovery-job.test.sh
 bash tests/eod-capture-cron.test.sh
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests/test_eod_capture.py tests/test_eod_capture_status.py
+python3 -m pytest tests/test_automatic_memory.py tests/test_automatic_memory_publisher.py tests/test_k2b_context.py
 python3 -m pytest tests/test_export_claude_history.py
 bash tests/inventory-retired-runtime.test.sh
 ```

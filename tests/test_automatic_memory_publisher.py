@@ -346,3 +346,77 @@ def test_invalid_policy_bytes_are_an_explicit_gate_refusal(monkeypatch):
     monkeypatch.setattr(Path, 'read_bytes', read_bytes)
     with pytest.raises(PermissionError, match='policy ledger is malformed'):
         p.live_preflight(vault)
+
+
+def test_v2_corrections_are_published_and_recall_from_shared_snapshot(tmp_path):
+    """Publisher carries v2 correction metadata, not a lossy v1 downgrade."""
+    vault, state = setup(tmp_path)
+    old = json.loads((state / "memory.json").read_text())["records"][
+        "fact.office"
+    ]["versions"][0]
+    newer = automatic_memory.enqueue_bundle(
+        state,
+        _bundle(
+            host_id="home",
+            session_id="session-home-correction",
+            completed_at="2026-09-11T12:00:00+08:00",
+            cursor="turn:0010",
+            key="decision.office",
+            kind="decision",
+            value="Move the SJM office to Hengqin.",
+            event_id="event-home-correction",
+            quote="Move the SJM office to Hengqin.",
+        ),
+    )
+    eod_capture.accept_memory_envelope(state, newer, writer_role="home")
+    eod_capture.reconcile_memory_delivery(state, newer["delivery_id"], writer_role="home")
+    records = json.loads((state / "memory.json").read_text())["records"]
+    new_version = next(
+        version
+        for version in records["decision.office"]["versions"]
+        if version["citation"]["event_id"] == "event-home-correction"
+    )
+    candidate = {
+        "relation": "supersedes",
+        "target_item_id": old["item_id"],
+        "source_item_id": new_version["item_id"],
+        "topic_ref": "wiki/projects/project_atlas.md",
+        "field": "office_location",
+        "evidence_refs": [old["item_id"], new_version["item_id"]],
+    }
+    receipt = automatic_memory.create_review_receipt(
+        state / "memory.json",
+        candidate,
+        reviewer="codex_conversation",
+        model="gpt-5-codex",
+        reviewed_at="2026-09-28T10:00:00+00:00",
+    )
+    automatic_memory.apply_corrections(
+        state / "memory.json",
+        [{**candidate, "review_receipt_id": receipt["receipt_id"]}],
+        recovery_dir=state / "recovery",
+    )
+
+    result = publisher().publish(state / "memory.json", state, vault, "home", preflight=ready)
+    assert result["status"] == "published"
+    shared = vault / "System/memory/automatic-memory-current.json"
+    published = json.loads(shared.read_text())
+    assert published["schema_version"] == 2
+    assert len(published["corrections"]) == 1
+    recalled = automatic_memory.recall(shared, "fact.office", read_only=True)
+    assert recalled["status"] == "superseded"
+    assert recalled["replacement"]["key"] == "decision.office"
+    note = (vault / "wiki/context/context_automatic-memory-recall.md").read_text()
+    assert "Status: superseded" in note
+    assert "Move the SJM office to Hengqin." in note
+
+
+def test_unknown_future_schema_fails_closed_without_overwrite(tmp_path):
+    vault, state = setup(tmp_path)
+    target = state / "memory.json"
+    future = {"schema_version": 3, "records": {}, "corrections": []}
+    target.write_text(json.dumps(future))
+    with pytest.raises(automatic_memory.StateCorruptionError, match="schema_version"):
+        publisher().publish(target, state, vault, "home", preflight=ready)
+    assert json.loads(target.read_text()) == future
+    assert not (vault / "System").exists()
