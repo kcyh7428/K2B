@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 import time
 from collections import deque
@@ -939,7 +940,7 @@ def _span_locator(
 
 
 def _spans(
-    text: str, terms: list[str], *, take_head: bool
+    text: str, terms: list[str], *, take_head: bool, prefer_body: bool = False
 ) -> tuple[list[tuple[str, int, int, int | None, int | None]], bool]:
     """Return bounded (quote, start_line, end_line, byte_start, byte_end) spans.
 
@@ -959,17 +960,35 @@ def _spans(
     line that carries both an early claim and a later correction contributes
     one window per end, and any match elided between those windows also sets
     the truncation flag.
+
+    ``prefer_body`` reorders the retained spans -- never their quotes,
+    locators or byte bounds -- so the explicitly selected topic note leads with
+    a substantive passage.  Its reserved evidence slot would otherwise be spent
+    on a heading that merely repeats a query word.  A matching non-heading
+    passage wins first, then any non-heading passage, and a heading is kept
+    only when neither the retained spans nor the bounded scan saw an eligible
+    body passage.  Because the per-source cap fills with matches before the
+    body preference runs, an all-heading selection would otherwise stay
+    heading-only even though a body exists; one interior heading is exchanged
+    for the earliest body passage so the anchor is substantive, and a matching
+    passage dropped by that exchange still marks the list partial.
     """
 
     lines = text.splitlines()
     matches: list[tuple[str, int, int, int | None, int | None]] = []
     head_spans: list[tuple[str, int, int, int | None, int | None]] = []
+    # For the explicitly selected topic note only: the earliest matching
+    # non-heading passage and the earliest non-heading passage of any kind.
+    # One reference each keeps this bounded even when hundreds of matching
+    # headings would saturate the per-source cap before any body is seen.
+    body_match: tuple[str, int, int, int | None, int | None] | None = None
+    body_any: tuple[str, int, int, int | None, int | None] | None = None
     truncated = False
     start = 0
     buffer: list[str] = []
 
     def flush(end_line: int) -> None:
-        nonlocal start, buffer, truncated
+        nonlocal start, buffer, truncated, body_match, body_any
         if not buffer:
             return
         block = "\n".join(buffer)
@@ -983,6 +1002,11 @@ def _spans(
             span = (quote, start + 1, end_line, byte_start, byte_end)
             if take_head and len(head_spans) < MAX_SPANS_PER_SOURCE:
                 head_spans.append(span)
+            if prefer_body and not _is_heading_span(quote):
+                if body_any is None:
+                    body_any = span
+                if body_match is None and _matches(quote, terms):
+                    body_match = span
             if _matches(quote, terms):
                 matches.append(span)
 
@@ -1021,7 +1045,104 @@ def _spans(
         selected.append(span)
         seen.add(span)
     ordered = sorted(selected, key=lambda span: span[1])[:MAX_SPANS_PER_SOURCE]
+    if prefer_body:
+        ordered, body_dropped_match = _prefer_body_spans(
+            ordered, terms, candidate=body_match or body_any
+        )
+        if body_dropped_match:
+            truncated = True
     return ordered, truncated
+
+
+def _is_heading_span(quote: str) -> bool:
+    """True when every non-empty line of a span is a Markdown heading.
+
+    A block that opens with a heading but carries body prose is substantive
+    content, so it stays eligible as a body passage rather than being dismissed
+    as a bare heading.
+    """
+
+    lines = [line.strip() for line in quote.splitlines() if line.strip()]
+    return bool(lines) and all(
+        re.match(r"^#{1,6}(?:\s|$)", line) for line in lines
+    )
+
+
+def _prefer_body_spans(
+    spans: list[tuple[str, int, int, int | None, int | None]],
+    terms: list[str],
+    *,
+    candidate: tuple[str, int, int, int | None, int | None] | None = None,
+) -> tuple[list[tuple[str, int, int, int | None, int | None]], bool]:
+    """Lead with a substantive body passage, admitting one the cap hid.
+
+    Tiers, stably sorted so document order survives inside each: a matching
+    non-heading passage, then any non-heading passage, then a heading.  The
+    sort only changes order; each span keeps its original locator, byte bounds
+    and quote, so the derived hash and citation are unchanged.
+
+    When every retained span is a heading but the bounded scan saw an eligible
+    body passage (``candidate``), one interior heading is exchanged for it so
+    a matching-heading-saturated selection still leads with real prose.  A
+    heading at either retained end is never moved, so the earliest retained
+    span and the newest one -- including a late correction -- survive.  The
+    returned flag is True when the exchange dropped a matching passage, so the
+    caller keeps the packet honestly partial rather than presenting the capped
+    list as complete.
+    """
+
+    if candidate is not None and not any(
+        not _is_heading_span(span[0]) for span in spans
+    ):
+        spans, elided = _exchange_for_body(spans, candidate, terms)
+    else:
+        elided = False
+
+    def tier(span: tuple[str, int, int, int | None, int | None]) -> int:
+        quote = span[0]
+        if _is_heading_span(quote):
+            return 2
+        return 0 if _matches(quote, terms) else 1
+
+    return sorted(spans, key=tier), elided
+
+
+def _exchange_for_body(
+    spans: list[tuple[str, int, int, int | None, int | None]],
+    candidate: tuple[str, int, int, int | None, int | None],
+    terms: list[str],
+) -> tuple[list[tuple[str, int, int, int | None, int | None]], bool]:
+    """Swap one interior heading for ``candidate`` when the cap is saturated.
+
+    Returns the (possibly unchanged) spans plus whether a matching passage was
+    dropped.  Under the cap the body simply joins the list; at the cap only a
+    heading strictly between the retained ends is exchanged, so the oldest
+    retained span and the newest one always survive.  A non-matching heading
+    is spent before a matching one, so a query word in a bare ``#`` line never
+    costs a real passage.
+    """
+
+    if candidate in spans:
+        return spans, False
+    if len(spans) < MAX_SPANS_PER_SOURCE:
+        return sorted([*spans, candidate], key=lambda span: span[1]), False
+    interior = [
+        index
+        for index in range(1, len(spans) - 1)
+        if _is_heading_span(spans[index][0])
+    ]
+    if not interior:
+        # Both retained ends are the only headings; keep the heading fallback.
+        return spans, False
+    non_matching = [
+        index for index in interior if not _matches(spans[index][0], terms)
+    ]
+    pool = non_matching or interior
+    victim = pool[len(pool) // 2]
+    elided = _matches(spans[victim][0], terms)
+    kept = [span for index, span in enumerate(spans) if index != victim]
+    kept.append(candidate)
+    return sorted(kept, key=lambda span: span[1]), elided
 
 
 def _resolve_note_link(vault: Path, target: str) -> Path | None:
@@ -2046,6 +2167,7 @@ def _emit_note_sources(
     scanned_paths: set[Path],
     head_all: set[Path],
     head_first: set[Path],
+    anchor_path: Path | None = None,
     max_sources: int,
     max_evidence: int,
     max_candidate_bytes: int,
@@ -2078,7 +2200,12 @@ def _emit_note_sources(
             scanned_paths.add(path)
         # Compute spans before binding the source so a matched-only-in-name
         # candidate that keeps no span never consumes a source slot.
-        spans, spans_truncated = _spans(text, terms, take_head=path in head_all)
+        spans, spans_truncated = _spans(
+            text,
+            terms,
+            take_head=path in head_all,
+            prefer_body=path == anchor_path,
+        )
         if not spans and path in head_first:
             # A discovery-ranked note always contributes at least its head so
             # a matched entity is visible even when its body uses other words.
@@ -2251,7 +2378,11 @@ def gather(
             topic_ref=topic_note,
         )
     reserved_sources = 1 if (mem_evidence and max_sources > 1) else 0
-    reserved_evidence = min(len(mem_evidence), max_evidence)
+    # An explicitly selected topic note is the caller's scope anchor, so keep
+    # one evidence slot in reserve for it: a memory-heavy snapshot must not
+    # consume every span before the note is even emitted.
+    anchor_reserve = 1 if (topic_note and max_evidence > 0) else 0
+    reserved_evidence = min(len(mem_evidence), max(0, max_evidence - anchor_reserve))
     note_max_sources = max_sources - reserved_sources
     note_max_evidence = max_evidence - reserved_evidence
 
@@ -2309,6 +2440,7 @@ def gather(
             scanned_paths=scanned_paths,
             head_all=head_all,
             head_first=head_all,
+            anchor_path=note_path,
             max_sources=note_max_sources,
             max_evidence=note_max_evidence,
             max_candidate_bytes=max_candidate_bytes,
@@ -2767,9 +2899,16 @@ def _packet_bytes(packet: dict) -> int:
     return len(json.dumps(packet, ensure_ascii=False).encode("utf-8"))
 
 
-def _evidence_trim_priority(span: dict) -> int:
+def _evidence_trim_priority(span: dict, *, anchor: bool = False) -> int:
     """Lower is discarded first; curated memory outranks broad prose."""
 
+    if anchor:
+        # The reserved span of an explicitly selected topic note.  A note the
+        # caller named must stay source-linked whenever the byte bound can hold
+        # it, so it outranks everything else.  An accepted correction pair is
+        # still dropped as one unit -- both halves together -- just before, and
+        # in preference to, sacrificing that anchor.
+        return 6
     if span.get("kind") == "memory":
         if not span.get("durable", True):
             # A validated but unpublished local provisional item.
@@ -2778,13 +2917,47 @@ def _evidence_trim_priority(span: dict) -> int:
             "superseded",
             "retracted",
         }:
-            # One half of a contradiction/correction pair: keep it longest and
-            # always drop it together with its partner.
-            return 4
+            # One half of a contradiction/correction pair: kept as long as the
+            # byte bound allows, always dropped together with its partner, and
+            # never left standing unqualified to make room for the anchor.
+            return 5
         return 3
     if span.get("authority") == "semantic_shelf":
         return 0
     return 1
+
+
+def _anchor_evidence_ids(packet: dict) -> set[int]:
+    """``id()``s of the explicitly selected topic note's one reserved span.
+
+    ``--topic-note`` names the caller's chosen scope anchor, recorded under
+    ``topic.note_ref``.  Normalising that reference the same way as the emitted
+    source's vault-relative posix path keeps the note's first real span out of
+    the ordinary-prose trim, so a memory-rich packet can stay ``partial`` and
+    honest while still source-linking the note the caller explicitly asked for.
+    The span is reserved, not absolute: ``_trim_packet`` drops every other span
+    first and then fails explicitly rather than returning a note-less packet, so
+    a bound that cannot hold the anchor never implies the topic was covered.
+    """
+
+    topic = packet.get("topic")
+    if not isinstance(topic, dict):
+        return set()
+    note_ref = topic.get("note_ref")
+    if not isinstance(note_ref, str) or not note_ref:
+        return set()
+    wanted = posixpath.normpath(note_ref)
+    anchor_sources = {
+        source.get("source_id")
+        for source in packet.get("sources", [])
+        if source.get("relative_path") == wanted
+    }
+    if not anchor_sources:
+        return set()
+    for span in packet.get("evidence", []):
+        if span.get("source_id") in anchor_sources:
+            return {id(span)}
+    return set()
 
 
 def _correction_item_pairs(packet: dict) -> dict[str, set[str]]:
@@ -2984,6 +3157,10 @@ def _trim_packet(packet: dict, max_bytes: int) -> dict:
     if "packet_byte_limit" not in packet["reasons"]:
         packet["reasons"].append("packet_byte_limit")
         packet["reasons"].sort()
+    # Capture the caller's explicit anchor before any span is evicted so the
+    # post-trim check can tell "the note never emitted a span" from "the bound
+    # forced the note out".
+    anchor_ids = _anchor_evidence_ids(packet)
     while _packet_bytes(packet) > max_bytes:
         if not packet["evidence"]:
             # There is nothing left to evict.  Orphaned correction metadata was
@@ -3004,10 +3181,14 @@ def _trim_packet(packet: dict, max_bytes: int) -> dict:
         # best-ranked evidence survives.  A correction pair is dropped as a
         # unit: never leave one side of a supersede/retract lopsided.
         pairs = _correction_item_pairs(packet)
+        anchor_span_ids = _anchor_evidence_ids(packet)
         order = sorted(
             range(len(packet["evidence"])),
             key=lambda index: (
-                _evidence_trim_priority(packet["evidence"][index]),
+                _evidence_trim_priority(
+                    packet["evidence"][index],
+                    anchor=id(packet["evidence"][index]) in anchor_span_ids,
+                ),
                 -index,
             ),
         )
@@ -3021,6 +3202,17 @@ def _trim_packet(packet: dict, max_bytes: int) -> dict:
         _prune_orphan_packet_sources(packet)
         _prune_incomplete_correction_units(packet)
     _prune_orphan_packet_sources(packet)
+    if anchor_ids and not _anchor_evidence_ids(packet):
+        # Every lower-priority span was already gone, so this bound cannot hold
+        # even a minimal packet that keeps the selected note source-linked.
+        # Failing closed beats a "valid" partial packet with no note span.
+        raise InvalidInput(
+            "topic_anchor_unfittable",
+            (
+                "byte bound cannot retain a span of the explicitly selected "
+                "topic note"
+            ),
+        )
     return packet
 
 

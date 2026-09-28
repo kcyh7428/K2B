@@ -1,6 +1,7 @@
 """Focused acceptance tests for bounded recall and resume briefs."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -1489,19 +1490,39 @@ def test_packet_trim_never_leaves_a_correction_pair_lopsided(tmp_path: Path) -> 
     )
     _note(vault, "wiki/projects/project_atlas.md", f"# Atlas\n\n{filler}\n")
     _write_published_memory(vault, memory)
-    # A deliberately tight bound: the recorded coverage, freshness and
-    # candidate-inventory metadata alone must still be trimmable.
-    packet = k2b_context.gather(
-        "Atlas deadline",
-        vault,
-        topic_note="wiki/projects/project_atlas.md",
-        now="2026-09-28T10:00:00+08:00",
-        max_bytes=2000,
-    )
-    assert packet["partial"] is True
-    assert "packet_byte_limit" in packet["reasons"]
-    present = {span.get("item_id") for span in packet["evidence"]}
-    assert (old["item_id"] in present) == (new["item_id"] in present)
+
+    def gather_at(max_bytes: int) -> dict:
+        return k2b_context.gather(
+            "Atlas deadline",
+            vault,
+            topic_note="wiki/projects/project_atlas.md",
+            now="2026-09-28T10:00:00+08:00",
+            max_bytes=max_bytes,
+        )
+
+    # A bound that still holds the accepted pair keeps both halves together.
+    # The reserved topic anchor is now a substantive body passage rather than
+    # the bare ``# Atlas`` heading, so the minimal fitting packet is a little
+    # larger than the heading-anchored calibration.
+    roomy = gather_at(6_200)
+    assert roomy["partial"] is True
+    assert "packet_byte_limit" in roomy["reasons"]
+    roomy_items = {span.get("item_id") for span in roomy["evidence"]}
+    assert {old["item_id"], new["item_id"]} <= roomy_items
+
+    # A tighter bound that cannot hold both the pair and the chosen note drops
+    # the pair as one unit instead of leaving a lopsided half.
+    tight = gather_at(3_000)
+    tight_items = {span.get("item_id") for span in tight["evidence"]}
+    assert old["item_id"] not in tight_items
+    assert new["item_id"] not in tight_items
+    assert tight["corrections"] == []
+
+    # Below the chosen note's own anchor floor the packet fails closed rather
+    # than returning a note-less "valid" partial packet.
+    with pytest.raises(k2b_context.InvalidInput) as excinfo:
+        gather_at(2_000)
+    assert excinfo.value.reason == "topic_anchor_unfittable"
 
 
 def test_broad_query_keeps_memory_over_name_only_notes(tmp_path: Path) -> None:
@@ -1742,6 +1763,541 @@ def test_packet_byte_trim_keeps_sources_and_evidence_coherent(tmp_path: Path) ->
     assert packet["packet_id"] == "packet:" + k2b_context._sha256_hex(
         k2b_context._packet_manifest(packet)
     )
+
+
+def test_memory_rich_packet_keeps_selected_topic_note_source_linked(
+    tmp_path: Path,
+) -> None:
+    """A memory-saturated packet must still keep the chosen topic note.
+
+    The published snapshot can fill the evidence slots and approach the byte
+    cap before the note is emitted, and byte trimming discards ordinary note
+    prose first.  The explicitly selected note is the caller's scope anchor, so
+    its head span must survive with a real quote and a rendered citation while
+    the packet stays honestly partial.
+    """
+
+    memory = tmp_path / "home-state" / "memory.json"
+    for index in range(40):
+        _apply(
+            memory,
+            _bundle(
+                host_id="home",
+                session_id=f"session-resume-{index:02d}",
+                completed_at=f"2026-09-{index % 8 + 1:02d}T10:00:00+08:00",
+                cursor=f"turn:resume-{index:02d}",
+                key=f"memory.fact.reliable_resume_{index:02d}.{index:04d}",
+                value=(
+                    "The reliable resume brief gathers bounded source-linked "
+                    f"evidence for topic {index} with citation and provenance."
+                ),
+                event_id=f"event-resume-{index:02d}",
+                quote=(
+                    "The reliable resume brief gathers bounded source-linked "
+                    f"evidence for topic {index} with citation and provenance."
+                ),
+            ),
+        )
+    vault = tmp_path / "vault"
+    note_rel = "wiki/reference/2026-09-28_reliable-resume.md"
+    body = "\n\n".join(
+        f"The reliable resume brief section {index} records the decision and "
+        f"the next action for the topic with supporting prose {index}."
+        for index in range(k2b_context.MAX_SPANS_PER_SOURCE)
+    )
+    _note(vault, note_rel, f"# Reliable resume\n\n{body}\n")
+    _write_published_memory(vault, memory)
+
+    packet = k2b_context.gather(
+        "reliable resume",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+    )
+
+    # The byte cap was reached and the omission is reported, not hidden.
+    assert packet["partial"] is True
+    assert "packet_byte_limit" in packet["reasons"]
+
+    anchor_sources = [
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    ]
+    assert anchor_sources, "the explicitly selected topic note must stay a source"
+    anchor_id = anchor_sources[0]["source_id"]
+    anchor_spans = [
+        span for span in packet["evidence"] if span["source_id"] == anchor_id
+    ]
+    assert anchor_spans, "the topic note must keep at least one real span"
+    assert anchor_spans[0]["quote"]
+    # A programmatically rendered citation binds the span to the note passage.
+    citation = k2b_context._build_citations(packet)[anchor_spans[0]["evidence_id"]]
+    assert citation["kind"] == "note"
+    assert citation["target"].startswith(f"{note_rel}#L")
+    # Curated memory is not suppressed to make room for the reservation.
+    assert any(span["kind"] == "memory" for span in packet["evidence"])
+    # The trimmed packet still validates with exact source binding intact.
+    k2b_context._validate_packet(packet)
+
+
+def test_topic_anchor_prefers_later_matching_body_over_matching_heading(
+    tmp_path: Path,
+) -> None:
+    """Memory saturation and a byte cap must not leave a heading-only anchor.
+
+    The chosen note's reserved, trim-protected span is the first span emitted
+    for that source.  When the heading repeats the query but a later body
+    passage also matches, the anchor must be that substantive body quote --
+    with its own locator, hash and citation -- not the bare ``#`` heading.
+    """
+
+    memory = tmp_path / "home-state" / "memory.json"
+    for index in range(40):
+        _apply(
+            memory,
+            _bundle(
+                host_id="home",
+                session_id=f"session-resume-body-{index:02d}",
+                completed_at=f"2026-09-{index % 8 + 1:02d}T10:00:00+08:00",
+                cursor=f"turn:resume-body-{index:02d}",
+                key=f"memory.fact.reliable_resume_body_{index:02d}.{index:04d}",
+                value=(
+                    "The reliable resume brief gathers bounded source-linked "
+                    f"evidence for topic {index} with citation and provenance."
+                ),
+                event_id=f"event-resume-body-{index:02d}",
+                quote=(
+                    "The reliable resume brief gathers bounded source-linked "
+                    f"evidence for topic {index} with citation and provenance."
+                ),
+            ),
+        )
+    vault = tmp_path / "vault"
+    note_rel = "wiki/reference/2026-09-28_reliable-resume.md"
+    body_passages = [
+        (
+            f"The reliable resume body passage {index} records the priority "
+            f"and the next action for the topic with supporting prose {index}."
+        )
+        for index in range(k2b_context.MAX_SPANS_PER_SOURCE)
+    ]
+    _note(
+        vault,
+        note_rel,
+        "# Reliable resume\n\n" + "\n\n".join(body_passages) + "\n",
+    )
+    _write_published_memory(vault, memory)
+
+    packet = k2b_context.gather(
+        "reliable resume",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+    )
+    assert packet["partial"] is True
+    assert "packet_byte_limit" in packet["reasons"]
+
+    anchor_source = next(
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    )
+    anchor_spans = [
+        span
+        for span in packet["evidence"]
+        if span["source_id"] == anchor_source["source_id"]
+    ]
+    assert anchor_spans, "the explicitly selected topic note must keep a span"
+    anchor = anchor_spans[0]
+    assert not anchor["quote"].lstrip().startswith("#"), "anchor must not be a heading"
+    assert anchor["quote"] in body_passages, "the real body quote must survive"
+    # The span keeps its original locator-derived citation and still seals.
+    citation = k2b_context._build_citations(packet)[anchor["evidence_id"]]
+    assert citation["kind"] == "note"
+    assert citation["target"].startswith(f"{note_rel}#L")
+    k2b_context._validate_packet(packet)
+
+
+def test_topic_anchor_keeps_a_body_when_matching_headings_saturate_the_cap(
+    tmp_path: Path,
+) -> None:
+    """Matching headings that fill the span cap must not hide a real body.
+
+    The per-source cap fills with the earliest and newest matches before the
+    body preference runs, so a query that repeats in every one of thirteen
+    headings would leave the explicitly selected note heading-only even though
+    each heading is followed by a body paragraph.  With a memory-saturated,
+    byte-capped packet that heading-only anchor is the note's only trace, so a
+    real body passage must take part in the capped selection instead.
+    """
+
+    memory = tmp_path / "home-state" / "memory.json"
+    for index in range(40):
+        _apply(
+            memory,
+            _bundle(
+                host_id="home",
+                session_id=f"session-resume-headings-{index:02d}",
+                completed_at=f"2026-09-{index % 8 + 1:02d}T10:00:00+08:00",
+                cursor=f"turn:resume-headings-{index:02d}",
+                key=f"memory.fact.reliable_resume_headings_{index:02d}.{index:04d}",
+                value=(
+                    "The reliable resume brief gathers bounded source-linked "
+                    f"evidence for topic {index} with citation and provenance."
+                ),
+                event_id=f"event-resume-headings-{index:02d}",
+                quote=(
+                    "The reliable resume brief gathers bounded source-linked "
+                    f"evidence for topic {index} with citation and provenance."
+                ),
+            ),
+        )
+    vault = tmp_path / "vault"
+    note_rel = "wiki/reference/2026-09-28_reliable-resume.md"
+    body_passages = [
+        f"Operations note {index} covers the dashboard rollout only."
+        for index in range(13)
+    ]
+    blocks: list[str] = []
+    for index in range(13):
+        blocks.append(f"## Reliable resume section {index}")
+        blocks.append(body_passages[index])
+    _note(vault, note_rel, "\n\n".join(blocks) + "\n")
+    _write_published_memory(vault, memory)
+
+    packet = k2b_context.gather(
+        "reliable resume",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+    )
+    # Both the memory saturation and the byte cap engaged; the >cap elision and
+    # the byte trim are reported instead of presented as a complete packet.
+    assert packet["partial"] is True
+    assert "packet_byte_limit" in packet["reasons"]
+    assert "source_span_limit" in packet["reasons"]
+
+    anchor_source = next(
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    )
+    anchor_spans = [
+        span
+        for span in packet["evidence"]
+        if span["source_id"] == anchor_source["source_id"]
+    ]
+    assert anchor_spans, "the explicitly selected topic note must keep a span"
+    assert len(anchor_spans) <= k2b_context.MAX_SPANS_PER_SOURCE
+    anchor = anchor_spans[0]
+    # The reserved anchor is the real body passage, not a bare ``#`` heading.
+    assert not anchor["quote"].lstrip().startswith("#"), "anchor must not be a heading"
+    assert anchor["quote"] in body_passages, "the real body quote must survive"
+    assert anchor["quote"] == body_passages[0]
+    # The retained span keeps its own locator-derived citation and still seals.
+    citation = k2b_context._build_citations(packet)[anchor["evidence_id"]]
+    assert citation["kind"] == "note"
+    assert citation["target"].startswith(f"{note_rel}#L")
+    k2b_context._validate_packet(packet)
+
+    # The capped selection itself preserves the anchored pair -- the earliest
+    # and the newest matching heading -- while admitting one real body span.
+    note_text = (vault / note_rel).read_text(encoding="utf-8")
+    spans, spans_truncated = k2b_context._spans(
+        note_text,
+        k2b_context._query_terms("reliable resume"),
+        take_head=True,
+        prefer_body=True,
+    )
+    quotes = [span[0] for span in spans]
+    assert spans_truncated is True
+    assert "## Reliable resume section 0" in quotes, "earliest match must survive"
+    assert "## Reliable resume section 12" in quotes, "newest match must survive"
+    assert any(quote in body_passages for quote in quotes)
+
+
+def test_topic_anchor_prefers_body_when_only_heading_matches(tmp_path: Path) -> None:
+    """A query that matches only the heading still anchors on body prose."""
+
+    vault = tmp_path / "vault"
+    note_rel = "wiki/reference/2026-09-28_reliable-resume.md"
+    body = "Operations notes for the dashboard rollout only."
+    _note(vault, note_rel, f"# Reliable resume\n\n{body}\n")
+
+    packet = k2b_context.gather(
+        "reliable resume",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+    )
+    anchor_source = next(
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    )
+    anchor_spans = [
+        span
+        for span in packet["evidence"]
+        if span["source_id"] == anchor_source["source_id"]
+    ]
+    assert anchor_spans
+    assert anchor_spans[0]["quote"] == body
+    k2b_context._validate_packet(packet)
+
+
+def test_topic_anchor_falls_back_to_heading_with_no_body(tmp_path: Path) -> None:
+    """A note with no eligible body span keeps its matching heading."""
+
+    vault = tmp_path / "vault"
+    note_rel = "wiki/reference/2026-09-28_reliable-resume.md"
+    _note(vault, note_rel, "# Reliable resume\n\n## Next steps\n")
+
+    packet = k2b_context.gather(
+        "reliable resume",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+    )
+    anchor_source = next(
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    )
+    anchor_spans = [
+        span
+        for span in packet["evidence"]
+        if span["source_id"] == anchor_source["source_id"]
+    ]
+    assert anchor_spans
+    assert anchor_spans[0]["quote"] == "# Reliable resume"
+    k2b_context._validate_packet(packet)
+
+
+def test_selected_topic_note_keeps_a_span_when_memory_fills_the_bound(
+    tmp_path: Path,
+) -> None:
+    """Memory cannot consume every evidence slot before the chosen note."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+    for index in range(5):
+        _apply(
+            memory,
+            _bundle(
+                host_id="home",
+                session_id=f"session-dense-{index}",
+                completed_at=f"2026-09-0{index + 1}T10:00:00+08:00",
+                cursor=f"turn:dense-{index}",
+                key=f"memory.fact.dense_resume_{index}.aaaa",
+                value=f"Dense resume memory record {index} about the Atlas deadline.",
+                event_id=f"event-dense-{index}",
+                quote=f"Dense resume memory record {index} about the Atlas deadline.",
+            ),
+        )
+    vault = tmp_path / "vault"
+    note_rel = "wiki/projects/project_atlas.md"
+    _note(vault, note_rel, "# Atlas\n\nThe Atlas deadline moved to 8 October.\n")
+    _write_published_memory(vault, memory)
+
+    packet = k2b_context.gather(
+        "Atlas deadline",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+        max_evidence=2,
+    )
+    anchor_sources = [
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    ]
+    assert anchor_sources
+    anchor_id = anchor_sources[0]["source_id"]
+    assert any(
+        span["source_id"] == anchor_id and span["quote"]
+        for span in packet["evidence"]
+    )
+    assert len(packet["evidence"]) <= 2
+    k2b_context._validate_packet(packet)
+
+
+def test_tight_byte_cap_keeps_selected_anchor_over_correction_pair(
+    tmp_path: Path,
+) -> None:
+    """A bound that fits the correction pair but not pair+note keeps the note.
+
+    Both halves of an accepted correction pair can carry the same trim
+    priority, so a byte cap that can hold the pair but not the pair plus the
+    caller's note must decide between them.  The explicitly selected note is
+    the scope anchor, so it must win, and the pair must be dropped as one unit
+    rather than leaving a stale half standing unqualified.
+    """
+
+    memory = tmp_path / "home-state" / "memory.json"
+    old = _apply(
+        memory,
+        _bundle(
+            host_id="home",
+            session_id="session-anchor-old",
+            completed_at="2026-09-20T10:00:00+08:00",
+            cursor="turn:anchor-old",
+            key="memory.fact.atlas_deadline.aaaa",
+            value="The Atlas deadline is 5 October 2026.",
+            event_id="event-anchor-old",
+            quote="The Atlas deadline is 5 October 2026.",
+        ),
+    )
+    new = _apply(
+        memory,
+        _bundle(
+            host_id="home",
+            session_id="session-anchor-new",
+            completed_at="2026-09-21T10:00:00+08:00",
+            cursor="turn:anchor-new",
+            key="memory.decision.atlas_timeline.bbbb",
+            kind="decision",
+            value="Move the Atlas deadline to 8 October 2026, replacing 5 October.",
+            event_id="event-anchor-new",
+            quote="Move the Atlas deadline to 8 October 2026, replacing 5 October.",
+        ),
+    )
+    # A later version under the successor's key leaves the replacement itself
+    # superseded, so both halves of the accepted pair carry the same priority
+    # and the pair-vs-anchor tradeoff is the only call the byte cap has to make.
+    _apply(
+        memory,
+        _bundle(
+            host_id="home",
+            session_id="session-anchor-later",
+            completed_at="2026-09-22T10:00:00+08:00",
+            cursor="turn:anchor-later",
+            key="memory.decision.atlas_timeline.bbbb",
+            kind="decision",
+            value="The Atlas timeline is pending final sign-off.",
+            event_id="event-anchor-later",
+            quote="The Atlas timeline is pending final sign-off.",
+        ),
+    )
+    automatic_memory.apply_corrections(
+        memory,
+        [_reviewed_proposal(memory, old, new)],
+        recovery_dir=memory.parent / "recovery",
+    )
+
+    vault = tmp_path / "vault"
+    note_rel = "wiki/projects/project_atlas.md"
+    _note(vault, note_rel, "# Atlas\n\nThe Atlas deadline is 8 October.\n")
+    _write_published_memory(vault, memory)
+
+    full = k2b_context.gather(
+        "Atlas deadline", vault, topic_note=note_rel, now="2026-09-29T10:00:00+08:00"
+    )
+    assert full["partial"] is False
+    anchor_source = next(
+        source for source in full["sources"] if source["relative_path"] == note_rel
+    )
+    anchor_span = next(
+        span
+        for span in full["evidence"]
+        if span["source_id"] == anchor_source["source_id"]
+    )
+    pair_ids = {old["item_id"], new["item_id"]}
+    pair_spans = [span for span in full["evidence"] if span.get("item_id") in pair_ids]
+    assert len(pair_spans) == 2
+    # The boundary this guards: both pair halves trim at the same priority and
+    # the explicit anchor must outrank them.
+    assert {k2b_context._evidence_trim_priority(span) for span in pair_spans} == {5}
+    assert k2b_context._evidence_trim_priority(anchor_span, anchor=True) > 5
+
+    def bytes_when_only(predicate) -> int:
+        """Size of the packet with only the spans matching ``predicate``."""
+
+        clone = copy.deepcopy(full)
+        clone["evidence"] = [span for span in clone["evidence"] if predicate(span)]
+        clone["status"] = "partial"
+        k2b_context._prune_orphan_packet_sources(clone)
+        k2b_context._prune_incomplete_correction_units(clone)
+        return k2b_context._packet_bytes(clone)
+
+    only_anchor = bytes_when_only(
+        lambda span: span["source_id"] == anchor_source["source_id"]
+    )
+    only_pair = bytes_when_only(lambda span: span.get("item_id") in pair_ids)
+    # A bound that fits either side alone but not both together, with slack so
+    # the chosen note is never the thing that fails to fit.
+    bound = max(only_anchor, only_pair) + 64
+    assert max(only_anchor, only_pair) < bound < k2b_context._packet_bytes(full)
+
+    packet = k2b_context.gather(
+        "Atlas deadline",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+        max_bytes=bound,
+    )
+
+    # The caller's note keeps a real, source-linked span and a citation.
+    kept_anchor = [
+        span
+        for span in packet["evidence"]
+        if span["source_id"] == anchor_source["source_id"]
+    ]
+    assert kept_anchor, "the explicitly selected topic note must keep a span"
+    assert kept_anchor[0]["quote"]
+    citation = k2b_context._build_citations(packet)[kept_anchor[0]["evidence_id"]]
+    assert citation["kind"] == "note"
+    assert citation["target"].startswith(f"{note_rel}#L")
+
+    # The pair is dropped atomically: no lopsided half, no orphan correction
+    # metadata, and no stale assertion left standing unqualified.
+    assert not [span for span in packet["evidence"] if span.get("item_id") in pair_ids]
+    assert packet["corrections"] == []
+    assert not any("5 October" in span["quote"] for span in packet["evidence"])
+    assert {span["source_id"] for span in packet["evidence"]} == {
+        source["source_id"] for source in packet["sources"]
+    }
+    assert all(
+        any(span["source_id"] == source["source_id"] for span in packet["evidence"])
+        for source in packet["sources"]
+    )
+
+    # The byte-driven omission is reported, not hidden.
+    assert packet["partial"] is True
+    assert packet["status"] == "partial"
+    assert "packet_byte_limit" in packet["reasons"]
+    k2b_context._validate_packet(packet)
+
+
+def test_selected_anchor_below_its_floor_fails_closed(tmp_path: Path) -> None:
+    """A bound too small even for the note's own anchor fails, never fakes it."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+    old, new = _correction_pair_memory(memory)
+    vault = tmp_path / "vault"
+    note_rel = "wiki/projects/project_atlas.md"
+    _note(vault, note_rel, "# Atlas\n\nThe Atlas deadline is 8 October.\n")
+    _write_published_memory(vault, memory)
+
+    # 2_000 bytes clears the irreducible packet metadata but sits below the
+    # anchor's own floor, so the only honest outcome is an explicit failure
+    # rather than a "valid" partial packet with no source-linked note.
+    with pytest.raises(k2b_context.InvalidInput) as excinfo:
+        k2b_context.gather(
+            "Atlas deadline",
+            vault,
+            topic_note=note_rel,
+            now="2026-09-29T10:00:00+08:00",
+            max_bytes=2_000,
+        )
+    assert excinfo.value.reason == "topic_anchor_unfittable"
+
+    # One step up the bound keeps the note and reports the byte-driven trim.
+    packet = k2b_context.gather(
+        "Atlas deadline",
+        vault,
+        topic_note=note_rel,
+        now="2026-09-29T10:00:00+08:00",
+        max_bytes=3_000,
+    )
+    anchor_sources = [
+        source for source in packet["sources"] if source["relative_path"] == note_rel
+    ]
+    assert anchor_sources
+    assert any(
+        span["source_id"] == anchor_sources[0]["source_id"] and span["quote"]
+        for span in packet["evidence"]
+    )
+    assert packet["partial"] is True
+    assert "packet_byte_limit" in packet["reasons"]
+    k2b_context._validate_packet(packet)
 
 
 def _reseal(packet: dict) -> dict:
