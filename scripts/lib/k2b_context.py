@@ -56,6 +56,111 @@ MAX_TERM_CHARS = 400
 # an oversized term cannot inflate the packet before evidence trimming runs.
 MAX_FOLLOWUP_TERMS = 8
 MAX_FOLLOWUP_TERM_CHARS = 80
+# A broad (non-topic) query reserves this many evidence spans for its ranked
+# ordinary notes.  Without the floor a high-volume published-memory snapshot
+# can consume every span before any note is emitted, so a strongly relevant
+# note would never even reach the packet.  The reservation only limits memory
+# when memory would otherwise take the whole budget, and the leading note's
+# retained spans are additionally kept through the byte trim.
+BROAD_NOTE_EVIDENCE_RESERVE = 8
+# Obvious English conversational filler carries no retrieval signal but does
+# carry substring matches: in a spoken continuation query such as "where were
+# we" the term ``we`` matches the unrelated stem ``weave``, while ``where`` and
+# ``were`` match incidental prose.  Filtering is deliberately narrow so it can
+# never hide a claim: only closed-class grammatical words that carry no
+# reference of their own and non-lexical backchannel are dropped.  Anything that
+# can change the meaning of a project claim stays searchable -- negation
+# (``no``, ``not``, ``nor``), completion, status and time words (``done``,
+# ``now``, ``still``, ``again``), predicate state particles (``up``, ``out``,
+# ``on``, ``over``), modal and speculative hedges (``maybe``, ``might``,
+# ``could``, ``perhaps``, ``probably``), degree and evaluative adverbs
+# (``very``, ``too``, ``really``, ``just``), the lexical verb ``do`` and its
+# forms, quantifiers and deictic place/time adverbs.  A status query such as
+# "not done" therefore still yields its distinguishing terms.  CJK terms are
+# character n-grams, never whole English words, so they are never affected.
+CONVERSATIONAL_FILLER = frozenset(
+    {
+        # Articles and demonstratives.
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        # Personal and possessive pronouns.
+        "i",
+        "me",
+        "my",
+        "we",
+        "us",
+        "our",
+        "you",
+        "your",
+        "yours",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "it",
+        "its",
+        "they",
+        "them",
+        "their",
+        # Interrogatives and relative pronouns.
+        "how",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "why",
+        # Prepositions, particles and coordinating/subordinating conjunctions.
+        # Predicate state particles are deliberately absent: "is the dashboard
+        # up", "is the service out", "is the sync on" and "is the migration
+        # over" carry their state in the particle, so dropping it leaves only
+        # the entity word and can rank an older note that shares it above the
+        # note recording the current state.  ``down`` and ``off`` were never
+        # filtered, so every state word now behaves the same way.
+        "about",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "to",
+        "with",
+        "and",
+        "but",
+        "if",
+        "or",
+        "than",
+        # Copulas and the be/have auxiliaries.
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "having",
+        # Non-lexical backchannel.
+        "uh",
+        "um",
+        "oh",
+        "yeah",
+    }
+)
 MAX_LINK_HOPS = 4
 MAX_MEMORY_FILE_BYTES = 8 * 1024 * 1024
 MAX_PROVISIONAL_ENVELOPES = 200
@@ -396,7 +501,12 @@ def _exact_keys(value: object, expected: set[str], label: str) -> dict:
 
 
 def _query_terms(query: str) -> list[str]:
-    """Deterministic terms for English words and Chinese character bigrams."""
+    """Deterministic terms for English words and Chinese character bigrams.
+
+    Obvious English conversational filler is dropped so a broad spoken query
+    (``where were we``) does not contribute substrings such as ``we`` that
+    falsely match unrelated words.  CJK character terms are never filtered.
+    """
 
     terms: list[str] = []
     seen: set[str] = set()
@@ -404,6 +514,8 @@ def _query_terms(query: str) -> list[str]:
     def add(term: str) -> None:
         lowered = term.casefold()
         if len(lowered) < 2 or lowered in seen:
+            return
+        if lowered in CONVERSATIONAL_FILLER:
             return
         seen.add(lowered)
         terms.append(lowered)
@@ -2382,7 +2494,19 @@ def gather(
     # one evidence slot in reserve for it: a memory-heavy snapshot must not
     # consume every span before the note is even emitted.
     anchor_reserve = 1 if (topic_note and max_evidence > 0) else 0
-    reserved_evidence = min(len(mem_evidence), max(0, max_evidence - anchor_reserve))
+    # A broad query has no caller-selected anchor, so reserve a bounded floor
+    # for the ranked ordinary notes instead: a high-volume memory snapshot must
+    # not consume every span before a strongly relevant note is emitted.  The
+    # reservation only binds when memory would otherwise take the whole budget,
+    # and never claims more than half the span budget so a small caller bound
+    # cannot suppress the memory snapshot wholesale.
+    broad_note_reserve = (
+        min(BROAD_NOTE_EVIDENCE_RESERVE, max_evidence // 2)
+        if (not topic_note and terms and max_evidence > 0)
+        else 0
+    )
+    note_reserve = max(anchor_reserve, broad_note_reserve)
+    reserved_evidence = min(len(mem_evidence), max(0, max_evidence - note_reserve))
     note_max_sources = max_sources - reserved_sources
     note_max_evidence = max_evidence - reserved_evidence
 
@@ -2724,6 +2848,10 @@ def gather(
     # Deduplicate by item id, preferring durable evidence over provisional.
     evidence = _dedupe_evidence(evidence)
     corrections = _dedupe_corrections(corrections)
+    # The leading ranked ordinary note of a broad query keeps a bounded set of
+    # its spans through the byte trim, so a memory-rich packet still
+    # source-links the best lexical candidate instead of dropping every note.
+    retained_lead_ids = _lead_note_evidence_ids(sources, evidence, broad_note_reserve)
 
     coverage_value = _coverage_receipt(
         coverage_receipt, state_root=coverage_state_root or provisional_root
@@ -2769,7 +2897,7 @@ def gather(
     # so sealing the packet after trimming cannot push it back over max_bytes.
     packet["status"] = "no_evidence"
     packet["packet_id"] = "packet:" + "0" * 64
-    packet = _trim_packet(packet, max_bytes)
+    packet = _trim_packet(packet, max_bytes, retained_evidence_ids=retained_lead_ids)
     packet["status"] = (
         "partial"
         if packet["partial"]
@@ -2899,16 +3027,31 @@ def _packet_bytes(packet: dict) -> int:
     return len(json.dumps(packet, ensure_ascii=False).encode("utf-8"))
 
 
-def _evidence_trim_priority(span: dict, *, anchor: bool = False) -> int:
-    """Lower is discarded first; curated memory outranks broad prose."""
+def _evidence_trim_priority(
+    span: dict, *, anchor: bool = False, retained: bool = False
+) -> int:
+    """Lower is discarded first; curated memory outranks broad prose.
+
+    ``anchor`` marks the explicitly selected topic note, ``retained`` the
+    automatically retained leading note of a broad query.  The explicit
+    caller choice outranks everything; the automatic best guess still outranks
+    the memory snapshot it must survive, but yields to an accepted
+    correction pair so curation is never traded away for a lexical guess.
+    """
 
     if anchor:
-        # The reserved span of an explicitly selected topic note.  A note the
-        # caller named must stay source-linked whenever the byte bound can hold
-        # it, so it outranks everything else.  An accepted correction pair is
-        # still dropped as one unit -- both halves together -- just before, and
-        # in preference to, sacrificing that anchor.
+        # The explicitly selected topic note.  A note the caller named must
+        # stay source-linked whenever the byte bound can hold it, so it
+        # outranks everything else.  An accepted correction pair is still
+        # dropped as one unit -- both halves together -- just before, and in
+        # preference to, sacrificing the anchor.
         return 6
+    if retained:
+        # The leading ranked ordinary note of a broad query.  No caller chose
+        # it, so it yields to an accepted correction pair, but it outranks the
+        # curated memory snapshot: a memory-rich packet must not evict every
+        # ordinary note span while memory keeps its own.
+        return 4
     if span.get("kind") == "memory":
         if not span.get("durable", True):
             # A validated but unpublished local provisional item.
@@ -2958,6 +3101,45 @@ def _anchor_evidence_ids(packet: dict) -> set[int]:
         if span.get("source_id") in anchor_sources:
             return {id(span)}
     return set()
+
+
+def _lead_note_evidence_ids(
+    sources: list[dict], evidence: list[dict], limit: int
+) -> frozenset[str]:
+    """Evidence ids of the highest-ranked ordinary note's retained spans.
+
+    A broad query emits its ranked ordinary notes before the appended memory
+    snapshot, so the first vault-note/raw-capture source is the best lexical
+    candidate.  ``_trim_packet`` keeps a bounded number of that source's spans
+    through the byte trim, so a memory-rich packet still source-links the most
+    relevant note instead of dropping every ordinary note span.  The limit is a
+    bound, not a promise: a note with fewer matches contributes only what it
+    has, and memory still fills the rest of the packet.
+    """
+
+    if limit <= 0 or not sources or not evidence:
+        return frozenset()
+    lead_source_id = next(
+        (
+            source["source_id"]
+            for source in sources
+            if source.get("source_type") in {"vault_note", "raw_capture"}
+        ),
+        None,
+    )
+    if lead_source_id is None:
+        return frozenset()
+    ids: list[str] = []
+    for span in evidence:
+        if span.get("source_id") != lead_source_id:
+            continue
+        evidence_id = span.get("evidence_id")
+        if not isinstance(evidence_id, str):
+            continue
+        ids.append(evidence_id)
+        if len(ids) >= limit:
+            break
+    return frozenset(ids)
 
 
 def _correction_item_pairs(packet: dict) -> dict[str, set[str]]:
@@ -3046,6 +3228,64 @@ def _correction_edges(packet: dict) -> dict[str, set[str]]:
     for correction in packet.get("corrections", []):
         add(correction.get("target_item_id"), correction.get("source_item_id"))
     return edges
+
+
+def _trim_order_priorities(
+    packet: dict,
+    *,
+    anchor_span_ids: set[int],
+    retained_evidence_ids: frozenset[str],
+) -> list[int]:
+    """Trim priority per span, ranking a correction unit by its stickiest member.
+
+    A correction relation is dropped as one unit, so its ordering must be the
+    component's, not one half's.  A superseded target carries the reserved pair
+    priority while its replacement renders as ordinary ``current`` memory;
+    without this the unit would be evicted at the replacement's lower priority
+    and a merely lexical broad-query note could outlive the curation.
+    """
+
+    priorities = [
+        _evidence_trim_priority(
+            span,
+            anchor=id(span) in anchor_span_ids,
+            retained=span.get("evidence_id") in retained_evidence_ids,
+        )
+        for span in packet["evidence"]
+    ]
+    edges = _correction_edges(packet)
+    if not edges:
+        return priorities
+    by_item: dict[str, list[int]] = {}
+    for index, span in enumerate(packet["evidence"]):
+        if span.get("kind") != "memory":
+            continue
+        item_id = span.get("item_id")
+        if isinstance(item_id, str):
+            by_item.setdefault(item_id, []).append(index)
+    if not by_item:
+        return priorities
+    component = {
+        item_id: max(priorities[index] for index in indexes)
+        for item_id, indexes in by_item.items()
+    }
+    # ``_correction_edges`` is symmetric, so one pass per change propagates the
+    # component maximum in both directions until every member agrees.
+    changed = True
+    while changed:
+        changed = False
+        for left, neighbours in edges.items():
+            if left not in component:
+                continue
+            value = component[left]
+            for right in neighbours:
+                if right in component and component[right] < value:
+                    component[right] = value
+                    changed = True
+    for item_id, indexes in by_item.items():
+        for index in indexes:
+            priorities[index] = max(priorities[index], component[item_id])
+    return priorities
 
 
 def _prune_incomplete_correction_units(packet: dict) -> bool:
@@ -3148,7 +3388,23 @@ def _prune_incomplete_correction_units(packet: dict) -> bool:
     return True
 
 
-def _trim_packet(packet: dict, max_bytes: int) -> dict:
+def _trim_packet(
+    packet: dict,
+    max_bytes: int,
+    *,
+    retained_evidence_ids: frozenset[str] = frozenset(),
+) -> dict:
+    """Drop evidence until the packet fits ``max_bytes``.
+
+    ``retained_evidence_ids`` names the spans of a broad query's leading
+    ordinary note.  They trim just above the memory snapshot -- but below an
+    accepted correction pair -- so a memory-rich packet keeps the best lexical
+    candidate source-linked while memory still fills whatever remains.  Unlike
+    the explicit topic anchor, an unfittable retained span is not fatal: it is
+    an automatic best guess, so the trim simply drops it and the packet stays
+    honestly ``partial``.
+    """
+
     _prune_incomplete_correction_units(packet)
     if _packet_bytes(packet) <= max_bytes:
         return packet
@@ -3182,15 +3438,14 @@ def _trim_packet(packet: dict, max_bytes: int) -> dict:
         # unit: never leave one side of a supersede/retract lopsided.
         pairs = _correction_item_pairs(packet)
         anchor_span_ids = _anchor_evidence_ids(packet)
+        priorities = _trim_order_priorities(
+            packet,
+            anchor_span_ids=anchor_span_ids,
+            retained_evidence_ids=retained_evidence_ids,
+        )
         order = sorted(
             range(len(packet["evidence"])),
-            key=lambda index: (
-                _evidence_trim_priority(
-                    packet["evidence"][index],
-                    anchor=id(packet["evidence"][index]) in anchor_span_ids,
-                ),
-                -index,
-            ),
+            key=lambda index: (priorities[index], -index),
         )
         victim = packet["evidence"][order[0]]
         drop_ids = {id(victim)} | _correction_partner_ids(

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1648,6 +1649,237 @@ def test_broad_query_with_substantive_notes_still_reaches_memory(tmp_path: Path)
     present = {span.get("item_id") for span in packet["evidence"]}
     assert older["item_id"] in present
     assert newer["item_id"] in present
+
+
+def test_conversational_filler_is_dropped_without_touching_cjk_terms() -> None:
+    """Spoken filler must not contribute false substring query terms.
+
+    The 2026-09-29 Home continuation query ended "... where were we"; the term
+    ``we`` matched the unrelated stem ``feature_k2b-weave``.  Filler is dropped,
+    CJK character terms are preserved because they are n-grams, not English
+    words, and a filler-only query yields no terms rather than false ones.
+    """
+
+    terms = k2b_context._query_terms("K2B dashboard interface UI where were we")
+    assert terms == ["k2b", "dashboard", "interface", "ui"]
+    for filler in ("where", "were", "we"):
+        assert filler not in terms
+
+    # Filtering stays narrow: status, negation and speculative words that can
+    # distinguish a project claim must survive it.
+    assert k2b_context._query_terms("not done") == ["not", "done"]
+    assert k2b_context._query_terms("no, not yet, still not done") == [
+        "no",
+        "not",
+        "yet",
+        "still",
+        "done",
+    ]
+
+    assert k2b_context._query_terms("where were we") == []
+    assert k2b_context._query_terms("我们在哪里") == ["我们", "们在", "在哪", "哪里"]
+
+
+def test_status_phrase_remains_searchable(tmp_path: Path) -> None:
+    """Negation and completion terms must still reach a status note.
+
+    The first filler cut dropped ``no``/``not``/``done``/``still``/``again``, so
+    a status query such as "is the dashboard migration not done" lost its
+    distinguishing terms and could not retrieve the note recording that state.
+    """
+
+    terms = k2b_context._query_terms("is the dashboard migration not done")
+    assert terms == ["dashboard", "migration", "not", "done"]
+    assert "not" in terms and "done" in terms
+
+    vault = tmp_path / "vault"
+    note = "wiki/projects/project_dashboard.md"
+    _note(
+        vault,
+        note,
+        (
+            "# Dashboard project\n\n"
+            "The dashboard migration is not done; the snapshot table is "
+            "still missing.\n"
+        ),
+    )
+    ranked, *_ = k2b_context._candidate_note_files(
+        vault, terms, time.monotonic() + 5.0
+    )
+    assert ranked, "the status phrase must still retrieve a note"
+    assert ranked[0].relative_to(vault).as_posix() == note
+
+
+def test_operational_state_particle_remains_searchable(tmp_path: Path) -> None:
+    """A state particle must survive filtering and rank the status note first.
+
+    An earlier filler cut dropped ``up`` and ``out``, so "is the dashboard up"
+    and "is the service out" kept only the entity word.  Both notes then scored
+    the same and the older note won on the alphabetical path tie-break, which
+    is the misrecall this guards.  No query term appears in either filename, so
+    the comparison is decided by the ranked note body, not by name matching.
+    """
+
+    assert k2b_context._query_terms("is the dashboard up") == ["dashboard", "up"]
+    assert k2b_context._query_terms("is the mail service out") == [
+        "mail",
+        "service",
+        "out",
+    ]
+    assert k2b_context._query_terms("is the sync on") == ["sync", "on"]
+    assert k2b_context._query_terms("is the migration over") == ["migration", "over"]
+
+    up_vault = tmp_path / "vault-up"
+    older_up = "wiki/projects/project_home-console.md"
+    _note(
+        up_vault,
+        older_up,
+        (
+            "# Home console project\n\n"
+            "The dashboard interface review is scheduled for next week.\n"
+        ),
+    )
+    newer_up = "wiki/reference/2026-09-29_home-console-status.md"
+    _note(
+        up_vault,
+        newer_up,
+        (
+            "# Home console status\n\n"
+            "The dashboard is up again after the 18:20 restart.\n"
+        ),
+    )
+    ranked_up, *_ = k2b_context._candidate_note_files(
+        up_vault,
+        k2b_context._query_terms("is the dashboard up"),
+        time.monotonic() + 5.0,
+    )
+    ranked_up_rel = [path.relative_to(up_vault).as_posix() for path in ranked_up]
+    assert ranked_up_rel[0] == newer_up, "the state note must outrank the older note"
+    assert ranked_up_rel.index(older_up) == 1
+
+    out_vault = tmp_path / "vault-out"
+    older_out = "wiki/projects/project_company-portal.md"
+    _note(
+        out_vault,
+        older_out,
+        (
+            "# Company portal project\n\n"
+            "The company mail service is delivered through the portal; "
+            "ownership sits with Keith.\n"
+        ),
+    )
+    newer_out = "wiki/reference/2026-09-29_company-portal-status.md"
+    _note(
+        out_vault,
+        newer_out,
+        (
+            "# Company portal status\n\n"
+            "The company mail service is out since 09:00; the portal reported "
+            "an upstream outage.\n"
+        ),
+    )
+    ranked_out, *_ = k2b_context._candidate_note_files(
+        out_vault,
+        k2b_context._query_terms("is the mail service out"),
+        time.monotonic() + 5.0,
+    )
+    ranked_out_rel = [path.relative_to(out_vault).as_posix() for path in ranked_out]
+    assert ranked_out_rel[0] == newer_out, "the state note must outrank the older note"
+    assert ranked_out_rel.index(older_out) == 1
+
+
+def test_filler_false_hit_does_not_outrank_the_relevant_note(tmp_path: Path) -> None:
+    """A filler substring stem match must not lead the ranked candidates."""
+
+    vault = tmp_path / "vault"
+    _note(
+        vault,
+        "wiki/concepts/Shipped/feature_k2b-weave.md",
+        "# Weave feature\n\nShipped weave feature notes.\n",
+    )
+    relevant = "wiki/reference/2026-09-28_k2b-dashboard-direction.md"
+    _note(
+        vault,
+        relevant,
+        "# K2B Home: dashboard direction\n\nKeith wants a dashboard snapshot.\n",
+    )
+
+    terms = k2b_context._query_terms("K2B dashboard interface UI where were we")
+    ranked, *_ = k2b_context._candidate_note_files(
+        vault, terms, time.monotonic() + 5.0
+    )
+    ranked_rel = [path.relative_to(vault).as_posix() for path in ranked]
+    assert ranked_rel[0] == relevant
+    # The false hit only shares the entity term ``k2b`` and must rank behind.
+    assert ranked_rel.index(relevant) < ranked_rel.index(
+        "wiki/concepts/Shipped/feature_k2b-weave.md"
+    )
+
+
+def test_memory_rich_broad_query_keeps_the_leading_note_source_linked(
+    tmp_path: Path,
+) -> None:
+    """A broad query keeps its best note even when memory fills both bounds."""
+
+    memory = tmp_path / "home-state" / "memory.json"
+    filler = "The dashboard interface discussion covers an unrelated topic."
+    for index in range(60):
+        _apply(
+            memory,
+            _bundle(
+                host_id="home",
+                session_id=f"session-dashboard-{index:02d}",
+                completed_at=f"2026-09-{index % 8 + 1:02d}T10:00:00+08:00",
+                cursor=f"turn:dashboard-{index:02d}",
+                key=f"memory.fact.dashboard_neighbour_{index:02d}.{index:04d}",
+                value=" ".join([filler] * 20),
+                event_id=f"event-dashboard-{index:02d}",
+                quote=" ".join([filler] * 6),
+            ),
+        )
+    vault = tmp_path / "vault"
+    # A false filler substring hit must not displace the relevant note.
+    _note(
+        vault,
+        "wiki/concepts/Shipped/feature_k2b-weave.md",
+        "# Weave feature\n\nShipped weave feature notes.\n",
+    )
+    relevant = "wiki/reference/2026-09-28_k2b-dashboard-direction.md"
+    _note(
+        vault,
+        relevant,
+        (
+            "# K2B Home: dashboard direction\n\n"
+            "Keith reports that the existing dashboard was not useful.\n\n"
+            "The dashboard will run only on SJM or Home, with a snapshot of "
+            "ongoing background work.\n"
+        ),
+    )
+    _write_published_memory(vault, memory)
+
+    packet = k2b_context.gather(
+        "K2B dashboard interface UI where were we",
+        vault,
+        now="2026-09-29T12:00:00+08:00",
+    )
+    assert packet["partial"] is True
+    assert "packet_byte_limit" in packet["reasons"]
+    # Memory is reduced by the byte bound, never suppressed wholesale.
+    assert any(
+        source["source_type"] == "published_memory" for source in packet["sources"]
+    )
+    note_sources = {
+        source["source_id"]
+        for source in packet["sources"]
+        if source["relative_path"] == relevant
+    }
+    assert note_sources, "the best ordinary note must stay source-linked"
+    note_spans = [
+        span for span in packet["evidence"] if span["source_id"] in note_sources
+    ]
+    assert note_spans
+    assert any("dashboard" in span["quote"].casefold() for span in note_spans)
+    k2b_context._validate_packet(packet)
 
 
 def test_selected_topic_note_reserves_head_without_hiding_later_match(
