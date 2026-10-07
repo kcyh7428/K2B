@@ -11,7 +11,12 @@ source root, private state root, inclusive start date and per-run limit. Missing
 configuration is a stop, not permission to guess paths. The repaired production
 jobs run every six hours, with at most 12 completed turns, 240000 cumulative
 input-view bytes and 20 minutes per host per run, whichever comes first. These
-runs use only the signed-in native Codex product, never DeepSeek or another paid
+batch limits also apply to operator-configured hourly recovery of the same
+named jobs. Only the interactive operator may activate that recovery interval;
+native workers must never change their own schedule or other activation bounds.
+The hourly recovery interval does not widen the source-date window or enable
+any additional provider or background routine.
+These runs use only the signed-in native Codex product, never DeepSeek or another paid
 API, with no paid fallback. The 2026-09-25 DeepSeek handoff was a bounded
 engineering lane for the repair itself, not a change to scheduled extraction.
 Use 2026-09-13 through the current HKT date (including missed dates). Do not widen that range or backfill
@@ -72,6 +77,9 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    machine-local automatic-memory state root, and an inclusive recovery range.
 2. For each returned input view, read all `dialogue_events` and `context_events` and
    produce extraction JSON conforming to `scripts/prompts/eod-capture-extract.md`.
+   The automatic-memory destination accepts only `fact`, `decision`, `preference`
+   and `commitment`. Do not emit the generic extractor's `learning` kind here;
+   retain an explicit durable observation as a `fact` when its evidence supports it.
    Preserve exact evidence quotes and event identities. Record facts,
    Keith-authored decisions, explicit preferences, and open commitments. Do not
    promote assistant suggestions to Keith decisions. Earlier turns in a
@@ -145,7 +153,17 @@ without selecting or extracting work. Report pending turns and oldest pending ti
 when attention is needed. If pending work remains with no completed extraction, or
 backlog age exceeds 24 hours after initial catch-up, flag the capacity/hold problem
 once and when it changes; do not claim current recall from an ACTIVE registration.
+Report `empty_completed_turns` from the backlog JSON as excluded empty completions
+in those summaries. Empty completions are not successful extractions; a rising
+count with no real dialogue progress requires operator diagnosis of source format.
 `memory-status` observes registration, latest run evidence, holds and persisted
 state; `memory-backlog` measures source coverage. Neither proves shared arrival.
 Do not claim achieved cadence or seven-day acceptance without actual evidence.
-Ordinary successful or unchanged runs stay quiet.
+Ordinary successful runs stay quiet. An unchanged operator hold is still blocked
+ingestion, never healthy memory: report that state with pending-turn count,
+oldest pending time and the required operator action in the user-facing final
+message. Preserve the canonical receipt schema and existing hold/exception fields;
+do not add prose or new fields to command evidence or receipt JSON.
+Use helper-produced backlog/status fields exactly as returned; the restriction
+above forbids worker-authored alterations, not fields emitted by the helpers.
+Keep the explanation compact; do not describe a blocked batch as ordinary success.

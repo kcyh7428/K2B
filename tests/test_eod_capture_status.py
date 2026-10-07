@@ -3357,6 +3357,144 @@ def test_backlog_scan_budget_reports_incomplete_not_zero_backlog(tmp_path):
     assert result["complete"] is False
 
 
+@pytest.mark.parametrize("changed_on_call", [1, 2])
+def test_worklist_reports_source_change_before_scan_or_persistence(
+    tmp_path: Path, monkeypatch, changed_on_call: int,
+) -> None:
+    root = tmp_path / ".codex" / "sessions"
+    source = _modern_session(root, "2026-09-05", "changing-source")
+    with source.open("a") as handle:
+        for row in (
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-2"}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user",
+             "content": [{"type": "input_text", "text": "Another durable request"}]}},
+            {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-2",
+             "completed_at": "2026-09-05T11:00:00+08:00"}},
+        ):
+            handle.write(json.dumps(row) + "\n")
+    calls = 0
+
+    def changed(*args):
+        nonlocal calls
+        calls += 1
+        return calls == changed_on_call
+
+    monkeypatch.setattr(eod_capture, "_source_snapshot_changed", changed)
+    state = tmp_path / "state"
+    result = eod_capture.build_memory_worklist(
+        state_root=state, codex_root=root, since="2026-09-05",
+        through="2026-09-05", writer_role="home", limit=1,
+    )
+    assert result["selected"] == 0
+    assert result["parse_exception_counts"]["source_changed_during_selection"] == 1
+    assert calls == changed_on_call
+    assert result["status"] == "needs_attention"
+    assert not list((state / "source-bundles").glob("*.json"))
+
+
+def test_worklist_keeps_verified_completed_snapshot_when_source_appends(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / ".codex" / "sessions"
+    source = _modern_session(root, "2026-09-05", "appending-source")
+    captured = source.read_bytes()
+    original = eod_capture.parse_completed_dialogue
+
+    def append_after_parse(*args, **kwargs):
+        parsed = original(*args, **kwargs)
+        if kwargs.get("source_byte_limit") is None:
+            return parsed
+        with source.open("a") as handle:
+            for row in (
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-2"}},
+                {"type": "response_item", "payload": {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "Later append outside snapshot"}]}},
+                {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-2",
+                 "completed_at": "2026-09-05T11:00:00+08:00"}},
+            ):
+                handle.write(json.dumps(row) + "\n")
+        return parsed
+
+    monkeypatch.setattr(eod_capture, "parse_completed_dialogue", append_after_parse)
+    state = tmp_path / "state"
+    result = eod_capture.build_memory_worklist(
+        state_root=state, codex_root=root, since="2026-09-05",
+        through="2026-09-05", writer_role="home", limit=10,
+    )
+    assert result["selected"] == 1
+    assert result["status"] == "ready"
+    bundle = json.loads(Path(result["items"][0]["source_bundle_path"]).read_text())
+    assert bundle["raw_source_sha256"] == hashlib.sha256(captured).hexdigest()
+    assert bundle["raw_source_bytes"] == len(captured)
+    assert "Later append outside snapshot" not in bundle["transcript"]
+    assert eod_capture.prepare_memory_extraction_input(
+        state_root=state, work_id=result["items"][0]["work_id"], writer_role="home",
+    )["status"] == "ready"
+
+
+def test_worklist_survives_source_disappearing_before_persistence(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / ".codex" / "sessions"
+    source = _modern_session(root, "2026-09-05", "vanishing-source")
+    original = eod_capture._source_bundle_from_prefix
+
+    def disappearing(*args):
+        bundle = original(*args)
+        source.unlink()
+        return bundle
+
+    monkeypatch.setattr(eod_capture, "_source_bundle_from_prefix", disappearing)
+    result = eod_capture.build_memory_worklist(
+        state_root=tmp_path / "state", codex_root=root, since="2026-09-05",
+        through="2026-09-05", writer_role="home", limit=1,
+    )
+    assert result["selected"] == 0
+    assert result["parse_exception_counts"]["source_unavailable"] == 1
+
+
+@pytest.mark.parametrize("day,expected", [("2026-09-04", 0), ("2026-09-05", 1), ("2026-09-06", 0)])
+def test_worklist_scopes_parse_diagnostics_to_requested_dates(tmp_path: Path, day: str, expected: int) -> None:
+    root = tmp_path / ".codex" / "sessions"
+    source = _modern_session(root, "2026-09-05", "dated-diagnostic")
+    with source.open("a") as handle:
+        for payload in (
+            {"type": "task_started", "turn_id": "turn-2"},
+            {"type": "task_complete", "turn_id": "wrong-turn",
+             "completed_at": day + "T11:00:00+08:00"},
+        ):
+            handle.write(json.dumps({"type": "event_msg", "payload": payload}) + "\n")
+    result = eod_capture.build_memory_worklist(
+        state_root=tmp_path / "state", codex_root=root, since="2026-09-05",
+        through="2026-09-05", writer_role="home", limit=1,
+    )
+    assert result["selected"] == 1
+    assert result["parse_exception_counts"].get("task_complete_turn_id_mismatch", 0) == expected
+
+
+def test_worklist_excludes_foreign_project_without_aborting(tmp_path: Path) -> None:
+    root = tmp_path / ".codex" / "sessions"
+    source = _modern_session(root, "2026-09-05", "foreign-source")
+    rows = [json.loads(line) for line in source.read_text().splitlines()]
+    rows[0]["payload"]["cwd"] = "/Users/keithmbpm2/Projects/OtherProject"
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    result = eod_capture.build_memory_worklist(
+        state_root=tmp_path / "state", codex_root=root, since="2026-09-05",
+        through="2026-09-05", writer_role="home", limit=1,
+    )
+    assert result["selected"] == 0
+    assert result["status"] == "idle"
+
+
+def test_memory_status_reports_hold_as_blocked_ingestion(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "extraction-hold.json").write_text(json.dumps({
+        "created_at": "2026-10-07T11:00:00Z", "reason": "operator intervention",
+    }))
+    status = eod_capture.memory_status(
+        state, writer_role="sjm-source-only", automation_root=tmp_path / "no-jobs",
+    )
+    assert status["native_extraction_hold"] == "present"
+    assert status["ingestion_state"] == "blocked"
+
+
 def test_memory_worklist_selects_each_completed_prefix_inside_requested_range(
     tmp_path: Path,
 ) -> None:

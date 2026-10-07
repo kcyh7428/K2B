@@ -174,6 +174,37 @@ def test_completed_dialogue_parser_preserves_text_beyond_old_limits(
     assert all(0 < len(chunk["text"]) <= 1024 for chunk in latest["chunks"])
 
 
+def test_empty_completed_turn_does_not_reselect_previous_dialogue(tmp_path: Path) -> None:
+    session = tmp_path / "rollout-empty-turn.jsonl"
+    _write_completed_dialogue_session(session, user_text="Keep this decision",
+                                    assistant_text="Recorded")
+    before = eod_capture.parse_completed_dialogue(session, source_host="home")
+    with session.open("a") as handle:
+        for payload in (
+            {"type": "task_started", "turn_id": "empty-turn"},
+            {"type": "task_complete", "turn_id": "empty-turn",
+             "completed_at": "2026-09-05T10:01:00+08:00"},
+        ):
+            handle.write(json.dumps({"type": "event_msg", "payload": payload}) + "\n")
+    after = eod_capture.parse_completed_dialogue(session, source_host="home")
+    assert after["completed_prefixes"] == before["completed_prefixes"]
+    assert after["empty_completed_turns"] == 1
+
+
+def test_parser_byte_snapshot_does_not_consume_later_appended_records(tmp_path: Path) -> None:
+    session = tmp_path / "rollout-byte-snapshot.jsonl"
+    _write_completed_dialogue_session(session, user_text="Captured decision",
+                                    assistant_text="Recorded")
+    size = session.stat().st_size
+    with session.open("a") as handle:
+        handle.write("{invalid later append}\n")
+    parsed = eod_capture.parse_completed_dialogue(
+        session, source_host="home", source_byte_limit=size,
+    )
+    assert len(parsed["completed_prefixes"]) == 1
+    assert "Captured decision" in parsed["completed_prefixes"][0]["transcript"]
+
+
 def test_completed_prefix_and_event_identities_survive_later_appends(tmp_path: Path) -> None:
     session = tmp_path / "rollout-growing.jsonl"
     _write_completed_dialogue_session(
