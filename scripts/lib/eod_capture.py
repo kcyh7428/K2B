@@ -301,12 +301,27 @@ def _event_to_text(event: dict) -> str:
 
 
 def _read_complete_jsonl_records(
-    session_path: Path, *, deadline: float | None = None
+    session_path: Path, *, deadline: float | None = None,
+    source_byte_limit: int | None = None,
 ) -> list[tuple[int, dict, bytes]]:
     """Read complete JSONL records, ignoring only an unterminated partial tail."""
     records: list[tuple[int, dict, bytes]] = []
+    if source_byte_limit is not None and (
+        type(source_byte_limit) is not int or source_byte_limit < 0
+    ):
+        raise ValueError("source byte limit must be a nonnegative integer")
     with session_path.open("rb") as handle:
-        for line_no, raw_line in enumerate(handle, 1):
+        def snapshot_lines():
+            remaining = source_byte_limit
+            while remaining is None or remaining > 0:
+                raw = handle.readline(-1 if remaining is None else remaining)
+                if not raw:
+                    break
+                if remaining is not None:
+                    remaining -= len(raw)
+                yield raw
+
+        for line_no, raw_line in enumerate(snapshot_lines(), 1):
             if deadline is not None and time.monotonic() >= deadline:
                 raise DialogueParseTimeout("bounded dialogue parse exceeded its deadline")
             if not raw_line.strip():
@@ -455,11 +470,14 @@ def parse_completed_dialogue(
     source_host: str,
     max_chunk_chars: int = DEFAULT_DIALOGUE_CHUNK_CHARS,
     deadline: float | None = None,
+    source_byte_limit: int | None = None,
 ) -> dict:
     """Parse one source once into stable, lossless completed-turn prefixes."""
     if source_host not in {"home", "sjm"}:
         raise ValueError(f"unsupported source host: {source_host}")
-    records = _read_complete_jsonl_records(session_path, deadline=deadline)
+    records = _read_complete_jsonl_records(
+        session_path, deadline=deadline, source_byte_limit=source_byte_limit
+    )
     def check_deadline() -> None:
         if deadline is not None and time.monotonic() >= deadline:
             raise DialogueParseTimeout("bounded dialogue parse exceeded its deadline")
@@ -488,6 +506,8 @@ def parse_completed_dialogue(
         "completed_prefix_sha256": None,
         "completed_prefixes": [],
         "parse_diagnostics": [],
+        "empty_completed_turns": 0,
+        "empty_completed_dates": [],
     }
     if excluded_reason is not None:
         return result
@@ -602,6 +622,16 @@ def parse_completed_dialogue(
             if event_kind == "task_complete":
                 completion_turn_id = str(payload.get("turn_id") or active_turn_id or "")
                 if active_turn_id and completion_turn_id == active_turn_id:
+                    if not pending:
+                        # No extractable dialogue (including filtered bootstrap
+                        # messages). Never relabel prior evidence as this turn.
+                        result["empty_completed_turns"] += 1
+                        result["empty_completed_dates"].append(_completed_at_date(
+                            payload.get("completed_at") or event.get("timestamp")
+                        ))
+                        active_turn_id = None
+                        pending = []
+                        continue
                     completed_events.extend(pending)
                     completed_at = payload.get("completed_at") or event.get("timestamp")
                     prefix = make_prefix(
@@ -717,6 +747,26 @@ def _source_changed_since(
     )
 
 
+def _source_snapshot_hash(path: Path, byte_count: int) -> str:
+    """Hash exactly the captured bytes, excluding any later native append."""
+    digest = hashlib.sha256()
+    remaining = byte_count
+    with path.open("rb") as handle:
+        while remaining:
+            chunk = handle.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                raise OSError("source snapshot was shortened")
+            digest.update(chunk)
+            remaining -= len(chunk)
+    return digest.hexdigest()
+
+
+def _source_snapshot_changed(path: Path, source_stat: os.stat_result, digest: str) -> bool:
+    """Rewrites/shortening invalidate a snapshot; later appends do not."""
+    return (path.stat().st_size < source_stat.st_size
+            or _source_snapshot_hash(path, source_stat.st_size) != digest)
+
+
 def build_source_bundle(
     session_path: Path,
     *,
@@ -749,6 +799,17 @@ def build_source_bundle(
         raise ValueError("source changed while the handoff bundle was created")
     run_date = str(prefix.get("completed_date") or "") if prefix else ""
     run_date = run_date or _session_content_date(resolved) or _mtime_date(resolved)
+    return _source_bundle_from_prefix(
+        resolved, source_host, parsed, prefix, raw_source_sha256, run_date
+    )
+
+
+def _source_bundle_from_prefix(
+    resolved: Path, source_host: str, parsed: dict, prefix: dict,
+    raw_source_sha256: str, run_date: str,
+) -> dict:
+    """Shape a bundle from an already verified, unchanged source snapshot."""
+    transcript = prefix["transcript"]
     return {
         "bundle_schema_version": 1,
         "source_host": source_host,
@@ -3207,11 +3268,21 @@ def build_memory_worklist(
     source_paths = sorted(
         {source_path for paths in discovered.values() for source_path in paths}
     )
+    source_stats: dict[str, os.stat_result] = {}
     for source_path in source_paths:
         try:
+            source_stat = source_path.stat()
+            source_hash = _source_snapshot_hash(source_path, source_stat.st_size)
             parsed = parse_completed_dialogue(
-                source_path, source_host=source_host
+                source_path, source_host=source_host,
+                source_byte_limit=source_stat.st_size,
             )
+            if _source_snapshot_changed(source_path, source_stat, source_hash):
+                excluded += 1
+                parse_exception_counts["source_changed_during_selection"] = (
+                    parse_exception_counts.get("source_changed_during_selection", 0) + 1
+                )
+                continue
         except OSError:
             excluded += 1
             parse_exception_counts["source_unavailable"] = (
@@ -3224,7 +3295,11 @@ def build_memory_worklist(
         if not parsed.get("eligible"):
             excluded += 1
             continue
+        source_stats[str(source_path.resolve())] = source_stat
         for diagnostic in parsed.get("parse_diagnostics", []):
+            if (diagnostic.get("completed_date")
+                    and diagnostic["completed_date"] not in requested_dates):
+                continue
             reason = str(diagnostic.get("reason") or "unknown_parse_diagnostic")
             parse_exception_counts[reason] = parse_exception_counts.get(reason, 0) + 1
         prefixes = [
@@ -3235,13 +3310,11 @@ def build_memory_worklist(
         ]
         for prefix in prefixes:
             try:
-                bundle = build_source_bundle(
-                    source_path,
-                    source_host=source_host,
-                    codex_root=codex_root,
-                    run_date=prefix["completed_date"],
-                    completed_cursor=prefix["cursor"],
+                bundle = _source_bundle_from_prefix(
+                    source_path.resolve(), source_host, parsed, prefix,
+                    source_hash, prefix["completed_date"],
                 )
+                bundle["raw_source_bytes"] = source_stat.st_size
             except OSError:
                 excluded += 1
                 parse_exception_counts["source_unavailable"] = (
@@ -3273,6 +3346,7 @@ def build_memory_worklist(
     exception_counts = {"needs_attention": 0, "retry_backoff": 0}
     lock_path = state_root / ".memory-worklist.lock"
     with _file_lock(lock_path):
+        failed_sources: set[str] = set()
         for current_bundle in eligible:
             work_id = _memory_work_id(current_bundle)
             receipt_path = _memory_work_path(
@@ -3289,6 +3363,42 @@ def build_memory_worklist(
                 ):
                     raise RuntimeError("memory source bundle identity conflicts")
             else:
+                if current_bundle["session_path"] in failed_sources:
+                    continue
+                source_path = Path(current_bundle["session_path"])
+                root = _resolve_codex_root(codex_root)
+                try:
+                    source_path.stat()
+                    in_scope = (
+                        source_path.resolve().is_relative_to(root)
+                        and detect_source_app(source_path, codex_root=root) != "unknown"
+                        and _is_k2b_scope(source_path)
+                    )
+                    changed = _source_snapshot_changed(
+                        source_path, source_stats[str(source_path)],
+                        current_bundle["raw_source_sha256"],
+                    )
+                except (OSError, KeyError, ValueError):
+                    failed_sources.add(current_bundle["session_path"])
+                    excluded += 1
+                    parse_exception_counts["source_unavailable"] = (
+                        parse_exception_counts.get("source_unavailable", 0) + 1
+                    )
+                    continue
+                if changed:
+                    failed_sources.add(current_bundle["session_path"])
+                    excluded += 1
+                    parse_exception_counts["source_changed_during_selection"] = (
+                        parse_exception_counts.get("source_changed_during_selection", 0) + 1
+                    )
+                    continue
+                if not in_scope:
+                    failed_sources.add(current_bundle["session_path"])
+                    excluded += 1
+                    parse_exception_counts["source_outside_scope"] = (
+                        parse_exception_counts.get("source_outside_scope", 0) + 1
+                    )
+                    continue
                 bundle = current_bundle
                 _atomic_write_json(bundle_path, bundle)
             record = {
@@ -4805,6 +4915,7 @@ def memory_backlog(
     pending, extracted = [], []
     seen: set[str] = set()
     invalid_receipts = source_errors = parse_exceptions = unverified_turns = 0
+    empty_completed_turns = 0
     for path in sorted(root.rglob("*.jsonl")):
         if time.monotonic() >= deadline:
             complete = False
@@ -4833,6 +4944,9 @@ def memory_backlog(
         if (not parsed.get("eligible") or parsed.get("provenance_status") != "known_user"
             or parsed.get("thread_source") not in INTERACTIVE_THREAD_SOURCES):
             continue
+        empty_completed_turns += sum(
+            day in dates for day in parsed.get("empty_completed_dates", [])
+        )
         parse_exceptions += sum(d.get("completed_date") in dates
                                 for d in parsed.get("parse_diagnostics", []))
         for prefix in parsed.get("completed_prefixes", []):
@@ -4889,6 +5003,7 @@ def memory_backlog(
         "unverified_turns": unverified_turns,
         "source_errors": source_errors, "parse_exceptions": parse_exceptions,
         "timed_out_sources": timed_out,
+        "empty_completed_turns": empty_completed_turns,
         "oldest_pending_at": min(pending, default=None),
         "latest_extracted_source_at": max(extracted, default=None),
     }
@@ -4937,6 +5052,11 @@ def memory_status(
         "native_run_outcome": native["last_run_outcome"],
         "native_extraction_hold": native["extraction_hold"],
         "native_diagnostic": native["diagnostic"],
+        "ingestion_state": (
+            "blocked" if native["extraction_hold"] == "present"
+            else "unknown" if native["extraction_hold"] != "absent"
+            else "not_verified"
+        ),
         "outbox": automatic_memory.outbox_status(state_root),
         "worklist_files": len(list((state_root / "worklist").glob("*.json"))),
         "extraction_receipt_files": len(
