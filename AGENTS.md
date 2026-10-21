@@ -2,6 +2,45 @@
 
 Read this file before modifying K2B. Direct user instructions override it.
 
+## Writing style for every conversation
+
+Never use em dashes (Unicode U+2014) in K2B-authored prose. This applies to
+chat replies, email subjects and bodies, messages, documents, presentations,
+vault notes and internal drafts. Do not substitute double hyphens, whether
+spaced or joined to words.
+Use a comma, colon, semicolon, full stop or parentheses as appropriate.
+This is Keith's existing writing rule, not a preference that depends on
+retrieving an old learning or invoking a particular skill.
+The character check targets U+2014 and double-hyphen prose substitutes;
+it is not a general Unicode punctuation validator or a ban on numerical
+minus signs, ranges or ordinary hyphens.
+
+Preserve verbatim third-party quotations and quoted correspondence, literal
+command flags and separators, identifiers, filenames and the standard email
+signature delimiter. These exceptions do not permit dash substitutes in
+newly authored prose. Only edit a match positively identified as newly
+authored prose. Preserve code, URLs, regex syntax, YAML delimiters and
+Markdown structure. If classification is uncertain, preserve the text
+verbatim and record the reason instead of silently normalizing it.
+
+Before presenting or handing off any draft intended for circulation, save
+the exact proposed subject and body in a mode-0600 file created with
+`mktemp` under the operating-system temporary directory `${TMPDIR:-/tmp}`.
+Run creation, scanning and cleanup in one shell or Python scope, with a
+`trap` or `finally` that deletes the file on success, failure or catchable
+interruption.
+Never place it in the project, vault or another synchronized folder. Scan
+the file with `rg -n '\x{2014}|--' "$draft_file"`.
+Exit 1 means no matches. Exit 0 requires reviewing every match: preserve
+only the literal exceptions above, rewrite authored prose violations and
+scan again after edits. Handoff requires no remaining prose violations;
+matches retained as literal exceptions must have an identified reason.
+Any other exit means the check failed and must be resolved before handoff.
+Present the checked text without unverified edits and check revisions again.
+This mechanical workflow covers circulation drafts only. Other chat prose,
+notes and internal drafts require self-review for the same writing rule;
+do not describe that self-review as an automatic or verified output filter.
+
 ## Product and hosts
 
 K2B is Keith's single-user knowledge and workflow system. Its current authorized topology is:
