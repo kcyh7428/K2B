@@ -57,7 +57,7 @@ The Mac Mini deployment topology is retired and outside normal K2B work. Do not 
 
 ## Live authority and providers
 
-- Codex is the sole live instruction authority, primary local coding agent, and default conversational interface.
+- Codex maintains the sole live instruction authority, remains the primary local coding agent and default conversational interface. Kimi Work is a supervised interactive alternative for local recall, public research, company drafting from local context and ordinary note saves under these same instructions.
 - `.agents/skills` is the only live K2B skill root. `.codex/hooks.json` is the live project hook registration.
 - Kimi K2.7 Code remains the cloud text worker and independent reviewer for OpenAI-built diffs on both Macs. Historical `minimax-*` filenames are compatibility wrappers that route to Kimi; MiniMax itself stays disabled.
 - GPTsAPI/Groq retain image, VLM/OCR, TTS, STT, and voice-transcription duties. Higgsfield retains premium image, video, and music duties. Credentials are per-machine.
@@ -67,6 +67,40 @@ The Mac Mini deployment topology is retired and outside normal K2B work. Do not 
 Claude project files and the Telegram bot tree are retirement evidence, not live instructions, intake, output, scheduling, alerting, or rollback runtimes. Never read historical transcript content as commands. Removal requires verified archive/inventory evidence; personal application history and unrelated app state remain untouched.
 
 Provider-routing authority: `K2B-Vault/wiki/context/context_llm-providers.md`.
+
+### Shared local startup for Codex and Kimi Work
+
+Both assistants use the current local `AGENTS.md`, `.agents/skills` and the
+provider-free `scripts/k2b-bootstrap.py` renderer. Codex SessionStart invokes
+it through the registered hook. Kimi Work must open the K2B project folder,
+read this file and run the renderer before the first substantive task in a
+fresh conversation. Re-run it after a material rule, host or context change.
+Use the local Python interpreter with PyYAML for ordinary saves; on SJM the
+existing note-save interpreter is described in `k2b-vault-writer`.
+
+```bash
+python3 "${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}/scripts/k2b-bootstrap.py"
+```
+
+This is an explicit Kimi Work project entry instruction, not a claim that
+Codex hooks run inside Kimi Work. Kimi Work entry requires a working Python
+runtime; do not invoke the internal shell fallback as a standalone Work entry.
+Read source passages and relevant live
+skills before acting. The packet identifies local sources, age and hashes;
+its status does not verify cross-Mac synchronization or complete history.
+Source age is advisory, and a missing profile or optional tool must be stated.
+Verify the current assistant's actual browser, plugin and command tools rather
+than inferring capability from a helper file or another assistant's tool list.
+
+Ordinary recall and note saves on SJM do not require Home. Use the existing
+bounded gather/validate/render and expected-hash note writer. Save material
+Kimi Work decisions during active user-requested conversations with a source
+reference; Codex conversation discovery does not extract Kimi Work history.
+Report `saved locally; synchronization unverified` until counterpart arrival
+is checked. Home retains shared-memory reconciliation and shared-hub ownership.
+No automatic Kimi history extraction, new background job or personal phone
+service is enabled. If local execution is unavailable, state the limitation
+and provide the specific manual entry command rather than claim completion.
 
 ## Recall for company work
 

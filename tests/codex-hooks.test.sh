@@ -29,7 +29,7 @@ cat > "$VALID_FIXTURE" <<'JSON'
           {
             "type": "command",
             "command": "export K2B_HOOK_PROVIDER=codex; export K2B_PROJECT_ROOT=\"${K2B_PROJECT_ROOT:-$HOME/Projects/K2B}\"; \"$K2B_PROJECT_ROOT/scripts/hooks/session-start.sh\"",
-            "timeout": 10
+            "timeout": 20
           }
         ]
       }
@@ -91,7 +91,7 @@ expected_targets = {
     "scripts/hooks/session-start.sh",
 }
 expected_timeouts = {
-    "scripts/hooks/session-start.sh": 10,
+    "scripts/hooks/session-start.sh": 20,
 }
 if set(data.get("hooks", {})) != {"SessionStart"}:
     raise SystemExit(f"clean-slate hooks must contain only SessionStart: {sorted(data.get('hooks', {}))}")

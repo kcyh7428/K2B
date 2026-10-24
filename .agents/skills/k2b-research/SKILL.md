@@ -5,16 +5,38 @@ description: Deep dive into external topics -- scan for new AI tools, techniques
 
 # K2B Research Agent
 
-> **Host boundary:** SJM may perform read-only research, but any raw note, review item, asset, or other synchronized-vault output must be produced on Home.
+> **Host boundary:** SJM may research and save ordinary wiki synthesis through `k2b-vault-writer`. Raw captures, review items, assets, shared hubs and bulk compilation remain Home-only.
+
+Here, ordinary wiki synthesis means a user-requested, single-note summary of
+stable findings under the writer's six ordinary wiki roots, with source links,
+dates, provenance/frontmatter and uncertainty preserved. The exact create/update
+scope and save procedure are in
+`.agents/skills/k2b-vault-writer/SKILL.md`, "Ordinary Note Save Procedure".
+That procedure applies on both Macs and includes new ordinary notes; do not
+invent an existing-page-only restriction. Preserve a source reference in the
+writer receipt. A full source capture, transcript, raw research run record,
+review-queue item, bulk rewrite or compile job does not qualify by renaming it
+as a wiki note. On SJM, finish those outputs in chat and report Home capture as
+a separate step. Direct ordinary-note saves remain within Keith's active request
+and the writer's policy checks; they do not authorize a bulk compile or remove
+its separate approval gate. The helper's narrow index update is part of the
+ordinary-save contract, not authority to edit other shared indexes.
 
 ## Live K2B Authority
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
-- Codex is the interactive commander; Kimi K2.7 is the background text worker.
+- Codex is the default interactive assistant; supervised Kimi Work may research under the same local instructions. Kimi Code retains its worker and independent review role.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
 - Background research jobs are disabled in Stage 1; run research interactively unless Keith separately authorizes a bounded job.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.
+
+In a fresh Kimi Work conversation, read AGENTS.md and run
+`scripts/k2b-bootstrap.py` before research. Verify the current session's
+source tools and cite the retrieved sources; do not assume another assistant's
+plugins exist here. A public research answer can finish on either Mac. Ordinary
+wiki synthesis may save through `k2b-vault-writer` on either Mac, while raw
+capture, shared hubs and bulk compilation retain their Home-only boundary.
 
 On-demand research that scans externally for new tools, techniques, and ideas, and deep dives into specific topics or URLs. Supports multi-source deep research via NotebookLM.
 
@@ -35,7 +57,8 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 - Vault: `~/Projects/K2B-Vault`
 - Skills: `~/Projects/K2B/.agents/skills/`
 - Research topics: `~/Projects/K2B-Vault/wiki/context/research-topics.md`
-- Output: `~/Projects/K2B-Vault/raw/research/`
+- Home output: `~/Projects/K2B-Vault/raw/research/`. On SJM, answer in chat or
+  save ordinary wiki synthesis through `k2b-vault-writer`.
 
 ## External Scanning
 
@@ -102,7 +125,9 @@ Detect URL type and handle accordingly:
 
 **All URL types produce** the **Lens-Based Review Format** (see section below). The review leads with a verdict, runs the universal checks (gated, novelty, skepticism), applies a lens-specific already-have check against K2B's existing stack, and stakes one claim (adopt / retrofit / skip / post seed / seed ticker / etc., depending on detected lens).
 
-Save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md` per the format's skeleton.
+On Home, save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md` per the format's skeleton.
+On SJM, finish with the research answer or save ordinary wiki synthesis through
+`k2b-vault-writer`; do not create a raw capture, raw index entry or compile task.
 
 ## Deep Research Mode (`/research deep <topic>`) -- added 2026-04-12
 
@@ -180,6 +205,9 @@ Use `--json` if you need citation references for attribution in the vault note.
 
 #### Phase 4: Optional Deliverables
 
+This phase's vault downloads are Home-only. On SJM, skip these downloads and
+report that vault asset delivery requires Home; do not write to `Assets/`.
+
 Ask Keith: "Want an audio overview to listen to, a mind map, or an infographic?"
 
 If yes:
@@ -217,11 +245,14 @@ NotebookLM notebook: [notebook-id] (persistent, can revisit for follow-up querie
 
 And one extra frontmatter field: `notebooklm-notebook: "<notebook-id>"`. Everything else is identical to URL Deep Dive.
 
-Save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md`.
+On Home, save to `raw/research/YYYY-MM-DD_research_<topic-slug>.md`.
+On SJM, finish with the answer or use `k2b-vault-writer` for ordinary wiki
+synthesis. Do not save to `raw/`, `review/`, `Assets/` or their indexes.
 
 #### Phase 6: Compile
 
-Trigger k2b-compile on the new raw research note:
+Home only: trigger k2b-compile on the new raw research note. On SJM, skip this
+phase entirely; ordinary synthesis already uses `k2b-vault-writer`:
 - Updates relevant wiki pages (concepts, projects, reference)
 - Creates new reference pages if needed
 - Updates cross-links
@@ -418,6 +449,11 @@ And add `notebooklm-notebook: "<notebook-id>"` to the frontmatter. Everything el
 - **State detected lens upfront in the first output line** so Keith can redirect before reading the rest.
 
 ## `/research videos "<query>"` -- on-demand video discovery via NotebookLM
+
+This retained workflow is Home-only because its success and failure paths write
+raw run records and shared indexes. On SJM, do not enter the workflow below;
+research with the current session's public source tools, then answer or save
+ordinary wiki synthesis through `k2b-vault-writer`.
 
 Retires the old YouTube recommend agent. On explicit request, finds videos matching a query, filters them via NotebookLM using Keith's baked framing + the tail of `wiki/context/video-preferences.md`, adds suitable ones to the K2B Watch playlist, and drops per-video review notes. Results and failures surface in the active Codex session with durable run evidence.
 
@@ -1201,6 +1237,12 @@ All playlist IDs come from `~/Projects/K2B/scripts/k2b-playlists.json` -- the ca
 
 ## Named notebook library (`/research notebook`) -- added 2026-04-18
 
+This retained library workflow is Home-only because it writes the shared
+notebook registry, usage metadata and raw audit records. On SJM, do not enter
+its subcommands or advanced examples below. Read public sources with the current
+session's tools, then answer or save ordinary wiki synthesis through
+`k2b-vault-writer`; do not write the registry, raw records or assets.
+
 Persistent NotebookLM notebooks that survive across sessions. Use this when Keith wants to ask multiple angles against the same source corpus over time (days or weeks) without paying the 2-5 minute re-indexing cost for every new question.
 
 **When to use which NBLM path:**
@@ -1586,6 +1628,11 @@ The `notebooklm` skill at `~/.agents/skills/notebooklm/` has full command docume
 
 ## Kimi extraction offload (added 2026-04-10)
 
+This workflow is Home-only because its extractor writes the shared job ledger,
+raw research and compile outputs. On SJM, use the current conversation and its
+source tools directly, then answer or save ordinary wiki synthesis through
+`k2b-vault-writer`. Do not invoke this extractor or append its ledger on SJM.
+
 **Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that consumes interactive context on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.7 Code and keep Codex focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
 
 **Contract**:
@@ -1629,9 +1676,11 @@ The `notebooklm` skill at `~/.agents/skills/notebooklm/` has full command docume
 
 ## Output Format
 
-Save to `raw/research/YYYY-MM-DD_research-briefing.md` (or `raw/research/YYYY-MM-DD_research-[topic-slug].md` for focused research).
+Home only: save to `raw/research/YYYY-MM-DD_research-briefing.md` (or `raw/research/YYYY-MM-DD_research-[topic-slug].md` for focused research).
 
-After saving to raw/research/, trigger k2b-compile to digest the raw source into wiki pages. k2b-compile reads the raw research note, shows Keith a summary of wiki pages to update, and on approval updates wiki pages, indexes, and wiki/log.md.
+On Home, after saving to raw/research/, trigger k2b-compile to digest the raw source into wiki pages. k2b-compile reads the raw research note, shows Keith a summary of wiki pages to update, and on approval updates wiki pages, indexes, and wiki/log.md.
+On SJM, return the research answer or save ordinary wiki synthesis through
+`k2b-vault-writer`; skip raw capture, assets, shared logs and k2b-compile.
 
 ```markdown
 ---

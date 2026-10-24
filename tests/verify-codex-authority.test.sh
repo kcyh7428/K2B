@@ -156,6 +156,15 @@ fi
 echo "PASS: operational dependencies are scanned"
 
 for surface in \
+  scripts/k2b-bootstrap.py \
+  scripts/lib/k2b_bootstrap.py \
+  scripts/hooks/bootstrap-local.sh
+do
+  expect_violation "$surface" "CLAUDE_PROJECT_DIR"
+done
+echo "PASS: shared startup dependencies are scanned"
+
+for surface in \
   vault/System/memory/active_rules.md
 do
   expect_violation "$surface" "CLAUDE_PROJECT_DIR"
