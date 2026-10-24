@@ -1445,6 +1445,7 @@ def recall(
     *,
     provisional_outbox: Path | None = None,
     read_only: bool = False,
+    resolution_note: Path | None = None,
 ) -> dict:
     _required_string(key, "recall key", pattern=SAFE_KEY_RE)
     if type(read_only) is not bool:
@@ -1469,14 +1470,33 @@ def recall(
     if provisional_outbox is None:
         return home_result
 
+    proofs: dict[str, dict] = {}
+    proof_state: str | None = None
+    if resolution_note is not None:
+        import automatic_memory_proofs
+        proofs, proof_state = automatic_memory_proofs.read(resolution_note, state)
+        home_result["key_resolution_proof_state"] = proof_state
+    def proof_result(result: dict) -> dict:
+        if proof_state is not None:
+            result["key_resolution_proof_state"] = proof_state
+        if "rekeyed_outbox_items" in home_result:
+            result["rekeyed_outbox_items"] = home_result["rekeyed_outbox_items"]
+        return result
     provisional_by_kind = _provisional_versions(provisional_outbox, key)
     if record is not None:
         durable_ids = {version["item_id"] for version in record["versions"]}
+        matched = {version["item_id"] for versions in provisional_by_kind.values() for version in versions
+                   if version["item_id"] in proofs and proofs[version["item_id"]]["original_key"] == key}
+        if matched:
+            index = _item_index(state["records"])
+            home_result["rekeyed_outbox_items"] = [{**proofs[item_id],
+                "citation": deepcopy(index[proofs[item_id]["published_item_id"]][2]["citation"])}
+                for item_id in sorted(matched)]
         provisional_by_kind = {
             kind: [
                 version
                 for version in versions
-                if version["item_id"] not in durable_ids
+                if version["item_id"] not in durable_ids and version["item_id"] not in matched
             ]
             for kind, versions in provisional_by_kind.items()
         }
@@ -1488,13 +1508,14 @@ def recall(
     if not provisional_by_kind:
         return home_result
     if len(provisional_by_kind) > 1:
-        return _unresolved_kind_conflict(
+        return proof_result(_unresolved_kind_conflict(
             key,
             provisional_by_kind,
             home_result=home_result if record is not None else None,
-        )
+        ))
     provisional_kind, provisional = next(iter(provisional_by_kind.items()))
     provisional_result = _recall_record(key, provisional_kind, provisional)
+    proof_result(provisional_result)
     if record is None:
         if provisional_result["status"] == "unresolved":
             provisional_result["pending_home"] = True
@@ -1504,7 +1525,7 @@ def recall(
         return provisional_result
 
     if provisional_kind != record["kind"]:
-        return {
+        return proof_result({
             "key": key,
             "status": "unresolved",
             "value": None,
@@ -1512,7 +1533,7 @@ def recall(
             "alternatives": [home_result, provisional_result],
             "history": [],
             "pending_home": True,
-        }
+        })
 
     home_latest = max(version["source_time"] for version in record["versions"])
     provisional_latest = max(version["source_time"] for version in provisional)
@@ -1522,6 +1543,7 @@ def recall(
         combined = _recall_record(
             key, record["kind"], [*record["versions"], *provisional]
         )
+        proof_result(combined)
         if combined["status"] == "current":
             return home_result
         combined["pending_home"] = True
