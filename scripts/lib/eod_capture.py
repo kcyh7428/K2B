@@ -1892,6 +1892,9 @@ def _validate_modern_artifact_binding(
     if data.get("completed_cursor") != expected_cursor:
         raise ValueError(f"{label} cursor does not match events")
     if require_chunks:
+        if "sql_binding" in data:
+            import codex_sql_memory
+            codex_sql_memory.validate_source(data)
         chunks = data.get("chunks")
         if not isinstance(chunks, list) or not chunks:
             raise ValueError(f"{label} has invalid chunks container")
@@ -3516,6 +3519,14 @@ def prepare_memory_extraction_input(
     view.update(input_schema_version=1, work_id=work_id, dialogue_events=current,
                 context_events=[], context_omitted_events=len(prior))
 
+    def refresh_attachments() -> None:
+        if "sql_binding" in bundle:
+            import codex_sql_memory
+            view["attachments"] = codex_sql_memory.input_attachments(
+                bundle, {event["event_id"] for event in current + view["context_events"]})
+
+    refresh_attachments()
+
     def byte_size(value: dict) -> int:
         return len((json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode())
 
@@ -3532,9 +3543,11 @@ def prepare_memory_extraction_input(
             break
         view["context_events"].insert(0, event)
         view["context_omitted_events"] -= 1
+        refresh_attachments()
         if byte_size(view) > 48000:
             view["context_events"].pop(0)
             view["context_omitted_events"] += 1
+            refresh_attachments()
             break
         context_bytes += event_bytes
     target = _memory_work_path(state_root, work_id, "extraction-inputs")
