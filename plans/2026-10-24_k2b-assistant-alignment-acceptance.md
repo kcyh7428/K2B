@@ -2,6 +2,12 @@
 
 Date: 24 October 2026, UTC+8.
 
+This is the historical implementation checkpoint. The subsequently authorized
+delivery is committed, pushed, activated on both Macs and accepted, including
+actual SJM Work and physical Home-off evidence. See
+[the final delivery record](2026-10-24_k2b-assistant-alignment-delivery.md).
+The preparation-state statements below describe the earlier checkpoint.
+
 ## What is prepared
 
 One local, provider-free startup renderer serves Codex SessionStart and the
