@@ -50,6 +50,9 @@ active_files=(
 )
 
 operational_files=(
+  "$REPO_ROOT/scripts/k2b-bootstrap.py"
+  "$REPO_ROOT/scripts/lib/k2b_bootstrap.py"
+  "$REPO_ROOT/scripts/hooks/bootstrap-local.sh"
   "$REPO_ROOT/scripts/k2b-shared-append.py"
   "$REPO_ROOT/scripts/lib/eod_capture.py"
   "$REPO_ROOT/scripts/lib/minimax_common.py"

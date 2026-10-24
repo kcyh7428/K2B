@@ -5,6 +5,12 @@ description: Default desktop path for creating or updating K2B vault notes with 
 
 # K2B Vault Writer
 
+Codex and supervised Kimi Work use this same local procedure. In a fresh
+Kimi Work conversation, first read the project's AGENTS.md and run
+`scripts/k2b-bootstrap.py`. Save material decisions with a source reference
+from the active conversation. Kimi Work chat history is not a Codex capture
+source. A local save does not prove counterpart arrival or Home reconciliation.
+
 > **Host boundary:** Ordinary wiki notes (`wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference`) save locally on either Mac through `scripts/vault-note-write.py` during active user-requested conversations -- no Home availability required. The helper's folder-index row and master-count updates are part of this explicit interactive exception. Policy/control state, MOCs, shared logs, raw capture, bulk compile and background memory remain Home-owned. On SJM, finish the ordinary save, report its local receipt, and state any Home-only follow-up separately; do not block the save, mutate those files, or invent a queue for them.
 
 Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
