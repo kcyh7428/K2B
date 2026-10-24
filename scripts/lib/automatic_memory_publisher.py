@@ -23,9 +23,10 @@ from pathlib import Path
 
 import automatic_memory
 import eod_capture
+import automatic_memory_proofs
 
-JSON_REL = "System/memory/automatic-memory-current.json"
-NOTE_REL = "wiki/context/context_automatic-memory-recall.md"
+JSON_REL = automatic_memory_proofs.JSON_REL
+NOTE_REL = automatic_memory_proofs.NOTE_REL
 INDEX_REL = "wiki/context/index.md"
 REPO = Path(__file__).resolve().parents[2]
 
@@ -165,6 +166,8 @@ def _reconciliation_watermark(state: Path, target: Path, snapshot: dict) -> dict
     target_hash = _hash(str(target.resolve()).encode())
     for path in sorted((state / "inbox").glob("*.json")):
         envelope = automatic_memory.load_home_envelope(state, path.stem)
+        import automatic_memory_key_resolution
+        effective_envelope, resolution_hash = automatic_memory_key_resolution.effective(state, envelope, memory_path=target)
         receipt_path = state / "reconciliation" / path.name
         try:
             receipt = json.loads(receipt_path.read_text())
@@ -175,8 +178,10 @@ def _reconciliation_watermark(state: Path, target: Path, snapshot: dict) -> dict
             or receipt.get("content_id") != envelope["content_id"]
             or receipt.get("memory_target_sha256") != target_hash):
             raise ValueError("reconciliation receipt identity mismatch")
-        for item in envelope["bundle"]["items"]:
-            version = automatic_memory._version(envelope["bundle"], item)
+        if receipt.get("key_resolution_sha256") != resolution_hash:
+            raise ValueError("reconciliation key resolution binding mismatch")
+        for item in effective_envelope["bundle"]["items"]:
+            version = automatic_memory._version(effective_envelope["bundle"], item)
             if version not in snapshot["records"].get(item["key"], {}).get("versions", []):
                 raise ValueError("reconciliation receipt is not backed by memory state")
         watermark[envelope["delivery_id"]] = _hash(receipt_path.read_bytes())
@@ -223,6 +228,11 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
             raise ValueError("publication renderer frontmatter contract changed")
         rendered[NOTE_REL] = rendered[NOTE_REL].replace(
             "status: generated\n", f'status: generated\ndate: {source_date}\ntype: context\norigin: k2b-extract\nup: "[[index]]"\nsnapshot-sha256: {digest}\n', 1)
+        import automatic_memory_proofs
+        if automatic_memory_proofs.snapshot_hash(snapshot) != digest:
+            raise ValueError('publication proof serialization contract changed')
+        proofs = automatic_memory_proofs.collect(state, target, snapshot)
+        rendered[NOTE_REL] += automatic_memory_proofs.render(digest, proofs)
         artifact_hashes = {rel: _hash(text.encode()) for rel, text in rendered.items()}
         expected = {"schema_version": 1, "status": "published", "writer_role": "home",
                     "vault_root": str(vault), "snapshot_sha256": digest,

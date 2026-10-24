@@ -4234,10 +4234,13 @@ def reconcile_memory_delivery(
     receipt_path = home_root / "reconciliation" / f"{delivery_id}.json"
     with _file_lock(home_root / ".reconciliation.lock"):
         envelope = automatic_memory.load_home_envelope(home_root, delivery_id)
+        import automatic_memory_key_resolution
+        effective_envelope, resolution_hash = automatic_memory_key_resolution.effective(home_root, envelope, memory_path=target)
+        resolution_binding = ({"key_resolution_sha256": resolution_hash} if resolution_hash else {})
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             expected_keys = sorted(
-                {item["key"] for item in envelope["bundle"]["items"]}
+                {item["key"] for item in effective_envelope["bundle"]["items"]}
             )
             if (
                 not isinstance(receipt, dict)
@@ -4250,7 +4253,8 @@ def reconcile_memory_delivery(
                     "applied",
                     "duplicates",
                     "keys",
-                }
+                } | set(resolution_binding)
+                or receipt.get("key_resolution_sha256") != resolution_hash
                 or type(receipt.get("schema_version")) is not int
                 or receipt.get("schema_version") != 1
                 or receipt.get("delivery_id") != delivery_id
@@ -4274,19 +4278,20 @@ def reconcile_memory_delivery(
                 raise ValueError(
                     "reconciliation receipt belongs to a different memory target"
                 )
-            verification = automatic_memory.apply_reviewed_envelope(target, envelope)
+            verification = automatic_memory.apply_reviewed_envelope(target, effective_envelope)
             return {
                 **receipt,
                 "duplicate": True,
                 "repair_applied": verification["applied"],
             }
-        result = automatic_memory.apply_reviewed_envelope(target, envelope)
+        result = automatic_memory.apply_reviewed_envelope(target, effective_envelope)
         receipt = {
             "schema_version": 1,
             "delivery_id": delivery_id,
             "content_id": envelope["content_id"],
             "memory_target_sha256": target_identity,
             "status": "reconciled",
+            **resolution_binding,
             **result,
         }
         _atomic_write_json(receipt_path, receipt)
@@ -4304,12 +4309,21 @@ def recall_memory(
     role = _memory_writer_role(writer_role)
     if role == "sjm-source-only" and provisional_root is None:
         provisional_root = state_root
-    return automatic_memory.recall(
-        memory_path or state_root / "memory.json",
+    target = memory_path or state_root / "memory.json"
+    import automatic_memory_proofs
+    vault = Path(os.environ.get("K2B_VAULT_PATH") or Path.home() / "Projects/K2B-Vault").expanduser()
+    published = target.resolve() == (vault / automatic_memory_proofs.JSON_REL).resolve()
+    local_home = role == "home" and target.resolve() == (state_root / "memory.json").resolve()
+    result = automatic_memory.recall(
+        target,
         key,
         provisional_outbox=provisional_root,
-        read_only=role == "sjm-source-only",
+        read_only=role == "sjm-source-only" or memory_path is not None,
+        resolution_note=vault / automatic_memory_proofs.NOTE_REL if published or local_home else None,
     )
+    if not published and not local_home and target.name == Path(automatic_memory_proofs.JSON_REL).name:
+        result["key_resolution_proof_state"] = "outside_configured_vault"
+    return result
 
 
 CORRECTION_PROPOSAL_SCHEMA_VERSION = 1
@@ -4787,20 +4801,42 @@ def _build_native_run_receipt(
     if role == "home":
         if not isinstance(drain_result, dict) or not isinstance(publication_result, dict):
             raise _MemoryRunError("home_command_json_required")
-        delivery_failures = 0
-        for key in ("local_delivery", "sjm_delivery"):
-            delivery = drain_result.get(key)
-            if not isinstance(delivery, dict):
-                raise _MemoryRunError("home_drain_delivery_missing")
-            for name, count in delivery.items():
-                if name.endswith("failed") or name in {"offline", "exhausted"}:
-                    if type(count) is not int or count < 0:
-                        raise _MemoryRunError("home_drain_failure_count_malformed")
-                    delivery_failures += count
-        commands["memory_home_drain"] = {
-            "status": drain_result.get("status"), "failed": delivery_failures,
-        }
+        if drain_result.get("status") == "failed":
+            if (drain_result.get("diagnostic") != "memory_drain_failed"
+                or not {"status", "diagnostic", "error_type", "message"}.issubset(drain_result)
+                or not all(isinstance(drain_result[k], str) and drain_result[k].strip()
+                           for k in ("error_type", "message"))):
+                raise _MemoryRunError("home_drain_failure_malformed")
+            commands["memory_home_drain"] = {"status": "failed", "diagnostic": "memory_drain_failed",
+                "error_type": _sanitize_log_value(drain_result["error_type"])[:80],
+                "message": _sanitize_log_value(drain_result["message"])[:500]}
+        else:
+            delivery_failures = 0
+            for key in ("local_delivery", "sjm_delivery"):
+                delivery = drain_result.get(key)
+                if not isinstance(delivery, dict):
+                    raise _MemoryRunError("home_drain_delivery_missing")
+                for name, count in delivery.items():
+                    if name.endswith("failed") or name in {"offline", "exhausted"}:
+                        if type(count) is not int or count < 0:
+                            raise _MemoryRunError("home_drain_failure_count_malformed")
+                        delivery_failures += count
+            commands["memory_home_drain"] = {
+                "status": drain_result.get("status"), "failed": delivery_failures,
+            }
         commands["memory_publish"] = {"status": publication_result.get("status")}
+        if publication_result.get("status") == "failed":
+            if (publication_result.get("diagnostic") != "memory_publication_failed"
+                or not {"status", "diagnostic", "error_type", "message"}.issubset(publication_result)
+                or not all(isinstance(publication_result[k], str) and publication_result[k].strip()
+                           for k in ("error_type", "message"))):
+                raise _MemoryRunError("home_publication_failure_malformed")
+            commands["memory_publish"]["diagnostic"] = "memory_publication_failed"
+            for field, limit in (("error_type", 80), ("message", 500)):
+                if field in publication_result:
+                    if not isinstance(publication_result[field], str) or not publication_result[field]:
+                        raise _MemoryRunError("home_publication_failure_malformed")
+                    commands["memory_publish"][field] = _sanitize_log_value(publication_result[field])[:limit]
     elif drain_result is not None or publication_result is not None:
         raise PermissionError("SJM cannot record Home publication")
     data = {
@@ -7620,6 +7656,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
             print(f"eod-capture: memory drain failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            print(json.dumps({"status": "failed", "diagnostic": "memory_drain_failed",
+                "error_type": type(exc).__name__, "message": _sanitize_log_value(exc)[:500]}, sort_keys=True))
             return 2
         print(json.dumps(result, sort_keys=True))
         return 0
@@ -7634,6 +7672,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
             print(f"eod-capture: memory publication failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            print(json.dumps({"status": "failed", "diagnostic": "memory_publication_failed",
+                "error_type": type(exc).__name__, "message": _sanitize_log_value(exc)[:500]}, sort_keys=True))
             return 2
         print(json.dumps(result, sort_keys=True))
         return 0
