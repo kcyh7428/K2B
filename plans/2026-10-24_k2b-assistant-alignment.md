@@ -191,3 +191,34 @@ The current SJM AGENTS/hooks were inspected and match Home's portable base;
 SJM's additional CapCut commit and dirty parser/transcription work are preserved.
 This skill-only correction requires a closure verdict before commit. No core
 bootstrap runtime file changed from the previously approved checkpoint.
+
+### Delivered and accepted
+
+Final research-scope review 2026-10-24T15-01-27Z_03442c explicitly APPROVE with
+no findings. Runtime commit fb87d8f28b70bdd3562561f32529e81ba06a82f0 was pushed
+to origin/codex/assistant-alignment-20261024 and activated on Home. SJM applied
+the exact sixteen reviewed file hashes through Git in commit
+2cfeb2285673b5a1faa2292f0e06054d2bfd577d, preserving its additional committed
+history and three dirty files. Home's two provider-routing edits and 893
+pre-existing untracked files were preserved and hash-checked.
+
+Both actual hosts pass the hook, SessionStart, ordinary-note authority, live
+authority and skill gates. SJM additionally passes all 27 focused Python tests.
+Home's retired project tree was inventoried, copied, verified and preserved
+outside the live checkout before its parity gate passed. SJM's shell gate uses
+the existing PyYAML-enabled interpreter; nothing was installed.
+
+Actual SJM Kimi Work passed source-cited corrected recall, fictional company
+drafting and its temporary-file scan, public WebSearch/FetchURL retrieval and
+ordinary saving. Home Wi-Fi was confirmed Off from 23:37:29 until restoration
+started at 23:38:14 UTC+8. Two independent SJM probes found Home unreachable.
+Work saved at 23:37:31.950 to 23:37:32.026; fresh signed-in Codex read at
+23:37:32.122 to 23:37:32.190. The exact 1,107-byte source, writer receipt,
+backup and reader hash match. The reader was not supplied the decision value
+and correctly identified cobalt as current, superseding violet and amber.
+Wi-Fi restored automatically. Earlier command-comparison and wait timeouts
+remain failed test-harness attempts, with no writer started; they are not
+accepted evidence. See the final delivery record for paths and limits.
+
+State: reviewed, committed, pushed, activated-home, activated-sjm, accepted.
+The separate phone service and its personal export remain deferred.
