@@ -1,5 +1,9 @@
 # K2B recall repair checkpoint
 
+The repair is now reviewed, committed, pushed, activated and accepted on both
+Macs. See [the delivery record](2026-10-25_k2b-recall-delivery.md) for installed
+versions, tests, preservation evidence and remaining scope.
+
 The opening sections preserve the earlier checkpoint. The later passage and
 answer gate at the end records the completed candidate tests and subsequent
 delivery authorization. Installed-host acceptance must be evidenced separately.
