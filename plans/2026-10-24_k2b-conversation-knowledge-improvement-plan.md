@@ -10,11 +10,17 @@
 
 **Spec:** `plans/2026-10-24_k2b-conversation-knowledge-audit.md`, especially Required behavior after improvement and Acceptance and limits.
 
-**Current delivery:** Task 1's recall repair is reviewed, committed, pushed,
+**Current delivery, updated 26 October 2026:** Task 1's recall repair is reviewed, committed, pushed,
 activated and accepted on Home and SJM. See
-[the delivery record](2026-10-25_k2b-recall-delivery.md). Tasks 2 to 5 remain
-planned, and phone service remains deferred. The dated checkpoints below
-preserve their original preparation-state observations.
+[the delivery record](2026-10-25_k2b-recall-delivery.md). Task 2's bounded status
+report is also reviewed, delivered and accepted on both Macs, as recorded in
+[its delivery record](2026-10-25_k2b-knowledge-status-delivery.md). On 26 October,
+Keith authorized continuing development and reviewed deployment of the remaining
+work. Tasks 3 to 5 are authorized but not yet accepted; their actual acceptance
+evidence remains pending.
+Phone service, wider source scope, automatic SQL selection, schedule changes
+and background integration retain their separate authorization gates. The dated
+checkpoints below preserve their original preparation-state observations.
 
 ## Approved recall work, 25 October 2026
 
@@ -135,12 +141,12 @@ committed, pushed or activated; phone service remains deferred. See
 
 **Interfaces:** `knowledge_status.summarize(observations: dict, *, now: str) -> dict` is a pure stage-summary function. The CLI's read-only `report` command gathers bounded existing-reader observations and emits `observed_at`, `source_window`, `scope`, `source_coverage`, `delivery`, `publication`, `integration`, `replication` and `limitations`. Absent observations remain unknown. A private disposable status cache is derived evidence, never a new canonical memory store.
 
-- [ ] Add failing tests for overlapping file/SQL inventories, excluded projects, a SQL-only pending turn, unavailable attachments, a changed SQL revision, incomplete/time-limited scans, stale observations and offline peers. Include automation-origin dispatch versus a manually written run receipt.
-- [ ] Preserve adapter-specific counts when exact cross-format deduplication is unavailable; never sum overlapping aggregates. Use existing source/session/turn identities for any union that claims exactness.
-- [ ] Implement reporting of pending count and oldest source time, actual run outcome and dispatch evidence, publication watermark/hash, delivery backlog, and unmeasured integration. Do not equate active registration, zero outbox or idle Syncthing with source completeness.
-- [ ] Display the current K2B/K2Bi and date boundaries, plus metadata-only exclusions. Add an explicit `sql_selection: operator_only` limitation while the native selector remains file-backed. Do not automatically widen scope or stage SQL turns.
-- [ ] If the startup summary is added, read only a timestamped local cache within the hook's existing short deadline. Do not perform cross-host contact or full scans at startup. An absent/stale cache must say so.
-- [ ] Run `python3 -m pytest tests/test_knowledge_status.py tests/test_eod_capture_status.py -q` and, for a hook change, `bash tests/session-start-hook.test.sh` and `scripts/verify-codex-authority.sh`.
+- [x] Add failing tests for overlapping file/SQL inventories, excluded projects, a SQL-only pending turn, unavailable attachments, a changed SQL revision, incomplete/time-limited scans, stale observations and offline peers. Include automation-origin dispatch versus a manually written run receipt.
+- [x] Preserve adapter-specific counts when exact cross-format deduplication is unavailable; never sum overlapping aggregates. Use existing source/session/turn identities for any union that claims exactness. This release keeps the union unmeasured.
+- [x] Implement reporting of pending count and oldest source time, actual run outcome and dispatch evidence, publication watermark/hash, delivery backlog, and unmeasured integration. Do not equate active registration, zero outbox or idle Syncthing with source completeness. Current owners cannot verify dispatch or the latest publication-attempt outcome, so those remain explicitly unmeasured.
+- [x] Display the current K2B/K2Bi and date boundaries, plus metadata-only exclusions. Add an explicit `sql_selection: operator_only` limitation while the native selector remains file-backed. Do not automatically widen scope or stage SQL turns.
+- [x] Keep the optional startup summary and local cache absent in this release. No hook deadline, startup scan or cross-host behavior changes.
+- [x] Run `python3 -m pytest tests/test_knowledge_status.py tests/test_eod_capture_status.py -q`: final installed suite **293 passed on each Mac**, including the subsequent portable test correction. No hooks changed.
 
 **Checkpoint:** One report explains actual coverage and freshness without hiding unknowns. Keith can then decide whether automatic SQL selection or any additional project scope is wanted. Those decisions are separate from this reporting task.
 
@@ -198,8 +204,13 @@ Receipt schema 1 contains an operation ID derived from source identities and int
 The five tasks cover the audit's seven findings and all six required outcomes. Task 1 fixes the demonstrated user-facing failures without increasing context limits. Task 2 makes the existing capture contract observable before changing it. Task 3 adds integration receipts and supervised subject maintenance without creating another canonical memory store. Task 4 reconciles raw immutability, current guidance and portable verification. Task 5 owns installation, real desktop and unattended acceptance, schedule changes and any later background authority.
 
 Task 1 implementation and the recall comparison were authorized on 25 October.
-Task 1 delivery and activation were subsequently authorized explicitly. The
-remaining tasks are planned work, not implicitly activated by this recall repair.
+Task 1 delivery and activation were subsequently authorized explicitly. At that
+preparation checkpoint, the remaining tasks were planned work and were not
+implicitly activated by the recall repair. Keith's 26 October continuation
+instruction subsequently authorized their development and reviewed deployment.
+Their acceptance still requires the specific evidence in Tasks 3 to 5; wider
+source scope, automatic SQL selection, schedule changes and background
+integration retain their separate activation gates.
 
 ## Passage and answer gate, 25 October 2026
 
