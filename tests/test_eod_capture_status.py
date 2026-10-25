@@ -3589,12 +3589,34 @@ def test_record_memory_extraction_queues_once_and_receipts_exact_work(
     assert len(list((state / "extraction-receipts").glob("*.json"))) == 1
 
 
+@pytest.fixture
+def short_conflict_root():
+    import tempfile
+    # Control every parent component so the ordinary case really is short
+    # on both hosts, independent of pytest's platform-specific base path.
+    with tempfile.TemporaryDirectory(prefix="k2b-conflict-", dir="/tmp") as directory:
+        yield Path(directory)
+
+
+@pytest.mark.parametrize(
+    ("path_component", "expect_redaction"),
+    [
+        ("conflict", False),
+        ("syntheticAbCdEfGhIjKlMnOpQrStUvWxYz0123456789tokenfixture", True),
+    ],
+    ids=["short-path", "long-token-like-path"],
+)
 def test_completed_memory_extraction_conflict_is_distinct_and_read_only(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    short_conflict_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    path_component: str,
+    expect_redaction: bool,
 ) -> None:
-    root = tmp_path / ".codex" / "sessions"
+    tmp_path = short_conflict_root
+    case_root = tmp_path / path_component
+    root = case_root / ".codex" / "sessions"
     _modern_session(root, "2026-09-05", "completed-conflict")
-    state = tmp_path / "state"
+    state = case_root / "state"
     work = eod_capture.build_memory_worklist(
         state_root=state,
         codex_root=root,
@@ -3637,7 +3659,17 @@ def test_completed_memory_extraction_conflict_is_distinct_and_read_only(
 
     assert rc == 2
     assert "completed memory extraction conflicts with existing receipt" in stderr
-    assert completed["receipt_path"] in stderr
+    receipt_path = completed["receipt_path"]
+    assert Path(receipt_path).name in stderr
+    if expect_redaction:
+        # A long token-like temp path must be redacted, never echoed whole.
+        assert path_component in receipt_path
+        assert path_component not in stderr
+        assert path_component[:16] not in stderr
+        assert path_component[-16:] not in stderr
+        assert "[REDACTED]" in stderr
+    else:
+        assert receipt_path in stderr
     assert {
         path.relative_to(state): path.read_bytes()
         for path in state.rglob("*")
