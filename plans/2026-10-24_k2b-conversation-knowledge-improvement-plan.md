@@ -10,6 +10,12 @@
 
 **Spec:** `plans/2026-10-24_k2b-conversation-knowledge-audit.md`, especially Required behavior after improvement and Acceptance and limits.
 
+**Current delivery:** Task 1's recall repair is reviewed, committed, pushed,
+activated and accepted on Home and SJM. See
+[the delivery record](2026-10-25_k2b-recall-delivery.md). Tasks 2 to 5 remain
+planned, and phone service remains deferred. The dated checkpoints below
+preserve their original preparation-state observations.
+
 ## Approved recall work, 25 October 2026
 
 Keith authorized updating this plan and starting Task 1, including a comparison
@@ -88,7 +94,7 @@ integration; neither is presumed superior.
 - [x] Refactor ranking so an index-discovered candidate can receive its strongest filename/title/alias match. Rank direct key/value and subject evidence ahead of incidental quote matches. Prefer distinct query-term coverage and explicit entity phrases before deterministic tie-breaking.
 - [x] Allocate the existing packet budget across relevant entities and source types before filling it with lower-ranked matches. Preserve the selected topic anchor and accepted correction chains; do not fix this by raising global limits.
 - [x] Reuse the safe note-link resolver for selected-topic expansion, keeping traversal bounded and excluding index/control paths and escapes.
-- [ ] Run `python3 -m pytest tests/test_k2b_context.py -q`. Repeat the twelve diagnostic CLI cases on each host against one recorded snapshot. All ten expected subject sources, the selected-topic control and unknown-term control must pass. Review twenty held-out questions for answer quality rather than merely matching filenames.
+- [x] Run `python3 -m pytest tests/test_k2b_context.py -q`. Repeat the twelve diagnostic CLI cases on each host against one recorded snapshot. All ten expected subject sources, the selected-topic control and unknown-term control must pass. Review twenty held-out questions for answer quality rather than merely matching filenames. The new twenty-case gate assesses predeclared answer support, with two recorded bounded follow-ups, rather than automatic free-form generation; see the delivery record for this limit.
 
 **Checkpoint:** Relevant evidence is retained within the existing limits. Existing authorship, correction, freshness and citation validation remain intact. Prepare an isolated diff for the required reviewer; commit only after separate delivery authorization.
 
