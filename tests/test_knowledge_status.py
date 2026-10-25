@@ -637,6 +637,7 @@ def test_file_owner_unavailable_turns_preserved_from_owner(tmp_path: Path, monke
         app_root=app_root, sessions_root=sessions, state_root=state_root,
         writer_role="home", since=knowledge_status.APPROVED_WINDOW_START,
         through="2026-10-25", max_scan_seconds=0.5,
+        report_today="2026-10-25",
     )
     fb = coverage["file_backed"]
     assert fb["unavailable_turns"] == 3
@@ -672,6 +673,7 @@ def test_file_owner_omits_unavailable_turns_stays_unknown(tmp_path: Path, monkey
         app_root=app_root, sessions_root=sessions, state_root=state_root,
         writer_role="home", since=knowledge_status.APPROVED_WINDOW_START,
         through="2026-10-25", max_scan_seconds=0.5,
+        report_today="2026-10-25",
     )
     fb = coverage["file_backed"]
     assert "unavailable_turns" not in fb
@@ -706,13 +708,20 @@ def test_collector_routes_owner_roots(tmp_path: Path, monkeypatch):
     import codex_sql_memory as csm
     monkeypatch.setattr(csm, "scan", fake_sql_scan)
 
+    # A different wall date must not override the explicit synthetic date.
+    monkeypatch.setattr(cli, "_current_hkt_date", lambda: "2027-01-01")
     coverage = cli._collect_source_coverage(
         app_root=app_root, sessions_root=sessions, state_root=state_root,
         writer_role="home", since=knowledge_status.APPROVED_WINDOW_START,
         through="2026-10-25", max_scan_seconds=0.5,
+        report_today="2026-10-25",
     )
     assert Path(seen["file"]["codex_root"]) == sessions
     assert Path(seen["sql"]["codex_root"]) == app_root
+    assert seen["file"]["through"] == "2026-10-25"
+    assert seen["sql"]["through"] == "2026-10-25"
+    assert "report_today" not in seen["file"]
+    assert "report_today" not in seen["sql"]
     assert coverage["file_backed"]["pending_turns"] == 0
 
 
@@ -1298,6 +1307,7 @@ def test_cli_authorized_reader_filesystem_denial_degrades(tmp_path: Path, monkey
         app_root=app_root, sessions_root=sessions, state_root=state_root,
         writer_role="home", since=knowledge_status.APPROVED_WINDOW_START,
         through="2026-10-25", max_scan_seconds=0.5,
+        report_today="2026-10-25",
     )
     assert coverage["file_backed"]["status"] == "unavailable"
     assert "permission denied" in coverage["file_backed"]["diagnostic"]
