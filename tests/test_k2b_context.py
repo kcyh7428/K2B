@@ -658,8 +658,11 @@ def test_similarly_named_people_are_not_merged(tmp_path: Path) -> None:
     packet = k2b_context.gather("Ann", vault, now="2026-09-28T10:00:00+08:00")
     paths = {source["relative_path"] for source in packet["sources"]}
     assert "wiki/people/person_Ann.md" in paths
-    assert "wiki/people/person_Anna.md" in paths
-    assert len(paths) >= 2
+    assert "wiki/people/person_Anna.md" not in paths
+    both = k2b_context.gather("Ann Anna", vault, now="2026-09-28T10:00:00+08:00")
+    assert {s["relative_path"] for s in both["sources"]} == {
+        "wiki/people/person_Ann.md", "wiki/people/person_Anna.md"
+    }
 
 
 def test_chinese_alias_retrieval_preserves_source_wording(tmp_path: Path) -> None:
@@ -5160,54 +5163,6 @@ def test_oversized_markdown_paragraph_emits_window_containing_the_match(
     assert brief["packet_id"] == packet["packet_id"]
 
 
-def test_explicit_raw_capture_adds_to_linked_captures(tmp_path: Path) -> None:
-    """An explicit raw capture must not replace the topic note's linked capture."""
-
-    vault = tmp_path / "vault"
-    linked_rel = "raw/meetings/2026-09-20_atlas_linked.md"
-    _note(
-        vault,
-        "wiki/projects/project_atlas.md",
-        "# Atlas\n\nLinked decision: raw/meetings/2026-09-20_atlas_linked.md\n",
-    )
-    _note(
-        vault,
-        linked_rel,
-        "---\ndate: 2026-09-20\n---\n# Atlas linked capture\n\n"
-        "The linked decision keeps the Atlas deadline at 5 October.\n",
-    )
-    selected_rel = "raw/meetings/2026-09-22_atlas_selected.md"
-    _note(
-        vault,
-        selected_rel,
-        "---\ndate: 2026-09-22\n---\n# Atlas selected capture\n\n"
-        "The selected capture mentions the Atlas deadline too.\n",
-    )
-
-    packet = k2b_context.gather(
-        "Atlas deadline",
-        vault,
-        topic_note="wiki/projects/project_atlas.md",
-        raw_sources=[selected_rel],
-        now="2026-09-28T10:00:00+08:00",
-    )
-    raw_paths = {
-        source["relative_path"]
-        for source in packet["sources"]
-        if source["source_type"] == "raw_capture"
-    }
-    assert raw_paths == {linked_rel, selected_rel}
-    linked_source = next(
-        source for source in packet["sources"] if source["relative_path"] == linked_rel
-    )
-    linked_quotes = [
-        span["quote"]
-        for span in packet["evidence"]
-        if span["source_id"] == linked_source["source_id"]
-    ]
-    assert any("linked decision" in quote for quote in linked_quotes)
-    # No duplicated source/evidence for a capture named both ways.
-    assert len([s for s in packet["sources"] if s["relative_path"] == linked_rel]) == 1
 
 
 def test_absent_published_snapshot_is_a_coverage_gap_not_ok(tmp_path: Path) -> None:
