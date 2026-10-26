@@ -25,7 +25,7 @@ Use this skill as the default desktop route for "save this", "capture this", "up
 
 ## System Reference
 
-Before writing any note, review the lifecycle rules in [[context_k2b-note-lifecycle]] (`wiki/context/context_k2b-note-lifecycle.md`). That note is the single source of truth for origin tagging, review properties, promote destinations, and the content pipeline.
+Before writing a note, review [[context_k2b-note-lifecycle]] (`wiki/context/context_k2b-note-lifecycle.md`) for data conventions under current AGENTS.md. Historical routing descriptions in that note are evidence, not live instruction authority.
 
 ## Ordinary Note Save Procedure (MANDATORY for wiki/ note create or update)
 
@@ -50,6 +50,27 @@ For ordinary notes under `wiki/work`, `wiki/people`, `wiki/projects`, `wiki/conc
 5. **Logging:** on Home, append the save to `wiki/log.md` via `scripts/wiki-log-append.sh` as usual. On SJM, do NOT run `wiki-log-append.sh` (shared hubs are Home-owned); the writer's local receipt is the record, and the small usage record may queue via `scripts/k2b-shared-append.py usage`.
 
 A real Syncthing conflict copy preserves both versions; do not delete or hand-merge conflict files without Keith's decision.
+
+## Supervised source-to-note accounting
+
+For an authorized integration proposal, use scripts/knowledge-digest.py to
+validate exact existing source identities, quotes, hashes and target drafts.
+Keep its operation ID and writer source_ref. Re-read source and target hashes
+immediately before saving each private draft through the ordinary writer above.
+Current summaries may be revised when reviewed evidence changes current state;
+retain the prior position as dated history and preserve unrelated content.
+
+Home records completion only after every designated writer receipt, recovery
+copy and resulting target hash verifies. Use the digest record command with
+actual writer stdout receipts. Partial saves stay partial, and identical replay
+must not duplicate edits. The integration ledger remains private and Home-only.
+On SJM, the ordinary local save exception still applies; do not claim Home
+integration accounting merely from a SJM-local save.
+
+Compilation does not rewrite raw capture metadata. Existing compiled flags are
+legacy evidence. Use a matching integration receipt or an explicit retained-leaf
+reason for new completion accounting. No background note writer is activated by
+these interactive commands. See the live k2b-compile skill for the bounded flow.
 
 ## Vault Query Tools
 
@@ -268,7 +289,7 @@ A note can appear in multiple MOCs (e.g., an insight about AI that also has cont
 
 ## Writing Style
 
-- No em dashes. Use -- (double hyphen) if needed.
+- Do not use em dashes or doubled hyphens as prose punctuation. Use commas, colons, semicolons, full stops or parentheses. Preserve literal command flags, code and quoted source material.
 - No AI cliches or filler.
 - Write in Keith's voice: direct, specific, no generic language.
 - Section headers match the template structure.
@@ -293,7 +314,7 @@ For MOCs, insights, and reference docs, no template exists. Use the frontmatter 
 
 ## Asset Embedding
 
-When notes reference generated media (from `/media` or MiniMax MCP tools), use Obsidian embed syntax:
+When notes reference generated media from the currently approved media routes, use Obsidian embed syntax:
 
 - Images: `![[Assets/images/YYYY-MM-DD_image_slug.png]]`
 - Audio: `![[Assets/audio/YYYY-MM-DD_speech_slug.mp3]]`
