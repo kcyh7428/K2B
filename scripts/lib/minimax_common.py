@@ -140,6 +140,7 @@ def chat_completion(
     tool_choice: str | None = None,
     response_format: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT_S,
+    strict_finish_reason: bool = False,
 ) -> dict:
     """POST a chat-completion request and return the parsed JSON response.
 
@@ -164,6 +165,7 @@ def chat_completion(
         max_tokens=max_tokens,
         temperature=temperature,
         timeout=timeout,
+        strict_finish_reason=strict_finish_reason,
     )
 
 
@@ -174,6 +176,7 @@ def _kimi_chat_completion(
     max_tokens: int,
     temperature: float,
     timeout: int,
+    strict_finish_reason: bool = False,
 ) -> dict:
     """Call Kimi K2.7 at /coding/v1/messages and return the response in
     MiniMax chatcompletion_v2 envelope shape.
@@ -309,6 +312,16 @@ def _kimi_chat_completion(
         ),
     }
 
+    # finish_reason conversion is mode-dependent. Default (non-review)
+    # callers keep the original non-null behavior: stop_reason verbatim,
+    # falling back to the literal "stop" when the provider omits it. The
+    # strict_finish_reason=True path (used only by the minimax_review
+    # boundary) returns parsed.get("stop_reason") verbatim so an absent
+    # provider stop reason surfaces as None and the review rejects it.
+    if strict_finish_reason:
+        finish_reason = parsed.get("stop_reason")
+    else:
+        finish_reason = parsed.get("stop_reason") or "stop"
     return {
         "id": parsed.get("id"),
         "model": parsed.get("model", KIMI_DEFAULT_MODEL),
@@ -316,7 +329,7 @@ def _kimi_chat_completion(
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": assistant_text},
-                "finish_reason": parsed.get("stop_reason") or "stop",
+                "finish_reason": finish_reason,
             }
         ],
         "usage": usage,

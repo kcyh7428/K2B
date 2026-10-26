@@ -57,6 +57,19 @@ class KimiProviderLabelTests(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "echo \"# kimi-k2.7-code review -- APPROVE\"\n"
             "echo '{\"verdict\":\"approve\"}'\n"
+            "python3 - <<'PY'\n"
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "review = {'verdict': 'approve', 'summary': 'Synthetic review', 'findings': [], 'next_steps': []}\n"
+            "result = {'protocol_version': 1, 'attempt_id': os.environ['K2B_REVIEW_ATTEMPT_ID'], 'scope_sha256': os.environ['K2B_REVIEW_SCOPE_SHA256'], 'finish_reason': 'end_turn', 'model': 'synthetic', 'review': review}\n"
+            "target = Path(os.environ['K2B_REVIEW_RESULT_PATH'])\n"
+            "snapshot = target.with_name('review_input.txt')\n"
+            "snapshot.write_text('synthetic reviewed input')\n"
+            "snapshot.chmod(0o600)\n"
+            "result['content_sha256'] = __import__('hashlib').sha256(snapshot.read_bytes()).hexdigest()\n"
+            "target.write_text(json.dumps(result))\n"
+            "target.chmod(0o600)\n"
+            "PY\n"
             "exit 0\n",
             encoding="utf-8",
         )
@@ -401,6 +414,21 @@ class KimiProviderLabelTests(unittest.TestCase):
             [attempt["reviewer"] for attempt in state["reviewer_attempts"]],
             ["kimi"],
         )
+
+    def test_deprecated_alias_cannot_approve_echoed_header(self):
+        repo, _ = self._seed_review_repo()
+        (repo / "scripts" / "kimi-review.sh").write_text(
+            "#!/usr/bin/env bash\necho '# kimi-k2.7-code review -- APPROVE'\nexit 0\n"
+        )
+        result = self._run_review(
+            repo, "diff", "--files", "target.py", "--wait", "--primary", "minimax",
+            "--no-fallback", "--deadline", "10", "--heartbeat-interval", "1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        state = self._state_from_result(repo, result)
+        self.assertEqual(state["primary_requested"], "kimi")
+        self.assertIsNone(state.get("review_verdict"))
+        self.assertEqual(state["reviewer_attempts"][0]["exit_code"], 125)
 
     def test_review_sh_accepts_minimax_only_as_deprecated_alias_to_kimi(self) -> None:
         repo, plugin = self._seed_review_repo()
