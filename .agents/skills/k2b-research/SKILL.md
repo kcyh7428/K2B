@@ -83,6 +83,77 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 
 Detect URL type and handle accordingly:
 
+**Facebook Reels, videos and posts:**
+The following evidence procedure applies to every separately authorized Mini
+capture, with Facebook as the current routing case. It grants no new source scope.
+Use the separately authorized Mini browser/capture worker. Home and SJM supply
+the bounded task context and verify returned evidence; browser login stays on
+the Mini. The former Mini K2B deployment remains retired. Read
+`wiki/reference/2026-10-25_k2b-multi-machine-operating-model.md` in the local
+vault for the latest tested connection and remaining limits. Verify the actual
+computer-use connection and visible page;
+do not infer automatic routing from installed apps or a public download. If the
+Mini route is blocked, stop and report the exact blocker. Use another desktop
+for signed-in browsing only when Keith explicitly selects it for the task.
+Use a unique per-capture directory and manifest; never overwrite another run.
+Before dispatch, name a byte budget for the run and check free space on both
+Mini-local storage and the mounted share. Require at least twice that budget
+free on each, and stop dispatching if the check fails or the budget is unknown.
+Use a capture-tool limit that bounds cumulative run output, or monitored
+cumulative run size, and stop capture at the byte budget. A per-file limit alone
+does not satisfy this bound. If neither is available, report the capture blocked.
+Immediately before NAS writes, measure the actual cumulative run size and
+require at least twice that size free on each store. An exceeded budget or
+failed recheck means stop, preserve partials and report unverified/unintegrated;
+continuing with a larger budget requires Keith's approval for that run.
+After such approval, require at least twice the new budget free on both stores
+before any capture or transfer resumes; otherwise remain stopped and report it.
+Report retained run sizes and low-space blockers. Deleting originals or partials
+requires Keith's approval for the exact paths; this procedure enables no sweep.
+Before dispatch, state the task deadline and maximum attempts in the brief.
+Stop and report unverified/unintegrated when either bound is reached or the
+current task ends. The coordinator reports a stalled or disconnected worker
+as unverified, rather than treating silence as progress or success.
+Hash the final Mini-local originals before transfer and retain those hashes in
+a source/method/date/hash manifest beside the media. Return that manifest's
+SHA-256 or full expected hash list to the coordinator in the task completion
+message, independently of NAS retrieval. Copy the same manifest
+with NAS results; never replace its expected hashes using the NAS copy.
+Also retain the digest in a Mini-local completion record. A later explicitly
+authorized task may retrieve that original record and manifest through the
+existing SSH route; lack of automatic retries does not forbid authorized recovery.
+The capturing session verifies the NAS share is actually mounted on the Mini,
+using the live mount table to match the expected NAS server and share, rather
+than checking only that its directory exists. Write a unique random run marker
+and include its hash in the manifest. The coordinator must read the same marker
+through its own NAS connection before accepting NAS arrival.
+After mount verification, the capturing session reads back stored files and
+compares SHA-256 hashes with the Mini-local
+pre-transfer manifest before reporting NAS arrival. Any mount, write, read-back
+or hash failure means arrival failed: preserve the originals, record the failed
+files and expected/observed hashes or read error, and mark NAS partials unverified
+without treating them as source evidence or silently deleting them. Tell the
+requesting Home/SJM chat that storage status is Mini-local and knowledge remains
+unintegrated. Preserve Mini-local originals and their manifest; cleanup is not
+part of this capture procedure. Before the requesting knowledge host accepts a
+returned capture, it independently retrieves the expected manifest and selected
+stored files, checks the manifest against the Mini's separately returned digest
+or hash list, verifies file hashes and reads the content. For NAS verification,
+Home must use its own NAS mount, and SJM may read that mount through the Home
+relay; neither may reuse the Mini's mounted filesystem view. The existing SSH
+route to the Mini is only for retrieving its source manifest and completion
+record. If the independent NAS connection is unavailable, report NAS arrival
+unverified and preserve the results. Never copy
+credentials with results. A capture or transfer is not completed knowledge
+integration: ordinary synthesis requires the designated note-writer receipt,
+and raw vault capture remains Home-owned under its existing save procedure.
+If coordinator retrieval or verification is unavailable, including an offline
+Home relay, do not accept the capture; report unverified and unintegrated with
+the exact blocker. A transfer may be retried within the active authorized task
+using preserved originals and a new run directory. No later-session retry,
+cleanup or background job is automatically activated by this procedure.
+Keep the source's claims and Keith's reason for sharing it distinct.
+
 **YouTube URLs:**
 1. Follow `k2b-youtube-transcribe` for a single video's transcript. Start with its public-first, no-login command and use the shared helper, not the transcript MCP:
    ```bash

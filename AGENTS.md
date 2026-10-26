@@ -53,7 +53,28 @@ K2B is Keith's single-user knowledge and workflow system. Its current authorized
 
 Code moves through reviewed Git commits. Vault content moves through Syncthing. Credentials and machine-local state never move through either channel.
 
-The Mac Mini deployment topology is retired and outside normal K2B work. Do not contact, inspect, configure, deploy to, or create a deferred obligation for it unless Keith explicitly reopens that host as a new scope decision.
+The former Mac Mini deployment topology remains retired. Keith separately
+authorized the Mini as a supervised signed-in browser and media-capture worker
+on 25 October 2026 and reaffirmed that scope on 26 October 2026. Facebook
+browsing belongs on the Mini under that narrow authorization. Home and SJM
+remain the knowledge hosts; the NAS capture share stores media and results.
+Do not restore the Mini's old K2B checkout, vault replication, Telegram runtime
+or background jobs. Do not interpret the old deployment retirement as revoking
+the newer browser-worker authorization.
+
+From SJM, use the existing Home SSH connection as a relay when necessary;
+credentials stay on their owning machines. Mini browser control must use an
+actually available computer-use connection, with Screen Sharing as a supervised
+route. Read the local vault's
+`wiki/reference/2026-10-25_k2b-multi-machine-operating-model.md` for tested routes
+and dated limits. Confirm input and page results before claiming it works. A reachable
+host, installed app, public download or copied result does not prove a native
+Mini Codex browser connection or automatic task routing. Use Home or SJM for
+signed-in browsing only when Keith explicitly selects that host for the task.
+Before dispatch or capture-completion reporting, follow the Facebook evidence
+procedure in `k2b-research`: retain pre-transfer source hashes and provenance,
+verify the real Mini NAS mount and read-back, and report failed or unverified
+arrival as Mini-local and unintegrated. Never treat failed partials as evidence.
 
 ## Live authority and providers
 
@@ -286,7 +307,7 @@ When this checkout runs on `GLPs-MacBook-Pro` as `keithcheung`:
 
 - Project: `/Users/keithcheung/Projects/K2B`. Vault: `/Users/keithcheung/Projects/K2B-Vault`.
 - Translate home-Mac example paths to these local paths. Use local file tools and ripgrep for Vault search; Obsidian is optional.
-- Syncthing connects SJM only to Keith's home MacBook Pro. Do not contact, configure, sync to, or deploy to the Mac Mini.
+- Syncthing connects SJM only to Keith's home MacBook Pro. The Mini's separately authorized supervised browser-worker role does not add it to vault synchronization or restore its former K2B deployment.
 - The Git remote named `home` is the home MacBook source. Code does not travel through Syncthing.
 - SJM is read-only for the synchronized `K2B-Vault` except for one bounded path: ordinary notes -- Markdown under `wiki/work`, `wiki/people`, `wiki/projects`, `wiki/concepts`, `wiki/insights`, `wiki/reference` -- may be saved locally during active user-requested conversations through `scripts/vault-note-write.py`, which takes the locks, checks hashes, preserves conflict copies and updates the folder/master indexes. For every other vault write, a skill must stop and tell Keith to run the write on Home; do not invent a general pending-write format. Only purpose-built source exports, discovery receipts, and small records routed by `scripts/k2b-shared-append.py` may be queued under `~/.local/state/k2b/`.
 - SJM unattended work is restricted to local conversation discovery and the explicitly approved native automatic-memory job/probe described above. The native worker may extract the bounded local batch described above into its private outbox; it must not invoke Kimi, reconcile Home memory, edit the Vault, or start other dormant routines.
