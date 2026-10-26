@@ -19,6 +19,12 @@ Three guarantees:
 Codex and the Kimi reviewer (`scripts/kimi-review.sh`) are spawned via
 `subprocess.Popen`; no retired instruction or hook runtime is involved.
 
+Exit zero means the review completed, never approval by itself. For Kimi,
+consumers must require review_verdict == "approve" from the attempt-bound
+normalized result before shipping. "needs-attention" requires corrections;
+null means undetermined (including the unchanged Codex verdict behavior).
+Human output and watchdog logs cannot authorize a Kimi verdict.
+
 K2B-specific adaptations vs K2Bi reference (2026-04-21 port):
   A2: spawn_child uses process_group=0 (Python 3.11+) instead of
       preexec_fn=os.setsid, to avoid DeprecationWarning on Python 3.12+
@@ -33,6 +39,7 @@ K2B-specific adaptations vs K2Bi reference (2026-04-21 port):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -41,6 +48,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -80,6 +88,24 @@ _RECONNECT_RE = re.compile(
 )
 
 _log_lock = threading.Lock()
+
+def _codex_verdict_present(log_text: str) -> bool:
+    """Preserve existing Codex marker behavior."""
+    markers = (
+        "# Codex Review",
+        "# kimi-k2.7-code review",
+        "# kimi-for-coding review",
+        "APPROVE",
+        "NEEDS-ATTENTION",
+        '"verdict"',
+        "Review output captured",
+    )
+    return any(m in log_text for m in markers)
+
+
+def _kimi_scope_sha256(cmd: list[str]) -> str:
+    payload = json.dumps(cmd, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def utc_now_iso() -> str:
@@ -570,10 +596,23 @@ def watchdog_thread(proc: subprocess.Popen, logf, state_path: Path,
             if now >= hard_at:
                 log_line(logf, f"[{utc_now_iso()}] HARD_DEADLINE "
                          f"elapsed={elapsed:.0f}s; SIGTERM")
+                killed = False
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    killed = True
                 except ProcessLookupError:
                     pass
+                if killed:
+                    state.update({
+                        "status": "running",
+                        "phase": "hard_deadline_detected",
+                        "killed_by_deadline": True,
+                        "killed_by_deadline_attempt": attempt_id,
+                        "elapsed_s": round(elapsed, 1),
+                        "deadline_remaining_s": 0,
+                        "updated_at": utc_now_iso(),
+                    })
+                    write_state(state_path, state)
                 time.sleep(KILL_GRACE_S)
                 if not stop_event.is_set() and proc.poll() is None:
                     log_line(logf, f"[{utc_now_iso()}] SIGKILL after "
@@ -625,8 +664,17 @@ def run_one_reviewer(
     attempt_id = f"{job}:{reviewer}:{time.monotonic_ns()}:{secrets.token_hex(4)}"
     state.pop("killed_by_reconnect_stall", None)
     state.pop("killed_by_reconnect_stall_attempt", None)
+    state.pop("killed_by_deadline", None)
+    state.pop("killed_by_deadline_attempt", None)
     state.pop("since_final_reconnect_s", None)
     state.pop("phase", None)
+    # Clear stale verdict at attempt start; completion (exit 0) does not
+    # imply approval. The verdict is populated only for a validated Kimi
+    # attempt-bound normalized result. Codex keeps its existing marker behavior.
+    state.pop("review_verdict", None)
+    state.pop("review_result_path", None)
+    state.pop("review_content_sha256", None)
+    state.pop("review_attempt_dir", None)
     with log_path.open("a", buffering=1) as logf:
         attempt_log_start = logf.tell()
         log_line(logf, f"[{utc_now_iso()}] REVIEWER_START reviewer={reviewer} "
@@ -635,8 +683,80 @@ def run_one_reviewer(
         if disabled_reason is not None:
             log_line(logf, f"[{utc_now_iso()}] RECONNECT_STALL_DISABLED "
                      f"reason={disabled_reason}")
+        result_env: dict | None = None
+        if reviewer == "kimi":
+            try:
+                attempt_dir = Path(tempfile.mkdtemp(
+                    prefix="k2b-review-attempt-", dir=str(log_path.parent)
+                ))
+            except Exception as e:
+                log_line(logf, f"[{utc_now_iso()}] RESULT_DIR_FAILED "
+                         f"{type(e).__name__}")
+                state.update({"status": "result_dir_failed",
+                              "error": type(e).__name__,
+                              "reviewer_current": reviewer})
+                write_state(state_path, state)
+                return 125
+            try:
+                os.chmod(attempt_dir, 0o700)
+            except OSError as e:
+                log_line(logf, f"[{utc_now_iso()}] RESULT_DIR_CHMOD_FAILED "
+                         f"{type(e).__name__}")
+                state.update({"status": "result_dir_failed",
+                              "error": type(e).__name__,
+                              "reviewer_current": reviewer})
+                write_state(state_path, state)
+                return 125
+            result_path = attempt_dir / "review_result.json"
+            scope_sha256 = _kimi_scope_sha256(cmd)
+            try:
+                attempt_meta = {
+                    "job_id": job,
+                    "attempt_id": attempt_id,
+                    "reviewer": reviewer,
+                    "timestamp": utc_now_iso(),
+                    "state_path": str(state_path),
+                    "log_path": str(log_path),
+                    "scope_sha256": scope_sha256,
+                }
+                meta_data = json.dumps(
+                    attempt_meta, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                meta_path = attempt_dir / "attempt.json"
+                meta_fd = os.open(
+                    str(meta_path),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                with os.fdopen(meta_fd, "wb") as meta_handle:
+                    meta_handle.write(meta_data)
+                    meta_handle.flush()
+                    os.fsync(meta_handle.fileno())
+                for directory in (attempt_dir, log_path.parent):
+                    directory_fd = os.open(directory, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            except Exception as e:
+                log_line(logf, f"[{utc_now_iso()}] ATTEMPT_META_FAILED "
+                         f"{type(e).__name__}")
+                state.update({"status": "result_dir_failed",
+                              "error": type(e).__name__,
+                              "reviewer_current": reviewer})
+                write_state(state_path, state)
+                return 125
+            state["review_attempt_dir"] = str(attempt_dir)
+            result_env = {
+                "K2B_REVIEW_RESULT_PATH": str(result_path),
+                "K2B_REVIEW_ATTEMPT_ID": attempt_id,
+                "K2B_REVIEW_SCOPE_SHA256": scope_sha256,
+            }
         try:
-            proc = spawn_child(cmd, logf, extra_env, stdin_path)
+            child_env = dict(extra_env or {})
+            child_env.update(result_env or {})
+            proc = spawn_child(cmd, logf, child_env, stdin_path)
         except Exception as e:
             log_line(logf, f"[{utc_now_iso()}] SPAWN_FAILED {e}")
             state.update({"status": "spawn_failed", "error": str(e),
@@ -681,9 +801,15 @@ def run_one_reviewer(
             bool(state.get("killed_by_reconnect_stall"))
             and state.get("killed_by_reconnect_stall_attempt") == attempt_id
         )
+        deadline_killed = (
+            bool(state.get("killed_by_deadline"))
+            and state.get("killed_by_deadline_attempt") == attempt_id
+        )
         if stalled:
             effective_rc = 126
-        elif hit_deadline and rc != 0:
+        elif reviewer == "kimi" and deadline_killed and rc != 0:
+            effective_rc = 124
+        elif reviewer != "kimi" and hit_deadline and rc != 0:
             effective_rc = 124
         else:
             effective_rc = rc
@@ -692,26 +818,55 @@ def run_one_reviewer(
             state.pop("killed_by_reconnect_stall", None)
             state.pop("killed_by_reconnect_stall_attempt", None)
             state.pop("since_final_reconnect_s", None)
-            try:
-                with log_path.open("r", encoding="utf-8",
-                                   errors="replace") as readf:
-                    readf.seek(attempt_log_start)
-                    log_text = readf.read()
-            except OSError:
-                log_text = ""
-            verdict_markers = (
-                "# Codex Review", "# kimi-k2.7-code review",
-                "# kimi-for-coding review",
-                "APPROVE", "NEEDS-ATTENTION",
-                '"verdict"', "Review output captured",
-            )
-            if not any(m in log_text for m in verdict_markers):
+            gate_failed = False
+            if reviewer == "kimi":
+                kimi_verdict: str | None = None
+                reason = "rc=0 but Kimi attempt result missing or invalid"
+                try:
+                    from review_result import read_attempt_result
+                    verified_metadata: dict = {}
+                    kimi_verdict = read_attempt_result(
+                        result_path,
+                        attempt_id=attempt_id,
+                        scope_sha256=scope_sha256,
+                        metadata=verified_metadata,
+                    )
+                except Exception as exc:
+                    kimi_verdict = None
+                    reason = (
+                        "rc=0 but Kimi attempt result rejected "
+                        f"({type(exc).__name__})"
+                    )
+                if kimi_verdict is None:
+                    gate_failed = True
+                else:
+                    state["review_verdict"] = kimi_verdict
+                    state["review_content_sha256"] = verified_metadata["content_sha256"]
+                    state["review_result_path"] = str(result_path)
+                    if kimi_verdict == "needs-attention":
+                        # Valid verdict, but findings require correction.
+                        # Retain verdict/path; return distinct rc so
+                        # exit-code-only callers cannot treat findings as
+                        # approval. Transport completed.
+                        effective_rc = 4
+                    write_state(state_path, state)
+            else:
+                try:
+                    with log_path.open("r", encoding="utf-8",
+                                       errors="replace") as readf:
+                        readf.seek(attempt_log_start)
+                        log_text = readf.read()
+                except OSError:
+                    log_text = ""
+                if not _codex_verdict_present(log_text):
+                    gate_failed = True
+                reason = "rc=0 but no verdict marker in log"
+            if gate_failed:
                 no_fb = bool(state.get("no_fallback"))
                 next_action = ("no fallback (--no-fallback set)"
                                if no_fb else "forcing fallback")
                 log_line(logf, f"[{utc_now_iso()}] QUALITY_GATE_FAIL "
-                         f"reviewer={reviewer} rc=0 but no verdict marker "
-                         f"in log; {next_action}")
+                         f"reviewer={reviewer} {reason}; {next_action}")
                 effective_rc = 125
 
         log_line(logf, f"[{utc_now_iso()}] REVIEWER_END reviewer={reviewer} "
@@ -762,8 +917,14 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                               args.deadline, args.heartbeat_interval,
                               reconnect_stall_s=stall_s, extra_env=extra_env,
                               stdin_path=stdin_path)
+        corrections_required = (
+            rc == 4 and reviewer == "kimi"
+            and state.get("review_verdict") == "needs-attention"
+        )
         if rc == 0:
             attempt_result = "ok"
+        elif corrections_required:
+            attempt_result = "needs-attention"
         elif rc == 124:
             attempt_result = "timed_out"
         elif rc == 126:
@@ -779,6 +940,21 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                           "ended_at": utc_now_iso()})
             write_state(state_path, state)
             return 0
+        if corrections_required:
+            # Valid review completed but requires corrections: status is
+            # completed (transport done), exit_code is 4 so exit-code-only
+            # callers do not treat findings as approval. No fallback.
+            state.update({"status": "completed", "primary_used": primary,
+                          "fallback_used": idx > 0, "exit_code": 4,
+                          "ended_at": utc_now_iso()})
+            write_state(state_path, state)
+            with log_path.open("a") as logf:
+                log_line(logf, f"[{utc_now_iso()}] REVIEW_NEEDS_ATTENTION "
+                         f"reviewer={reviewer} rc=4; not approving, "
+                         f"not falling back")
+            return 4
+        # Infrastructure completion without a valid verdict is not approval;
+        # failure paths leave review_verdict absent at attempt boundaries.
         with log_path.open("a") as logf:
             if rc == 124:
                 why = "deadline"
@@ -889,6 +1065,10 @@ def cmd_poll(args: argparse.Namespace) -> int:
         "schema_version": state.get("schema_version", 1),
         "job_id": state.get("job_id"),
         "status": state.get("status"),
+        "review_verdict": state.get("review_verdict"),
+        "review_result_path": state.get("review_result_path"),
+        "review_content_sha256": state.get("review_content_sha256"),
+        "review_attempt_dir": state.get("review_attempt_dir"),
         "phase": state.get("phase"),
         "elapsed_s": state.get("elapsed_s"),
         "last_activity_s_ago": state.get("last_activity_s_ago"),
@@ -920,9 +1100,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path = ARCHIVE_DIR / f"{job}.log"
     state_path = ARCHIVE_DIR / f"{job}.json"
     state = {
-        # schema_version 2 (2026-05-07): added no_fallback field;
-        # status enum may be "running" | "completed" | "primary_failed" | "both_failed".
-        "schema_version": 2,
+        # schema_version 3 (2026-10-26): added review_verdict (lowercase
+        # "approve"/"needs-attention" from a validated attempt result;
+        # absent otherwise). Prior versions:
+        # v2 added no_fallback. status enum may be "running" | "completed" |
+        # "primary_failed" | "both_failed".
+        "schema_version": 3,
         "job_id": job, "scope": args.scope, "primary_requested": args.primary,
         "primary_alias_requested": args.primary_alias_requested,
         "builder_family": args.builder_family,
@@ -976,6 +1159,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(json.dumps({
             "job_id": job, "exit_code": rc,
             "status": state.get("status"),
+            "review_verdict": state.get("review_verdict"),
+            "review_result_path": state.get("review_result_path"),
+            "review_content_sha256": state.get("review_content_sha256"),
+            "review_attempt_dir": state.get("review_attempt_dir"),
             "builder_family": args.builder_family,
             "skip_codex": args.skip_codex,
             "other_reviewer_reason": args.other_reviewer_reason,

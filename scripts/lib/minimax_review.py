@@ -6,8 +6,10 @@ Codex's review-output schema. Touches nothing in /ship or the codex plugin.
 
 import argparse
 import json
+import math
 import os
 import re
+import secrets
 import subprocess
 import sys
 import textwrap
@@ -20,6 +22,373 @@ from minimax_common import (
     extract_assistant_text,
     extract_token_usage,
 )
+
+_ACCEPTED_FINISH_REASONS = frozenset({"end_turn", "stop"})
+
+
+def _type_matches(value: object, expected_type: str) -> bool:
+    """Return True when value matches the JSON Schema primitive type.
+
+    JSON booleans are not numbers or integers; the stdlib json module parses
+    them as Python bool, which subclasses int, so the explicit bool check must
+    come before the numeric checks.
+    """
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "number":
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and (not isinstance(value, float) or math.isfinite(value))
+        )
+    if expected_type == "integer":
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, float):
+            return math.isfinite(value) and value.is_integer()
+        return False
+    if expected_type == "null":
+        return value is None
+    return False
+
+
+def _json_enum_equal(candidate: object, expected: object) -> bool:
+    """Primitive JSON equality with numeric int/float equivalence.
+
+    ``True``/``False`` are never equal to numeric values. Objects and arrays
+    are unsupported and always return False (callers reject object/list enum
+    entries before reaching membership checks).
+    """
+    if isinstance(candidate, bool) or isinstance(expected, bool):
+        return isinstance(candidate, bool) and isinstance(expected, bool) and candidate == expected
+    if isinstance(candidate, (int, float)) and isinstance(expected, (int, float)):
+        return candidate == expected
+    if isinstance(candidate, (dict, list)) or isinstance(expected, (dict, list)):
+        return False
+    return candidate == expected
+
+
+def _validate_schema(
+    value: object,
+    schema: dict,
+    path: str,
+    errors: list[str],
+) -> None:
+    """Recursively validate value against the supported schema subset.
+
+    Supports: type (single string), required, additionalProperties,
+    enum, minLength, minimum, maximum, and array items. This is deliberately
+    scoped to review-output.schema.json's actual constructs so no schema
+    library is required.
+    """
+    if not isinstance(schema, dict):
+        errors.append(f"{path}: schema node is not an object")
+        return
+
+    expected_type = schema.get("type")
+    if isinstance(expected_type, str):
+        if not _type_matches(value, expected_type):
+            errors.append(
+                f"{path}: expected type {expected_type}, got "
+                f"{type(value).__name__}"
+            )
+            return
+
+    if "enum" in schema:
+        enum_values = schema["enum"]
+        if not isinstance(enum_values, list):
+            errors.append(f"{path}: schema enum is not a list")
+        elif not any(_json_enum_equal(value, item) for item in enum_values):
+            errors.append(f"{path}: value not in enum {enum_values!r}")
+
+    if isinstance(value, str) and "minLength" in schema:
+        min_length = schema["minLength"]
+        if isinstance(min_length, int) and not isinstance(min_length, bool):
+            if len(value) < min_length:
+                errors.append(
+                    f"{path}: string length {len(value)} < minLength "
+                    f"{min_length}"
+                )
+
+    if (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+    ):
+        minimum = schema.get("minimum")
+        if (
+            isinstance(minimum, (int, float))
+            and not isinstance(minimum, bool)
+            and value < minimum
+        ):
+            errors.append(f"{path}: value {value} < minimum {minimum}")
+        maximum = schema.get("maximum")
+        if (
+            isinstance(maximum, (int, float))
+            and not isinstance(maximum, bool)
+            and value > maximum
+        ):
+            errors.append(f"{path}: value {value} > maximum {maximum}")
+
+    if isinstance(value, dict):
+        properties = schema.get("properties") or {}
+        required = schema.get("required") or []
+        if isinstance(required, list):
+            for key in required:
+                if key not in value:
+                    errors.append(f"{path}: missing required field {key!r}")
+        additional = schema.get("additionalProperties", True)
+        if additional is False and isinstance(properties, dict):
+            for key in value:
+                if key not in properties:
+                    errors.append(f"{path}: unexpected field {key!r}")
+        if isinstance(properties, dict):
+            for key, child_schema in properties.items():
+                if key in value:
+                    _validate_schema(
+                        value[key], child_schema, f"{path}.{key}", errors
+                    )
+    elif isinstance(value, list):
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            for idx, child in enumerate(value):
+                _validate_schema(
+                    child, items_schema, f"{path}[{idx}]", errors
+                )
+
+
+def _schema_coverage_error(schema: object) -> str | None:
+    """Recursively verify the schema only uses the supported keyword subset.
+
+    Supported subset (deliberately narrow):
+      * ``$schema`` (string), ``type`` (single known primitive string),
+        ``additionalProperties`` (bool only), ``required`` (list of strings),
+        ``properties`` (object of child schemas), ``enum`` (non-empty list of
+        primitive JSON values excluding objects/arrays), ``minLength``
+        (non-negative int, bool rejected), ``minimum``/``maximum`` (finite
+        non-bool numbers), and ``items`` (single schema object).
+      * Every ``properties`` child and ``items`` child is walked, so
+        unsupported keywords on absent optional branches still fail closed.
+      * Composition keywords (``allOf``, ``anyOf``, ``oneOf``, ``not``,
+        ``$ref``, etc.) and any unknown keyword are rejected.
+      * Object/list ``additionalProperties`` schemas are rejected; only bool
+        is accepted. ``items`` array form is rejected.
+    Returns None when the schema is fully supported, else a bounded message
+    that never includes candidate data.
+    """
+    allowed = {
+        "$schema",
+        "type",
+        "additionalProperties",
+        "required",
+        "properties",
+        "enum",
+        "minLength",
+        "minimum",
+        "maximum",
+        "items",
+        # Standard annotation-only keys. They have no evaluation effect in
+        # this limited contract (all reference/composition/evaluation
+        # constructs remain explicitly unsupported), so allowing them cannot
+        # widen accepted shapes; it only stops benign metadata from halting
+        # review. Unknown evaluation keywords still fail closed below.
+        "title",
+        "description",
+        "$id",
+        "$comment",
+        "default",
+        "examples",
+        "deprecated",
+    }
+    primitive_types = {
+        "object",
+        "array",
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "null",
+    }
+
+    def is_finite_number(node: object) -> bool:
+        if isinstance(node, bool) or not isinstance(node, (int, float)):
+            return False
+        try:
+            return node == node and node not in (float("inf"), float("-inf"))
+        except (TypeError, ValueError):
+            return False
+
+    def walk(node: object, path: str, errors: list[str]) -> None:
+        if not isinstance(node, dict):
+            errors.append(f"{path}: schema node is not an object")
+            return
+        if not node:
+            # Empty schema node is only meaningful when it is a nested child;
+            # the caller validates the root separately. Accept as permissive
+            # primitive shape but flag at root for safety.
+            if path == "$":
+                errors.append("$: empty schema node unsupported")
+            return
+        for key in node:
+            if key not in allowed:
+                errors.append(f"{path}: unsupported schema keyword {key!r}")
+        if "$schema" in node:
+            if not isinstance(node["$schema"], str):
+                errors.append(f"{path}.$schema: must be a string")
+        if "type" in node:
+            type_value = node["type"]
+            if not isinstance(type_value, str):
+                errors.append(f"{path}.type: must be a single primitive string")
+            elif type_value not in primitive_types:
+                errors.append(f"{path}.type: unsupported type {type_value!r}")
+        if "additionalProperties" in node:
+            additional = node["additionalProperties"]
+            if not isinstance(additional, bool):
+                errors.append(
+                    f"{path}.additionalProperties: only boolean values are supported"
+                )
+        if "required" in node:
+            required = node["required"]
+            if not isinstance(required, list):
+                errors.append(f"{path}.required: must be a list of strings")
+            else:
+                for idx, entry in enumerate(required):
+                    if not isinstance(entry, str):
+                        errors.append(
+                            f"{path}.required[{idx}]: must be a string"
+                        )
+        if "enum" in node:
+            enum_values = node["enum"]
+            if not isinstance(enum_values, list):
+                errors.append(f"{path}.enum: must be a list")
+            elif not enum_values:
+                errors.append(f"{path}.enum: must be a non-empty list")
+            else:
+                for idx, entry in enumerate(enum_values):
+                    if isinstance(entry, (dict, list)):
+                        errors.append(
+                            f"{path}.enum[{idx}]: object/list enum entries are unsupported"
+                        )
+                    elif isinstance(entry, float):
+                        if not is_finite_number(entry):
+                            errors.append(
+                                f"{path}.enum[{idx}]: enum numbers must be finite"
+                            )
+                    elif isinstance(entry, bool):
+                        # Booleans are primitive JSON values; allowed in enum.
+                        continue
+                    elif entry is None or isinstance(entry, (str, int)):
+                        continue
+                    else:
+                        errors.append(
+                            f"{path}.enum[{idx}]: unsupported enum value type"
+                        )
+        if "minLength" in node:
+            min_length = node["minLength"]
+            if (
+                isinstance(min_length, bool)
+                or not isinstance(min_length, int)
+                or min_length < 0
+            ):
+                errors.append(
+                    f"{path}.minLength: must be a non-negative integer"
+                )
+        if "minimum" in node:
+            minimum = node["minimum"]
+            if not is_finite_number(minimum):
+                errors.append(f"{path}.minimum: must be a finite number")
+        if "maximum" in node:
+            maximum = node["maximum"]
+            if not is_finite_number(maximum):
+                errors.append(f"{path}.maximum: must be a finite number")
+        if "properties" in node:
+            properties = node["properties"]
+            if not isinstance(properties, dict):
+                errors.append(f"{path}.properties: must be an object")
+            else:
+                for key, child in properties.items():
+                    if not isinstance(key, str):
+                        errors.append(
+                            f"{path}.properties: keys must be strings"
+                        )
+                        continue
+                    walk(child, f"{path}.properties.{key}", errors)
+        if "items" in node:
+            items = node["items"]
+            if isinstance(items, list):
+                errors.append(
+                    f"{path}.items: array form is unsupported"
+                )
+            elif not isinstance(items, dict):
+                errors.append(f"{path}.items: must be a schema object")
+            else:
+                walk(items, f"{path}.items", errors)
+
+    errors: list[str] = []
+    walk(schema, "$", errors)
+    if not errors:
+        return None
+    joined = "; ".join(errors[:8])
+    if len(joined) > 800:
+        joined = joined[:800] + "..."
+    return joined
+
+
+def validate_review_output(parsed: object, schema: dict) -> str | None:
+    """Return None when parsed fully matches schema, else a bounded message."""
+    coverage_error = _schema_coverage_error(schema)
+    if coverage_error is not None:
+        return f"unsupported schema: {coverage_error}"
+    errors: list[str] = []
+    _validate_schema(parsed, schema, "$", errors)
+    if not errors:
+        return None
+    joined = "; ".join(errors[:8])
+    if len(joined) > 800:
+        joined = joined[:800] + "..."
+    return joined
+
+
+def _safe_validation_error(exc: object) -> str:
+    """Bounded, non-sensitive summary of a validation failure."""
+    if isinstance(exc, str):
+        text = exc
+    else:
+        text = f"{type(exc).__name__}: {exc}"
+    text = text.replace("\n", " ")
+    if len(text) > 800:
+        text = text[:800] + "..."
+    return text
+
+
+def extract_finish_reason(response: dict | None) -> str | None:
+    """Return the provider finish_reason string, or None when unavailable."""
+    if not isinstance(response, dict):
+        return None
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    reason = first.get("finish_reason")
+    return reason if isinstance(reason, str) else None
+
+
+def extract_response_model(response: dict | None, requested: str) -> str:
+    """Return the actual returned model id, falling back to the requested one."""
+    if isinstance(response, dict):
+        actual = response.get("model")
+        if isinstance(actual, str) and actual:
+            return actual
+    return requested
 
 LIB_DIR = Path(__file__).resolve().parent
 REPO_ROOT = Path(
@@ -723,6 +1092,21 @@ def extract_json_object(text: str) -> dict | None:
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+# Stable, model-name-independent verdict marker emitted in markdown mode only,
+# after the response has passed finish_reason and schema validation. The
+# runner never treats this display text as approval authority. It consumes the
+# separate attempt result. Value is lowercase to match the review JSON contract.
+MACHINE_VERDICT_PREFIX = "K2B_REVIEW_VERDICT:"
+MACHINE_VERDICT_VALUES = frozenset({"approve", "needs-attention"})
+
+
+def render_machine_marker(parsed: dict) -> str:
+    """Return the standalone machine verdict marker for validated output."""
+    verdict = parsed.get("verdict")
+    if verdict not in MACHINE_VERDICT_VALUES:
+        raise ValueError("cannot render marker for invalid verdict")
+    return f"{MACHINE_VERDICT_PREFIX} {verdict}"
+
 
 def render_markdown(parsed: dict, model: str, usage: dict) -> str:
     verdict = parsed.get("verdict", "?")
@@ -774,6 +1158,9 @@ def render_markdown(parsed: dict, model: str, usage: dict) -> str:
         for step in next_steps:
             lines.append(f"- {step}")
         lines.append("")
+    lines.append("---")
+    lines.append(render_machine_marker(parsed))
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -787,22 +1174,58 @@ def archive(
     prompt: str,
     response: dict,
     usage: dict,
+    actual_model: str | None = None,
+    finish_reason: str | None = None,
+    requested_max_tokens: int | None = None,
+    final_text_length: int | None = None,
+    validation_error: str | None = None,
 ) -> Path:
     archive_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    out = archive_dir / f"{ts}_{scope}.json"
     record = {
         "timestamp_utc": ts,
         "scope": scope,
-        "model": model,
+        "model": actual_model or model,
+        "requested_model": model,
         "usage": usage,
         "parsed": parsed,
         "raw_text": raw_text,
         "prompt_chars": len(prompt),
-        "response_id": response.get("id"),
+        "response_id": response.get("id") if isinstance(response, dict) else None,
+        "finish_reason": finish_reason,
+        "requested_max_tokens": requested_max_tokens,
+        "final_text_length": (
+            final_text_length
+            if final_text_length is not None
+            else len(raw_text or "")
+        ),
+        "validation_error": validation_error,
     }
-    out.write_text(json.dumps(record, indent=2, ensure_ascii=False))
-    return out
+    payload = json.dumps(record, indent=2, ensure_ascii=False)
+    # Prefer the canonical {ts}_{scope}.json name. Open with O_EXCL so a
+    # pre-existing file is never overwritten; only on FileExistsError do we
+    # add a random suffix (and retry) to preserve collision safety and mode.
+    for _ in range(16):
+        suffix = ""
+        if _:
+            suffix = "_" + secrets.token_hex(4)
+        out = archive_dir / f"{ts}_{scope}{suffix}.json"
+        try:
+            fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        return out
+    raise RuntimeError(f"could not create unique archive file in {archive_dir}")
+
+
+def _display_archive_path(path: Path) -> str:
+    """Render an archive path relative to REPO_ROOT when possible."""
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def append_usage_log(archive_dir: Path, model: str, scope: str, usage: dict) -> None:
@@ -1025,6 +1448,18 @@ def main() -> int:
         )
     prompt = build_prompt(target_label, args.focus, context, schema_text)
 
+    review_content_sha256: str | None = None
+    try:
+        from review_result import write_review_input
+        review_content_sha256 = write_review_input(prompt)
+    except Exception as exc:
+        print(
+            "[minimax-review] FAIL: review input snapshot failed "
+            f"({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 3
+
     print(
         f"[minimax-review] calling {args.model} ({len(prompt)} prompt chars)...",
         file=sys.stderr,
@@ -1035,6 +1470,7 @@ def main() -> int:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=args.max_tokens,
             temperature=0.2,
+            strict_finish_reason=True,
         )
     except MinimaxError as e:
         print(f"[minimax-review] FAIL: {e}", file=sys.stderr)
@@ -1042,41 +1478,133 @@ def main() -> int:
 
     raw_text = extract_assistant_text(response)
     usage = extract_token_usage(response)
-    parsed = extract_json_object(raw_text)
+    finish_reason = extract_finish_reason(response)
+    actual_model = extract_response_model(response, args.model)
+    final_text_length = len(raw_text or "")
+
+    validation_error: str | None = None
+    parsed: dict | None = None
+    if finish_reason is None:
+        validation_error = "missing finish_reason"
+    elif finish_reason not in _ACCEPTED_FINISH_REASONS:
+        validation_error = f"unexpected finish_reason {finish_reason!r}"
+    elif not isinstance(raw_text, str) or not raw_text.strip():
+        validation_error = "blank final text"
+    else:
+        try:
+            candidate = extract_json_object(raw_text)
+        except Exception as exc:  # pragma: no cover - defensive
+            candidate = None
+            validation_error = _safe_validation_error(exc)
+        if validation_error is None:
+            if candidate is None:
+                validation_error = "unparseable JSON"
+            else:
+                try:
+                    schema = json.loads(SCHEMA_PATH.read_text())
+                except Exception as exc:  # pragma: no cover - defensive
+                    schema = None
+                    validation_error = _safe_validation_error(exc)
+                if schema is not None:
+                    schema_error = validate_review_output(candidate, schema)
+                    if schema_error is not None:
+                        validation_error = schema_error
+                    else:
+                        parsed = candidate
+                        for _finding in parsed.get("findings") or []:
+                            for _line_key in ("line_start", "line_end"):
+                                _line_val = _finding.get(_line_key)
+                                if isinstance(_line_val, float) and _line_val.is_integer():
+                                    _finding[_line_key] = int(_line_val)
 
     archive_dir = Path(args.archive_dir)
     if not args.no_archive:
-        out = archive(
-            archive_dir,
-            scope=args.scope,
-            model=args.model,
-            parsed=parsed,
-            raw_text=raw_text,
-            prompt=prompt,
-            response=response,
-            usage=usage,
-        )
-        append_usage_log(archive_dir, args.model, args.scope, usage)
-        print(f"[minimax-review] archived: {out.relative_to(REPO_ROOT)}", file=sys.stderr)
-
-    if parsed is None:
+        try:
+            out = archive(
+                archive_dir,
+                scope=args.scope,
+                model=args.model,
+                parsed=parsed,
+                raw_text=raw_text or "",
+                prompt=prompt,
+                response=response,
+                usage=usage,
+                actual_model=actual_model,
+                finish_reason=finish_reason,
+                requested_max_tokens=args.max_tokens,
+                final_text_length=final_text_length,
+                validation_error=validation_error,
+            )
+            append_usage_log(archive_dir, actual_model, args.scope, usage)
+        except (OSError, RuntimeError) as exc:
+            print(
+                "[minimax-review] FAIL: archive/usage-log failed "
+                f"({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return 3
         print(
-            "[minimax-review] could not parse JSON from response. "
-            "See archive for raw output.",
+            f"[minimax-review] archived: {_display_archive_path(out)}",
             file=sys.stderr,
         )
+
+    if validation_error is None and parsed is not None:
+        try:
+            from review_result import write_attempt_result
+            write_attempt_result(
+                parsed,
+                finish_reason=finish_reason,
+                model=actual_model,
+                content_sha256=review_content_sha256,
+            )
+        except Exception as exc:
+            print(
+                "[minimax-review] FAIL: attempt result write failed "
+                f"({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            parsed = None
+            validation_error = "attempt result write failed"
+
+    if validation_error is not None or parsed is None:
+        diag = (
+            f"finish={finish_reason!r} model={actual_model!r} "
+            f"max_tokens={args.max_tokens} text_len={final_text_length} "
+            f"usage={{\n  prompt={usage.get('prompt_tokens')} "
+            f"completion={usage.get('completion_tokens')} "
+            f"total={usage.get('total_tokens')}}} "
+            f"validation_error={validation_error!r}"
+        )
+        print(f"[minimax-review] FAIL: {diag}", file=sys.stderr)
         if args.json:
-            print(json.dumps({"error": "unparseable", "raw": raw_text}, indent=2))
+            print(json.dumps({
+                "error": "invalid_review",
+                "finish_reason": finish_reason,
+                "model": actual_model,
+                "requested_max_tokens": args.max_tokens,
+                "final_text_length": final_text_length,
+                "usage": usage,
+                "validation_error": validation_error,
+            }, indent=2))
         else:
             print("# kimi-k2.7-code review -- UNPARSEABLE\n")
-            print("Raw response (truncated to 4KB):\n")
-            print("```\n" + raw_text[:4096] + "\n```")
+            print(
+                "Reviewer response did not satisfy the review-output contract \n"
+                f"(finish={finish_reason!r}, model={actual_model!r}, "
+                f"max_tokens={args.max_tokens}, text_len={final_text_length})."
+            )
+            print()
+            print(
+                "A transport success is not an approving verdict. Inspect the "
+                "archived evidence, then rerun explicitly with an adequate "
+                "max_tokens and deadline; do not treat this failure as approval."
+            )
         return 3
 
     if args.json:
         print(json.dumps(parsed, indent=2, ensure_ascii=False))
     else:
-        print(render_markdown(parsed, args.model, usage))
+        print(render_markdown(parsed, actual_model, usage))
     return 0
 
 
