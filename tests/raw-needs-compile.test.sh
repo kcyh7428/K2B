@@ -7,12 +7,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$REPO_ROOT/scripts/raw-needs-compile.py"
 
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+TEST_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TEST_ROOT"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-VAULT="$TMPDIR/K2B-Vault"
+VAULT="$TEST_ROOT/K2B-Vault"
 mkdir -p "$VAULT/raw/tldrs" "$VAULT/raw/research" "$VAULT/raw/youtube"
 
 write_note() {
@@ -54,7 +54,7 @@ Path(sys.argv[1]).write_bytes(
     b"\xef\xbb\xbf\r\n---\r\ntags: [test]\r\ndate: 2026-07-01\r\ntype: tldr\r\norigin: k2b-extract\r\ncompiled: true\r\n---\r\n\r\n# BOM CRLF\r\n"
 )
 PY
-cat > "$TMPDIR/outside.md" <<'EOF'
+cat > "$TEST_ROOT/outside.md" <<'EOF'
 ---
 tags: [test]
 date: 2026-07-01
@@ -65,7 +65,7 @@ compiled: false
 
 # Outside
 EOF
-ln -s "$TMPDIR/outside.md" "$VAULT/raw/tldrs/symlink.md"
+ln -s "$TEST_ROOT/outside.md" "$VAULT/raw/tldrs/symlink.md"
 
 python3 - "$VAULT" <<'PY'
 from pathlib import Path
