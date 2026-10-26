@@ -80,6 +80,21 @@ EOF
 #!/usr/bin/env bash
 echo "# kimi-k2.7-code review -- APPROVE"
 echo '{"verdict": "approve"}'
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
+result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
+          "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
+          "model": "synthetic", "review": review}
+target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
+snapshot = target.with_name("review_input.txt")
+snapshot.write_text("synthetic reviewed input")
+snapshot.chmod(0o600)
+result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+target.write_text(json.dumps(result))
+target.chmod(0o600)
+PY
 exit 0
 EOF
       chmod +x scripts/kimi-review.sh
@@ -561,6 +576,21 @@ case "$args" in
 esac
 echo "# kimi-k2.7-code review -- APPROVE"
 echo '{"verdict":"approve"}'
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
+result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
+          "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
+          "model": "synthetic", "review": review}
+target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
+snapshot = target.with_name("review_input.txt")
+snapshot.write_text("synthetic reviewed input")
+snapshot.chmod(0o600)
+result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+target.write_text(json.dumps(result))
+target.chmod(0o600)
+PY
 exit 0
 EOF
   chmod +x "$d/scripts/kimi-review.sh"
@@ -683,6 +713,21 @@ test_kimi_key_inherited_from_parent_env() {
 #!/usr/bin/env bash
 echo "# kimi-k2.7-code review -- APPROVE"
 echo "KEY-ECHO: [${KIMI_API_KEY:-UNSET}]"
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
+result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
+          "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
+          "model": "synthetic", "review": review}
+target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
+snapshot = target.with_name("review_input.txt")
+snapshot.write_text("synthetic reviewed input")
+snapshot.chmod(0o600)
+result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+target.write_text(json.dumps(result))
+target.chmod(0o600)
+PY
 exit 0
 EOF
   chmod +x "$d/scripts/kimi-review.sh"
@@ -1462,6 +1507,21 @@ test_watchdog_injects_heartbeat() {
 sleep 2
 echo "# kimi-k2.7-code review -- APPROVE"
 echo '{"verdict":"approve"}'
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
+result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
+          "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
+          "model": "synthetic", "review": review}
+target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
+snapshot = target.with_name("review_input.txt")
+snapshot.write_text("synthetic reviewed input")
+snapshot.chmod(0o600)
+result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+target.write_text(json.dumps(result))
+target.chmod(0o600)
+PY
 exit 0
 EOF
   chmod +x "$d/scripts/kimi-review.sh"

@@ -10,6 +10,9 @@
 #
 # Default mode backgrounds the child and returns a JSON envelope with job_id
 # and log_path. Use `--wait` to block until the review finishes.
+# Kimi --wait: exit 0 is approval; exit 4 is completed with needs-attention,
+# without fallback. Dispatch/poll success and status=completed are not approval.
+# See plans/2026-10-26_kimi-review-result-contract.md for evidence retention.
 #
 # Usage:
 #   scripts/review.sh diff --files a.py,b.py

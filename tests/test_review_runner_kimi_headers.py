@@ -37,7 +37,7 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
         }
         rr.write_state(self.state_path, self.state)
 
-    def test_current_default_kimi_header_counts_as_verdict_marker(self) -> None:
+    def test_current_kimi_header_alone_cannot_authorize_verdict(self) -> None:
         header = f"# {mmc.KIMI_DEFAULT_MODEL} review -- APPROVE"
         cmd = [
             "bash",
@@ -57,10 +57,10 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
             heartbeat_s=1,
             reconnect_stall_s=0,
         )
-        self.assertEqual(rc, 0)
-        self.assertNotIn("QUALITY_GATE_FAIL", _read_log(self.log_path))
+        self.assertEqual(rc, 125)
+        self.assertIn("QUALITY_GATE_FAIL", _read_log(self.log_path))
 
-    def test_legacy_kimi_header_still_counts_as_verdict_marker(self) -> None:
+    def test_legacy_kimi_header_alone_cannot_authorize_verdict(self) -> None:
         cmd = [
             "bash",
             "-lc",
@@ -79,8 +79,8 @@ class ReviewRunnerKimiHeaderTests(unittest.TestCase):
             heartbeat_s=1,
             reconnect_stall_s=0,
         )
-        self.assertEqual(rc, 0)
-        self.assertNotIn("QUALITY_GATE_FAIL", _read_log(self.log_path))
+        self.assertEqual(rc, 125)
+        self.assertIn("QUALITY_GATE_FAIL", _read_log(self.log_path))
 
     def test_build_kimi_cmd_prefers_canonical_script(self) -> None:
         scripts_dir = self.tmp / "scripts"
