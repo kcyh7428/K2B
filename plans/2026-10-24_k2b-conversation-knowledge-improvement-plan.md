@@ -16,8 +16,12 @@ activated and accepted on Home and SJM. See
 report is also reviewed, delivered and accepted on both Macs, as recorded in
 [its delivery record](2026-10-25_k2b-knowledge-status-delivery.md). On 26 October,
 Keith authorized continuing development and reviewed deployment of the remaining
-work. Tasks 3 to 5 are authorized but not yet accepted; their actual acceptance
-evidence remains pending.
+work. Tasks 3 and 4 are now accepted for the bounded interactive workflow:
+Home runtime b10979e and test follow-up bfd21b0, SJM equivalents 061469a and
+4841a91, three source-bound operations, four note targets and verified replay.
+See plans/2026-10-26_k2b-knowledge-integration-delivery.md for actual receipts and
+installed checks. Task 5 remains open for fresh desktop entry, final-version
+native source-to-recall evidence and seven actual observation days.
 Phone service, wider source scope, automatic SQL selection, schedule changes
 and background integration retain their separate authorization gates. The dated
 checkpoints below preserve their original preparation-state observations.
@@ -158,13 +162,13 @@ committed, pushed or activated; phone service remains deferred. See
 
 Receipt schema 1 contains an operation ID derived from source identities and intended target content hashes, source references and hashes, disposition, timestamp, and target paths with before/after hashes and ordinary-writer receipt IDs. A retained leaf has an explicit reason and no target edit. Receipts reference the existing knowledge and evidence rather than copying another memory store.
 
-- [ ] Add failing tests for changed sources, stale note hashes, invented item IDs/quotes, unsafe or missing link targets, symlinks, real conflict copies, partial multi-note saves, duplicate replay, a source intentionally retained as a leaf, and a proposal presented as a completed business event.
-- [ ] Derive queue states `needs_review`, `integrated`, `retained_leaf` and `blocked` from receipts. Do not infer failure from an absent legacy compiled flag. Every explicit terminal disposition needs a source identity and reason.
-- [ ] Build a proposal containing existing target notes, expected note hashes, exact source references, replacement-draft hashes, a current-summary change, dated history and the reason for each relationship. The current interactive Codex conversation supplies synthesis; the helper makes no provider call.
-- [ ] Apply authorized proposals through the ordinary-note writer. Re-read source and note hashes immediately before saving. Record success only after all designated writer receipts and resulting note hashes verify. Preserve partial outcomes for completion or manual resolution.
-- [ ] Keep raw sources immutable. Extend the derived queue to classify human captures separately from orchestrator technical records, preserving existing skipped/deferred dispositions. Completion receipts replace new edits to raw compilation flags.
-- [ ] Run `python3 -m pytest tests/test_knowledge_integration.py tests/test_vault_note_write.py -q` and `bash tests/vault-note-authority.test.sh`. Make authority checks pass after skill changes.
-- [ ] Re-read and supervise three real topic proposals: Amy onboarding, Kingdee/Pulse+ and K2B's current operating model. Use only supported new facts and decisions. Preserve unknown sending, signature, acceptance and completion states. Replay the same proposals and verify zero duplicate edits or knowledge.
+- [x] Add failing tests for changed sources, stale note hashes, invented item IDs/quotes, unsafe or missing link targets, symlinks, real conflict copies, partial multi-note saves, duplicate replay, a source intentionally retained as a leaf, and a proposal presented as a completed business event.
+- [x] Derive queue states `needs_review`, `integrated`, `retained_leaf` and `blocked` from receipts. Do not infer failure from an absent legacy compiled flag. Every explicit terminal disposition needs a source identity and reason.
+- [x] Build a proposal containing existing target notes, expected note hashes, exact source references, replacement-draft hashes, a current-summary change, dated history and the reason for each relationship. The current interactive Codex conversation supplies synthesis; the helper makes no provider call.
+- [x] Apply authorized proposals through the ordinary-note writer. Re-read source and note hashes immediately before saving. Record success only after all designated writer receipts and resulting note hashes verify. Preserve partial outcomes for completion or manual resolution.
+- [x] Keep raw sources immutable. Extend the derived queue to classify human captures separately from orchestrator technical records, preserving existing skipped/deferred dispositions. Completion receipts replace new edits to raw compilation flags.
+- [x] Run `python3 -m pytest tests/test_knowledge_integration.py tests/test_vault_note_write.py -q` and `bash tests/vault-note-authority.test.sh`. Make authority checks pass after skill changes.
+- [x] Re-read and supervise three real topic proposals: Amy onboarding, Kingdee/Pulse+ and K2B's current operating model. Use only supported new facts and decisions. Preserve unknown sending, signature, acceptance and completion states. Replay the same proposals and verify zero duplicate edits or knowledge.
 
 **Checkpoint:** New assertions have an auditable route into subject knowledge, including intentional leaves and unresolved work. There is still no new unattended writer.
 
@@ -174,12 +178,12 @@ Receipt schema 1 contains an operation ID derived from source identities and int
 
 **Interfaces:** Keep the existing raw helper CLI compatible. Add explicit classification/receipt-backed status rather than treating all missing flags as a unified backlog. Preserve provenance and history while making the current operational description truthful.
 
-- [ ] Add tests distinguishing technical records, human captures, missing flags, receipt-backed integration, skipped/deferred items and unreadable metadata. Raw bytes must remain unchanged throughout queue evaluation and completion accounting.
-- [ ] Replace the compile worker's double-hyphen prose instruction with the live punctuation rule. For substantive updates, include bounded current target-note passages as well as index discovery, then have Codex validate the proposal against current source and note hashes. Avoid sending an unbounded vault to the worker.
-- [ ] Permit reviewed current-summary updates while preserving dated history, rather than using append-only text as a substitute for resolving current state. Cross-key correction candidates require review through the existing correction workflow; never bulk-merge keys by name similarity.
-- [ ] Correct the prominent K2B project and retirement descriptions, and reconcile the lifecycle reference with current authority. Preserve historical facts as dated history. Do not contact or create work for the retired host.
-- [ ] Correct the SJM test's expectation of an unredacted full temporary path. Assert a stable receipt identifier and unchanged state while preserving secret redaction. Include both short and token-like temporary paths in the regression.
-- [ ] Run focused changed-module tests, `bash tests/raw-needs-compile.test.sh`, `scripts/verify-codex-authority.sh` and applicable note/index writer tests. Repeat the seven-module baseline on both hosts; preserve and review SJM's existing parser delta separately from this work.
+- [x] Add tests distinguishing technical records, human captures, missing flags, receipt-backed integration, skipped/deferred items and unreadable metadata. Raw bytes must remain unchanged throughout queue evaluation and completion accounting.
+- [x] Replace the compile worker's double-hyphen prose instruction with the live punctuation rule. For substantive updates, include bounded current target-note passages as well as index discovery, then have Codex validate the proposal against current source and note hashes. Avoid sending an unbounded vault to the worker.
+- [x] Permit reviewed current-summary updates while preserving dated history, rather than using append-only text as a substitute for resolving current state. Cross-key correction candidates require review through the existing correction workflow; never bulk-merge keys by name similarity.
+- [x] Correct the prominent K2B project and retirement descriptions, and reconcile the lifecycle reference with current authority. Preserve historical facts as dated history. Do not contact or create work for the retired host.
+- [x] Correct the SJM test's expectation of an unredacted full temporary path. Assert a stable receipt identifier and unchanged state while preserving secret redaction. Include both short and token-like temporary paths in the regression.
+- [x] Run focused changed-module tests, `bash tests/raw-needs-compile.test.sh`, `scripts/verify-codex-authority.sh` and applicable note/index writer tests. Repeat the seven-module baseline on both hosts; preserve and review SJM's existing parser delta separately from this work.
 
 **Checkpoint:** Current guidance, writer ownership and queue semantics agree. Historical evidence remains available and is interpreted with source time and speaker attribution.
 
@@ -189,7 +193,7 @@ Receipt schema 1 contains an operation ID derived from source identities and int
 
 **Interfaces:** Acceptance records bind deployed Git heads/file hashes, actual native dispatches, source-event identities, extraction/reconciliation/publication receipts, note-integration receipts, snapshot hashes and normal recall results on both hosts. Prepared, reviewed, committed, activated and accepted remain distinct states.
 
-- [ ] Preserve both dirty checkouts and SJM adaptations. Obtain the required independent verdict for each implementation diff. After explicit delivery authorization, transfer only reviewed Git changes and verify the actual installed host versions.
+- [x] Preserve both dirty checkouts and SJM adaptations. Obtain the required independent verdict for each implementation diff. After explicit delivery authorization, transfer only reviewed Git changes and verify the actual installed host versions.
 - [ ] Use genuine completed user conversations, one per host, to verify the full path into published memory and normal recall on both Macs. Bind the evidence to native scheduler dispatch. Include replay, offline SJM/Home, a pending local delivery, a changed decision, a missing attachment, a quota/hold and a simultaneous-writer attempt in isolated tests or explicitly approved probes.
 - [ ] Verify one fresh desktop session on each host actually receives the intended startup context and retrieves a known subject. A manual hook invocation or ephemeral CLI test does not satisfy this desktop check.
 - [ ] Measure incoming turn sizes, completed extraction per cycle, deferred work and oldest pending time. Propose aligning Home reconciliation at least 30 minutes after SJM starts, keeping the six-hour cadence and existing limits, so a normal SJM extraction can reach that Home cycle. Change registration only after approval and read it back.
@@ -248,3 +252,27 @@ Final staged code approval, reviewed Git delivery and installed-host verificatio
 are the remaining delivery gates at this record's preparation. Record their
 outcome separately after execution. Broader stage reporting, supervised topic
 integration and sustained end-to-end acceptance remain Tasks 2 to 5.
+
+## Tasks 3 and 4 delivery, 26 October 2026
+
+The bounded interactive implementation and guidance repair are accepted.
+Runtime b10979e and reviewed portable-test follow-up bfd21b0 were pushed and
+activated on Home; SJM equivalents are 061469a and 4841a91. Installed checks
+passed 1,057 tests on Home and 1,058 on SJM, with authority and raw/writer shell
+checks passing through the existing local interpreters.
+
+Three real topic proposals covered Amy, Kingdee/Pulse+ and the K2B operating
+model, with four ordinary-writer targets and Home integration receipts. Replays
+changed no note, index or integration bytes. Current project, retirement,
+lifecycle and operating-reference descriptions distinguish active authority
+from dated history. Initial cross-Mac hashes and normal evidence passages were
+checked. Packets remain bounded/partial; this is not global capture or general
+answer-accuracy acceptance.
+
+The runtime reviewer permitted scoped shipping after its final-test condition,
+which passed before commit. The test-only review returned APPROVE with a
+documented non-blocking test-precision minor. Exact verdicts, receipts and scope
+limits are in plans/2026-10-26_k2b-knowledge-integration-delivery.md. Task 5 stays
+open under plans/2026-10-24_k2b-knowledge-end-to-end-acceptance.md. Fresh desktop
+sessions, final-version native evidence and seven actual days cannot be inferred
+from this implementation acceptance.
