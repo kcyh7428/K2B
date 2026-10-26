@@ -384,7 +384,21 @@ def test_deep_json_cli_has_concise_failure(tmp_path, capsys):
     assert ki.main(["queue", "--snapshot", str(deep)]) != 0
     result = capsys.readouterr()
     assert "Traceback" not in result.err
-    assert "not readable JSON" in result.err
+    # Patch releases can differ in the JSON decoder's nesting tolerance.
+    # Both decoder refusal and rejection of the resulting array are correct.
+    assert result.err.startswith("knowledge-digest: snapshot ")
+    assert "not readable JSON" in result.err or "invalid" in result.err
+
+
+def test_decoder_recursion_error_is_caught(tmp_path, monkeypatch, capsys):
+    file = tmp_path / "snapshot.json"
+    file.write_text("{}")
+    def decoder_refusal(*args, **kwargs):
+        raise RecursionError("synthetic decoder recursion limit")
+    monkeypatch.setattr(ki.json, "loads", decoder_refusal)
+    assert ki.main(["queue", "--snapshot", str(file)]) == 1
+    result = capsys.readouterr()
+    assert "not readable JSON" in result.err and "Traceback" not in result.err
 
 
 def test_sjm_queue_does_not_claim_home_ledger_coverage(tmp_path, monkeypatch, capsys):
