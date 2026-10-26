@@ -9,7 +9,16 @@ description: Use when Keith asks to synchronize, update, or compare K2B across t
 
 K2B currently spans two authorized Macs: Keith's home MacBook and the SJM MacBook `GLPs-MacBook-Pro`. Code moves through Git. Vault moves through Syncthing. Credentials and machine-local state stay on the machine that owns them.
 
-The Mac Mini deployment lane is retired and outside this skill. A request that explicitly names the Mini requires a new scope decision; do not contact it, run a legacy deploy script, or create a deferred Mini obligation.
+The former Mac Mini deployment lane remains retired. Keith authorized a separate
+supervised Mini browser/capture role on 25 October 2026 and reaffirmed it on
+26 October. That role may use the existing Home SSH relay and an available
+computer-use connection; it does not restore the old Mini checkout, vault sync,
+Telegram runtime or background jobs. Preserve this newer narrow authorization
+when reconciling dated notes with the retired deployment history. Report network,
+browser control, capture, NAS arrival and knowledge integration separately.
+For Mini capture status, follow the Facebook evidence procedure in k2b-research.
+Report the manifest with Mini-local pre-transfer hashes and NAS read-back
+status. Failed or unverified arrival remains Mini-local and unintegrated.
 
 ## Before any mutation
 
