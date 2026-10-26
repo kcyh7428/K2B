@@ -1,4 +1,4 @@
-"""Synthetic tests for P2-A read-only recovery preparation."""
+"""Synthetic tests for P2-B read-only recovery preparation."""
 from __future__ import annotations
 
 import hashlib
@@ -68,7 +68,15 @@ def _make_manifest(source: Path, paths):
 
 def _materialize(restored: Path, source: Path, paths) -> None:
     for rel in paths:
-        _write(restored, rel, (source / rel).read_bytes(), (source / rel).stat().st_mode & 0o777)
+        _write(restored, rel, (source / rel).read_bytes(), (source / rel).stat().st_mode & 0o7777)
+    # Materialize exact source directory modes for root and ancestors.
+    m = manifest(source, list(paths))
+    os.chmod(restored, m["directory_modes"]["."])
+    for key, mode in m["directory_modes"].items():
+        if key == ".":
+            continue
+        (restored / key).mkdir(parents=True, exist_ok=True)
+        os.chmod(restored / key, mode)
 
 
 def _run_cli(args, cwd=None):
@@ -78,6 +86,26 @@ def _run_cli(args, cwd=None):
         text=True,
         cwd=str(cwd) if cwd else None,
     )
+
+
+def _cli_auto_materialize(source: Path, restored: Path, paths) -> None:
+    """Copy bytes and modes from source for CLI tests without importing manifest."""
+    for rel in paths:
+        src = source / rel
+        dst = restored / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        os.chmod(dst, src.stat().st_mode & 0o7777)
+    os.chmod(restored, os.stat(source).st_mode & 0o7777)
+    for rel in paths:
+        relpath = Path(rel)
+        for parent in relpath.parents:
+            if str(parent) == ".":
+                break
+            src_dir = source / parent
+            dst_dir = restored / parent
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(dst_dir, os.stat(src_dir).st_mode & 0o7777)
 
 
 # ---- happy path ---------------------------------------------------------
@@ -96,6 +124,8 @@ def test_manifest_and_verify_happy(tmp_path):
         assert len(entry["sha256"]) == 64
         assert isinstance(entry["mode"], int)
         assert isinstance(entry["mtime_ns"], int)
+    assert m["directory_modes"]["."] == (os.stat(source).st_mode & 0o7777)
+    assert set(m["directory_modes"]) == {".", "wiki", "raw"}
     assert _snapshot(source) == before, "source must remain unchanged"
 
     _materialize(restored, source, paths)
@@ -104,6 +134,8 @@ def test_manifest_and_verify_happy(tmp_path):
     assert result["file_count"] == 2
     assert result["total_bytes"] == sum(f["size"] for f in m["files"])
     assert result["rehearsal_only"] is True
+    assert result["directory_modes_checked"] is True
+    assert result["file_modes_checked"] is True
 
 
 def test_empty_approved_file_roundtrip(tmp_path):
@@ -156,6 +188,8 @@ def test_restored_disk_nfd_name_matches_nfc_manifest(tmp_path):
     _write(source, "wiki/caf\u00e9.md", b"unicode fixture")
     m = manifest(source, ["wiki/caf\u00e9.md"])
     _write(restored, "wiki/cafe\u0301.md", b"unicode fixture")
+    os.chmod(restored, os.stat(source).st_mode & 0o7777)
+    os.chmod(restored / "wiki", os.stat(source / "wiki").st_mode & 0o7777)
     assert verify_restore(m, restored)["status"] == "verified"
 
 
@@ -172,8 +206,9 @@ def test_verification_reports_manifest_scope_without_source_freshness(tmp_path):
     (source / "wiki/note.md").write_text("a later edit")
     result = verify_restore(m, restored)
     assert result["source_freshness"] == "not_checked"
-    expected = hashlib.sha256(json.dumps(m, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    expected = hashlib.sha256(json.dumps(m, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     assert result["manifest_sha256"] == expected
+    assert result["canonical_manifest_sha256"] == expected
 
 
 def test_hash_open_refuses_late_symlink(tmp_path):
@@ -395,6 +430,7 @@ def test_verify_rejects_bad_manifest_paths_before_read(tmp_path, monkeypatch):
         "files": [
             {"path": "secrets/x.txt", "size": 1, "sha256": "0" * 64, "mode": 0o644, "mtime_ns": 0}
         ],
+        "directory_modes": {".": 0o755, "secrets": 0o755},
     }
     import k2b_recovery as mod
 
@@ -534,11 +570,12 @@ def test_cli_manifest_and_verify_success(tmp_path):
     assert result.returncode == 0, result.stderr
     m = json.loads(result.stdout)
     assert m["schema_version"] == 1
+    assert "directory_modes" in m
     assert _snapshot(source) == before_source
     manifest_file = tmp_path / "manifest.json"
     manifest_file.write_text(result.stdout, encoding="utf-8")
 
-    _materialize(restored, source, paths)
+    _cli_auto_materialize(source, restored, paths)
     before_restored = _snapshot(restored)
     verify = _run_cli(
         ["verify", "--manifest", str(manifest_file), "--restored-root", str(restored)]
@@ -547,6 +584,8 @@ def test_cli_manifest_and_verify_success(tmp_path):
     out = json.loads(verify.stdout)
     assert out["status"] == "verified"
     assert out["rehearsal_only"] is True
+    assert out["directory_modes_checked"] is True
+    assert out["file_modes_checked"] is True
     assert _snapshot(restored) == before_restored
 
 
@@ -577,3 +616,470 @@ def test_cli_duplicate_json_keys_rejected(tmp_path):
     )
     assert result.returncode != 0
     assert json.loads(result.stderr)["status"] == "error"
+
+
+# ---- P2-B: manifest digest recipes --------------------------------------
+
+
+def test_canonical_manifest_digest_stable_across_formatting(tmp_path):
+    source, restored = _cluster(tmp_path)
+    paths = ["wiki/note.md", "raw/evidence.txt"]
+    m = _make_manifest(source, paths)
+    _materialize(restored, source, paths)
+    result = verify_restore(m, restored)
+    recipe = hashlib.sha256(
+        json.dumps(m, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert result["canonical_manifest_sha256"] == recipe
+    assert result["manifest_sha256"] == recipe
+    reordered = json.loads(json.dumps(m, indent=4))
+    assert verify_restore(reordered, restored)["canonical_manifest_sha256"] == recipe
+
+
+def test_cli_manifest_artifact_sha256_matches_bytes(tmp_path):
+    source, restored = _cluster(tmp_path)
+    paths = ["wiki/note.md"]
+    _cli_auto_materialize(source, restored, paths)
+    m = _make_manifest(source, paths)
+    manifest_file = tmp_path / "manifest.json"
+    # Write with non-canonical formatting and trailing whitespace/newline.
+    artifact_bytes = (json.dumps(m, indent=4, ensure_ascii=False) + "\n\n").encode("utf-8")
+    manifest_file.write_bytes(artifact_bytes)
+    verify = _run_cli(
+        ["verify", "--manifest", str(manifest_file), "--restored-root", str(restored)]
+    )
+    assert verify.returncode == 0, verify.stderr
+    out = json.loads(verify.stdout)
+    assert out["manifest_artifact_sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
+    canonical = hashlib.sha256(
+        json.dumps(m, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert out["canonical_manifest_sha256"] == canonical
+    assert out["manifest_artifact_sha256"] != out["canonical_manifest_sha256"]
+
+
+def test_verify_manifest_sha256_alias_is_canonical(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = _make_manifest(source, ["raw/evidence.txt"])
+    _materialize(restored, source, ["raw/evidence.txt"])
+    result = verify_restore(m, restored)
+    assert result["manifest_sha256"] == result["canonical_manifest_sha256"]
+
+
+# ---- P2-B: directory modes ----------------------------------------------
+
+
+def test_directory_mode_restrictive_roundtrip(tmp_path):
+    source, restored = _cluster(tmp_path)
+    paths = ["wiki/note.md", "raw/evidence.txt"]
+    os.chmod(source, 0o700)
+    os.chmod(source / "wiki", 0o750)
+    os.chmod(source / "raw", 0o710)
+    m = _make_manifest(source, paths)
+    assert m["directory_modes"] == {".": 0o700, "wiki": 0o750, "raw": 0o710}
+    _materialize(restored, source, paths)
+    result = verify_restore(m, restored)
+    assert result["directory_modes_checked"] is True
+
+
+def test_nested_ancestor_directory_modes_recorded(tmp_path):
+    source, restored = _cluster(tmp_path)
+    _write(source, "wiki/sub/deep/note.md", b"nested\n", 0o640)
+    os.chmod(source / "wiki"/ "sub", 0o755)
+    os.chmod(source / "wiki"/ "sub" / "deep", 0o770)
+    m = _make_manifest(source, ["wiki/sub/deep/note.md"])
+    assert set(m["directory_modes"]) == {".", "wiki", "wiki/sub", "wiki/sub/deep"}
+    _materialize(restored, source, ["wiki/sub/deep/note.md"])
+    assert verify_restore(m, restored)["directory_modes_checked"] is True
+
+
+@pytest.mark.parametrize("target", [".", "wiki"])
+def test_directory_mode_mismatch_rejected(tmp_path, target):
+    source, restored = _cluster(tmp_path)
+    paths = ["wiki/note.md"]
+    m = _make_manifest(source, paths)
+    _materialize(restored, source, paths)
+    os.chmod(restored if target == "." else restored / target, 0o701)
+    with pytest.raises(RecoveryError, match="directory mode"):
+        verify_restore(m, restored)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["directory_modes"].pop("wiki"),
+        lambda m: m["directory_modes"].update(extra=0o755),
+        lambda m: m["directory_modes"].update({"wiki/sub": 0o755}),
+        lambda m: m["directory_modes"].update({"/abs": 0o755}),
+        lambda m: m["directory_modes"].update({"wiki/../x": 0o755}),
+        lambda m: m["directory_modes"].update({"WiKi": 0o755}),
+        lambda m: m["directory_modes"].update({"wiki": "755"}),
+        lambda m: m["directory_modes"].update({"wiki": True}),
+        lambda m: m["directory_modes"].update({"wiki": -1}),
+        lambda m: m["directory_modes"].update({"wiki": 0o10000}),
+        lambda m: m.update(directory_modes=[]),
+    ],
+)
+def test_directory_modes_strictly_validated_before_payload_read(tmp_path, monkeypatch, mutate):
+    source, restored = _cluster(tmp_path)
+    m = _make_manifest(source, ["wiki/note.md"])
+    bad = json.loads(json.dumps(m))
+    mutate(bad)
+    import k2b_recovery as mod
+
+    def boom(*_a, **_k):
+        raise AssertionError("payload must not be read for rejected directory_modes")
+
+    monkeypatch.setattr(mod, "_sha256_bounded", boom)
+    with pytest.raises(RecoveryError):
+        verify_restore(bad, restored)
+
+
+def test_legacy_schema1_without_directory_modes_accepted(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = _make_manifest(source, ["raw/evidence.txt"])
+    legacy = json.loads(json.dumps(m))
+    legacy.pop("directory_modes")
+    _materialize(restored, source, ["raw/evidence.txt"])
+    with pytest.raises(RecoveryError, match="legacy"):
+        verify_restore(legacy, restored)
+    result = verify_restore(legacy, restored, allow_legacy_no_directory_modes=True)
+    assert result["status"] == "verified_legacy_no_directory_modes"
+    assert result["directory_modes_checked"] is False
+    assert result["file_modes_checked"] is True
+
+
+def test_parent_mode_changed_during_hash_rejected(tmp_path, monkeypatch):
+    source, restored = _cluster(tmp_path)
+    m = _make_manifest(source, ["wiki/note.md"])
+    _materialize(restored, source, ["wiki/note.md"])
+    import k2b_recovery as mod
+
+    original = mod._sha256_bounded
+
+    def flaky(path, limit):
+        result = original(path, limit)
+        os.chmod(restored / "wiki", 0o700)
+        return result
+
+    monkeypatch.setattr(mod, "_sha256_bounded", flaky)
+    with pytest.raises(RecoveryError):
+        verify_restore(m, restored)
+
+
+def test_source_parent_mode_changed_during_hash_rejected(tmp_path, monkeypatch):
+    source, _ = _cluster(tmp_path)
+    import k2b_recovery as mod
+    original = mod._sha256_bounded
+
+    def changed(path, limit):
+        result = original(path, limit)
+        os.chmod(source / "wiki", 0o700)
+        return result
+
+    os.chmod(source / "wiki", 0o755)
+    monkeypatch.setattr(mod, "_sha256_bounded", changed)
+    with pytest.raises(RecoveryError, match="directory mode"):
+        manifest(source, ["wiki/note.md"])
+
+
+def test_cli_manifest_size_ceiling(tmp_path):
+    mf = tmp_path / "oversized.json"
+    with mf.open("wb") as handle:
+        handle.truncate(64 * 1024 * 1024 + 1)
+    restored = tmp_path / "restored"
+    restored.mkdir()
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(restored)])
+    assert result.returncode != 0
+    evidence = json.loads(result.stderr)
+    assert "manifest exceeds" in evidence["error"]
+    assert "manifest_artifact_sha256" not in evidence
+    assert "canonical_manifest_sha256" not in evidence
+
+
+def test_cli_legacy_requires_explicit_opt_in(tmp_path):
+    source, restored = _cluster(tmp_path)
+    paths = ["wiki/note.md"]
+    _materialize(restored, source, paths)
+    m = manifest(source, paths)
+    del m["directory_modes"]
+    mf = tmp_path / "legacy.json"
+    mf.write_text(json.dumps(m))
+    args = ["verify", "--manifest", str(mf), "--restored-root", str(restored)]
+    refused = _run_cli(args)
+    assert refused.returncode != 0
+    assert "legacy" in json.loads(refused.stderr)["error"]
+    allowed = _run_cli(args + ["--allow-legacy-no-directory-modes"])
+    assert allowed.returncode == 0, allowed.stderr
+    assert json.loads(allowed.stdout)["directory_modes_checked"] is False
+
+
+def test_cli_failed_verification_retains_manifest_identifiers(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    mf = tmp_path / "manifest.json"
+    mf.write_text(json.dumps(m, indent=2) + "\n")
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(restored)])
+    assert result.returncode != 0
+    error = json.loads(result.stderr)
+    assert error["manifest_artifact_sha256"] == hashlib.sha256(mf.read_bytes()).hexdigest()
+    assert error["canonical_manifest_sha256"] == hashlib.sha256(json.dumps(m, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def test_file_special_permission_bit_roundtrip(tmp_path):
+    source, restored = _cluster(tmp_path)
+    os.chmod(source / "wiki/note.md", 0o1644)
+    m = manifest(source, ["wiki/note.md"])
+    assert m["files"][0]["mode"] == 0o1644
+    _materialize(restored, source, ["wiki/note.md"])
+    assert verify_restore(m, restored)["file_modes_checked"] is True
+
+
+def test_cli_malformed_json_binds_only_artifact(tmp_path):
+    mf = tmp_path / "malformed.json"
+    mf.write_bytes(b'{"invalid":')
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(tmp_path)])
+    assert result.returncode != 0
+    evidence = json.loads(result.stderr)
+    assert evidence["manifest_artifact_sha256"] == hashlib.sha256(mf.read_bytes()).hexdigest()
+    assert "canonical_manifest_sha256" not in evidence
+
+
+def test_cli_utf8_bom_keeps_exact_artifact_hash(tmp_path):
+    source, restored = _cluster(tmp_path)
+    _materialize(restored, source, ["wiki/note.md"])
+    m = manifest(source, ["wiki/note.md"])
+    mf = tmp_path / "bom.json"
+    mf.write_bytes(b"\xef\xbb\xbf" + json.dumps(m).encode())
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(restored)])
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["manifest_artifact_sha256"] == hashlib.sha256(mf.read_bytes()).hexdigest()
+
+
+def test_api_receipt_discloses_no_artifact_read(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    _materialize(restored, source, ["wiki/note.md"])
+    assert verify_restore(m, restored)["manifest_artifact_checked"] is False
+    mf = tmp_path / "manifest.json"
+    mf.write_text(json.dumps(m))
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(restored)])
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["manifest_artifact_checked"] is True
+
+
+def test_cli_receipt_binds_verified_locations(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    _materialize(restored, source, ["wiki/note.md"])
+    mf = tmp_path / "manifest.json"
+    mf.write_text(json.dumps(m))
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(restored)])
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["manifest_path"] == str(mf.resolve())
+    assert receipt["restored_root"] == str(restored.resolve())
+    assert receipt["restored_root_device"] == restored.stat().st_dev
+
+
+def test_manifest_generation_refuses_unverifiable_serialization(tmp_path, monkeypatch):
+    import k2b_recovery as mod
+    source, _ = _cluster(tmp_path)
+    monkeypatch.setattr(mod, "MAX_MANIFEST_BYTES", 100)
+    with pytest.raises(RecoveryError, match="serialized manifest"):
+        manifest(source, ["wiki/note.md"])
+
+
+def test_canonical_identity_preserves_file_array_order(tmp_path):
+    source, restored = _cluster(tmp_path)
+    paths = ["wiki/note.md", "raw/evidence.txt"]
+    m = manifest(source, paths)
+    _materialize(restored, source, paths)
+    reordered = json.loads(json.dumps(m))
+    reordered["files"].reverse()
+    first = verify_restore(m, restored)
+    second = verify_restore(reordered, restored)
+    assert first["status"] == second["status"] == "verified"
+    assert first["canonical_manifest_sha256"] != second["canonical_manifest_sha256"]
+
+
+def test_nonstring_directory_key_raises_recovery_error(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    m["directory_modes"].update({3: 0o755, "extra": 0o755})
+    with pytest.raises(RecoveryError):
+        verify_restore(m, restored)
+
+
+def test_manifest_cli_uses_guarded_serialization(tmp_path):
+    import k2b_recovery as mod
+    source, _ = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    result = _run_cli(["manifest", "--root", str(source), "--approved-path", "wiki/note.md"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == mod.serialize_manifest(m)
+
+
+def test_root_identity_changed_during_hash_rejected(tmp_path, monkeypatch):
+    import k2b_recovery as mod
+    from types import SimpleNamespace
+    source, restored = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    _materialize(restored, source, ["wiki/note.md"])
+    original_hash, original_stat = mod._sha256_bounded, mod._lstat
+    changed = False
+
+    def hashed(path, limit):
+        nonlocal changed
+        result = original_hash(path, limit)
+        changed = True
+        return result
+
+    def observed(path):
+        st = original_stat(path)
+        if path == restored and changed:
+            return SimpleNamespace(st_dev=st.st_dev, st_ino=st.st_ino+1, st_size=st.st_size, st_mtime_ns=st.st_mtime_ns, st_ctime_ns=st.st_ctime_ns, st_mode=st.st_mode)
+        return st
+
+    monkeypatch.setattr(mod, "_sha256_bounded", hashed)
+    monkeypatch.setattr(mod, "_lstat", observed)
+    with pytest.raises(RecoveryError, match="root"):
+        verify_restore(m, restored)
+
+
+def test_cli_read_race_binds_observed_bytes(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("race_cli", CLI)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    mf = tmp_path / "manifest.json"
+    mf.write_bytes(b'{"synthetic": true}')
+    original = cli._stat_signature
+    calls = 0
+
+    def changed_signature(st):
+        nonlocal calls
+        calls += 1
+        return original(st) + (calls >= 4,)
+
+    monkeypatch.setattr(cli, "_stat_signature", changed_signature)
+    assert cli.main(["verify", "--manifest", str(mf), "--restored-root", str(tmp_path)]) == 1
+    evidence = json.loads(capsys.readouterr().err)
+    assert "changed while reading" in evidence["error"]
+    assert evidence["observed_bytes_sha256"] == hashlib.sha256(mf.read_bytes()).hexdigest()
+    assert "manifest_artifact_sha256" not in evidence
+    assert "canonical_manifest_sha256" not in evidence
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_cli_nonstandard_json_constant_has_no_canonical_hash(tmp_path, constant):
+    mf = tmp_path / "nonstandard.json"
+    mf.write_text('{"schema_version": ' + constant + '}')
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(tmp_path)])
+    assert result.returncode != 0
+    evidence = json.loads(result.stderr)
+    assert "nonstandard JSON" in evidence["error"]
+    assert evidence["manifest_artifact_sha256"] == hashlib.sha256(mf.read_bytes()).hexdigest()
+    assert "canonical_manifest_sha256" not in evidence
+
+
+def test_cli_float_overflow_has_typed_error(tmp_path):
+    mf = tmp_path / "overflow.json"
+    mf.write_text('{"schema_version": 1e400}')
+    result = _run_cli(["verify", "--manifest", str(mf), "--restored-root", str(tmp_path)])
+    evidence = json.loads(result.stderr)
+    assert result.returncode != 0
+    assert "out-of-range" in evidence["error"]
+    assert not evidence["error"].startswith("ValueError:")
+    assert "canonical_manifest_sha256" not in evidence
+
+
+def test_source_mode_changed_during_serialization_rejected(tmp_path, monkeypatch):
+    import k2b_recovery as mod
+    source, _ = _cluster(tmp_path)
+    os.chmod(source / "wiki", 0o755)
+    original = mod.serialize_manifest
+
+    def changed(data):
+        output = original(data)
+        os.chmod(source / "wiki", 0o700)
+        return output
+
+    monkeypatch.setattr(mod, "serialize_manifest", changed)
+    with pytest.raises(RecoveryError, match="directory mode"):
+        manifest(source, ["wiki/note.md"])
+
+
+def test_source_file_changed_during_serialization_rejected(tmp_path, monkeypatch):
+    import k2b_recovery as mod
+    source, _ = _cluster(tmp_path)
+    original = mod.serialize_manifest
+
+    def changed(data):
+        output = original(data)
+        note = source / "wiki/note.md"
+        before = note.stat()
+        note.write_bytes(note.read_bytes()[::-1])
+        os.utime(note, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000))
+        return output
+
+    monkeypatch.setattr(mod, "serialize_manifest", changed)
+    with pytest.raises(RecoveryError, match="file changed"):
+        manifest(source, ["wiki/note.md"])
+
+
+def test_cli_manifest_disappears_before_final_identity_check(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("deleted_cli", CLI)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    source, restored = _cluster(tmp_path)
+    m = manifest(source, ["wiki/note.md"])
+    _materialize(restored, source, ["wiki/note.md"])
+    mf = tmp_path / "manifest.json"
+    mf.write_text(json.dumps(m))
+    original = cli.verify_restore
+
+    def removed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        mf.unlink()
+        return result
+
+    monkeypatch.setattr(cli, "verify_restore", removed)
+    assert cli.main(["verify", "--manifest", str(mf), "--restored-root", str(restored)]) == 1
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert "identity check" in error
+    assert not error.startswith("FileNotFoundError:")
+
+
+def test_generation_final_recheck_is_explicitly_stat_level(tmp_path, monkeypatch):
+    import k2b_recovery as mod
+    source, _ = _cluster(tmp_path)
+    note = source / "wiki/note.md"
+    original_bytes = note.read_bytes()
+    trusted_stat = note.lstat()
+    original_stat, original_serializer = mod._lstat, mod.serialize_manifest
+
+    def forged_stat(path):
+        return trusted_stat if path == note else original_stat(path)
+
+    def hidden_mutation(data):
+        output = original_serializer(data)
+        note.write_bytes(original_bytes[::-1])
+        return output
+
+    # Simulates a violated kernel-metadata assumption, not a supported writer.
+    monkeypatch.setattr(mod, "_lstat", forged_stat)
+    monkeypatch.setattr(mod, "serialize_manifest", hidden_mutation)
+    m = manifest(source, ["wiki/note.md"])
+    assert m["files"][0]["sha256"] == hashlib.sha256(original_bytes).hexdigest()
+    assert m["files"][0]["sha256"] != hashlib.sha256(note.read_bytes()).hexdigest()
+
+
+def test_unexpected_restored_ancestor_directory_rejected(tmp_path):
+    source, restored = _cluster(tmp_path)
+    m = _make_manifest(source, ["wiki/note.md"])
+    _materialize(restored, source, ["wiki/note.md"])
+    (restored / "other").mkdir()
+    with pytest.raises(RecoveryError):
+        verify_restore(m, restored)

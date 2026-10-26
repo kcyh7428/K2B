@@ -1,8 +1,13 @@
-"""P2-A synthetic recovery preparation primitives (read-only).
+"""P2-B synthetic recovery preparation primitives (read-only).
 
 manifest(root, approved_paths) and verify_restore(manifest, restored_root)
 produce and check a manifest of explicitly approved regular files. Nothing in
 this module copies, restores, or writes files. Standard library only.
+
+Selected POSIX file modes and, for new manifests, exact ancestor directory
+modes (root '.' plus each ancestor of an approved file) are recorded and
+checked. No ACL, owner, xattr, timestamp, ancestor-outside-root, or
+independent-device verification is claimed.
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 MAX_FILE_BYTES = 16 * 1024 * 1024
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 CHUNK_BYTES = 65536
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -57,9 +63,11 @@ _PRIVATE_NAMES = frozenset(
     }
 )
 _MANIFEST_KEYS = frozenset(
-    {"schema_version", "source_root", "files"}
+    {"schema_version", "source_root", "files", "directory_modes"}
 )
+_LEGACY_MANIFEST_KEYS = frozenset({"schema_version", "source_root", "files"})
 _FILE_KEYS = frozenset({"path", "size", "sha256", "mode", "mtime_ns"})
+_DIRECTORY_MODE_MAX = 0o7777
 
 
 class RecoveryError(ValueError):
@@ -135,6 +143,16 @@ def _validate_approved_paths(approved_paths) -> list[str]:
         seen_fold[folded] = path
         validated.append(path)
     return validated
+
+
+def _expected_directory_keys(rel_paths) -> set[str]:
+    """Return exact required directory key set: '.' plus every file ancestor."""
+    keys = {"."}
+    for rel in rel_paths:
+        parts = rel.split("/")
+        for index in range(1, len(parts)):
+            keys.add("/".join(parts[:index]))
+    return keys
 
 
 # ---- root validation ----------------------------------------------------
@@ -215,7 +233,7 @@ def _sha256_bounded(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _read_approved(root: Path, rel_paths: list[str]) -> list[dict]:
+def _read_approved(root: Path, rel_paths: list[str]) -> tuple[list[dict], dict[str, tuple]]:
     # Full validation of members before any payload read.
     resolved = []
     for rel in rel_paths:
@@ -251,27 +269,74 @@ def _read_approved(root: Path, rel_paths: list[str]) -> list[dict]:
             }
         )
 
+    signatures = {}
     for rel, full, before in resolved:
         after = _lstat(full)
         if _stat_signature(before) != _stat_signature(after):
             raise RecoveryError(f"file changed during manifest pass: {rel!r}")
+        signatures[rel] = _stat_signature(after)
 
     records.sort(key=lambda item: item["path"])
-    return records
+    return records, signatures
+
+
+def _directory_mode_snapshot(root: Path, rel_paths: list[str]) -> dict[str, int]:
+    """Capture exact mode bits for root '.' and every approved-file ancestor."""
+    modes: dict[str, int] = {}
+    keys = _expected_directory_keys(rel_paths)
+    for key in sorted(keys):
+        full = root if key == "." else root / key
+        st = _lstat(full)
+        if stat.S_ISLNK(st.st_mode):
+            raise RecoveryError(f"symlink directory in source: {key!r}")
+        if not stat.S_ISDIR(st.st_mode):
+            raise RecoveryError(f"not a directory in source: {key!r}")
+        modes[key] = stat.S_IMODE(st.st_mode)
+    # Recheck that source directory modes stayed stable during capture.
+    for key in sorted(keys):
+        full = root if key == "." else root / key
+        st = _lstat(full)
+        if stat.S_IMODE(st.st_mode) != modes[key]:
+            raise RecoveryError(f"source directory mode changed during manifest pass: {key!r}")
+    return modes
 
 
 def manifest(root: Path, approved_paths: list[str]) -> dict:
     """Build a read-only manifest for explicit approved files under root."""
     root = _check_absolute_existing_dir(root, "root")
     rel_paths = _validate_approved_paths(approved_paths)
-    files = _read_approved(root, rel_paths)
+    directory_modes = _directory_mode_snapshot(root, rel_paths)
+    files, signatures = _read_approved(root, rel_paths)
+    after_modes = _directory_mode_snapshot(root, rel_paths)
+    if after_modes != directory_modes:
+        raise RecoveryError("source directory mode changed while hashing")
+    directory_modes = after_modes
     if not files:
         raise RecoveryError("manifest must not be empty")
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "source_root": str(root),
         "files": files,
+        "directory_modes": directory_modes,
     }
+    serialize_manifest(result)
+    if _directory_mode_snapshot(root, rel_paths) != directory_modes:
+        raise RecoveryError("source directory mode changed during serialization")
+    for rel in rel_paths:
+        if _stat_signature(_lstat(root / rel)) != signatures[rel]:
+            raise RecoveryError(f"source file changed during serialization: {rel!r}")
+    return result
+
+
+def serialize_manifest(result: dict) -> str:
+    """Return the exact bounded JSON text emitted by the manifest CLI."""
+    try:
+        serialized = json.dumps(result, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    except (ValueError, TypeError) as exc:
+        raise RecoveryError("nonstandard or out-of-range JSON value") from exc
+    if len(serialized.encode("utf-8")) > MAX_MANIFEST_BYTES:
+        raise RecoveryError("serialized manifest exceeds 64 MiB ceiling; use separately verified supported tooling")
+    return serialized
 
 
 # ---- manifest validation ------------------------------------------------
@@ -287,10 +352,58 @@ def _require_int(value, field: str, *, minimum: int | None = None, maximum: int 
     return value
 
 
-def _validate_manifest(data) -> tuple[Path, list[dict]]:
+def _validate_directory_modes(directory_modes, required_keys: set[str]) -> dict[str, int]:
+    if not isinstance(directory_modes, dict):
+        raise RecoveryError("manifest field directory_modes must be an object")
+    if not all(isinstance(key, str) for key in directory_modes):
+        raise RecoveryError("directory_modes keys must be strings")
+    actual = set(directory_modes.keys())
+    missing = required_keys - actual
+    extra = actual - required_keys
+    if missing:
+        raise RecoveryError(f"directory_modes missing keys: {sorted(missing)}")
+    if extra:
+        raise RecoveryError(f"directory_modes has unexpected keys: {sorted(extra)}")
+    seen_fold: dict[str, str] = {}
+    result: dict[str, int] = {}
+    for key in sorted(actual):
+        if not isinstance(key, str) or not key:
+            raise RecoveryError("directory_modes keys must be nonempty strings")
+        if key != ".":
+            if any(ord(c) < 32 or ord(c) == 127 for c in key):
+                raise RecoveryError(f"directory_modes key has control character: {key!r}")
+            if "\\" in key or key.startswith("/"):
+                raise RecoveryError(f"directory_modes key is unsafe: {key!r}")
+            if key != unicodedata.normalize("NFC", key):
+                raise RecoveryError(f"directory_modes key is not NFC: {key!r}")
+            parts = key.split("/")
+            for part in parts:
+                if part in {"", ".", ".."}:
+                    raise RecoveryError(f"directory_modes key has invalid component: {key!r}")
+                if part != unicodedata.normalize("NFC", part):
+                    raise RecoveryError(f"directory_modes key component is not NFC: {key!r}")
+        elif key == ".":
+            pass
+        folded = key.casefold()
+        if folded in seen_fold:
+            raise RecoveryError(
+                f"directory_modes case-insensitive key collision: {key!r} vs {seen_fold[folded]!r}"
+            )
+        seen_fold[folded] = key
+        value = directory_modes[key]
+        result[key] = _require_int(
+            value, f"directory_modes[{key!r}]", minimum=0, maximum=_DIRECTORY_MODE_MAX
+        )
+    return result
+
+
+def _validate_manifest(data) -> tuple[Path, list[dict], dict[str, int] | None]:
     if not isinstance(data, dict):
         raise RecoveryError("manifest must be an object")
-    if set(data.keys()) != _MANIFEST_KEYS:
+    keys = set(data.keys())
+    has_directory_modes = "directory_modes" in keys
+    allowed = _MANIFEST_KEYS if has_directory_modes else _LEGACY_MANIFEST_KEYS
+    if keys != allowed:
         raise RecoveryError("manifest has unexpected or missing keys")
     _require_int(data["schema_version"], "schema_version")
     if data["schema_version"] != SCHEMA_VERSION:
@@ -332,15 +445,24 @@ def _validate_manifest(data) -> tuple[Path, list[dict]]:
             {"path": rel, "size": size, "sha256": digest, "mode": mode}
         )
     records.sort(key=lambda item: item["path"])
-    return source_path, records
+
+    directory_modes = None
+    if has_directory_modes:
+        expected_keys = _expected_directory_keys([r["path"] for r in records])
+        directory_modes = _validate_directory_modes(data["directory_modes"], expected_keys)
+    return source_path, records, directory_modes
 
 
 # ---- tree walking -------------------------------------------------------
 
 
-def _walk_tree(root: Path) -> tuple[dict, set]:
-    """Map NFC relative names to (stat, native path), refusing collisions."""
+def _walk_tree(root: Path) -> tuple[dict, set, dict]:
+    """Map NFC relative names to (stat, native path), refusing collisions.
+
+    Also returns a map of NFC relative directory names to native Path objects.
+    """
     files = {}
+    directories = {".": root}
     empty_dirs = set()
     seen = set()
 
@@ -351,6 +473,7 @@ def _walk_tree(root: Path) -> tuple[dict, set]:
             raise RecoveryError(f"restored path collision: {rel!r}")
         seen.add(folded)
         return rel
+
     def walk_error(error):
         raise RecoveryError(f"cannot walk restored tree: {error}") from error
 
@@ -359,12 +482,13 @@ def _walk_tree(root: Path) -> tuple[dict, set]:
         kept_dirs = []
         for name in sorted(dirnames):
             full = base / name
-            canonical(full)
+            rel = canonical(full)
             st = _lstat(full)
             if stat.S_ISLNK(st.st_mode):
                 raise RecoveryError(f"symlink directory in restored tree: {full}")
             if not stat.S_ISDIR(st.st_mode):
                 raise RecoveryError(f"special directory entry in restored tree: {full}")
+            directories[rel] = full
             kept_dirs.append(name)
         dirnames[:] = kept_dirs
         for name in sorted(filenames):
@@ -381,20 +505,69 @@ def _walk_tree(root: Path) -> tuple[dict, set]:
             rel = unicodedata.normalize("NFC", Path(dirpath).relative_to(root).as_posix())
             if rel != ".":
                 empty_dirs.add(rel)
-    return files, empty_dirs
+    return files, empty_dirs, directories
 
 
-def verify_restore(manifest: dict, restored_root: Path) -> dict:
+def _check_directory_modes(
+    restored_root: Path,
+    expected: dict[str, int],
+    directories: dict[str, Path],
+) -> None:
+    """Check root and every expected directory mode using native walked paths."""
+    for key in sorted(expected):
+        if key == ".":
+            native = restored_root
+        else:
+            native = directories.get(key)
+            if native is None:
+                raise RecoveryError(f"missing directory in restored tree: {key!r}")
+        st = _lstat(native)
+        if stat.S_ISLNK(st.st_mode):
+            raise RecoveryError(f"symlink directory in restored tree: {key!r}")
+        if not stat.S_ISDIR(st.st_mode):
+            raise RecoveryError(f"not a directory in restored tree: {key!r}")
+        if stat.S_IMODE(st.st_mode) != expected[key]:
+            raise RecoveryError(f"directory mode mismatch for {key!r}")
+
+
+def _check_restored_directory_set(directories: dict[str, Path], expected_dirs: set[str]) -> None:
+    actual = set(directories.keys())
+    unexpected = actual - expected_dirs
+    if unexpected:
+        raise RecoveryError(f"unexpected directories in restored tree: {sorted(unexpected)}")
+    missing = expected_dirs - actual
+    if missing:
+        raise RecoveryError(f"missing directories in restored tree: {sorted(missing)}")
+
+
+def _canonical_manifest_sha256(manifest_obj: dict) -> str:
+    try:
+        encoded = json.dumps(manifest_obj, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError) as exc:
+        raise RecoveryError("nonstandard or out-of-range JSON value") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def verify_restore(manifest: dict, restored_root: Path, *, allow_legacy_no_directory_modes: bool = False) -> dict:
     """Verify a restored tree against a manifest. Read-only; rehearsal only."""
-    source_path, records = _validate_manifest(manifest)
+    source_path, records, directory_modes = _validate_manifest(manifest)
+    if type(allow_legacy_no_directory_modes) is not bool:
+        raise RecoveryError("legacy opt-in must be a boolean")
+    if directory_modes is None and not allow_legacy_no_directory_modes:
+        raise RecoveryError("legacy manifest requires allow_legacy_no_directory_modes=True; directory coverage is absent")
     if not isinstance(restored_root, Path):
         raise RecoveryError("restored_root must be a pathlib.Path")
     restored_root = _check_absolute_existing_dir(restored_root, "restored_root")
+    root_path = str(restored_root.resolve(strict=True))
+    root_before = _lstat(restored_root)
     _disjoint(source_path, restored_root)
 
     expected = {r["path"]: r for r in records}
+    expected_dirs = _expected_directory_keys(list(expected))
+    modes_checked = directory_modes is not None
 
-    before_files, before_empty = _walk_tree(restored_root)
+    before_files, before_empty, before_dirs = _walk_tree(restored_root)
+    _check_restored_directory_set(before_dirs, expected_dirs)
     unexpected = set(before_files) - set(expected)
     if unexpected:
         raise RecoveryError(f"unexpected files in restored tree: {sorted(unexpected)}")
@@ -403,6 +576,8 @@ def verify_restore(manifest: dict, restored_root: Path) -> dict:
         raise RecoveryError(f"missing files in restored tree: {sorted(missing)}")
     if before_empty:
         raise RecoveryError(f"unexpected empty directories: {sorted(before_empty)}")
+    if modes_checked:
+        _check_directory_modes(restored_root, directory_modes, before_dirs)
 
     total_bytes = 0
     for rel in sorted(expected):
@@ -419,9 +594,11 @@ def verify_restore(manifest: dict, restored_root: Path) -> dict:
             raise RecoveryError(f"content mismatch for {rel!r}")
         total_bytes += total
 
-    after_files, after_empty = _walk_tree(restored_root)
+    after_files, after_empty, after_dirs = _walk_tree(restored_root)
     if set(after_files) != set(before_files):
         raise RecoveryError("restored tree membership changed during verification")
+    if set(after_dirs) != set(before_dirs):
+        raise RecoveryError("restored tree directories changed during verification")
     if after_empty != before_empty:
         raise RecoveryError("restored tree directories changed during verification")
     for rel, (before, native_path) in before_files.items():
@@ -430,16 +607,27 @@ def verify_restore(manifest: dict, restored_root: Path) -> dict:
             raise RecoveryError(f"restored native path changed: {rel!r}")
         if _stat_signature(before) != _stat_signature(after):
             raise RecoveryError(f"restored file changed during verification: {rel!r}")
+    if modes_checked:
+        _check_directory_modes(restored_root, directory_modes, after_dirs)
+    if (_stat_signature(root_before) != _stat_signature(_lstat(restored_root))
+            or str(restored_root.resolve(strict=True)) != root_path):
+        raise RecoveryError("restored root identity changed during verification")
 
+    canonical = _canonical_manifest_sha256(manifest)
     return {
-        "status": "verified",
+        "status": "verified" if modes_checked else "verified_legacy_no_directory_modes",
+        "directory_mode_gate": "passed" if modes_checked else "not_passed_legacy",
         "file_count": len(expected),
         "total_bytes": total_bytes,
+        "restored_root": root_path,
+        "restored_root_device": root_before.st_dev,
         "rehearsal_only": True,
         "source_freshness": "not_checked",
         "mtime_checked": False,
         "independence_checked": False,
-        "manifest_sha256": hashlib.sha256(
-            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
+        "file_modes_checked": True,
+        "manifest_artifact_checked": False,
+        "directory_modes_checked": modes_checked,
+        "canonical_manifest_sha256": canonical,
+        "manifest_sha256": canonical,
     }
