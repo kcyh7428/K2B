@@ -86,9 +86,10 @@ def _install(role, expected):
         staged=Path(tempfile.mkdtemp(prefix='staging-'+digest+'-',dir=release.parent))
         atomic_write(staged/'worker.py',data,0o444)
         atomic_write(staged/'config.json',(json.dumps(config)+'\n').encode(),0o444)
-        sync_directory(staged);staged.chmod(0o555)
+        sync_directory(staged)
         require(not release.exists(),'Concurrent release publication; preserve staging: '+str(staged))
         staged.rename(release);sync_directory(release.parent)
+    release.chmod(0o555);sync_directory(release)
     launcher=root/'k2b-reel-v1'
     require(not launcher.is_symlink(),'Symlink launcher')
     previous=launcher.read_bytes() if launcher.exists() else None

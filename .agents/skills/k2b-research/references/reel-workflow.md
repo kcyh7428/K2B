@@ -45,6 +45,17 @@ The NAS IP and per-host SMB accounts are intentionally pinned to the verified
 deployment. A changed NAS address, DNS-name mount or account is an operator
 configuration change requiring renewed verification and reviewed installation.
 The helper stops instead of accepting a similarly named unverified share.
+The named Mini's existing route was verified on 27 October 2026: Facebook and
+three allowed media hosts resolved into `198.18.0.0/15`, with successful normal
+TLS connections. Mini role therefore permits that specific fake-IP transport
+range as well as public addresses. Home retains public-only media checks.
+Fixed Facebook/CDN hostname restrictions, HTTPS and normal TLS certificate and
+hostname verification remain mandatory. LAN, loopback, link-local and arbitrary
+private URLs remain rejected. This supports the observed Mini route, not every
+proxy, and changes no VPN, DNS, router or proxy settings. `version` reports the mode.
+Changes to the Mini's proxy, DNS mode or fake-IP range require renewed route
+verification. Other private ranges remain blocked; never expand the allowance
+automatically. Inspect the `version` transport mode when diagnosing a route change.
 
 Read the completed JSON result. It must bind `run_id`, `manifest_sha256`, local
 path and NAS path. A successful send is only dispatch. Use wait_threads for

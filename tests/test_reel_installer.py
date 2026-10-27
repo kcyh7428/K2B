@@ -59,5 +59,37 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(calls,[target.parent]);self.assertEqual(target.read_bytes(),b'complete')
             self.assertEqual(target.stat().st_mode&0o777,0o600)
 
+    def test_real_macos_directory_publication_then_readonly_permissions(self):
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as d:
+            home=Path(d);source=Path(i.__file__).with_name('reel-worker.py');digest=i.hashlib.sha256(source.read_bytes()).hexdigest()
+            account=types.SimpleNamespace(pw_dir=str(home),pw_name='keithmbpm2')
+            try:
+                with patch.object(i.pwd,'getpwuid',return_value=account),patch.object(i.subprocess,'check_output',return_value=json.dumps({'worker_sha256':digest})),contextlib.redirect_stdout(io.StringIO()):i.install('home',digest)
+                release=home/'.local/libexec/k2b-reel'/digest
+                self.assertTrue((release/'worker.py').is_file());self.assertEqual(release.stat().st_mode&0o777,0o555)
+            finally:
+                # Restore only this test's private directories for TemporaryDirectory cleanup.
+                for path in [home,*home.rglob('*')]:
+                    if path.is_dir() and not path.is_symlink():path.chmod(0o700)
+
+    def test_retry_after_publication_before_chmod_completes_existing_release(self):
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as d:
+            home=Path(d);source=Path(i.__file__).with_name('reel-worker.py');digest=i.hashlib.sha256(source.read_bytes()).hexdigest()
+            release=home/'.local/libexec/k2b-reel'/digest;account=types.SimpleNamespace(pw_dir=str(home),pw_name='keithmbpm2');actual=Path.chmod
+            def crash(path,mode):
+                if path==release:raise OSError('simulated crash after rename before chmod')
+                return actual(path,mode)
+            try:
+                with patch.object(i.pwd,'getpwuid',return_value=account),patch.object(i.subprocess,'check_output',return_value=json.dumps({'worker_sha256':digest})),contextlib.redirect_stdout(io.StringIO()):
+                    with patch.object(Path,'chmod',new=crash),self.assertRaises(OSError):i.install('home',digest)
+                    self.assertTrue(release.is_dir());self.assertEqual(release.stat().st_mode&0o777,0o700)
+                    i.install('home',digest)
+                self.assertEqual(release.stat().st_mode&0o777,0o555)
+                self.assertTrue((home/'.local/libexec/k2b-reel-v1').is_file())
+                self.assertTrue((home/'.codex/rules/k2b-reel-v1.rules').is_file())
+            finally:
+                for path in [home,*home.rglob('*')]:
+                    if path.is_dir() and not path.is_symlink():path.chmod(0o700)
+
 
 if __name__=='__main__':unittest.main()

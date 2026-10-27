@@ -48,6 +48,18 @@ class ReelTests(unittest.TestCase):
                 with self.assertRaises(w.Blocked):w.check_response_peer(response)
         with self.assertRaises(w.Blocked):w.check_response_peer(types.SimpleNamespace())
 
+    def test_only_mini_role_allows_the_verified_fake_ip_transport(self):
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as d:
+            for role,allowed in [('mini',True),('home',False)]:
+                with patch.object(w,'config',return_value={'role':role}),patch.object(w,'arguments',return_value=argparse.Namespace(action='version')),patch.object(w,'own_home',return_value=Path(d)),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(w.main(),0)
+                response=types.SimpleNamespace(fp=types.SimpleNamespace(raw=types.SimpleNamespace(_sock=types.SimpleNamespace(getpeername=lambda:('198.18.1.2',443)))))
+                if allowed:w.check_response_peer(response)
+                else:
+                    with self.assertRaises(w.Blocked):w.check_response_peer(response)
+                for address in ['127.0.0.1','192.168.50.67','10.0.0.1','169.254.1.1']:
+                    self.assertFalse(w.media_address_allowed(address))
+                with self.assertRaises(w.Blocked):w.source_url('https://198.18.1.2/reel/123/')
+
     def test_landscape_and_progressive_hd_formats_are_supported(self):
         video={'vcodec':'h264','acodec':'none','width':1280,'height':720,'tbr':100}
         audio={'vcodec':'none','acodec':'aac','abr':50}

@@ -31,6 +31,8 @@ MAX_SECONDS = 600
 NAS = Path('/Volumes/k2b-captures')
 TOOLS = {name: '/opt/homebrew/bin/' + name for name in ('ffmpeg', 'ffprobe', 'yt-dlp')}
 RUN_RE = r'reel-([0-9]{1,24})-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}'
+MINI_FAKE_IP_ROUTE = False
+MINI_FAKE_IP_RANGE = ipaddress.ip_network('198.18.0.0/15')
 
 
 class Blocked(Exception):
@@ -54,6 +56,13 @@ def source_url(value):
     return urllib.parse.urlunsplit((p.scheme,p.netloc,p.path,'',''))
 
 
+def media_address_allowed(value):
+    address=ipaddress.ip_address(value)
+    # The named Mini's existing Meta HTTPS route was verified in this fake-IP range.
+    # This is not an allowance for LAN/loopback URLs or caller-selected proxies.
+    return address.is_global or (MINI_FAKE_IP_ROUTE and address in MINI_FAKE_IP_RANGE)
+
+
 def check_remote(value, media=False):
     p = urllib.parse.urlsplit(value)
     host = p.hostname or ''
@@ -61,7 +70,7 @@ def check_remote(value, media=False):
     domains = ('fbcdn.net', 'fbsbx.com') if media else ('facebook.com',)
     need(any(host == d or host.endswith('.'+d) for d in domains), 'unexpected_remote_host')
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    need(bool(addresses) and all(ipaddress.ip_address(a[4][0]).is_global for a in addresses), 'non_public_remote_address')
+    need(bool(addresses) and all(media_address_allowed(a[4][0]) for a in addresses), 'unsupported_media_address')
 
 
 class Redirects(urllib.request.HTTPRedirectHandler):
@@ -74,7 +83,7 @@ class Redirects(urllib.request.HTTPRedirectHandler):
 def check_response_peer(response):
     raw=getattr(getattr(response,'fp',None),'raw',None);connection=getattr(raw,'_sock',None)
     need(connection is not None,'media_peer_unavailable')
-    need(ipaddress.ip_address(connection.getpeername()[0]).is_global,'non_public_media_peer')
+    need(media_address_allowed(connection.getpeername()[0]),'unsupported_media_peer')
 
 
 def sha(path):
@@ -673,12 +682,14 @@ def read_status(run,state,role):
 
 
 def main():
+    global MINI_FAKE_IP_ROUTE
     os.umask(0o077)
     try:
         args=arguments(); c=config(); role=c['role']
+        MINI_FAKE_IP_ROUTE=role=='mini'
         state=safe_dir(own_home()/'.local/state/k2b/reels-v1')
         with operation_timeout(600),(contextlib.nullcontext() if args.action in ('version','status','inventory') else lock(state)):
-            if args.action=='version': result={'version':VERSION,'role':role,'worker_sha256':sha(Path(__file__))}
+            if args.action=='version': result={'version':VERSION,'role':role,'worker_sha256':sha(Path(__file__)),'media_transport':'verified_mini_fake_ip_or_public' if MINI_FAKE_IP_ROUTE else 'public_only'}
             elif args.action=='inventory':
                 result=inventory(state,role)
             elif args.action=='recover-local': result=recover_local(args.run_id,args.manifest_sha256,state,role)
