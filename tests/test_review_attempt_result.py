@@ -466,6 +466,8 @@ class RealWrapperIntegrationTests(_RunnerCase):
             "KIMI_API_KEY": "synthetic-key-0123456789",
             "K2B_ENV_FILE": str(self.shim_env),
             "K2B_LLM_PROVIDER": "kimi",
+            "K2B_REVIEW_TELEMETRY": "0",
+            "K2B_REVIEW_TRIAL_DISABLED": "1",
             "K2B_REVIEW_RESULT_PATH": str(self.stale_result),
             "K2B_REVIEW_ATTEMPT_ID": "stale",
             "K2B_REVIEW_SCOPE_SHA256": "stale",
