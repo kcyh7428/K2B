@@ -13,10 +13,13 @@ import secrets
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from review_trial import model_matches, try_record
 
 from minimax_common import (
+    DEFAULT_MAX_TOKENS,
     MinimaxError,
     chat_completion,
     extract_assistant_text,
@@ -1327,8 +1330,8 @@ def main() -> int:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=16384,
-        help="Max completion tokens (default 16384; 4096 truncates rich reviews)",
+        default=DEFAULT_MAX_TOKENS,
+        help=f"Max completion tokens (default {DEFAULT_MAX_TOKENS}, respects K2B_LLM_MAX_TOKENS)",
     )
     parser.add_argument(
         "--archive-dir",
@@ -1464,6 +1467,7 @@ def main() -> int:
         f"[minimax-review] calling {args.model} ({len(prompt)} prompt chars)...",
         file=sys.stderr,
     )
+    started = time.monotonic()
     try:
         response = chat_completion(
             model=args.model,
@@ -1473,6 +1477,8 @@ def main() -> int:
             strict_finish_reason=True,
         )
     except MinimaxError as e:
+        if os.environ.get('K2B_REVIEW_TELEMETRY') == '1':
+            try_record(args.model, None, {}, time.monotonic() - started, 'transport-error', args.scope)
         print(f"[minimax-review] FAIL: {e}", file=sys.stderr)
         return 2
 
@@ -1517,6 +1523,12 @@ def main() -> int:
                                 if isinstance(_line_val, float) and _line_val.is_integer():
                                     _finding[_line_key] = int(_line_val)
 
+    if validation_error is None and os.environ.get('K2B_REVIEW_TRIAL_ID') and not model_matches(args.model, response.get('model')):
+        validation_error = 'trial returned an unexpected model'
+    if os.environ.get('K2B_REVIEW_TELEMETRY') == '1':
+        try_record(args.model, response.get('model'), usage, time.monotonic() - started,
+               'invalid-response' if validation_error else (parsed or {}).get('verdict', 'unknown'), args.scope,
+               validation_error=validation_error)
     archive_dir = Path(args.archive_dir)
     if not args.no_archive:
         try:

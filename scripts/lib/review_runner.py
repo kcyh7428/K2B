@@ -388,6 +388,11 @@ def spawn_child(cmd: list[str], logf, extra_env: dict | None = None,
                 "(MiniMax subscription expired); set K2B_LLM_PROVIDER=kimi"
             )
         if provider == "kimi":
+            from review_trial import configure
+            trial = configure(env)
+            if trial:
+                log_line(logf, f"[{utc_now_iso()}] REVIEW_TRIAL {json.dumps(trial)}")
+            env.setdefault('K2B_REVIEW_TELEMETRY', '1' if env.get('K2B_REVIEW_TRIAL_ID') else '0')
             if "KIMI_API_KEY" not in env:
                 try:
                     env["KIMI_API_KEY"] = load_kimi_api_key()
