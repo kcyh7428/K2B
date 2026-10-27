@@ -3206,7 +3206,7 @@ def encode_control(collections, bindings, interval, sqlite_bundles) -> bytes:
 
 
 FIXED_COLLECTION_COUNT = 4
-MAX_COLLECTION_FILES = 18454
+MAX_COLLECTION_FILES = MAX_MEMBERS
 
 
 def decode_fixed_controls(raw_controls, original_digests, *, expected_ids,

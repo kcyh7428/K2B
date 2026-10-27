@@ -1006,12 +1006,45 @@ def test_fixed_four_aggregate_bounds_remain_enforced(component, tmp_path, monkey
         mrc.decode_fixed_controls(raws, digests, **expected)
 
 
-def test_actual_count_projection_fits_explicit_four_collection_allowance():
-    assert mrc.FIXED_COLLECTION_COUNT == 4
-    assert sum((3339, 14003, 1014, 2)) == 18358
-    assert mrc.MAX_FILES == 16384
-    assert mrc.MAX_COLLECTION_FILES == 18358 + 3 * mrc._CONTROL_MAX_SQLITE == 18454
-    assert 18358 < mrc.MAX_COLLECTION_FILES
+@pytest.mark.parametrize("counts,accepts", [
+    ((4000, 14000, 880, 4), True),
+    ((8191, 8191, 8191, 8191), True),
+    ((8192, 8191, 8191, 8191), False),
+])
+def test_growth_admission_retains_aggregate_member_boundary(component, tmp_path, counts, accepts):
+    # Invented metadata only: four tiny fixture files, no payload copies.
+    fixtures = [_control_fixture(component, tmp_path, name) for name in ("A", "B", "C", "D")]
+    empty_sha = hashlib.sha256(b"").hexdigest()
+    for fixture, count in zip(fixtures, counts):
+        selection = fixture[0][0]["selection"]
+        names = ["retained.txt", *[f"f{i:05d}.txt" for i in range(count - 1)]]
+        prototype = dict(selection["files"][0]["signature"], size=0)
+        selection["files"] = [{"rel": name, "signature": dict(prototype, ino=index + 1)}
+                              for index, name in enumerate(names)]
+        selection["sha256"] = dict.fromkeys(names, empty_sha)
+        selection["parent_modes"] = {".": selection["root_mode"]}
+        selection["membership"] = {".": sorted(names)}
+        sizes = [len(selection["root"].encode())] + [len((selection["root"] + "/" + name).encode()) for name in names]
+        selection["profile"].update(file_count=count, member_count=count + 1,
+            total_bytes=0, size_per_file=0, component_bytes=max(len(name.encode()) for name in names),
+            full_path_bytes=max(sizes), cumulative_path_bytes=sum(sizes))
+        selection["selection_digest"] = mrc._selection_digest(selection)
+    raws = [mrc.encode_control(*fixture) for fixture in fixtures]
+    dependencies = [[(0, "retained.txt", empty_sha), (1, "retained.txt", empty_sha)]]
+    expected = dict(expected_ids=("A", "B", "C", "D"),
+        expected_selection_digests=[f[0][0]["selection"]["selection_digest"] for f in fixtures],
+        expected_bindings=fixtures[0][1], expected_interval=fixtures[0][2],
+        expected_dependencies=dependencies,
+        expected_dependencies_sha256=hashlib.sha256(json.dumps(dependencies,
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest())
+    call = lambda: mrc.decode_fixed_controls(raws, [hashlib.sha256(raw).hexdigest() for raw in raws], **expected)
+    if accepts:
+        controls = call()
+        assert sum(c["collections"][0]["selection"]["profile"]["file_count"] for c in controls) == sum(counts)
+        assert sum(counts) + 4 <= mrc.MAX_MEMBERS
+    else:
+        with pytest.raises(mrc.ContractError, match="^control_aggregate$"):
+            call()
 
 
 def test_control_recovers_complete_selections_and_interval_claim(component, tmp_path):
