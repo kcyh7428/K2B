@@ -123,6 +123,15 @@ class ReelTests(unittest.TestCase):
         header=requests[0].get_header('Authorization').encode()
         self.assertEqual(header.split()[0],bytes((66,101,97,114,101,114)))
         self.assertEqual(header.split()[1],b'fixture_key')
+        self.assertEqual(requests[0].get_header('User-agent'),'K2B-Reel/1')
+
+    def test_transcription_http_failure_reports_only_numeric_status(self):
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as d:
+            audio=Path(d)/'audio.flac';audio.write_bytes(b'fixture')
+            error=w.urllib.error.HTTPError('https://api.groq.com/openai/v1/audio/transcriptions',403,'secret request detail',{},None)
+            opener=types.SimpleNamespace(open=lambda *a,**kw:(_ for _ in ()).throw(error))
+            with patch.object(w,'groq_key',return_value='fixture_key'),patch.object(w.urllib.request,'build_opener',return_value=opener):
+                with self.assertRaisesRegex(w.Blocked,'^transcription_http_403$'):w.transcribe(audio)
 
     def test_role_guards_reject_cross_host_actions(self):
         for role,action,reason in [('home','capture','capture_requires_mini'),('mini','process','process_requires_home'),('mini','save-digest','save_requires_home')]:

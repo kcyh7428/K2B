@@ -79,6 +79,8 @@ prepares visual contact sheets. It persists the result to NAS before success.
 The prepared result is evidence for review, not a finished digest. Home's existing
 `~/.k2b-env` must be a regular file owned by Keith with mode 0600. A credential
 failure blocks processing; do not copy or silently change credential files.
+The fixed Groq request identifies this client as `K2B-Reel/1`. Provider HTTP
+failures report only their numeric status, without headers, credentials or body.
 
 Read the entire transcript. Reconcile the labelled overlaps against the original
 chunk responses. Review every returned contact sheet in the documented reading

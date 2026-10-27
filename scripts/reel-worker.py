@@ -295,14 +295,17 @@ def transcribe(path):
     body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.flac"\r\nContent-Type: audio/flac\r\n\r\n'.encode())
     body.extend(data); body.extend(f'\r\n--{boundary}--\r\n'.encode())
     request = urllib.request.Request('https://api.groq.com/openai/v1/audio/transcriptions', data=body,
-              headers={'Content-Type':'multipart/form-data; boundary='+boundary,'Authorization':'Bearer '+groq_key()})
+              headers={'Content-Type':'multipart/form-data; boundary='+boundary,'Authorization':'Bearer '+groq_key(),'User-Agent':'K2B-Reel/'+VERSION})
     # Do not follow redirects with an Authorization header.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,*args,**kwargs): raise Blocked('transcription_redirect')
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
-    with opener.open(request, timeout=90) as r:
-        data=r.read(4*1024**2+1); need(len(data)<=4*1024**2,'transcript_response_limit')
-        return json.loads(data)
+    try:
+        with opener.open(request, timeout=90) as r:
+            data=r.read(4*1024**2+1); need(len(data)<=4*1024**2,'transcript_response_limit')
+            return json.loads(data)
+    except urllib.error.HTTPError as error:
+        raise Blocked('transcription_http_'+str(error.code)) from None
 
 
 def config():
