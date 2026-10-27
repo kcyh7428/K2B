@@ -2,6 +2,8 @@
 
 Prepared method only. Real source copies, NAS payload writes and restore execution remain held for the manager's exact release. This package provides observations and command plans, not a controller that freezes writers or performs recovery.
 
+For proposed current/history/private-state classes outside the delivered semantic verifier, use the separately reviewed [one-time consumer contract](2026-10-27_manual-run-consumer-contract.md). Its frozen P2 component is preparation input until actually delivered and rebound. Do not route every broader path through this narrower helper, omit rejected evidence, or reuse this baseline verdict as approval of broader execution. The original `2975eb5` delivery/activation receipts remain immutable evidence of the earlier six-file package.
+
 ## Before release
 
 1. Bind delivered P2 commit `c3849ee7186d27bbeda89f2981b8b4b2ac2014af`, approved by Kimi job `2026-10-26T23-25-32Z_5a0469`. Its CLI SHA-256 is `26f1201cabbcf4a275bf7d4d96a0b02295d83398cba55335bc4333ec729f8bbb`; module SHA-256 is `30d5d303baf021065537b60b55a17acdc94cd36e1e9a05a053d73378fc7fe03d`. The delivered `plans/2026-10-27_k2b-nas-manual-recovery-rehearsal.md` SHA-256 is `47cbeb4b00832893a72648e03beb93dccbb97e5571fa4a71f34335791ae8edc1`. Recheck these actual bytes before execution. Bind this orchestration commit and approving review separately.
