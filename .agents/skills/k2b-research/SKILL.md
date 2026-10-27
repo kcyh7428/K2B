@@ -84,8 +84,21 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 Detect URL type and handle accordingly:
 
 **Facebook Reels, videos and posts:**
-The following evidence procedure applies to every separately authorized Mini
-capture, with Facebook as the current routing case. It grants no new source scope.
+For the installed on-demand capture/digest workflow, first read
+`references/reel-workflow.md`. Use its fixed reviewed commands and saved command
+permissions rather than generating temporary capture, transfer or transcription
+scripts for each link. Installed availability and permission acceptance must be
+verified from current command results; the reference is not an activation receipt.
+
+For the installed route, `references/reel-workflow.md` governs command invocation,
+fixed budgets and result collection. The helper performs the storage and provenance
+checks described below; the coordinator verifies its returned evidence rather than
+repeating those operations through temporary scripts. The following manual procedure
+governs separately authorized captures outside that installed route and states the
+evidence invariants both routes must preserve. It grants no new source scope.
+A blocked or failed installed route stops that task and is reported. Entering the
+manual procedure requires fresh explicit Keith authorization naming that capture;
+a routine link submission does not authorize this fallback or a gate bypass.
 Use the separately authorized Mini browser/capture worker. Home and SJM supply
 the bounded task context and verify returned evidence; browser login stays on
 the Mini. The former Mini K2B deployment remains retired. Read

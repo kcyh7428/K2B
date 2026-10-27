@@ -30,6 +30,9 @@ k2b-remote/*.db
 # Temp media
 workspace/uploads/
 
+# Private Reel digest drafts stay local; the NAS retains completed results.
+/output/reel-digests/
+
 # Autoresearch iteration logs (per-skill, not committed)
 **/eval/results.tsv
 
