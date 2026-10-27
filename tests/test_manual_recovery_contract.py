@@ -890,3 +890,250 @@ def test_contract_error_no_path_leak(component, tmp_path):
     with pytest.raises(mrc.ContractError) as exc:
         mrc.prepare_selection(component, root, ["missing.txt"], [], w)
     assert str(root) not in str(exc.value)
+
+
+def _control_fixture(component, tmp_path, name="source"):
+    root = _new_root(tmp_path, name)
+    _write(root / "retained.txt", b"invented retained evidence")
+    window = mrc.Window(60)
+    selection = mrc.prepare_selection(component, root, ["retained.txt"], [], window)
+    selection = mrc.bind_hashes(component, selection,
+        component.shasum_files([str(root / "retained.txt")]), window)
+    collections = [{"id": name, "selection": selection, "alias_control_sha256": None}]
+    bindings = {key: "a" * 64 for key in mrc._CONTROL_BINDING_KEYS}
+    bindings.update(operator_commit=mrc.OPERATOR_COMMIT,
+        operator_manifest_sha256=mrc.operator_manifest_sha256(),
+        standard_component_sha256=mrc.P2_TEST_SHA256,
+        sqlite_component_sha256=mrc.STANDARD_MANIFEST["scripts/lib/k2b_sqlite_recovery.py"])
+    interval = {"id": "controlled-interval", "started_at_ns": 1,
+                "finished_at_ns": 1001, "evidence_sha256": "b" * 64}
+    sqlite = []
+    return collections, bindings, interval, sqlite
+
+
+@pytest.mark.parametrize("mutation", [None, "count", "swapped", "replayed", "bindings", "interval", "selection", "dependency-endpoint", "dependency-pair", "dependency-empty", "dependency-digest"])
+def test_exact_four_fixed_control_consistency(component, tmp_path, monkeypatch, mutation):
+    fixtures = [_control_fixture(component, tmp_path, name) for name in ("A", "B", "C", "D")]
+    raws = [mrc.encode_control(*fixture) for fixture in fixtures]
+    digests = [hashlib.sha256(raw).hexdigest() for raw in raws]
+    expected_ids = tuple(fixture[0][0]["id"] for fixture in fixtures)
+    expected_selection_digests = tuple(
+        fixture[0][0]["selection"]["selection_digest"] for fixture in fixtures)
+    expected = dict(
+        expected_ids=expected_ids,
+        expected_selection_digests=expected_selection_digests,
+        expected_bindings=dict(fixtures[0][1]),
+        expected_interval=dict(fixtures[0][2]),
+        expected_dependencies=[
+            [(0, "retained.txt", fixtures[0][0][0]["selection"]["sha256"]["retained.txt"]),
+             (1, "retained.txt", fixtures[1][0][0]["selection"]["sha256"]["retained.txt"])],
+            [(2, "retained.txt", fixtures[2][0][0]["selection"]["sha256"]["retained.txt"]),
+             (3, "retained.txt", fixtures[3][0][0]["selection"]["sha256"]["retained.txt"])],
+        ])
+    expected["expected_dependencies_sha256"] = hashlib.sha256(
+        json.dumps(expected["expected_dependencies"], sort_keys=True,
+                   separators=(",", ":"), ensure_ascii=False,
+                   allow_nan=False).encode("utf-8")).hexdigest()
+    if mutation == "count":
+        raws = raws[:3]; digests = digests[:3]
+    elif mutation == "swapped":
+        raws[0], raws[1] = raws[1], raws[0]
+        digests[0], digests[1] = digests[1], digests[0]
+    elif mutation == "replayed":
+        raws[1], digests[1] = raws[0], digests[0]
+    elif mutation == "bindings":
+        fixtures[1][1]["workflow_interval_sha256"] = "f" * 64
+        raws[1] = mrc.encode_control(*fixtures[1])
+        digests[1] = hashlib.sha256(raws[1]).hexdigest()
+    elif mutation == "interval":
+        fixtures[1][2]["id"] = "other-interval"
+        raws[1] = mrc.encode_control(*fixtures[1])
+        digests[1] = hashlib.sha256(raws[1]).hexdigest()
+    elif mutation == "selection":
+        expected["expected_selection_digests"] = ("f" * 64, "e" * 64, "d" * 64, "c" * 64)
+    elif mutation == "dependency-endpoint":
+        expected["expected_dependencies"][0][1] = (1, "missing.txt", "f" * 64)
+        expected["expected_dependencies_sha256"] = hashlib.sha256(
+            json.dumps(expected["expected_dependencies"], sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=False,
+                       allow_nan=False).encode("utf-8")).hexdigest()
+    elif mutation == "dependency-pair":
+        expected["expected_dependencies"][0][1] = expected["expected_dependencies"][0][0]
+        expected["expected_dependencies_sha256"] = hashlib.sha256(
+            json.dumps(expected["expected_dependencies"], sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=False,
+                       allow_nan=False).encode("utf-8")).hexdigest()
+    elif mutation == "dependency-empty":
+        expected["expected_dependencies"] = []
+        expected["expected_dependencies_sha256"] = hashlib.sha256(b"[]").hexdigest()
+    elif mutation == "dependency-digest":
+        expected["expected_dependencies_sha256"] = "f" * 64
+    call = lambda: mrc.decode_fixed_controls(
+        raws, digests, **expected)
+    if mutation is None:
+        controls = call()
+        assert [c["collections"][0]["id"] for c in controls] == ["A", "B", "C", "D"]
+    elif mutation == "count":
+        with pytest.raises(mrc.ContractError, match="^control_aggregate_expected$"):
+            call()
+    elif mutation in ("swapped", "replayed", "bindings", "interval", "selection"):
+        with pytest.raises(mrc.ContractError, match="^control_aggregate_binding$"):
+            call()
+    elif mutation in ("dependency-endpoint", "dependency-pair", "dependency-empty",
+                      "dependency-digest"):
+        with pytest.raises(mrc.ContractError, match="^control_aggregate_dependencies$"):
+            call()
+
+
+@pytest.mark.parametrize("bound", ["files", "members", "bytes", "paths"])
+def test_fixed_four_aggregate_bounds_remain_enforced(component, tmp_path, monkeypatch, bound):
+    fixtures = [_control_fixture(component, tmp_path, name) for name in ("A", "B", "C", "D")]
+    selections = [f[0][0]["selection"] for f in fixtures]
+    dependencies = [[(0, "retained.txt", selections[0]["sha256"]["retained.txt"]),
+                     (1, "retained.txt", selections[1]["sha256"]["retained.txt"])]]
+    expected = dict(expected_ids=("A", "B", "C", "D"),
+        expected_selection_digests=[s["selection_digest"] for s in selections],
+        expected_bindings=fixtures[0][1], expected_interval=fixtures[0][2],
+        expected_dependencies=dependencies,
+        expected_dependencies_sha256=hashlib.sha256(json.dumps(dependencies, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest())
+    raws = [mrc.encode_control(*f) for f in fixtures]
+    digests = [hashlib.sha256(raw).hexdigest() for raw in raws]
+    if bound == "files": monkeypatch.setattr(mrc, "MAX_COLLECTION_FILES", 3)
+    if bound == "members": monkeypatch.setattr(mrc, "MAX_MEMBERS", 7)
+    if bound == "bytes": monkeypatch.setattr(mrc, "MAX_TOTAL_BYTES", max(s["profile"]["total_bytes"] for s in selections))
+    if bound == "paths": monkeypatch.setattr(mrc, "MAX_CUMULATIVE_PATH_BYTES", max(s["profile"]["cumulative_path_bytes"] for s in selections))
+    with pytest.raises(mrc.ContractError, match="^control_aggregate$"):
+        mrc.decode_fixed_controls(raws, digests, **expected)
+
+
+def test_actual_count_projection_fits_explicit_four_collection_allowance():
+    assert mrc.FIXED_COLLECTION_COUNT == 4
+    assert sum((3339, 14003, 1014, 2)) == 18358
+    assert mrc.MAX_FILES == 16384
+    assert mrc.MAX_COLLECTION_FILES == 18358 + 3 * mrc._CONTROL_MAX_SQLITE == 18454
+    assert 18358 < mrc.MAX_COLLECTION_FILES
+
+
+def test_control_recovers_complete_selections_and_interval_claim(component, tmp_path):
+    args = _control_fixture(component, tmp_path)
+    raw = mrc.encode_control(*args)
+    recovered = mrc.decode_control(raw, hashlib.sha256(raw).hexdigest())
+    assert recovered["collections"] == args[0]
+    assert recovered["claim"] == "exact_admitted_collection_controlled_interval"
+    assert recovered["sqlite_bundles"] == args[3]
+    with pytest.raises(mrc.ContractError, match="control_digest_mismatch"):
+        mrc.decode_control(raw + b" ", hashlib.sha256(raw).hexdigest())
+
+
+@pytest.mark.parametrize("mutation", ["missing-binding", "wrong-operator", "wrong-pin", "boolean-time", "too-long", "unknown-field", "duplicate-sqlite"])
+def test_control_schema_refuses_invalid_original(component, tmp_path, mutation):
+    args = _control_fixture(component, tmp_path)
+    body = json.loads(mrc.encode_control(*args))
+    if mutation == "missing-binding": body["bindings"].pop("owner_launch_sha256")
+    if mutation == "wrong-operator": body["bindings"]["operator_commit"] = "a" * 40
+    if mutation == "wrong-pin": body["bindings"]["operator_manifest_sha256"] = "0" * 64
+    if mutation == "boolean-time": body["interval"]["started_at_ns"] = True
+    if mutation == "too-long": body["interval"]["finished_at_ns"] = 601_000_000_001
+    if mutation == "unknown-field": body["approved"] = True
+    if mutation == "duplicate-sqlite": body["sqlite_bundles"] = [{"invalid": True}] * 2
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(mrc.ContractError):
+        mrc.decode_control(raw, hashlib.sha256(raw).hexdigest())
+
+
+def test_control_duplicate_keys_and_noncanonical_refuse(component, tmp_path):
+    raw = mrc.encode_control(*_control_fixture(component, tmp_path))
+    duplicate = raw.replace(b'"version":1', b'"version":1,"version":1')
+    for bad in [duplicate, raw + b"\n"]:
+        with pytest.raises(mrc.ContractError):
+            mrc.decode_control(bad, hashlib.sha256(bad).hexdigest())
+
+
+def test_control_rejects_multiple_collections_per_fixed_two_object_run(component, tmp_path):
+    first = _control_fixture(component, tmp_path, "first")
+    second = _control_fixture(component, tmp_path, "second")
+    with pytest.raises(mrc.ContractError, match="^control_collections$"):
+        mrc.encode_control(first[0] + second[0], *first[1:])
+    duplicate = dict(first[0][0], id="another-id")
+    with pytest.raises(mrc.ContractError, match="^control_collections$"):
+        mrc.encode_control(first[0] + [duplicate], *first[1:])
+
+
+def test_control_keeps_existing_single_selection_bounds(component, tmp_path, monkeypatch):
+    args = _control_fixture(component, tmp_path)
+    assert mrc.encode_control(*args)
+    monkeypatch.setattr(mrc, "MAX_FILES", 0)
+    with pytest.raises(mrc.ContractError, match="^selection_corrupt$"):
+        mrc.encode_control(*args)
+
+
+def test_control_size_bound_refuses_without_truncation(component, tmp_path, monkeypatch):
+    args = _control_fixture(component, tmp_path)
+    raw = mrc.encode_control(*args)
+    monkeypatch.setattr(mrc, "CONTROL_MAX_BYTES", len(raw) - 1)
+    with pytest.raises(mrc.ContractError, match="control_too_large"):
+        mrc.encode_control(*args)
+    with pytest.raises(mrc.ContractError, match="control_too_large"):
+        mrc.decode_control(raw, hashlib.sha256(raw).hexdigest())
+
+
+@pytest.mark.parametrize("mutation", [None, "missing-parent", "extra-directory", "extra-observed-member", "missing-ancestor", "missing-parent-edge"])
+def test_sqlite_control_retains_exact_bundle_receipt_and_profile(component, tmp_path, mutation):
+    collections, bindings, interval, _ = _control_fixture(component, tmp_path)
+    source = Path(collections[0]["selection"]["root"])
+    names = ["db/snapshot.sqlite3", "db/receipt.json", "db/report.json"]
+    for name in names:
+        _write(source / name, b"invented metadata fixture, not a compatible database")
+    window = mrc.Window(60)
+    selection = mrc.prepare_selection(component, source, ["retained.txt", *names], [], window)
+    bound = mrc.bind_hashes(component, selection, component.shasum_files(
+        [str(source / name) for name in ["retained.txt", *names]]), window)
+    collections[0]["selection"] = bound
+    sqlite = [{"id": "memory", "profile": "memory", "receipt_sha256": bound["sha256"]["db/receipt.json"],
+               "sqlite_version": "3.53.2", "interval_evidence_sha256": "d" * 64, "relative_root": "db"}]
+    if mutation is not None:
+        if mutation == "missing-parent":
+            del bound["parent_modes"]["db"]
+            del bound["membership"]["db"]
+            bound["profile"]["member_count"] -= 1
+        elif mutation == "extra-directory":
+            bound["parent_modes"]["db/extra"] = 0o700
+            bound["membership"]["db/extra"] = []
+            bound["membership"]["db"].append("extra")
+            bound["membership"]["db"].sort()
+            bound["empty_dirs"].append("db/extra")
+            bound["profile"]["member_count"] += 1
+        elif mutation == "extra-observed-member":
+            bound["membership"]["db"].append("unadmitted")
+            bound["membership"]["db"].sort()
+        elif mutation == "missing-ancestor":
+            for row in bound["files"]:
+                if row["rel"].startswith("db/"):
+                    old = row["rel"]
+                    row["rel"] = "outer/" + old
+                    bound["sha256"][row["rel"]] = bound["sha256"].pop(old)
+            bound["parent_modes"]["outer/db"] = bound["parent_modes"].pop("db")
+            bound["membership"]["outer/db"] = bound["membership"].pop("db")
+            bound["membership"]["."] = sorted("outer" if n == "db" else n for n in bound["membership"]["."])
+            sqlite[0]["relative_root"] = "outer/db"
+        elif mutation == "missing-parent-edge":
+            bound["membership"]["."].remove("db")
+        bound["selection_digest"] = mrc._selection_digest(bound)
+        # The original schema accepts the internally consistent forged map.
+        mrc._verify_selection(bound)
+        with pytest.raises(mrc.ContractError, match="^control_sqlite_members$"):
+            mrc.encode_control(collections, bindings, interval, sqlite)
+        body = {"version": 1, "claim": mrc.CONTROL_CLAIM, "collections": collections,
+                "bindings": bindings, "interval": interval, "sqlite_bundles": sqlite}
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        with pytest.raises(mrc.ContractError, match="^control_sqlite_members$"):
+            mrc.decode_control(raw, hashlib.sha256(raw).hexdigest())
+        return
+    raw = mrc.encode_control(collections, bindings, interval, sqlite)
+    assert mrc.decode_control(raw, hashlib.sha256(raw).hexdigest())["sqlite_bundles"] == sqlite
+    changed = dict(sqlite[0], receipt_sha256="0" * 64)
+    with pytest.raises(mrc.ContractError, match="control_sqlite_receipt"):
+        mrc.encode_control(collections, bindings, interval, [changed])
+    changed = dict(sqlite[0], relative_root="../escaping")
+    with pytest.raises(mrc.ContractError):
+        mrc.encode_control(collections, bindings, interval, [changed])
