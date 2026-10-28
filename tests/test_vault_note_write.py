@@ -21,6 +21,341 @@ SCRIPT = os.path.join(REPO_ROOT, "scripts", "vault-note-write.py")
 
 MAX_NOTE_BYTES = 2 * 1024 * 1024
 
+def legacy_count_pages_scoped(dir_abs):
+    """Designated compile count_pages semantics, minus .sync-conflict-*.md
+    artifacts. Scoped to this writer: compile-index-update.py is not edited
+    and its global semantics are unchanged."""
+    if not os.path.isdir(dir_abs):
+        return 0
+    n = 0
+    for entry in os.listdir(dir_abs):
+        path = os.path.join(dir_abs, entry)
+        if os.path.islink(path):
+            continue
+        if os.path.isdir(path):
+            # A nested folder without its own index is owned by this index.
+            if entry.casefold() != "shipped" and not os.path.exists(os.path.join(path, "index.md")):
+                n += legacy_count_pages_scoped(path)
+            continue
+        if not entry.endswith(".md") or entry == "index.md":
+            continue
+        if ".sync-conflict-" in entry:
+            continue
+        if os.path.isfile(os.path.join(dir_abs, entry)):
+            n += 1
+    return n
+
+def test_count_pages_scoped_real_fs_counts_and_no_child_probes(tmp_path, monkeypatch):
+    mod = load_module()
+    root = tmp_path / "vault"
+    root.mkdir()
+    (root / "a.md").write_text("x", encoding="utf-8")
+    (root / "index.md").write_text("x", encoding="utf-8")
+    (root / "b.MD").write_text("x", encoding="utf-8")
+    (root / "note.sync-conflict-20200101.md").write_text("x", encoding="utf-8")
+    plain = root / "plain"
+    plain.mkdir()
+    (plain / "c.md").write_text("x", encoding="utf-8")
+    plain_nested = plain / "deeper"
+    plain_nested.mkdir()
+    (plain_nested / "d.md").write_text("x", encoding="utf-8")
+    indexed = root / "indexed"
+    indexed.mkdir()
+    (indexed / "index.md").write_text("x", encoding="utf-8")
+    (indexed / "e.md").write_text("x", encoding="utf-8")
+    shipped = root / "ShIpPeD"
+    shipped.mkdir()
+    (shipped / "f.md").write_text("x", encoding="utf-8")
+    link_file = root / "link.md"
+    link_file.symlink_to(root / "a.md")
+    link_dir = root / "linkdir"
+    link_dir.symlink_to(plain)
+    expected = legacy_count_pages_scoped(str(root))
+    assert expected == 3
+    visited = []
+    original_lstat = os.lstat
+    def counting_lstat(path, *args, **kwargs):
+        visited.append(os.path.normpath(str(path)))
+        return original_lstat(path, *args, **kwargs)
+    monkeypatch.setattr(mod.os, "lstat", counting_lstat)
+    probes = []
+    original_islink = os.path.islink
+    def counting_islink(path):
+        probes.append(("islink", os.path.normpath(str(path))))
+        return original_islink(path)
+    monkeypatch.setattr(mod.os.path, "islink", counting_islink)
+    original_isfile = os.path.isfile
+    def counting_isfile(path):
+        probes.append(("isfile", os.path.normpath(str(path))))
+        return original_isfile(path)
+    monkeypatch.setattr(mod.os.path, "isfile", counting_isfile)
+    assert mod.count_pages_scoped(str(root)) == expected
+    guard_visited = {os.path.normpath(str(root)), os.path.normpath(str(plain)), os.path.normpath(str(plain_nested))}
+    assert set(visited) == guard_visited
+    assert probes == []
+
+def test_count_pages_scoped_missing_and_nondir_root(tmp_path):
+    mod = load_module()
+    missing = tmp_path / "nope"
+    assert mod.count_pages_scoped(str(missing)) == legacy_count_pages_scoped(str(missing)) == 0
+    file_root = tmp_path / "file.md"
+    file_root.write_text("x", encoding="utf-8")
+    assert mod.count_pages_scoped(str(file_root)) == legacy_count_pages_scoped(str(file_root)) == 0
+
+def test_count_pages_scoped_fifo_excluded(tmp_path):
+    mod = load_module()
+    root = tmp_path / "vault"
+    root.mkdir()
+    (root / "real.md").write_text("x", encoding="utf-8")
+    fifo_path = root / "pipe.md"
+    try:
+        os.mkfifo(str(fifo_path))
+    except (AttributeError, OSError):
+        pytest.skip("FIFO not supported on this platform")
+    assert stat.S_ISFIFO(os.lstat(str(fifo_path)).st_mode)
+    assert mod.count_pages_scoped(str(root)) == legacy_count_pages_scoped(str(root)) == 1
+
+def test_count_pages_scoped_listing_error_propagates(tmp_path, monkeypatch):
+    mod = load_module()
+    root = tmp_path / "vault"
+    root.mkdir()
+    (root / "a.md").write_text("x", encoding="utf-8")
+    real_listdir = os.listdir
+    real_scandir = os.scandir
+    target = os.path.normpath(str(root))
+    def bad_listdir(path):
+        if os.path.normpath(str(path)) == target:
+            raise PermissionError("denied")
+        return real_listdir(path)
+    def bad_scandir(path):
+        if os.path.normpath(str(path)) == target:
+            raise PermissionError("denied")
+        return real_scandir(path)
+    monkeypatch.setattr(mod.os, "listdir", bad_listdir)
+    monkeypatch.setattr(mod.os, "scandir", bad_scandir)
+    with pytest.raises(PermissionError):
+        mod.count_pages_scoped(str(root))
+
+def test_count_pages_scoped_nested_permission_error_propagates(tmp_path, monkeypatch):
+    mod = load_module()
+    root = tmp_path / "vault"
+    root.mkdir()
+    (root / "a.md").write_text("x", encoding="utf-8")
+    sub = root / "sub"
+    sub.mkdir()
+    (sub / "b.md").write_text("x", encoding="utf-8")
+    real_scandir = os.scandir
+    real_listdir = os.listdir
+    target = os.path.normpath(str(sub))
+    def bad_scandir(path):
+        if os.path.normpath(str(path)) == target:
+            raise PermissionError("denied")
+        return real_scandir(path)
+    def bad_listdir(path):
+        if os.path.normpath(str(path)) == target:
+            raise PermissionError("denied")
+        return real_listdir(path)
+    monkeypatch.setattr(mod.os, "scandir", bad_scandir)
+    monkeypatch.setattr(mod.os, "listdir", bad_listdir)
+    with pytest.raises(PermissionError):
+        mod.count_pages_scoped(str(root))
+
+
+@pytest.mark.parametrize("failure", ["all", "is_symlink", "is_dir", "is_file"])
+def test_count_pages_scoped_entry_metadata_error_suppressed(tmp_path, monkeypatch, failure):
+    mod = load_module()
+    (tmp_path / "good.md").write_text("x", encoding="utf-8")
+    (tmp_path / "bad.md").write_text("x", encoding="utf-8")
+    real_scandir = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self.entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_symlink(self):
+            if self.name == "bad.md" and failure in ("all", "is_symlink"):
+                raise PermissionError("metadata denied")
+            return self.entry.is_symlink()
+
+        def is_dir(self, *, follow_symlinks):
+            if self.name == "bad.md" and failure in ("all", "is_dir"):
+                raise PermissionError("metadata denied")
+            return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+        def is_file(self, *, follow_symlinks):
+            if self.name == "bad.md" and failure in ("all", "is_file"):
+                raise PermissionError("metadata denied")
+            return self.entry.is_file(follow_symlinks=follow_symlinks)
+
+    class Scan:
+        def __enter__(self):
+            self.scan = real_scandir(tmp_path)
+            return (Entry(entry) for entry in self.scan)
+
+        def __exit__(self, *args):
+            self.scan.close()
+
+    # Exercise the actual old os.path helpers with underlying syscall failures.
+    real_stat, real_lstat = os.stat, os.lstat
+    bad_path = str(tmp_path / "bad.md")
+    stat_calls = 0
+
+    def failing_stat(path, *args, **kwargs):
+        nonlocal stat_calls
+        if os.fspath(path) == bad_path:
+            stat_calls += 1
+            if (failure == "all" or failure == "is_dir" and stat_calls == 1
+                    or failure == "is_file" and stat_calls == 2):
+                raise PermissionError("metadata denied")
+        return real_stat(path, *args, **kwargs)
+
+    def failing_lstat(path, *args, **kwargs):
+        if os.fspath(path) == bad_path and failure in ("all", "is_symlink"):
+            raise PermissionError("metadata denied")
+        return real_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as legacy_patch:
+        legacy_patch.setattr(os, "stat", failing_stat)
+        legacy_patch.setattr(os, "lstat", failing_lstat)
+        expected = legacy_count_pages_scoped(str(tmp_path))
+    assert expected == (1 if failure in ("all", "is_file") else 2)
+    monkeypatch.setattr(mod.os, "scandir", lambda path: Scan())
+    assert mod.count_pages_scoped(str(tmp_path)) == expected
+
+
+def test_count_pages_scoped_iteration_error_propagates(tmp_path, monkeypatch):
+    mod = load_module()
+
+    class Scan:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            raise PermissionError("iteration denied")
+
+    monkeypatch.setattr(mod.os, "scandir", lambda path: Scan())
+    with pytest.raises(PermissionError):
+        mod.count_pages_scoped(str(tmp_path))
+
+
+def test_count_pages_scoped_failed_link_metadata_never_follows_targets(tmp_path, monkeypatch):
+    mod = load_module()
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "good.md").write_text("x", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "target.md").write_text("x", encoding="utf-8")
+    (root / "file-link.md").symlink_to(outside / "target.md")
+    (root / "dir-link").symlink_to(outside, target_is_directory=True)
+    links = {str(root / "file-link.md"), str(root / "dir-link")}
+    real_lstat, real_scandir = os.lstat, os.scandir
+
+    def denied_link_stat(path, *args, **kwargs):
+        if os.fspath(path) in links:
+            raise PermissionError("link metadata denied")
+        return real_lstat(path, *args, **kwargs)
+
+    # The legacy false result can admit links through following path predicates.
+    # The released contract explicitly excludes symlinks even under this error.
+    with monkeypatch.context() as legacy_patch:
+        legacy_patch.setattr(os, "lstat", denied_link_stat)
+        assert legacy_count_pages_scoped(str(root)) == 3
+
+    class Entry:
+        def __init__(self, entry):
+            self.entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_symlink(self):
+            if self.path in links:
+                raise PermissionError("link metadata denied")
+            return self.entry.is_symlink()
+
+        def is_dir(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+        def is_file(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            return self.entry.is_file(follow_symlinks=follow_symlinks)
+
+    class Scan:
+        def __enter__(self):
+            self.scan = real_scandir(root)
+            return (Entry(entry) for entry in self.scan)
+
+        def __exit__(self, *args):
+            self.scan.close()
+
+    monkeypatch.setattr(os, "scandir", lambda path: Scan())
+    assert mod.count_pages_scoped(str(root)) == 1
+
+
+def test_count_pages_scoped_closes_scans_before_recursion(tmp_path, monkeypatch):
+    mod = load_module()
+    leaf = tmp_path
+    for _ in range(7):
+        leaf = leaf / "nested"
+        leaf.mkdir()
+    (leaf / "note.md").write_text("x", encoding="utf-8")
+    real_scandir = os.scandir
+    active = 0
+
+    class Scan:
+        def __init__(self, path):
+            self.path = path
+
+        def __enter__(self):
+            nonlocal active
+            active += 1
+            assert active == 1
+            self.scan = real_scandir(self.path)
+            return self.scan
+
+        def __exit__(self, *args):
+            nonlocal active
+            self.scan.close()
+            active -= 1
+
+    monkeypatch.setattr(os, "scandir", Scan)
+    assert mod.count_pages_scoped(str(tmp_path)) == 1
+    assert active == 0
+
+
+def test_count_pages_scoped_rejects_symlink_root_and_swapped_child(tmp_path, monkeypatch):
+    mod = load_module()
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "child"
+    child.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "external.md").write_text("x", encoding="utf-8")
+    link = tmp_path / "root-link"
+    link.symlink_to(outside, target_is_directory=True)
+    assert mod.count_pages_scoped(str(link)) == 0
+    real_scandir = os.scandir
+
+    class Scan:
+        def __enter__(self):
+            self.scan = real_scandir(root)
+            return self.scan
+
+        def __exit__(self, *args):
+            self.scan.close()
+            child.rmdir()
+            child.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(os, "scandir", lambda path: Scan())
+    assert mod.count_pages_scoped(str(root)) == 0
+
 FOLDER_INDEX_4COL = """---
 tags: [index, wiki]
 date: 2026-04-08
