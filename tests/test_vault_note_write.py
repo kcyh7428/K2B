@@ -21,6 +21,301 @@ SCRIPT = os.path.join(REPO_ROOT, "scripts", "vault-note-write.py")
 
 MAX_NOTE_BYTES = 2 * 1024 * 1024
 
+def test_scoped_bookkeeping_unrelated_not_counted(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    calls = []
+    master_path = vault_env["vault"] / "wiki/index.md"
+    master_path.write_text(master_path.read_text().replace("| Person pages | 1 |", "| Person pages | 17 |"))
+    real = mod.count_pages_scoped
+    people_dir = str((vault_env["vault"] / "wiki/people").resolve())
+    work_dir = str((vault_env["vault"] / "wiki/work").resolve())
+
+    def guarded(dir_abs):
+        calls.append(os.path.realpath(dir_abs))
+        if os.path.realpath(dir_abs).startswith(people_dir):
+            raise AssertionError("unrelated scope counted: " + dir_abs)
+        return real(dir_abs)
+
+    monkeypatch.setattr(mod, "count_pages_scoped", guarded)
+    real_scandir = os.scandir
+
+    def guarded_scandir(path):
+        if os.path.realpath(path).startswith(people_dir):
+            raise AssertionError("unrelated directory enumerated")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    rc = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc == 0, capsys.readouterr()
+    assert calls == [work_dir]
+    work_index = (vault_env["vault"] / "wiki/work/index.md").read_text(encoding="utf-8")
+    assert "Entries: 3" in work_index
+    master = (vault_env["vault"] / "wiki/index.md").read_text(encoding="utf-8")
+    # The intentionally stale people snapshot remains 17; work becomes 3.
+    assert "| [work/](work/index.md) | Work pages | 3 |" in master
+    assert "| [people/](people/index.md) | Person pages | 17 |" in master
+    assert "**Total wiki pages: 20**" in master
+
+def test_scoped_bookkeeping_indexed_nested_ownership(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    vault = vault_env["vault"]
+    nested = vault / "wiki/work/deep"
+    nested.mkdir(parents=True)
+    (nested / "index.md").write_text(FOLDER_INDEX_4COL, encoding="utf-8")
+    master = vault / "wiki/index.md"
+    master.write_text(
+        MASTER_INDEX.replace(
+            "| [work/](work/index.md) | Work pages | 2 |",
+            "| [work/](work/index.md) | Work pages | 2 |\n| [work/deep/](work/deep/index.md) | Deep | 2 |",
+        ).replace("**Total wiki pages: 3**", "**Total wiki pages: 5**"),
+        encoding="utf-8",
+    )
+    rc = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/deep/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc == 0, capsys.readouterr()
+    mtext = master.read_text(encoding="utf-8")
+    assert "| [work/deep/](work/deep/index.md) | Deep | 1 |" in mtext
+    # Parent work row untouched (snapshot), total recomputed from rows.
+    assert "| [work/](work/index.md) | Work pages | 2 |" in mtext
+    assert "**Total wiki pages: 4**" in mtext
+
+def test_scoped_bookkeeping_unindexed_nested_owned_by_ancestor(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    vault = vault_env["vault"]
+    nested = vault / "wiki/work/plain"
+    nested.mkdir(parents=True)
+    rc = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/plain/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc == 0, capsys.readouterr()
+    master = (vault / "wiki/index.md").read_text(encoding="utf-8")
+    assert "| [work/](work/index.md) | Work pages | 3 |" in master
+    assert "**Total wiki pages: 4**" in master
+
+def test_scoped_bookkeeping_missing_own_master_row_refused(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    vault = vault_env["vault"]
+    nested = vault / "wiki/work/deep"
+    nested.mkdir(parents=True)
+    (nested / "index.md").write_text(FOLDER_INDEX_4COL, encoding="utf-8")
+    # No row for work/deep in the master index.
+    master_before = (vault / "wiki/index.md").read_bytes()
+    rc = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/deep/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc == 1, capsys.readouterr()
+    assert (vault / "wiki/index.md").read_bytes() == master_before
+    assert not (nested / "work_new-note.md").exists()
+    assert receipts(vault_env) == []
+
+def test_scoped_bookkeeping_malformed_master_before_mutation(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    vault = vault_env["vault"]
+    master = vault / "wiki/index.md"
+    bad = MASTER_INDEX.replace(
+        "| [work/](work/index.md) | Work pages | 2 |",
+        "| [work/](work/index.md) | Work pages | lots |",
+    )
+    master.write_text(bad, encoding="utf-8")
+    note_before = (vault / "wiki/work/work_kingdee-hris-recovery.md").read_bytes()
+    rc = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc == 1, capsys.readouterr()
+    assert master.read_text(encoding="utf-8") == bad
+    assert (vault / "wiki/work/work_kingdee-hris-recovery.md").read_bytes() == note_before
+    assert not (vault / "wiki/work/work_new-note.md").exists()
+    assert receipts(vault_env) == []
+
+def test_scoped_bookkeeping_partial_index_failure_repair(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    real = inject_first_index_replace_failure(mod)
+    try:
+        rc = inproc_write(
+            mod, tmp_path, vault_env,
+            "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+        )
+    finally:
+        mod.atomic_replace = real
+    assert rc == 3, capsys.readouterr()
+    partial = _receipt_payload(receipts(vault_env)[-1])
+    assert partial["result"] == "partial"
+    note = vault_env["vault"] / "wiki/work/work_new-note.md"
+    assert note.exists()
+    # Retry same operation repairs.
+    rc2 = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc2 == 0, capsys.readouterr()
+    final = _receipt_payload(receipts(vault_env)[-1])
+    assert final["result"] in ("saved-local", "already-present")
+    assert final["backups"]["note_after"] == partial["backups"]["note_after"]
+    assert len(receipts(vault_env)) == 1
+    master = (vault_env["vault"] / "wiki/index.md").read_text(encoding="utf-8")
+    assert "| [work/](work/index.md) | Work pages | 3 |" in master
+    assert "**Total wiki pages: 4**" in master
+
+def test_scoped_bookkeeping_completed_replay_no_counts(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    rc = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc == 0, capsys.readouterr()
+    capsys.readouterr()
+    receipt_before = receipts(vault_env)[0].read_bytes()
+    calls = []
+    real = mod.count_pages_scoped
+
+    def guarded(dir_abs):
+        calls.append(dir_abs)
+        return real(dir_abs)
+
+    monkeypatch.setattr(mod, "count_pages_scoped", guarded)
+    master_before = (vault_env["vault"] / "wiki/index.md").read_bytes()
+    rc2 = inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    )
+    assert rc2 == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    assert out["result"] == "already-present"
+    assert calls == []
+    assert receipts(vault_env)[0].read_bytes() == receipt_before
+    assert (vault_env["vault"] / "wiki/index.md").read_bytes() == master_before
+
+@pytest.mark.parametrize("fault", [
+    "count", "negative", "duplicate", "mismatch", "escape", "total", "missing-total", "duplicate-total", "folder",
+])
+def test_scoped_bookkeeping_invalid_indices_before_write(vault_env, tmp_path, monkeypatch, capsys, fault):
+    mod = load_module()
+    vault = vault_env["vault"]
+    master = vault / "wiki/index.md"
+    folder = vault / "wiki/work/index.md"
+    row = "| [work/](work/index.md) | Work pages | 2 |"
+    if fault == "folder":
+        folder.write_text(folder.read_text().replace("Last updated:", "Broken header:"))
+    else:
+        replacements = {
+            "count": row.replace("2 |", "many |"),
+            "negative": row.replace("2 |", "-1 |"),
+            "duplicate": row + "\n" + row,
+            "mismatch": row.replace("(work/index.md)", "(work/other/index.md)"),
+            "escape": row.replace("(work/index.md)", "(../work/index.md)"),
+            "total": row,
+            "missing-total": row,
+            "duplicate-total": row,
+        }
+        text = master.read_text().replace(row, replacements[fault])
+        if fault == "total":
+            text = text.replace("**Total wiki pages: 3**", "**Total wiki pages: many**")
+        elif fault == "missing-total":
+            text = text.replace("**Total wiki pages: 3**", "")
+        elif fault == "duplicate-total":
+            text += "\n**Total wiki pages: 3**\n"
+        master.write_text(text)
+    before = (master.read_bytes(), folder.read_bytes())
+    monkeypatch.setattr(mod, "count_pages_scoped", lambda path: pytest.fail("counted before validation"))
+    assert inproc_write(mod, tmp_path, vault_env, "wiki/work/new.md", NOTE_NEW, "missing", "sum", "src") == 1
+    capsys.readouterr()
+    assert not (vault / "wiki/work/new.md").exists()
+    assert receipts(vault_env) == []
+    assert (master.read_bytes(), folder.read_bytes()) == before
+
+
+def test_scoped_bookkeeping_fresh_master_failure_is_partial_and_repairable(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    vault = vault_env["vault"]
+    master = vault / "wiki/index.md"
+    original = master.read_bytes()
+    real_replace = mod.atomic_replace
+
+    def concurrent_change(path, data, mode):
+        result = real_replace(path, data, mode)
+        if path.endswith("work_new-note.md"):
+            master.write_text(master.read_text().replace("| Work pages | 2 |", "| Work pages | bad |"))
+        return result
+
+    monkeypatch.setattr(mod, "atomic_replace", concurrent_change)
+    assert inproc_write(mod, tmp_path, vault_env, "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src") == 3
+    capsys.readouterr()
+    assert "| Work pages | bad |" in master.read_text()
+    partial = _receipt_payload(receipts(vault_env)[0])
+    assert partial["result"] == "partial"
+    assert (vault / "wiki/work/work_new-note.md").read_text() == NOTE_NEW
+    master.write_bytes(original)
+    monkeypatch.setattr(mod, "atomic_replace", real_replace)
+    assert inproc_write(mod, tmp_path, vault_env, "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src") == 0
+    capsys.readouterr()
+    final = _receipt_payload(receipts(vault_env)[0])
+    assert final["backups"]["note_after"] == partial["backups"]["note_after"]
+    assert "**Total wiki pages: 4**" in master.read_text()
+
+
+@pytest.mark.parametrize("grow_after_note", [False, True])
+def test_scoped_bookkeeping_master_size_bound(vault_env, tmp_path, monkeypatch, capsys, grow_after_note):
+    mod = load_module()
+    master = vault_env["vault"] / "wiki/index.md"
+    original = master.read_bytes()
+    monkeypatch.setattr(mod, "MAX_INDEX_BYTES", 4096)
+    oversized = original + b"\n" + b"x" * 4096
+    real_replace = mod.atomic_replace
+    if grow_after_note:
+        def grow(path, data, mode):
+            result = real_replace(path, data, mode)
+            if path.endswith("work_new-note.md"):
+                master.write_bytes(oversized)
+            return result
+        monkeypatch.setattr(mod, "atomic_replace", grow)
+    else:
+        master.write_bytes(oversized)
+    rc = inproc_write(mod, tmp_path, vault_env, "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src")
+    capsys.readouterr()
+    assert rc == (3 if grow_after_note else 1)
+    assert master.read_bytes() == oversized
+    note = vault_env["vault"] / "wiki/work/work_new-note.md"
+    assert note.exists() == grow_after_note
+    if not grow_after_note:
+        assert receipts(vault_env) == []
+        return
+    partial = _receipt_payload(receipts(vault_env)[0])
+    assert partial["result"] == "partial"
+    master.write_bytes(original)
+    monkeypatch.setattr(mod, "atomic_replace", real_replace)
+    assert inproc_write(mod, tmp_path, vault_env, "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src") == 0
+    capsys.readouterr()
+    final = _receipt_payload(receipts(vault_env)[0])
+    assert final["backups"]["note_after"] == partial["backups"]["note_after"]
+    assert len(receipts(vault_env)) == 1
+    assert "**Total wiki pages: 4**" in master.read_text()
+
+
+@pytest.mark.parametrize("valid_target", [False, True])
+def test_scoped_bookkeeping_child_index_symlink_policy(tmp_path, valid_target):
+    mod = load_module()
+    root = tmp_path / "scope"
+    child = root / "child"
+    child.mkdir(parents=True)
+    (root / "root.md").write_text("root")
+    (child / "child.md").write_text("child")
+    target = tmp_path / "external-index.md"
+    if valid_target:
+        target.write_text("metadata ownership only")
+    (child / "index.md").symlink_to(target)
+    # Existing exists policy treats a dangling index as unindexed. Neither
+    # the index target nor note contents are read by this metadata traversal.
+    assert mod.count_pages_scoped(str(root)) == (1 if valid_target else 2)
+
+
 def legacy_count_pages_scoped(dir_abs):
     """Designated compile count_pages semantics, minus .sync-conflict-*.md
     artifacts. Scoped to this writer: compile-index-update.py is not edited
@@ -1396,6 +1691,23 @@ def install_concepts(env):
     (folder / "index.md").write_text(CONCEPTS_INDEX, encoding="utf-8")
     for stem in CONCEPT_STEMS:
         (folder / (stem + ".md")).write_text(NOTE_CONCEPT_NEW, encoding="utf-8")
+    master = vault / "wiki/index.md"
+    text = master.read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if line.startswith("| [")]
+    anchors = [line for line in rows if "(people/index.md)" in line]
+    assert len(anchors) == 1
+    assert "(concepts/index.md)" not in text
+    existing_total = sum(int(line.split("|")[-2].strip()) for line in rows)
+    total_lines = [line for line in text.splitlines()
+                   if line.startswith("**Total wiki pages:")]
+    assert total_lines == ["**Total wiki pages: %d**" % existing_total]
+    count = len(CONCEPT_STEMS)
+    row = "| [concepts/](concepts/index.md) | Concept pages | %d |" % count
+    assert text.count(anchors[0]) == 1
+    text = text.replace(anchors[0], row + "\n" + anchors[0], 1)
+    text = text.replace(total_lines[0], "**Total wiki pages: %d**" % (existing_total + count), 1)
+    assert text.count(row) == 1
+    master.write_text(text, encoding="utf-8")
 
 
 def inproc_write(mod, tmp_path, env, note_rel, content, expected, summary, src="src",
@@ -1874,12 +2186,12 @@ def test_new_note_appearing_after_intent_is_refused(vault_env, tmp_path, monkeyp
 
 def test_partial_on_folder_index_decode_failure(vault_env, tmp_path, monkeypatch, capsys):
     mod = load_module()
-    calls = {"n": 0}
+    folder_index = vault_env["vault"] / "wiki/work/index.md"
+    target = folder_index.parent / "work_new-note.md"
     real_read = mod._read_index_bytes
 
     def fake_read(path, label):
-        calls["n"] += 1
-        if calls["n"] == 2:
+        if os.path.abspath(path) == str(folder_index) and target.exists():
             return b"\xff\xfe not utf-8"
         return real_read(path, label)
 
@@ -1899,28 +2211,98 @@ def test_partial_on_folder_index_decode_failure(vault_env, tmp_path, monkeypatch
     assert (vault_env["vault"] / "wiki/work/index.md").read_text(
         encoding="utf-8"
     ) == FOLDER_INDEX_4COL
+    partial = _receipt_payload(receipts(vault_env)[0])
+    note_before_retry = target.read_bytes()
+    operation = mod.operation_key(
+        "wiki/work/work_new-note.md", note_before_retry, "sum", None, "src", None
+    )
+    assert partial["operation"] == operation == receipts(vault_env)[0].stem
+    assert partial["expected_sha256"] == "missing"
+    assert partial["note_sha256"] == sha256_bytes(note_before_retry)
+    assert partial["result"] == "partial"
+    # The original missing expectation is accepted only as recorded_replay:
+    # matching unfinished receipt, unchanged note bytes and same operation.
+    monkeypatch.setattr(mod, "_read_index_bytes", real_read)
+    assert inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    ) == 0
+    capsys.readouterr()
+    assert len(receipts(vault_env)) == 1
+    final = _receipt_payload(receipts(vault_env)[0])
+    assert final["backups"]["note_after"] == partial["backups"]["note_after"]
+    assert final["operation"] == operation
+    assert final["result"] == "already-present"
+    for key in ("operation", "path", "note_sha256", "summary", "status",
+                "section", "source_ref", "expected_sha256"):
+        assert final[key] == partial[key]
+    assert final["expected_sha256"] == "missing"
+    assert target.read_bytes() == note_before_retry
+    repaired = folder_index.read_text(encoding="utf-8")
+    expected_folder = FOLDER_INDEX_4COL.replace(
+        "Last updated: 2026-09-01 | Entries: 2",
+        "Last updated: %s | Entries: 3" % _today(),
+    ) + "| [[work_new-note]] | - | sum | %s |\n" % _today()
+    assert repaired == expected_folder
+    master = (vault_env["vault"] / "wiki/index.md").read_text(encoding="utf-8")
+    expected_master = MASTER_INDEX.replace(
+        "| [work/](work/index.md) | Work pages | 2 |",
+        "| [work/](work/index.md) | Work pages | 3 |",
+    ).replace("**Total wiki pages: 3**", "**Total wiki pages: 4**")
+    assert master == expected_master
+    receipt_bytes = receipts(vault_env)[0].read_bytes()
+    assert inproc_write(
+        mod, tmp_path, vault_env,
+        "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src",
+    ) == 0
+    capsys.readouterr()
+    assert receipts(vault_env)[0].read_bytes() == receipt_bytes
+    assert folder_index.read_text(encoding="utf-8") == expected_folder
+    assert (vault_env["vault"] / "wiki/index.md").read_text(encoding="utf-8") == expected_master
+    assert target.read_bytes() == note_before_retry
+
+
+@pytest.mark.parametrize("fault", [
+    "absent", "operation", "path", "note_sha256", "summary", "status",
+    "section", "source_ref", "expected_sha256", "altered-note",
+])
+def test_missing_retry_requires_recorded_binding(vault_env, tmp_path, monkeypatch, capsys, fault):
+    mod = load_module()
+    rel = "wiki/work/work_new-note.md"
+    real_replace = inject_first_index_replace_failure(mod)
+    assert inproc_write(mod, tmp_path, vault_env, rel, NOTE_NEW, "missing", "sum", "src") == 3
+    capsys.readouterr()
+    monkeypatch.setattr(mod, "atomic_replace", real_replace)
+    receipt_path = receipts(vault_env)[0]
+    target = vault_env["vault"] / rel
+    if fault == "absent":
+        receipt_path.unlink()
+    elif fault == "altered-note":
+        target.write_text("External change", encoding="utf-8")
+    else:
+        payload = _receipt_payload(receipt_path)
+        payload[fault] = "mismatched binding"
+        receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+    watched = [target, target.parent / "index.md", vault_env["vault"] / "wiki/index.md"]
+    before = [path.read_bytes() for path in watched]
+    receipt_before = receipt_path.read_bytes() if receipt_path.exists() else None
+    assert inproc_write(mod, tmp_path, vault_env, rel, NOTE_NEW, "missing", "sum", "src") == (2 if fault == "altered-note" else 1)
+    capsys.readouterr()
+    assert [path.read_bytes() for path in watched] == before
+    assert (receipt_path.read_bytes() if receipt_path.exists() else None) == receipt_before
+    assert len(receipts(vault_env)) == (0 if fault == "absent" else 1)
 
 
 def test_partial_on_master_helper_systemexit(vault_env, tmp_path, monkeypatch, capsys):
     mod = load_module()
-    real_load = mod.load_compile_index
+    real_helper = mod.update_master_index_text
 
-    class FlakyModule:
-        def __init__(self, wrapped):
-            self._w = wrapped
-            self.calls = 0
+    def flaky(text, index_rel, new_count, compile_mod):
+        if new_count is not None:
+            raise SystemExit(3)
+        return real_helper(text, index_rel, new_count, compile_mod)
 
-        def __getattr__(self, name):
-            return getattr(self._w, name)
-
-        def rewrite_master_index(self):
-            self.calls += 1
-            if self.calls == 2:
-                raise SystemExit(3)
-            return self._w.rewrite_master_index()
-
-    flaky = FlakyModule(real_load())
-    monkeypatch.setattr(mod, "load_compile_index", lambda: flaky)
+    monkeypatch.setattr(mod, "update_master_index_text", flaky)
     master_before = (vault_env["vault"] / "wiki/index.md").read_bytes()
     rc = inproc_write(
         mod, tmp_path, vault_env,

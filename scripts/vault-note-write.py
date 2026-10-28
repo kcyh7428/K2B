@@ -519,15 +519,75 @@ def count_pages_scoped(dir_abs):
     return n
 
 
-def rewrite_master_index_scoped(compile_mod):
-    """Run the designated master rewrite with conflict artifacts excluded
-    from counts, restoring the helper immediately afterwards."""
-    original = compile_mod.count_pages
-    compile_mod.count_pages = count_pages_scoped
-    try:
-        return compile_mod.rewrite_master_index()
-    finally:
-        compile_mod.count_pages = original
+def update_master_index_text(text, index_rel, new_count, compile_mod):
+    """Validate ownership without counting; update only that row and total.
+
+    Unrelated counts remain their existing index snapshot. No filesystem
+    access or missing-row creation is part of ordinary-save bookkeeping.
+    """
+    parts = index_rel.split("/")
+    if (not index_rel.startswith("wiki/") or index_rel == "wiki/index.md"
+            or not index_rel.endswith("/index.md") or "\\" in index_rel
+            or any(part in ("", ".", "..") for part in parts)):
+        raise ShapeError("invalid owning index: " + index_rel)
+    owner_href = index_rel[len("wiki/"):]
+    if new_count is not None and (type(new_count) is not int or new_count < 0):
+        raise ShapeError("new count must be a nonnegative integer")
+
+    lines = text.split("\n")
+    headers = [i for i, line in enumerate(lines)
+               if line.strip() == compile_mod.MASTER_TABLE_HEADER]
+    if len(headers) != 1:
+        raise ShapeError("master index must contain exactly one table header")
+    start = headers[0] + 2
+    if start > len(lines) or not is_separator_row(lines[start - 1], 3):
+        raise ShapeError("master index table separator is malformed")
+    rows = []
+    hrefs = set()
+    for i in range(start, len(lines)):
+        if not lines[i].strip().startswith("|"):
+            break
+        match = compile_mod.MASTER_ROW_RE.fullmatch(lines[i])
+        if match is None:
+            raise ShapeError("malformed master index row")
+        href = match.group(2)
+        if (href.startswith("/") or "\\" in href
+                or not href.endswith("/index.md")
+                or any(part in ("", ".", "..") for part in href.split("/"))
+                or any(ord(char) < 32 or ord(char) == 127 for char in href)):
+            raise ShapeError("unsafe or noncanonical master href: " + href)
+        if href in hrefs:
+            raise ShapeError("duplicate master row href: " + href)
+        hrefs.add(href)
+        try:
+            count = int(match.group(4))
+        except ValueError:
+            raise ShapeError("master count cannot be parsed")
+        rows.append((i, match, count))
+    if not rows or owner_href not in hrefs:
+        raise ShapeError("no master row for owning index: " + owner_href)
+
+    total_lines = [line for line in lines
+                   if line.lstrip().startswith("**Total wiki pages:")]
+    if len(total_lines) != 1 or any(
+            compile_mod.MASTER_TOTAL_RE.fullmatch(line) is None
+            for line in total_lines):
+        raise ShapeError("master total line is missing, malformed or duplicated")
+    if new_count is None:
+        return text
+
+    total = 0
+    for i, match, count in rows:
+        if match.group(2) == owner_href:
+            count = new_count
+            a, z = match.span(4)
+            lines[i] = lines[i][:a] + str(count) + lines[i][z:]
+        total += count
+    out = "\n".join(lines)
+    match = compile_mod.MASTER_TOTAL_RE.search(out)
+    a, z = match.span(2)
+    out = out[:a] + str(total) + out[z:]
+    return out
 
 
 def split_row(line):
@@ -650,12 +710,14 @@ def select_owner_table(tables, target, section):
 
 
 def update_folder_index_text(
-    text, note_stem, summary, status, section, folder_dir_abs, compile_mod
+    text, note_stem, summary, status, section, folder_dir_abs, compile_mod,
+    page_count=None,
 ):
     """Apply the note row update plus date/count header line.
 
     Only the owning table's row changes; unrelated cells, rows, tables and
-    sections are preserved byte-for-byte.
+    sections are preserved byte-for-byte. None validates without a count;
+    mutation receives the caller's actual affected-scope count.
     """
     lines = text.split("\n")
     tables = parse_tables(lines)
@@ -701,14 +763,12 @@ def update_folder_index_text(
 
     updated = "\n".join(lines)
 
-    new_count = count_pages_scoped(folder_dir_abs)
-
     def header_sub(match):
         return (
             match.group(1)
             + today
             + match.group(3)
-            + str(new_count)
+            + (match.group(4) if page_count is None else str(page_count))
             + match.group(5)
         )
 
@@ -940,7 +1000,11 @@ def _write_locked(
         compile_mod,
     )
     try:
-        rewrite_master_index_scoped(compile_mod)
+        update_master_index_text(
+            _read_index_bytes(master_abs, "master index").decode("utf-8"), index_rel, None, compile_mod
+        )
+    except UnicodeDecodeError:
+        raise ShapeError("master index is not valid UTF-8")
     except SystemExit as exc:
         raise ShapeError(
             "master index shape validation failed (exit %s)" % exc.code
@@ -1055,6 +1119,7 @@ def _write_locked(
 
     # --- mutate indexes; failures here are partial (note already saved) ---
     try:
+        scope_count = count_pages_scoped(os.path.dirname(folder_index_abs))
         fresh_folder_bytes = _read_index_bytes(folder_index_abs, "folder index")
         backups["folder_index_before"] = durable_private_copy(
             "before", fresh_folder_bytes
@@ -1068,6 +1133,7 @@ def _write_locked(
             section,
             os.path.dirname(folder_index_abs),
             compile_mod,
+            page_count=scope_count,
         )
         backups["folder_index_after"] = durable_private_copy(
             "after", new_folder_text.encode("utf-8")
@@ -1083,11 +1149,13 @@ def _write_locked(
             stat.S_IMODE(os.lstat(folder_index_abs).st_mode),
         )
 
-        fresh_master_bytes = _read_bytes(master_abs)
+        fresh_master_bytes = _read_index_bytes(master_abs, "master index")
         backups["master_index_before"] = durable_private_copy(
             "before", fresh_master_bytes
         )
-        new_master_text = rewrite_master_index_scoped(compile_mod)
+        new_master_text = update_master_index_text(
+            fresh_master_bytes.decode("utf-8"), index_rel, scope_count, compile_mod
+        )
         backups["master_index_after"] = durable_private_copy(
             "after", new_master_text.encode("utf-8")
         )
