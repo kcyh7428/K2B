@@ -477,25 +477,45 @@ STATUS_COLUMN = {"status": 1}
 def count_pages_scoped(dir_abs):
     """Designated compile count_pages semantics, minus .sync-conflict-*.md
     artifacts. Scoped to this writer: compile-index-update.py is not edited
-    and its global semantics are unchanged."""
-    if not os.path.isdir(dir_abs):
+    and its global semantics are unchanged. Child classification uses
+    non-following DirEntry predicates; the legacy index-existence ownership
+    probe is retained. Individual metadata errors retain false-predicate
+    behavior, while directory listing failures propagate."""
+    try:
+        root_mode = os.lstat(dir_abs).st_mode
+    except (OSError, ValueError):
+        return 0
+    if not stat.S_ISDIR(root_mode):
         return 0
     n = 0
-    for entry in os.listdir(dir_abs):
-        path = os.path.join(dir_abs, entry)
-        if os.path.islink(path):
-            continue
-        if os.path.isdir(path):
-            # A nested folder without its own index is owned by this index.
-            if entry.casefold() != "shipped" and not os.path.exists(os.path.join(path, "index.md")):
-                n += count_pages_scoped(path)
-            continue
-        if not entry.endswith(".md") or entry == "index.md":
-            continue
-        if ".sync-conflict-" in entry:
-            continue
-        if os.path.isfile(os.path.join(dir_abs, entry)):
-            n += 1
+    subdirs = []
+    with os.scandir(dir_abs) as entries:
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    continue
+            except OSError:
+                pass
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                is_dir = False
+            if is_dir:
+                # A nested folder without its own index is owned by this index.
+                if entry.name.casefold() != "shipped" and not os.path.exists(os.path.join(entry.path, "index.md")):
+                    subdirs.append(entry.path)
+                continue
+            if not entry.name.endswith(".md") or entry.name == "index.md":
+                continue
+            if ".sync-conflict-" in entry.name:
+                continue
+            try:
+                if entry.is_file(follow_symlinks=False):
+                    n += 1
+            except OSError:
+                continue
+    for path in subdirs:
+        n += count_pages_scoped(path)
     return n
 
 
