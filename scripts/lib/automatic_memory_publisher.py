@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -29,6 +30,12 @@ JSON_REL = automatic_memory_proofs.JSON_REL
 NOTE_REL = automatic_memory_proofs.NOTE_REL
 INDEX_REL = "wiki/context/index.md"
 REPO = Path(__file__).resolve().parents[2]
+SMB_STORAGE = {
+    "kind": "smb",
+    "mount_point": "/Users/keithmbpm2/Projects/K2B-NAS",
+    "source": "//cheung@192.168.50.67/Keith-Work",
+    "relative_target": "K2B-Vault",
+}
 
 
 def _hash(data: bytes) -> str:
@@ -57,12 +64,79 @@ def _lock(path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+_SMB_PROBE = """
+import os, sys
+from pathlib import Path
+vault, mount, target = map(Path, sys.argv[1:])
+if mount.is_symlink() or target.is_symlink() or mount.resolve() != mount:
+    raise SystemExit(2)
+if not target.is_dir(): raise SystemExit(3)
+if vault.resolve() != target: raise SystemExit(4)
+if os.statvfs(target).f_flag & os.ST_RDONLY: raise SystemExit(5)
+if not os.access(target, os.W_OK): raise SystemExit(6)
+"""
+
+
+def _smb_readiness(vault: Path, storage: dict) -> dict:
+    """Validate this mount and a read-only child probe, with a five-second timeout.
+
+    This adds no deadline to existing publication I/O or rollback. Subprocess
+    termination depends on OS scheduling; it is not a universal kernel-I/O bound.
+    """
+    if not isinstance(storage, dict) or storage != SMB_STORAGE:
+        raise PermissionError("SMB storage binding is not authorized")
+    print("SMB readiness: five-second subprocess probes only; parent path/policy "
+          "reads and publication writes have no new deadline. OS-level stalls "
+          "may still require operator recovery.", file=sys.stderr)
+    mount = Path(storage["mount_point"])
+    target = mount / storage["relative_target"]
+    try:
+        result = subprocess.run(["/sbin/mount"], capture_output=True, text=True,
+                                timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PermissionError("current mount identity is unavailable") from exc
+    ancestors = []
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"(.+) on (/.*) \(([^)]+)\)", line)
+        if not match:
+            raise PermissionError("current mount identity is malformed")
+        source, mounted, flags = match.groups()
+        if target.is_relative_to(Path(mounted)):
+            ancestors.append((len(Path(mounted).parts), source, mounted,
+                              {flag.strip() for flag in flags.split(",")}))
+    if not ancestors:
+        raise PermissionError("approved SMB mount is absent")
+    _, source, mounted, flags = max(ancestors, key=lambda entry: entry[0])
+    if (source != storage["source"] or mounted != str(mount)
+        or "smbfs" not in flags or "read-only" in flags):
+        raise PermissionError("approved SMB mount is absent, replaced or read-only")
+    try:
+        subprocess.run([sys.executable, "-I", "-c", _SMB_PROBE,
+                        str(vault), str(mount), str(target)], cwd="/",
+                       capture_output=True, text=True, timeout=5, check=True)
+    except subprocess.CalledProcessError as exc:
+        reason = {2: "symlink", 3: "missing target", 4: "wrong vault target",
+                  5: "read-only target", 6: "target not writable"}.get(
+                      exc.returncode, "filesystem probe failure")
+        raise PermissionError("approved SMB target is unavailable: " + reason) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PermissionError("approved SMB target is unavailable") from exc
+    return {"storage": "smb-ready", "binding": dict(storage)}
+
+
 def live_preflight(vault: Path) -> dict:
-    """Check actual host, approved ledger fingerprint and live local Syncthing.
+    """Check Home ownership, policy and live legacy Syncthing or authorized SMB.
 
     Authorization file fields: schema_version=1, enabled=true, vault_root,
     policy_ledger_sha256 and exclusive_paths=[JSON_REL, NOTE_REL]. Provisioning
     this file is an explicit later activation decision, never a repair side effect.
+    Optional storage must equal SMB_STORAGE exactly; absent means legacy mode.
+    Operator activation must compare /sbin/mount output to SMB_STORAGE literally.
+    Alias resolution and policy reads in this parent, and later writes, retain
+    existing I/O behavior. A probe timeout is not a whole-publication deadline.
+    If stuck, keep publication disabled, inspect the owning process and pending
+    journal, restore the mount privately, and retry through the existing journal
+    recovery path. Never discard journals or fabricate a success receipt.
     Credentials are loaded only from this Mac's Syncthing XML and never returned.
     """
     home = Path.home().resolve()
@@ -81,6 +155,8 @@ def live_preflight(vault: Path) -> dict:
         or authority.get("vault_root") != str(configured)
         or authority.get("exclusive_paths") != [JSON_REL, NOTE_REL]):
         raise PermissionError("production publication ownership is not authorized")
+    storage_evidence = (_smb_readiness(vault, authority["storage"])
+                        if "storage" in authority else None)
     ledger = _safe(vault, "wiki/context/policy-ledger.jsonl").read_bytes()
     # Human-readable policy rules are not interpreted by a permissive matcher.
     # A changed ledger invalidates the explicitly reviewed activation approval.
@@ -93,6 +169,8 @@ def live_preflight(vault: Path) -> dict:
     digest = _hash(ledger)
     if authority.get("policy_ledger_sha256") != digest:
         raise PermissionError("policy ledger changed; publication needs a fresh policy review")
+    if storage_evidence is not None:
+        return {"policy_ledger_sha256": digest, **storage_evidence}
     config = ET.parse(home / "Library/Application Support/Syncthing/config.xml").getroot()
     folder = next((f for f in config.findall("folder")
                    if Path(f.get("path", "")).expanduser().resolve() == vault.resolve()), None)
@@ -198,7 +276,10 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
     check = preflight or live_preflight
     # Preflight before even creating the local publication lock.
     evidence = check(vault)
-    if (not isinstance(evidence, dict) or evidence.get("syncthing") != "idle"
+    if (not isinstance(evidence, dict)
+        or not (("storage" not in evidence and evidence.get("syncthing") == "idle")
+                or (evidence.get("storage") == "smb-ready"
+                    and evidence.get("binding") == SMB_STORAGE))
         or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("policy_ledger_sha256", "")))):
         raise PermissionError("publication preflight is not a healthy, policy-bound result")
     paths = {rel: _safe(vault, rel) for rel in
@@ -239,6 +320,8 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                     "artifact_sha256": artifact_hashes, "reconciliation_watermark": watermark,
                     "policy_ledger_sha256": evidence["policy_ledger_sha256"],
                     "index": INDEX_REL, "log_marker": "automatic-memory snapshot=" + digest}
+        if evidence.get("storage") == "smb-ready":
+            expected.update(storage="smb-ready", binding=dict(evidence["binding"]))
         # Provenance can grow without changing the semantic snapshot. Each
         # immutable receipt therefore identifies the full publication binding.
         identity = _publication_id(expected)
@@ -279,7 +362,7 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
             if before[rel] is not None and before[rel] not in known[rel]:
                 raise PermissionError("generated recall was modified by another writer; preserve it")
         # Rendering/staging is complete before either shared artifact changes.
-        # Recheck live sync immediately before writing; prior cached health is insufficient.
+        # Recheck live storage before writing; prior cached health is insufficient.
         if check(vault) != evidence:
             raise PermissionError("publication preflight changed during staging")
         for rel, old_hash in before.items():

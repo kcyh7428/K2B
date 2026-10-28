@@ -7,6 +7,8 @@ import importlib
 import json
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,176 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import automatic_memory
 import eod_capture
 from test_automatic_memory import _bundle
+
+
+@pytest.fixture
+def smb_environment(tmp_path, monkeypatch):
+    p = publisher()
+    vault, state = setup(tmp_path)
+    binding = dict(p.SMB_STORAGE)
+    mount = Path(binding['mount_point'])
+    target = mount / binding['relative_target']
+    original_resolve = Path.resolve
+    original_dir = Path.is_dir
+    original_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, 'resolve', lambda self, *a, **kw:
+                        target / self.relative_to(vault) if self.is_relative_to(vault)
+                        else self if self in (mount, target)
+                        else original_resolve(self, *a, **kw))
+    monkeypatch.setattr(Path, 'is_dir', lambda self:
+                        True if self in (mount, target) else original_dir(self))
+    monkeypatch.setattr(Path, 'is_symlink', lambda self:
+                        False if self in (mount, target) else original_symlink(self))
+    env = SimpleNamespace(p=p, vault=vault, state=state, binding=binding,
+                          mount=mount, target=target, flags=0, writable=True,
+                          output=f"/dev/disk on / (apfs, local)\n{binding['source']} on {mount} (smbfs, nodev, nosuid, mounted by keithmbpm2)\n")
+    original_run = p.subprocess.run
+    env.real_run = original_run
+    def run(args, **kwargs):
+        if args == ['/sbin/mount']:
+            assert kwargs['timeout'] == 5 and kwargs['check']
+            return SimpleNamespace(stdout=env.output)
+        if args[:3] == [sys.executable, '-I', '-c']:
+            assert kwargs['timeout'] == 5 and kwargs['check'] and kwargs['cwd'] == '/'
+            # Execute the exact child probe with synthetic filesystem boundaries.
+            with monkeypatch.context() as scoped:
+                scoped.setattr(sys, 'argv', ['probe', *args[4:]])
+                try:
+                    exec(args[3], {})
+                except SystemExit as exc:
+                    raise p.subprocess.CalledProcessError(exc.code, args) from exc
+            return SimpleNamespace(returncode=0)
+        return original_run(args, **kwargs)
+    monkeypatch.setattr(p.subprocess, 'run', run)
+    monkeypatch.setattr(p.os, 'statvfs', lambda path: SimpleNamespace(f_flag=env.flags))
+    monkeypatch.setattr(p.os, 'access', lambda path, mode: env.writable)
+    return env
+
+
+def test_smb_binding_ready(smb_environment):
+    e = smb_environment
+    assert e.p._smb_readiness(e.vault, e.binding) == {
+        'storage': 'smb-ready', 'binding': e.binding}
+
+
+@pytest.mark.parametrize('change', ['absent', 'source', 'mount', 'type', 'readonly',
+                                   'nested', 'malformed', 'stat-readonly', 'access',
+                                   'userless', 'alias', 'unrelated-malformed'])
+def test_smb_failed_readiness_makes_no_publication_writes(smb_environment, change):
+    e = smb_environment
+    if change == 'absent': e.output = '/dev/disk on / (apfs, local)\n'
+    if change == 'source': e.output = e.output.replace('192.168.50.67', '192.168.50.68')
+    if change == 'mount': e.output = e.output.replace(str(e.mount), str(e.mount) + '-old')
+    if change == 'type': e.output = e.output.replace('smbfs', 'nfs')
+    if change == 'readonly': e.output = e.output.replace('smbfs', 'smbfs, read-only')
+    if change == 'nested': e.output += f'/dev/disk on {e.target} (apfs, local)\n'
+    if change == 'malformed': e.output = 'malformed\n'
+    if change == 'stat-readonly': e.flags = e.p.os.ST_RDONLY
+    if change == 'access': e.writable = False
+    if change == 'userless': e.output = e.output.replace('cheung@', '')
+    if change == 'alias': e.output = e.output.replace('192.168.50.67', 'NAS.local')
+    if change == 'unrelated-malformed': e.output += 'unidentified mount\n'
+    before = {str(f): f.read_bytes() for f in e.vault.rglob('*') if f.is_file()}
+    with pytest.raises(PermissionError):
+        e.p.publish(e.state/'memory.json', e.state, e.vault, 'home',
+                    preflight=lambda v: e.p._smb_readiness(v, e.binding))
+    assert before == {str(f): f.read_bytes() for f in e.vault.rglob('*') if f.is_file()}
+    assert not (e.state/'.publication.lock').exists()
+
+
+@pytest.mark.parametrize('bad', [None, [], 'smb', {}, {'kind': 'nfs'},
+                               {'extra': True}, {'source': 'wrong'},
+                               {'relative_target': '../K2B-Vault'}])
+def test_smb_unauthorized_binding(smb_environment, bad):
+    e = smb_environment
+    value = {**e.binding, **bad} if isinstance(bad, dict) and bad else bad
+    with pytest.raises(PermissionError):
+        e.p._smb_readiness(e.vault, value)
+
+
+@pytest.mark.parametrize('failure', ['missing', 'symlink', 'wrong-vault'])
+def test_smb_path_refusal(smb_environment, monkeypatch, failure):
+    e = smb_environment
+    if failure == 'missing': monkeypatch.setattr(Path, 'is_dir', lambda self: False)
+    if failure == 'symlink': monkeypatch.setattr(Path, 'is_symlink', lambda self: self == e.target)
+    vault = e.vault if failure != 'wrong-vault' else Path('/wrong/vault')
+    with pytest.raises(PermissionError): e.p._smb_readiness(vault, e.binding)
+
+
+def test_smb_paths_with_spaces_are_parsed(smb_environment):
+    e = smb_environment
+    e.output += '/dev/disk on /Volumes/Unrelated Volume (apfs, local)\n'
+    assert e.p._smb_readiness(e.vault, e.binding)['storage'] == 'smb-ready'
+
+
+def test_stalled_readiness_child_timeout_without_writes(smb_environment, monkeypatch):
+    """Prove a user-space stalled child is stopped, not arbitrary kernel I/O."""
+    e = smb_environment
+    def run(args, **kwargs):
+        if args == ['/sbin/mount']: return SimpleNamespace(stdout=e.output)
+        assert kwargs['timeout'] == 5
+        return e.real_run([sys.executable, '-I', '-c', 'import time; time.sleep(20)'],
+                        **{**kwargs, 'timeout': 0.1})
+    monkeypatch.setattr(e.p.subprocess, 'run', run)
+    started = time.monotonic()
+    with pytest.raises(PermissionError, match='unavailable'):
+        e.p.publish(e.state/'memory.json', e.state, e.vault, 'home',
+                    preflight=lambda v: e.p._smb_readiness(v, e.binding))
+    assert time.monotonic() - started < 5
+    assert not (e.state/'.publication.lock').exists()
+    assert not (e.vault/'System').exists()
+
+
+def test_smb_publication_and_binding_recheck(tmp_path):
+    p = publisher()
+    vault, state = setup(tmp_path)
+    evidence = {**ready(vault), 'storage': 'smb-ready', 'binding': dict(p.SMB_STORAGE)}
+    evidence.pop('syncthing')
+    result = p.publish(state/'memory.json', state, vault, 'home', preflight=lambda v: evidence)
+    assert result['binding'] == p.SMB_STORAGE and result['storage'] == 'smb-ready'
+    assert p.publish(state/'memory.json', state, vault, 'home', preflight=lambda v: evidence)['duplicate']
+
+
+def test_smb_binding_drift_before_write(tmp_path):
+    p = publisher()
+    vault, state = setup(tmp_path)
+    calls = []
+    def preflight(v):
+        binding = dict(p.SMB_STORAGE)
+        if calls: binding['source'] = 'changed'
+        calls.append(True)
+        return {'policy_ledger_sha256': ready(v)['policy_ledger_sha256'],
+                'storage': 'smb-ready', 'binding': binding}
+    with pytest.raises(PermissionError, match='changed during staging'):
+        p.publish(state/'memory.json', state, vault, 'home', preflight=preflight)
+    assert not (vault/'System').exists()
+
+
+@pytest.mark.parametrize('failure', [None, 'host', 'policy', 'paths', 'null-storage'])
+def test_live_smb_authority_gates(smb_environment, monkeypatch, failure):
+    e = smb_environment
+    p = e.p
+    home = Path('/Users/keithmbpm2')
+    logical = home/'Projects/K2B-Vault'
+    original_resolve = Path.resolve
+    monkeypatch.setattr(Path, 'resolve', lambda self, *a, **kw:
+                        e.target if self == logical else original_resolve(self, *a, **kw))
+    monkeypatch.setattr(Path, 'home', staticmethod(lambda: home))
+    monkeypatch.setattr(p.getpass, 'getuser', lambda: 'keithcheung' if failure == 'host' else 'keithmbpm2')
+    ledger = b'{"type":"guard"}\n'
+    authority = dict(schema_version=1, enabled=True, vault_root=str(logical),
+                     exclusive_paths=[p.JSON_REL, p.NOTE_REL],
+                     policy_ledger_sha256=p._hash(ledger), storage=e.binding)
+    if failure == 'policy': authority['policy_ledger_sha256'] = '0'*64
+    if failure == 'paths': authority['exclusive_paths'] = []
+    if failure == 'null-storage': authority['storage'] = None
+    monkeypatch.setattr(Path, 'read_text', lambda self: json.dumps(authority))
+    monkeypatch.setattr(Path, 'read_bytes', lambda self: ledger)
+    if failure:
+        with pytest.raises(PermissionError): p.live_preflight(e.vault)
+    else:
+        assert p.live_preflight(e.vault) == {
+            'policy_ledger_sha256': p._hash(ledger), 'storage': 'smb-ready', 'binding': e.binding}
 
 
 def publisher():
