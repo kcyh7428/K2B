@@ -21,6 +21,115 @@ SCRIPT = os.path.join(REPO_ROOT, "scripts", "vault-note-write.py")
 
 MAX_NOTE_BYTES = 2 * 1024 * 1024
 
+
+@pytest.mark.parametrize("alias_first", [False, True])
+def test_target_chain_stops_at_exact_name_and_closes_scan(tmp_path, monkeypatch, alias_first):
+    from types import SimpleNamespace
+    mod = load_module()
+    root = tmp_path / "vault"
+    folder = root / "wiki/reference"
+    folder.mkdir(parents=True)
+    (folder / "note.md").write_text("synthetic", encoding="utf-8")
+    expected = {str(root): "wiki", str(root / "wiki"): "reference", str(folder): "note.md"}
+    active = set()
+    closed = []
+    yielded = []
+    real_lstat = os.lstat
+
+    class Scan:
+        def __init__(self, path):
+            self.path = str(path)
+
+        def __enter__(self):
+            active.add(self.path)
+            return self
+
+        def __iter__(self):
+            name = expected[self.path]
+            if alias_first:
+                yielded.append(name.upper())
+                yield SimpleNamespace(name=name.upper())
+            yielded.append(name)
+            yield SimpleNamespace(name=name)
+            pytest.fail("enumerated unrelated names after exact match")
+
+        def __exit__(self, *args):
+            active.remove(self.path)
+            closed.append(self.path)
+
+    def checked_lstat(path, *args, **kwargs):
+        assert not active, "directory scan must close before path metadata checks"
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(mod.os, "scandir", Scan)
+    monkeypatch.setattr(mod.os, "lstat", checked_lstat)
+    monkeypatch.setattr(mod.os, "listdir", lambda path: pytest.fail("full directory listing used"))
+    mod.check_target_chain(str(root), "wiki/reference/note.md")
+    assert closed == list(expected)
+    assert not active
+    assert len(yielded) == (6 if alias_first else 3)
+
+
+@pytest.mark.parametrize("fault", ["alias", "missing", "iteration-error", "open-error"])
+def test_target_chain_absent_exact_name_family(tmp_path, monkeypatch, fault):
+    from types import SimpleNamespace
+    mod = load_module()
+    root = tmp_path / "vault"
+    root.mkdir()
+    closed = []
+
+    class Scan:
+        def __enter__(self):
+            return self
+
+        def __iter__(self):
+            yield SimpleNamespace(name="unrelated")
+            if fault in ("alias", "iteration-error"):
+                yield SimpleNamespace(name="NOTE.md")
+            if fault == "iteration-error":
+                raise PermissionError("synthetic iteration failure")
+
+        def __exit__(self, *args):
+            closed.append(True)
+
+    def scan(path):
+        if fault == "open-error":
+            raise PermissionError("synthetic open failure")
+        return Scan()
+
+    monkeypatch.setattr(mod.os, "scandir", scan)
+    if fault == "alias":
+        with pytest.raises(mod.WriteError, match="canonical on-disk case"):
+            mod.check_target_chain(str(root), "note.md")
+    elif fault.endswith("error"):
+        with pytest.raises(PermissionError, match="synthetic"):
+            mod.check_target_chain(str(root), "note.md")
+    else:
+        mod.check_target_chain(str(root), "note.md")
+    assert closed == ([] if fault == "open-error" else [True])
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["symlink-parent", "non-directory-parent", "directory-target"])
+def test_target_chain_metadata_refusals_preserved(tmp_path, kind):
+    mod = load_module()
+    root = tmp_path / "vault"
+    root.mkdir()
+    if kind == "symlink-parent":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (root / "wiki").symlink_to(outside, target_is_directory=True)
+        message = "refusing symlink"
+    elif kind == "non-directory-parent":
+        (root / "wiki").write_text("synthetic", encoding="utf-8")
+        message = "non-directory"
+    else:
+        (root / "wiki/note.md").mkdir(parents=True)
+        message = "not a regular file"
+    with pytest.raises(mod.WriteError, match=message):
+        mod.check_target_chain(str(root), "wiki/note.md")
+
+
 def test_scoped_bookkeeping_unrelated_not_counted(vault_env, tmp_path, monkeypatch, capsys):
     mod = load_module()
     calls = []
