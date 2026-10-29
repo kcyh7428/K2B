@@ -282,6 +282,14 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                     and evidence.get("binding") == SMB_STORAGE))
         or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("policy_ledger_sha256", "")))):
         raise PermissionError("publication preflight is not a healthy, policy-bound result")
+    # One operator-authorized Home migration, never general realpath equivalence.
+    # Only the production preflight can authorize historical namespace evidence.
+    historical_vault = "/Users/keithmbpm2/Projects/K2B-Vault"
+    accept_historical = (
+        preflight is None and evidence.get("storage") == "smb-ready"
+        and evidence.get("binding") == SMB_STORAGE
+        and vault == Path(SMB_STORAGE["mount_point"]) / SMB_STORAGE["relative_target"]
+        and Path(historical_vault).resolve() == vault)
     paths = {rel: _safe(vault, rel) for rel in
              (JSON_REL, NOTE_REL, INDEX_REL, "wiki/index.md", "wiki/log.md")}
     for rel in (INDEX_REL, "wiki/index.md", "wiki/log.md"):
@@ -347,7 +355,18 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                     if not isinstance(prior, dict) or prior.get("status") != "staged":
                         raise ValueError(f"publication pending receipt is malformed: {prior_path}")
                     prior = prior.get("publication")
-                if not isinstance(prior, dict) or prior.get("vault_root") != str(vault):
+                if (not isinstance(prior, dict)
+                    or not (prior.get("vault_root") == str(vault)
+                            or (accept_historical and prior.get("vault_root") == historical_vault))
+                    or type(prior.get("schema_version")) is not int or prior["schema_version"] != 1
+                    or prior.get("status") != "published" or prior.get("writer_role") != "home"
+                    or not isinstance(prior.get("artifact_sha256"), dict)
+                    or set(prior["artifact_sha256"]) != set(rendered)
+                    or any(not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)
+                           for sha in prior["artifact_sha256"].values())
+                    or prior.get("snapshot_sha256") != prior["artifact_sha256"][JSON_REL]
+                    or (("storage" in prior or "binding" in prior)
+                        and (prior.get("storage") != "smb-ready" or prior.get("binding") != SMB_STORAGE))):
                     raise ValueError(f"publication receipt is malformed or belongs to another vault: {prior_path}")
                 binding = {k: v for k, v in prior.items() if k != "published_at"}
                 if _publication_id(binding) != prior_path.stem:
