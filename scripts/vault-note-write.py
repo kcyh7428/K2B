@@ -316,8 +316,16 @@ def check_target_chain(vault_real, rel):
     parts = rel.split("/")
     cur = vault_real
     for i, part in enumerate(parts):
-        names = os.listdir(cur)
-        if part not in names and any(n.casefold() == part.casefold() for n in names):
+        exact = False
+        alias = False
+        with os.scandir(cur) as entries:
+            for entry in entries:
+                if entry.name == part:
+                    exact = True
+                    break
+                if entry.name.casefold() == part.casefold():
+                    alias = True
+        if not exact and alias:
             raise WriteError("note path must use the canonical on-disk case: " + part)
         cur = os.path.join(cur, part)
         if not os.path.lexists(cur):
