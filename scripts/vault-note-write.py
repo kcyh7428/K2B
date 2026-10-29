@@ -42,6 +42,8 @@
 # Format rule: no em dashes anywhere. Use "--".
 
 import argparse
+import errno
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -311,11 +313,86 @@ def validate_note_rel(rel):
     return joined
 
 
+def _native_path_identity(path, expected_stat):
+    """Return Darwin's lookup identity, or request the names scan.
+
+    The descriptor checks this lookup only. It does not pin a later write;
+    the existing writer locks, expected bytes and atomic replacement remain.
+    """
+    if sys.platform != "darwin":
+        return None
+    getpath = getattr(fcntl, "F_GETPATH", None)
+    if (getpath is None or not hasattr(os, "O_NOFOLLOW")
+            or not hasattr(os, "O_NONBLOCK")):
+        return None
+    if not (stat.S_ISDIR(expected_stat.st_mode) or stat.S_ISREG(expected_stat.st_mode)):
+        return None
+    # F_GETPATH is exported by Python and defined by the installed Apple
+    # SDK. Its path buffer uses the native limit; fcntl accepts at most 1024.
+    try:
+        size = os.pathconf("/", "PC_PATH_MAX")
+    except (ValueError, NotImplementedError):
+        return None
+    if not isinstance(size, int) or not 0 < size <= 1024:
+        return None
+    unsupported = (errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS,
+                   errno.EINVAL, errno.ENOTTY)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    if stat.S_ISDIR(expected_stat.st_mode):
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT or exc.errno in unsupported:
+            return None
+        raise
+    try:
+        opened = os.fstat(fd)
+        if (stat.S_IFMT(opened.st_mode), opened.st_dev, opened.st_ino) != (
+                stat.S_IFMT(expected_stat.st_mode), expected_stat.st_dev, expected_stat.st_ino):
+            raise WriteError("note path changed during native validation: " + path)
+        try:
+            raw = fcntl.fcntl(fd, getpath, bytes(size))
+        except OSError as exc:
+            if exc.errno in unsupported:
+                return None
+            raise
+        if not isinstance(raw, bytes) or len(raw) != size:
+            return None
+        nul = raw.find(b"\x00")
+        if nul <= 0 or raw[nul + 1:].strip(b"\x00"):
+            return None
+        got = os.fsdecode(raw[:nul])
+        if not os.path.isabs(got):
+            return None
+        if os.path.normpath(got) != got:
+            return None
+        return got
+    finally:
+        os.close(fd)
+
 def check_target_chain(vault_real, rel):
     """Reject symlinks and non-regular files along the target chain."""
     parts = rel.split("/")
     cur = vault_real
     for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        target = os.path.join(cur, part)
+        try:
+            st = os.lstat(target)
+        except FileNotFoundError:
+            st = None
+        if st is not None:
+            if stat.S_ISLNK(st.st_mode):
+                raise WriteError("refusing symlink in note path: " + target)
+            if last and not stat.S_ISREG(st.st_mode):
+                raise WriteError("note target is not a regular file: " + target)
+            if not last and not stat.S_ISDIR(st.st_mode):
+                raise WriteError("note path crosses a non-directory: " + target)
+            resolved = _native_path_identity(target, st)
+            if resolved == target:
+                cur = target
+                continue
         exact = False
         alias = False
         with os.scandir(cur) as entries:
@@ -327,13 +404,13 @@ def check_target_chain(vault_real, rel):
                     alias = True
         if not exact and alias:
             raise WriteError("note path must use the canonical on-disk case: " + part)
-        cur = os.path.join(cur, part)
-        if not os.path.lexists(cur):
+        cur = target
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
             return  # missing tail is fine
-        st = os.lstat(cur)
         if stat.S_ISLNK(st.st_mode):
             raise WriteError("refusing symlink in note path: " + cur)
-        last = i == len(parts) - 1
         if last and not stat.S_ISREG(st.st_mode):
             raise WriteError("note target is not a regular file: " + cur)
         if not last and not stat.S_ISDIR(st.st_mode):

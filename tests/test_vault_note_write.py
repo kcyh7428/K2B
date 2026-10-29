@@ -22,10 +22,319 @@ SCRIPT = os.path.join(REPO_ROOT, "scripts", "vault-note-write.py")
 MAX_NOTE_BYTES = 2 * 1024 * 1024
 
 
+@pytest.fixture
+def native_identity_case(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    mod = load_module()
+    target = str(tmp_path / "note.md")
+    (tmp_path / "note.md").write_text("synthetic", encoding="utf-8")
+    expected = os.lstat(target)
+    events = []
+    control = {"opened": expected}
+    monkeypatch.setattr(mod.sys, "platform", "darwin")
+    monkeypatch.setattr(mod.fcntl, "F_GETPATH", 631, raising=False)
+    monkeypatch.setattr(mod.os, "pathconf", lambda *args: 1024)
+
+    def event(stage):
+        events.append(stage)
+        if control.get("error_stage") == stage:
+            raise OSError(control["errno"], "synthetic native failure")
+
+    def opened(path, flags):
+        assert path == target
+        assert flags & mod.os.O_NOFOLLOW and flags & mod.os.O_NONBLOCK
+        assert flags & mod.os.O_ACCMODE == mod.os.O_RDONLY
+        if mod.stat.S_ISDIR(control["opened"].st_mode):
+            assert flags & mod.os.O_DIRECTORY
+        event("open")
+        return 901
+
+    def fstat(fd):
+        assert fd == 901
+        event("fstat")
+        return control["opened"]
+
+    def getpath(fd, command, buffer):
+        assert fd == 901 and command == 631
+        assert isinstance(buffer, bytes) and buffer == bytes(1024)
+        event("fcntl")
+        return control.get("raw", (os.fsencode(target) + b"\0").ljust(1024, b"\0"))
+
+    def close(fd):
+        assert fd == 901
+        event("close")
+
+    monkeypatch.setattr(mod.os, "open", opened)
+    monkeypatch.setattr(mod.os, "fstat", fstat)
+    monkeypatch.setattr(mod.os, "close", close)
+    monkeypatch.setattr(mod.os, "read", lambda *args: pytest.fail("payload read"))
+    monkeypatch.setattr(mod.fcntl, "fcntl", getpath)
+    return SimpleNamespace(mod=mod, target=target, expected=expected,
+                           events=events, control=control)
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_native_identity_bytes_result_and_close(native_identity_case, directory):
+    from types import SimpleNamespace
+    case = native_identity_case
+    expected = case.expected
+    if directory:
+        expected = SimpleNamespace(st_mode=stat.S_IFDIR, st_dev=expected.st_dev, st_ino=expected.st_ino)
+        case.control["opened"] = expected
+    assert case.mod._native_path_identity(case.target, expected) == case.target
+    assert case.events == ["open", "fstat", "fcntl", "close"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin native API integration")
+@pytest.mark.parametrize("directory", [False, True])
+def test_native_real_api_canonical_case_on_synthetic_volume(tmp_path, directory):
+    mod = load_module()
+    if not all((hasattr(mod.fcntl, "F_GETPATH"), hasattr(os, "O_NOFOLLOW"), hasattr(os, "O_NONBLOCK"))):
+        pytest.skip("Native optimization unavailable on this runtime")
+    canonical = tmp_path.resolve() / "Canonical-Leaf"
+    if directory:
+        canonical.mkdir()
+    else:
+        canonical.write_text("synthetic", encoding="utf-8")
+    altered = canonical.with_name(canonical.name.swapcase())
+    if not os.path.lexists(altered):
+        pytest.skip("Synthetic volume is case-sensitive; altered-case lookup is absent")
+    identity = mod._native_path_identity(str(altered), os.lstat(altered))
+    assert identity == str(canonical)
+    assert identity != str(altered)
+
+
+@pytest.mark.parametrize("error", ["EACCES", "EPERM", "EIO", "ELOOP"])
+def test_native_errors_have_clean_cli_refusal(vault_env, tmp_path, monkeypatch, capsys, error):
+    mod = load_module()
+    paths = [vault_env["vault"] / "wiki/work/index.md", vault_env["vault"] / "wiki/index.md"]
+    before = [path.read_bytes() for path in paths]
+    def failure(*args):
+        raise OSError(getattr(mod.errno, error), "synthetic native refusal")
+    monkeypatch.setattr(mod, "_native_path_identity", failure)
+    assert inproc_write(mod, tmp_path, vault_env, "wiki/work/work_new-note.md", NOTE_NEW, "missing", "sum", "src") == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.startswith("vault-note-write: input unavailable:")
+    assert "synthetic native refusal" in output.err
+    assert "Traceback" not in output.err
+    assert not (vault_env["vault"] / "wiki/work/work_new-note.md").exists()
+    assert [path.read_bytes() for path in paths] == before
+    assert receipts(vault_env) == []
+
+
+@pytest.mark.parametrize("unsupported", ["platform", "F_GETPATH", "O_NOFOLLOW", "O_NONBLOCK", "buffer"])
+def test_native_identity_unavailable_without_open(native_identity_case, monkeypatch, unsupported):
+    case = native_identity_case
+    if unsupported == "platform":
+        monkeypatch.setattr(case.mod.sys, "platform", "linux")
+    elif unsupported == "buffer":
+        monkeypatch.setattr(case.mod.os, "pathconf", lambda *args: 1025)
+    else:
+        owner = case.mod.fcntl if unsupported == "F_GETPATH" else case.mod.os
+        monkeypatch.delattr(owner, unsupported, raising=False)
+    assert case.mod._native_path_identity(case.target, case.expected) is None
+    assert case.events == []
+
+
+@pytest.mark.parametrize("stage", ["open", "fcntl"])
+@pytest.mark.parametrize("error", ["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EINVAL", "ENOTTY"])
+def test_native_identity_unsupported_requests_scan(native_identity_case, stage, error):
+    case = native_identity_case
+    case.control.update(error_stage=stage, errno=getattr(case.mod.errno, error))
+    assert case.mod._native_path_identity(case.target, case.expected) is None
+    assert case.events == (["open"] if stage == "open" else ["open", "fstat", "fcntl", "close"])
+
+
+@pytest.mark.parametrize("stage", ["open", "fstat", "fcntl", "close"])
+@pytest.mark.parametrize("error", ["EACCES", "EPERM", "EIO", "ELOOP"])
+def test_native_identity_real_errors_fail_closed(native_identity_case, stage, error):
+    case = native_identity_case
+    number = getattr(case.mod.errno, error)
+    case.control.update(error_stage=stage, errno=number)
+    with pytest.raises(OSError) as caught:
+        case.mod._native_path_identity(case.target, case.expected)
+    assert caught.value.errno == number
+    assert case.events == (["open"] if stage == "open" else
+                           ["open", "fstat", "close"] if stage == "fstat" else
+                           ["open", "fstat", "fcntl", "close"])
+
+
+def test_native_identity_missing_open_requests_scan(native_identity_case):
+    case = native_identity_case
+    case.control.update(error_stage="open", errno=case.mod.errno.ENOENT)
+    assert case.mod._native_path_identity(case.target, case.expected) is None
+    assert case.events == ["open"]
+
+
+@pytest.mark.parametrize("error", [ValueError, NotImplementedError])
+def test_native_identity_path_limit_unavailable(native_identity_case, monkeypatch, error):
+    case = native_identity_case
+    def unavailable(*args):
+        raise error("synthetic unavailable path limit")
+    monkeypatch.setattr(case.mod.os, "pathconf", unavailable)
+    assert case.mod._native_path_identity(case.target, case.expected) is None
+    assert case.events == []
+
+
+def test_native_identity_path_limit_io_error_fails_closed(native_identity_case, monkeypatch):
+    case = native_identity_case
+    def unavailable(*args):
+        raise OSError(case.mod.errno.EIO, "synthetic I/O error")
+    monkeypatch.setattr(case.mod.os, "pathconf", unavailable)
+    with pytest.raises(OSError) as caught:
+        case.mod._native_path_identity(case.target, case.expected)
+    assert caught.value.errno == case.mod.errno.EIO
+    assert case.events == []
+
+
+@pytest.mark.parametrize("field", ["st_mode", "st_dev", "st_ino"])
+def test_native_identity_changed_descriptor_refused(native_identity_case, field):
+    from types import SimpleNamespace
+    case = native_identity_case
+    values = {key: getattr(case.expected, key) for key in ("st_mode", "st_dev", "st_ino")}
+    values[field] = stat.S_IFIFO if field == "st_mode" else values[field] + 1
+    case.control["opened"] = SimpleNamespace(**values)
+    with pytest.raises(case.mod.WriteError, match="changed during native validation"):
+        case.mod._native_path_identity(case.target, case.expected)
+    assert case.events == ["open", "fstat", "close"]
+
+
+@pytest.mark.parametrize("raw", [None, "not bytes", bytearray(1024), b"", b"/short\0",
+    b"x" * 1024, bytes(1024), b"relative\0".ljust(1024, b"\0"),
+    b"/x/../y\0".ljust(1024, b"\0"), b"/x\0junk".ljust(1024, b"\0")])
+def test_native_identity_malformed_requests_scan_and_closes(native_identity_case, raw):
+    case = native_identity_case
+    case.control["raw"] = raw
+    assert case.mod._native_path_identity(case.target, case.expected) is None
+    assert case.events == ["open", "fstat", "fcntl", "close"]
+
+
+def test_native_validator_exact_avoids_scan(tmp_path, monkeypatch):
+    mod = load_module()
+    (tmp_path / "wiki").mkdir()
+    (tmp_path / "wiki/note.md").write_text("synthetic", encoding="utf-8")
+    native = []
+    def identity(path, metadata):
+        native.append(path)
+        return path
+    monkeypatch.setattr(mod, "_native_path_identity", identity)
+    monkeypatch.setattr(mod.os, "scandir", lambda *args: pytest.fail("native exact path scanned"))
+    mod.check_target_chain(str(tmp_path), "wiki/note.md")
+    assert native == [str(tmp_path / "wiki"), str(tmp_path / "wiki/note.md")]
+
+
+@pytest.mark.parametrize("exact_first", [False, True, None])
+def test_native_mismatch_scan_exact_wins_over_case_sibling(tmp_path, monkeypatch, exact_first):
+    from types import SimpleNamespace
+    mod = load_module()
+    (tmp_path / "note.md").write_text("synthetic", encoding="utf-8")
+    monkeypatch.setattr(mod, "_native_path_identity", lambda path, metadata: str(tmp_path / "NOTE.md"))
+    closed = []
+    class Scan:
+        def __enter__(self):
+            return self
+        def __iter__(self):
+            # Emulate case-sensitive sibling names on any host filesystem.
+            names = ["NOTE.md"] if exact_first is None else ["note.md", "NOTE.md"] if exact_first else ["NOTE.md", "note.md"]
+            return iter(SimpleNamespace(name=name) for name in names)
+        def __exit__(self, *args):
+            closed.append(True)
+    monkeypatch.setattr(mod.os, "scandir", lambda *args: Scan())
+    if exact_first is None:
+        with pytest.raises(mod.WriteError, match="canonical on-disk case"):
+            mod.check_target_chain(str(tmp_path), "note.md")
+    else:
+        mod.check_target_chain(str(tmp_path), "note.md")
+    assert closed == [True]
+
+
+def test_native_missing_tail_scans_only_existing_parent(tmp_path, monkeypatch):
+    mod = load_module()
+    (tmp_path / "wiki").mkdir()
+    raw = os.scandir
+    scans = []
+    monkeypatch.setattr(mod, "_native_path_identity", lambda path, metadata: path)
+    def scan(path):
+        scans.append(path)
+        return raw(path)
+    monkeypatch.setattr(mod.os, "scandir", scan)
+    mod.check_target_chain(str(tmp_path), "wiki/missing/note.md")
+    assert scans == [str(tmp_path / "wiki")]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_native_fallback_rechecks_type_after_scan(tmp_path, monkeypatch, existing):
+    mod = load_module()
+    target = tmp_path / "note.md"
+    other = tmp_path / "other.md"
+    other.write_text("synthetic", encoding="utf-8")
+    if existing:
+        target.write_text("synthetic", encoding="utf-8")
+    raw = os.scandir
+    monkeypatch.setattr(mod, "_native_path_identity", lambda *args: None)
+    class Scan:
+        def __enter__(self):
+            self.iterator = raw(tmp_path)
+            return self.iterator
+        def __exit__(self, *args):
+            self.iterator.close()
+            if existing:
+                target.unlink()
+            target.symlink_to(other)
+    monkeypatch.setattr(mod.os, "scandir", lambda *args: Scan())
+    with pytest.raises(mod.WriteError, match="refusing symlink"):
+        mod.check_target_chain(str(tmp_path), "note.md")
+
+
+@pytest.mark.parametrize("phase", ["initial", "after-scan"])
+@pytest.mark.parametrize("error", ["EACCES", "EIO"])
+def test_native_validator_metadata_errors_fail_closed(tmp_path, monkeypatch, phase, error):
+    mod = load_module()
+    target = tmp_path / "note.md"
+    target.write_text("synthetic", encoding="utf-8")
+    raw_stat, raw_scan = os.lstat, os.scandir
+    after = []
+    number = getattr(mod.errno, error)
+    def metadata(path, *args, **kwargs):
+        if str(path) == str(target) and (phase == "initial" or after):
+            raise OSError(number, "synthetic metadata failure")
+        return raw_stat(path, *args, **kwargs)
+    class Scan:
+        def __enter__(self):
+            self.scan = raw_scan(tmp_path)
+            return self.scan
+        def __exit__(self, *args):
+            self.scan.close()
+            after.append(True)
+    monkeypatch.setattr(mod.os, "lstat", metadata)
+    monkeypatch.setattr(mod.os, "scandir", lambda *args: Scan())
+    monkeypatch.setattr(mod, "_native_path_identity", lambda *args: None)
+    with pytest.raises(OSError) as caught:
+        mod.check_target_chain(str(tmp_path), "note.md")
+    assert caught.value.errno == number
+    assert after == ([] if phase == "initial" else [True])
+
+
+@pytest.mark.parametrize("mode", [stat.S_IFIFO, stat.S_IFCHR, stat.S_IFBLK, stat.S_IFSOCK, stat.S_IFLNK, stat.S_IFDIR])
+def test_native_validator_rejects_type_before_open(tmp_path, monkeypatch, mode):
+    from types import SimpleNamespace
+    mod = load_module()
+    raw = os.lstat
+    target = str(tmp_path / "note.md")
+    def metadata(path, *args, **kwargs):
+        return SimpleNamespace(st_mode=mode) if str(path) == target else raw(path, *args, **kwargs)
+    monkeypatch.setattr(mod.os, "lstat", metadata)
+    monkeypatch.setattr(mod, "_native_path_identity", lambda *args: pytest.fail("native opened rejected type"))
+    with pytest.raises(mod.WriteError):
+        mod.check_target_chain(str(tmp_path), "note.md")
+
+
 @pytest.mark.parametrize("alias_first", [False, True])
 def test_target_chain_stops_at_exact_name_and_closes_scan(tmp_path, monkeypatch, alias_first):
     from types import SimpleNamespace
     mod = load_module()
+    monkeypatch.setattr(mod, "_native_path_identity", lambda *args: None)
     root = tmp_path / "vault"
     folder = root / "wiki/reference"
     folder.mkdir(parents=True)
@@ -74,6 +383,7 @@ def test_target_chain_stops_at_exact_name_and_closes_scan(tmp_path, monkeypatch,
 def test_target_chain_absent_exact_name_family(tmp_path, monkeypatch, fault):
     from types import SimpleNamespace
     mod = load_module()
+    monkeypatch.setattr(mod, "_native_path_identity", lambda *args: None)
     root = tmp_path / "vault"
     root.mkdir()
     closed = []
