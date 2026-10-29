@@ -292,6 +292,9 @@ def validate_note_rel(rel):
             raise WriteError("note path must not contain hidden parts: " + part)
     joined = "/".join(parts)
     folded_joined = "/".join(folded)
+    if (folded_joined == "wiki/reference/minnie-family-memory"
+            or folded_joined.startswith("wiki/reference/minnie-family-memory/")):
+        raise WriteError("Mini-owned generated memory is not an ordinary note target")
     # macOS volumes are case-insensitive by default: validate the
     # case-folded path family so aliases cannot bypass protected
     # components or land outside the ordinary roots.
