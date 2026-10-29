@@ -1276,6 +1276,92 @@ def load_module():
     return mod
 
 
+@pytest.mark.parametrize("note_rel", [
+    "wiki/reference/minnie-family-memory",
+    "wiki/reference/minnie-family-memory/approved-memories.md",
+    "wiki/reference/minnie-family-memory/nested/other.md",
+    "WIKI/REFERENCE/MINNIE-FAMILY-MEMORY/approved-memories.md",
+    "wiki/reference/Minnie-Family-Memory/nested/other.md",
+])
+def test_minnie_generated_subtree_is_not_an_ordinary_note(note_rel):
+    mod = load_module()
+    with pytest.raises(mod.WriteError, match="Mini-owned generated memory"):
+        mod.validate_note_rel(note_rel)
+
+
+@pytest.mark.parametrize("note_rel", [
+    "wiki/reference/minnie-family-memory.md",
+    "wiki/reference/minnie-family-memory-other/note.md",
+    "wiki/reference/family-discord-memory.md",
+    "wiki/work/work_kingdee-hris-recovery.md",
+])
+def test_minnie_generated_guard_preserves_other_note_paths(note_rel):
+    assert load_module().validate_note_rel(note_rel) == note_rel
+
+
+@pytest.mark.parametrize("note_rel", [
+    "wiki/reference/minnie-family-memory",
+    "wiki/reference/minnie-family-memory/approved-memories.md",
+    "WIKI/REFERENCE/MINNIE-FAMILY-MEMORY/approved-memories.md",
+    "wiki/reference/minnie-family-memory/a/b/new.md",
+])
+def test_minnie_generated_save_refusal_preserves_existing_bytes(
+    vault_env, tmp_path, note_rel,
+):
+    target = vault_env["vault"] / "wiki/reference/minnie-family-memory/approved-memories.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(NOTE_KINGDEE_V1, encoding="utf-8")
+    index = target.parent / "index.md"
+    index.write_text(FOLDER_INDEX_4COL, encoding="utf-8")
+    paths = [target, index, vault_env["vault"] / "wiki/index.md"]
+    before = {p: p.read_bytes() for p in paths}
+    (vault_env["state"] / "existing-state.json").write_text('{"preserve":true}\n')
+    state_before = {
+        p.relative_to(vault_env["state"]): p.read_bytes() if p.is_file() else None
+        for p in vault_env["state"].rglob("*")
+    }
+    cmd = base_write_cmd(
+        tmp_path, vault_env["env"], note_rel, NOTE_KINGDEE_V2,
+        sha256_bytes(before[target]), "sum", "src",
+    )
+    proc = run_cli(cmd, vault_env["env"])
+    assert proc.returncode == 1, (proc.stdout, proc.stderr)
+    assert b"Mini-owned generated memory" in proc.stdout + proc.stderr
+    assert {p: p.read_bytes() for p in paths} == before
+    assert not (target.parent / "a").exists()
+    assert {
+        p.relative_to(vault_env["state"]): p.read_bytes() if p.is_file() else None
+        for p in vault_env["state"].rglob("*")
+    } == state_before
+
+
+@pytest.mark.parametrize("directory_link", [False, True])
+def test_minnie_generated_subtree_cannot_be_reached_through_symlink(
+    vault_env, tmp_path, directory_link,
+):
+    target = vault_env["vault"] / "wiki/reference/minnie-family-memory/approved-memories.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(NOTE_KINGDEE_V1, encoding="utf-8")
+    if directory_link:
+        link = target.parent.parent / "alternate-memory"
+        link.symlink_to(target.parent, target_is_directory=True)
+        note_rel = "wiki/reference/alternate-memory/approved-memories.md"
+    else:
+        link = target.parent.parent / "alternate-memory.md"
+        link.symlink_to(target)
+        note_rel = "wiki/reference/alternate-memory.md"
+    cmd = base_write_cmd(
+        tmp_path, vault_env["env"], note_rel, NOTE_KINGDEE_V2,
+        sha256_text(NOTE_KINGDEE_V1), "sum", "src",
+    )
+    proc = run_cli(cmd, vault_env["env"])
+    assert proc.returncode == 1, (proc.stdout, proc.stderr)
+    assert b"symlink" in proc.stdout + proc.stderr
+    assert link.is_symlink()
+    assert target.read_bytes() == NOTE_KINGDEE_V1.encode()
+    assert not receipts(vault_env)
+
+
 @pytest.mark.parametrize("user", ["keithmbpm2", "keithcheung"])
 def test_identity_fixtures_save_same_note_offline(vault_env, tmp_path, monkeypatch, user, capsys):
     mod = load_module()
