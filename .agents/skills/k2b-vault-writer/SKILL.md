@@ -15,6 +15,38 @@ source. A local save does not prove counterpart arrival or Home reconciliation.
 
 Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct structure, frontmatter, cross-links, and MOC integration.
 
+## Current online NAS target
+
+Both local writers use one online NAS collection through the exact Home/SJM aliases and mounts in `AGENTS.md`. NAS availability is required; Home availability is not required for an ordinary SJM save. The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused. Preserved originals are dated copies, not refreshed fallback. Automatic fallback/reconnection are not installed. Never select a shadow directory or old copy silently when the mounted target is unavailable.
+
+Before an authorized save, use this operating procedure, not a newly installed enforcement mechanism:
+
+1. Inspect `/sbin/mount`: require the exact source and mount point from `AGENTS.md`, `smbfs`, and no `read-only` flag. A directory alone is insufficient. Set `note_python` to Home `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3` or SJM `$HOME/Projects/K2B/venv/k2b-note-save/bin/python`. Check the logical target and read a bounded index sample:
+
+   ```bash
+   "$note_python" -c 'from pathlib import Path; print((Path.home()/"Projects/K2B-Vault").resolve(strict=True))'
+   head -c 4096 "$HOME/Projects/K2B-Vault/wiki/index.md"
+   ```
+
+   Compare the resolved path with the exact approved NAS target and retain the actual mount line, resolved path and read result in the existing private operation evidence. These recorded checks are mandatory before the writer, although the writer has no new runtime mount enforcement. If unavailable, stale or unverifiable, abort the save, retain the private draft and report the failed check. Never substitute a local path. The checks establish observed identity/readability, not write permission, future availability or an atomic mount lease; that remaining risk is not claimed solved. Do not normalize unfamiliar mount spellings. NAS failure is not a legacy-mode signal: only Keith's direct selection of a specific verified legacy target permits that separate operation, recorded with the selected mode.
+2. After the mount/alias check, set `nas_root` to the verified resolved target: Home `/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault`, SJM `/Volumes/Keith-Work/K2B-Vault`. Both ordinary-writer invocations and Home publication/index maintenance must use `K2B_COMPILE_INDEX_LOCK="$nas_root/.k2b-compile-index.lock.d"`. The existing ordinary writer holds its local writer lock and this designated compile lock throughout `_write_locked`, including note and index mutation. The native Home publication step 5 prefixes that same NAS lock for its imported index helper while retaining private publication/reconciliation locks. Once these invocation bindings are installed and checked, ordinary saves need no new Home-owner approval per note. Activation and genuinely overlapping exceptional operations still require exact current-owner coordination. If the required binding is absent or unverified, stop rather than claiming shared-lock protection. Do not change schedules or infer that a job was paused.
+3. Use the existing expected-hash writer below, retaining private backups, receipts, real conflict checks and partial-repair behavior. The real write is the write-permission test; any permission/storage failure is failed or partial, never success. No extra write probe is authorized. For Home's separately authorized shared-log command require `K2B_WIKI_LOG="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/wiki/log.md"` after verifying the same mount; a vault-root change alone does not redirect it. SJM never appends shared logs. Do not send a shared-hub write through the ordinary-note writer.
+
+Home shared logging retains its separate log lock. Do not point `K2B_WIKI_LOG_LOCK` at the common compile lock or reuse that lock for the log; standalone compile can already hold the compile lock when logging.
+4. Read back from that same verified resolved NAS root using `shasum -a 256 "$nas_root/<note-path>"` and compare with the successful writer receipt's resulting hash. Authorized counterpart readback uses its verified resolved root and the same note hash; no new access is implied. If it is unreachable, report `saved to verified NAS target; counterpart visibility unverified`. That is a readback limit, not an offline/liveness guarantee or a requirement for Home to approve an ordinary SJM note. Never infer no writer from sleeping, ping failure or silence; the shared compile lock and expected hash coordinate ordinary writes, not a sleep-monitoring procedure.
+
+While a save is still running, report `save in progress` and keep its process/operation identity. Do not start a duplicate, impose a new timeout or interpret the observed 44.566 seconds as failure. After an interruption, inspect the existing receipt and saved bytes before any retry; preserve failed/partial status and use the original draft, expected hash and command only under the existing partial-repair rules. On returning to an online session, reread the current NAS target and hash before a new save; compare privately pending drafts instead of reusing stale expected hashes. Unexpected divergence blocks overwrite and preserves both versions; no automatic offline reconnection is installed.
+
+For a busy or suspected stale lock, retain its exact path, mount identity, error, observation time and current operation/receipt identity. The responsible owner checks the known operation and latest matching private receipt through the existing authorized route. If it is running, wait only within that operation's declared budget. If ownership is unknown or inaccessible, leave the lock intact and report blocked once to root/Keith by that budget (the native run retains its existing 20-minute limit). No new monitor, hold or schedule is introduced. Never infer abandonment from age, an empty directory, sleep, ping or PID absence.
+
+Recovery requires positive acquiring-owner confirmation that no writer is in flight and an explicit recovery decision naming the exact target. Reverify the same mount and target, then use only empty-directory `rmdir` on that target; refuse nonempty, changed or unknown targets. Preserve original intent, partial receipts and backups. Resume the original receipt/bytes-bound repair, not a duplicate save. This procedure never automatically removes or timeout-deletes an unknown lock.
+
+The folder index and `wiki/index.md` must already be regular files before mutation. A missing required index is an index-state error for the current Home owner to repair, not permission to create it here, proceed without it or conclude that the NAS is absent.
+
+The manager confirmed collection identity by a common Home/SJM nonce, SJM `mkdir` EEXIST and owned cleanup on 29 October, plus matching Home hashes/marker after one real SJM save. That save took 44.566 seconds and also held Home's local compile lock while SJM used the NAS lock. The Home memory-publish owner then confirmed its command still lacked the NAS override and inherited local `/tmp/k2b-compile-index.lock.d`; the corrected native step 5 supplies the supported per-invocation binding. This instruction delivery is not live job activation. General unattended/concurrent-client safety remains unaccepted until corrected invocations are installed and checked, and the latency target remains unmet. If a mount binding changes, require authorized marker/hash confirmation again. The existing index-lock protocol remains `mkdir`/`rmdir`, not PID/TTL metadata. Real note/index conflicts still block; 13 identical historical copies are not blanket resolved status.
+
+Local/offline writer descriptions below apply only to an explicitly selected legacy local-replication mode. They do not install fallback for the online alias. Home-only hubs, SJM ordinary-note/index exception and permitted private staging remain unchanged.
+
 ## Desktop Capture Default
 
 Use this skill as the default desktop route for "save this", "capture this", "update K2B", "write this to the vault", and durable project/person/decision updates. Do not create a new capture skill for single-answer synthesis. Decide whether the material belongs directly in `wiki/` or should be saved as a raw source for later `/compile`:
@@ -33,17 +65,45 @@ For ordinary notes under `wiki/work`, `wiki/people`, `wiki/projects`, `wiki/conc
 
 1. **Prepare a private draft outside the vault** (for example under `/tmp` or `~/.local/state/k2b/drafts`) with the complete replacement note via apply_patch. The note must be valid UTF-8 Markdown with closed YAML frontmatter containing the core fields `tags`, `date`, `type`, `origin`, `up`, plus a nonempty body. One note per draft, at most 2 MiB.
 2. **Read the current target** and compute its sha256 (`shasum -a 256`), or pass `missing` for a new note. Read its folder index. An existing row determines the owning table; for a new note with multiple eligible tables, supply `--section 'Exact existing heading'` (for example `Backlog` or `SJM Resorts`). Missing or ambiguous ownership fails before saving. Pick a one-line summary; `--status` is only for a Status-column table, never a section selector. Fields must not contain newlines or `|` delimiters.
-3. **Invoke the writer:**
+3. **Invoke the existing writer:** Complete the online storage checks above, verify the common invocation binding, then use the existing writer with the host's installed `note_python` interpreter. No extra Home approval is required for an ordinary note under those installed bindings:
 
    ```bash
-   python3 "$HOME/Projects/K2B/scripts/vault-note-write.py" write \
+   : "${nas_root:?verify and set the approved resolved NAS target first}"
+   (
+   set -e
+   export PYTHONDONTWRITEBYTECODE=1
+   export K2B_VAULT_PATH="$nas_root"
+   export K2B_COMPILE_INDEX_LOCK="$nas_root/.k2b-compile-index.lock.d"
+   "$note_python" - <<'PY'
+   import hashlib, json, os, runpy
+   from pathlib import Path
+   root = Path(os.environ["K2B_VAULT_PATH"]).resolve(strict=True)
+   expected = root / ".k2b-compile-index.lock.d"
+   assert Path(os.environ["K2B_COMPILE_INDEX_LOCK"]).resolve() == expected
+   scripts = Path.home() / "Projects/K2B/scripts"
+   helper = scripts / "compile-index-update.py"
+   writer = scripts / "vault-note-write.py"
+   compiled = runpy.run_path(str(helper), run_name="k2b_setting_readback")
+   ordinary = runpy.run_path(str(writer), run_name="k2b_setting_readback")
+   settings = {"helper_LOCK_DIR": compiled["LOCK_DIR"],
+               "writer_compile_lock_dir": ordinary["compile_lock_dir"]()}
+   assert all(Path(value).resolve() == expected for value in settings.values())
+   print(json.dumps({"settings": {k: str(v) for k, v in settings.items()},
+                     "source_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+                                       for p in (helper, writer)},
+                     "command": str(writer) + " write"}))
+   PY
+   "$note_python" "$HOME/Projects/K2B/scripts/vault-note-write.py" write \
      --path wiki/work/work_example.md \
      --content-file /absolute/private-draft.md \
-     --expected-sha256 <current-hash|missing> \
+     --expected-sha256 '<current-hash|missing>' \
      --summary 'one line' \
      --source-ref 'conversation or source identifier' \
      [--status active] [--section 'Existing heading']
+   )
    ```
+
+   Retain the readback JSON privately with the command identity and host interpreter. It imports installed settings without invoking either main or acquiring a lock. Missing, default, mismatched or unreadable settings abort the subshell before the real command. Use the same exported environment and interpreter for both commands, after the fresh mount/alias check; a disconnected setting probe is insufficient. Substitute actual writer arguments for the illustrative ones before launch.
 
    `write` runs only for the approved operators (keithmbpm2, keithcheung) and needs PyYAML. On SJM use `$HOME/Projects/K2B/venv/k2b-note-save/bin/python`; elsewhere use the available project interpreter if default Python lacks PyYAML. Nothing is installed automatically. Success reports local saving, synchronization unverified. A completed identical operation is a no-op; changed summary/status is a new index update even when note bytes match. A `partial` result names the failed index or receipt step: retain the original draft, expected hash and command, resolve the reported cause, then retry that exact command. A persistently malformed index needs correction on Home; retries do not repair arbitrary malformed Markdown. Exit 2 means an observed conflict copy or stale expected hash: stop, preserve both versions, and surface it to Keith. This can occur after the note was saved; a partial receipt with `failed_step: conflict` requires manual resolution before retry, not repeated automatic retries.
 4. **Never** bypass the writer for these notes: it holds the local writer and designated index locks, keeps durable private before/after recovery copies plus a receipt under `~/.local/state/k2b` (never in the vault), and refuses to overwrite `.sync-conflict-*.md` copies.

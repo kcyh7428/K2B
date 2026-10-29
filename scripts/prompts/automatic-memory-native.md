@@ -111,13 +111,29 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    The command may use only the established `sjm-ai` connection and must report
    Home/SJM downtime honestly.
 
-5. On Home only, publish through `scripts/eod-capture.py memory-publish` using
+5. On Home only, publish through the existing command with per-invocation
+   `K2B_COMPILE_INDEX_LOCK="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/.k2b-compile-index.lock.d"`
+   and `K2B_WIKI_LOG="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/wiki/log.md"`
+   prefixed to `scripts/eod-capture.py memory-publish`, using
    the configured state root, `--writer-role home`, and the exact Home vault.
+   Follow the effective-setting readback and busy-lock runbook in
+   `k2b-vault-writer` after fresh mount/alias verification. In one subshell
+   export those bindings and the verified resolved `K2B_VAULT_PATH`; import
+   the installed compile helper without main and compare its `LOCK_DIR`
+   to that NAS root's `.k2b-compile-index.lock.d`. Retain the setting,
+   source hash and publication command identity privately. Missing, default,
+   mismatched or unreadable settings defer publication. Launch the existing
+   publication command with the same host Python 3.12 interpreter and unchanged
+   exported environment in that subshell. Retain the existing run budget;
+   unknown lock ownership stays blocked and never permits timeout deletion.
    Only attempt this when a new reconciliation occurred or a prior durable
    reconciliation still awaits publication. The separately provisioned Home
    publication authority, approved policy-ledger hash, exclusive managed paths,
-   publisher locks and live Syncthing preflight remain mandatory. A blocked
-   publication is waiting/failed, never published; do not bypass checks or edit
+   publisher locks and the approved exact SMB publication-authority/live
+   preflight remain mandatory. The imported index helper inherits the NAS
+   compile-lock binding; private publication/reconciliation locks remain intact.
+   Shared logging keeps its separate Home log lock, not the compile lock.
+   A blocked publication is waiting/failed, never published; do not bypass checks or edit
    shared memory/index/log files yourself. SJM must never run this step.
 
 Save actual drain and publication command JSON to private files. When publication
