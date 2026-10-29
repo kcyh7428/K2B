@@ -219,6 +219,205 @@ def ready(vault):
         "syncthing": "idle"}
 
 
+@pytest.fixture
+def namespace_migration(tmp_path, monkeypatch):
+    """Production preflight with invented authority, mount and local files only."""
+    p = publisher()
+    vault, state = setup(tmp_path)
+    binding = {**p.SMB_STORAGE, "mount_point": str(tmp_path / "approved-mount")}
+    mount = Path(binding["mount_point"])
+    mount.mkdir()
+    target = mount / binding["relative_target"]
+    vault.rename(target)
+    logical = Path("/Users/keithmbpm2/Projects/K2B-Vault")
+    home = logical.parents[1]
+    authority_path = home / ".local/state/k2b/automatic-memory/publication-authority.json"
+    authority = dict(schema_version=1, enabled=True, vault_root=str(logical),
+        exclusive_paths=[p.JSON_REL, p.NOTE_REL],
+        policy_ledger_sha256=ready(target)["policy_ledger_sha256"], storage=binding)
+    env = SimpleNamespace(p=p, vault=target, state=state, logical=logical,
+        alias_target=target, binding=binding, authority=authority, user="keithmbpm2",
+        mount_output=f"/dev/disk on / (apfs, local)\n{binding['source']} on {mount} (smbfs, nodev, nosuid)\n")
+    resolve, read_text, run = Path.resolve, Path.read_text, p.subprocess.run
+    monkeypatch.setattr(p, "SMB_STORAGE", binding)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(p.getpass, "getuser", lambda: env.user)
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **kw:
+        env.alias_target if self == logical else resolve(self, *a, **kw))
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **kw:
+        json.dumps(env.authority) if self == authority_path else read_text(self, *a, **kw))
+    def local_append_log(vault, digest):
+        # Log-helper behavior is covered separately; keep this family process-isolated.
+        assert vault == target
+        log = target / "wiki/log.md"
+        marker = "automatic-memory snapshot=" + digest
+        text = log.read_text()
+        if marker not in text:
+            log.write_text(text + marker + "\n")
+    monkeypatch.setattr(p, "_append_log", local_append_log)
+    def local_run(args, **kwargs):
+        if args == ["/sbin/mount"]:
+            return SimpleNamespace(stdout=env.mount_output, returncode=0)
+        expected_probe = [sys.executable, "-I", "-c", p._SMB_PROBE,
+                          str(env.alias_target), str(mount), str(target)]
+        assert args == expected_probe, "unexpected subprocess in synthetic namespace fixture"
+        assert env.alias_target.is_relative_to(tmp_path)
+        assert kwargs["cwd"] == "/" and kwargs["timeout"] == 5 and kwargs["check"]
+        return run(args, **kwargs)
+    monkeypatch.setattr(p.subprocess, "run", local_run)
+    return env
+
+
+def _namespace_history(env, kind, monkeypatch):
+    """Create invented pre-migration history, never read production receipts."""
+    p, vault, state = env.p, env.vault, env.state
+    if kind == "published":
+        p.publish(state / "memory.json", state, vault, "home", preflight=ready)
+        current = next((state / "publication").glob("*.json"))
+        outer = json.loads(current.read_text())
+        prior = outer
+    else:
+        with monkeypatch.context() as scoped:
+            def interrupted(*args):
+                raise OSError("invented interruption")
+            scoped.setattr(p, "_append_log", interrupted)
+            with pytest.raises(OSError, match="invented interruption"):
+                p.publish(state / "memory.json", state, vault, "home", preflight=ready)
+        current = next((state / "publication-pending").glob("*.json"))
+        outer = json.loads(current.read_text())
+        prior = outer["publication"]
+    prior["vault_root"] = str(env.logical)
+    identity = p._publication_id({k: v for k, v in prior.items() if k != "published_at"})
+    legacy = current.with_name(identity + ".json")
+    current.unlink()
+    legacy.write_text(json.dumps(outer))
+    newer = automatic_memory.enqueue_bundle(state, _bundle(
+        completed_at="2026-09-10T10:00:00+08:00", cursor="turn:0002",
+        value="The office is now Green.", quote="The office is now Green."))
+    eod_capture.accept_memory_envelope(state, newer, writer_role="home")
+    eod_capture.reconcile_memory_delivery(state, newer["delivery_id"], writer_role="home")
+    return legacy
+
+
+@pytest.mark.parametrize("kind", ["published", "staged"])
+def test_historical_home_namespace_uses_verified_smb_without_rewriting_history(namespace_migration, monkeypatch, kind):
+    env = namespace_migration
+    legacy = _namespace_history(env, kind, monkeypatch)
+    original = legacy.read_bytes()
+    historical = json.loads(original)
+    if kind == "staged":
+        historical = historical["publication"]
+    assert legacy.stem == env.p._publication_id(
+        {k: v for k, v in historical.items() if k != "published_at"})
+    result = env.p.publish(env.state / "memory.json", env.state, env.logical, "home")
+    assert result["vault_root"] == str(env.vault)
+    assert result["storage"] == "smb-ready" and result["binding"] == env.binding
+    assert result["status"] == "published" and result["duplicate"] is False
+    assert legacy.read_bytes() == original
+    current = env.state / "publication" / (env.p._publication_id(
+        {k: v for k, v in result.items() if k not in ("published_at", "duplicate")}) + ".json")
+    assert current.is_file() and current != legacy
+    receipt = json.loads(current.read_bytes())
+    assert receipt == {k: v for k, v in result.items() if k != "duplicate"}
+    assert set(receipt["artifact_sha256"]) == {env.p.JSON_REL, env.p.NOTE_REL}
+    for relative, digest in receipt["artifact_sha256"].items():
+        assert digest == hashlib.sha256((env.vault / relative).read_bytes()).hexdigest()
+    snapshot = automatic_memory._validate_memory_state(
+        json.loads((env.vault / env.p.JSON_REL).read_bytes()))
+    assert receipt["snapshot_sha256"] == env.p.automatic_memory_proofs.snapshot_hash(snapshot)
+    assert receipt["snapshot_sha256"] != historical["snapshot_sha256"]
+    expected_pending = {legacy.name: original} if kind == "staged" else {}
+    expected_published = {current.name: current.read_bytes()}
+    if kind == "published":
+        expected_published[legacy.name] = original
+    def assert_receipt_directories():
+        # Retain historical staged provenance; retire only the new transaction journal.
+        for folder, expected in (("publication-pending", expected_pending),
+                                 ("publication", expected_published)):
+            assert {path.name: path.read_bytes() for path in
+                    (env.state / folder).iterdir()} == expected
+    assert_receipt_directories()
+    after_publication = {str(path): path.read_bytes() for folder in (env.vault, env.state)
+                         for path in folder.rglob("*") if path.is_file()}
+    assert env.p.publish(env.state / "memory.json", env.state, env.logical, "home")["duplicate"]
+    assert legacy.read_bytes() == original
+    assert_receipt_directories()
+    assert after_publication == {str(path): path.read_bytes() for folder in (env.vault, env.state)
+                                 for path in folder.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("failure", ["other-root", "equivalent-path", "tampered", "identity-valid-hash-tamper", "schema", "status", "writer", "artifact-shape", "snapshot", "alias", "mount", "storage", "policy", "non-home", "legacy-mode", "injected-smb", "artifact-edited"])
+@pytest.mark.parametrize("kind", ["published", "staged"])
+def test_historical_namespace_refuses_invalid_binding_or_ownership_before_writes(namespace_migration, monkeypatch, failure, kind):
+    env = namespace_migration
+    legacy = _namespace_history(env, kind, monkeypatch)
+    outer = json.loads(legacy.read_text())
+    prior = outer["publication"] if kind == "staged" else outer
+    if failure == "other-root": prior["vault_root"] += "/unrelated"
+    if failure == "equivalent-path": prior["vault_root"] = str(env.vault) + "/."
+    if failure in ("tampered", "identity-valid-hash-tamper"):
+        prior["artifact_sha256"][env.p.NOTE_REL] = "f" * 64
+    if failure == "schema": prior["schema_version"] = True
+    if failure == "status": prior["status"] = "failed"
+    if failure == "writer": prior["writer_role"] = "sjm-source-only"
+    if failure == "artifact-shape": prior["artifact_sha256"] = []
+    if failure == "snapshot": prior["snapshot_sha256"] = "f" * 64
+    if failure in ("other-root", "equivalent-path", "identity-valid-hash-tamper", "schema", "status", "writer", "artifact-shape", "snapshot"):
+        renamed = legacy.with_name(env.p._publication_id(
+            {k: v for k, v in prior.items() if k != "published_at"}) + ".json")
+        legacy.rename(renamed)
+        legacy = renamed
+    legacy.write_text(json.dumps(outer))
+    historical_bytes = legacy.read_bytes()
+    identity = env.p._publication_id({k: v for k, v in prior.items() if k != "published_at"})
+    assert (legacy.stem != identity) if failure == "tampered" else (legacy.stem == identity)
+    if failure == "alias": env.alias_target = env.vault.parent / "wrong-target"
+    if failure == "mount":
+        assert env.binding["source"] in env.mount_output
+        env.mount_output = env.mount_output.replace(env.binding["source"], env.binding["source"] + "-wrong", 1)
+    if failure == "storage": env.authority["storage"] = {**env.binding, "source": "wrong"}
+    if failure == "policy": env.authority["policy_ledger_sha256"] = "0" * 64
+    if failure == "non-home": env.user = "keithcheung"
+    if failure == "artifact-edited": (env.vault / env.p.JSON_REL).write_text("invented human edit")
+    options = {}
+    if failure == "legacy-mode": options["preflight"] = ready
+    if failure == "injected-smb": options["preflight"] = lambda v: {
+        "policy_ledger_sha256": ready(v)["policy_ledger_sha256"],
+        "storage": "smb-ready", "binding": env.binding}
+    # Existing coordination locks may be acquired; their bytes are pinned too.
+    for name in (".publication.lock", ".reconciliation.lock"):
+        assert (env.state / name).read_bytes() == b""
+    before = {str(path): path.read_bytes() for folder in (env.vault, env.state)
+              for path in folder.rglob("*") if path.is_file()}
+    malformed = (ValueError, "publication receipt is malformed or belongs to another vault")
+    ownership = (PermissionError, "generated recall was modified by another writer")
+    expected_errors = {
+        "other-root": malformed,
+        "equivalent-path": malformed,
+        "tampered": (ValueError, "publication receipt content binding is invalid"),
+        "identity-valid-hash-tamper": ownership,
+        "schema": malformed,
+        "status": malformed,
+        "writer": malformed,
+        "artifact-shape": malformed,
+        "snapshot": malformed,
+        "alias": (PermissionError, "approved SMB target is unavailable: wrong vault target"),
+        "mount": (PermissionError, "approved SMB mount is absent, replaced or read-only"),
+        "storage": (PermissionError, "SMB storage binding is not authorized"),
+        "policy": (PermissionError, "policy ledger changed; publication needs a fresh policy review"),
+        "non-home": (PermissionError, "shared publication is allowed only on the Home Mac"),
+        "legacy-mode": malformed,
+        "injected-smb": malformed,
+        "artifact-edited": ownership,
+    }
+    error, message = expected_errors[failure]
+    with pytest.raises(error, match=message):
+        env.p.publish(env.state / "memory.json", env.state, env.logical, "home", **options)
+    assert before == {str(path): path.read_bytes() for folder in (env.vault, env.state)
+                      for path in folder.rglob("*") if path.is_file()}
+    assert legacy.read_bytes() == historical_bytes
+
+
 def test_publication_produces_indexed_cited_artifacts_and_idempotent_receipt(tmp_path):
     vault, state = setup(tmp_path)
     p = publisher()
@@ -246,8 +445,10 @@ def test_sjm_cannot_publish_even_with_injected_healthy_preflight(tmp_path, role)
     assert not (vault / "System").exists()
 
 
-def test_live_publication_without_activation_authority_is_blocked(tmp_path):
+def test_live_publication_without_activation_authority_is_blocked(tmp_path, monkeypatch):
     vault, state = setup(tmp_path)
+    # Refusal fixture must not traverse the installed Home SMB alias.
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **kw: self)
     with pytest.raises(PermissionError):
         publisher().publish(state / "memory.json", state, vault, "home")
     assert not (vault / "System").exists()
@@ -504,6 +705,7 @@ def test_invalid_policy_bytes_are_an_explicit_gate_refusal(monkeypatch):
     # Fake only the read boundaries; this test never reads/writes live files.
     home = Path('/Users/keithmbpm2')
     vault = home/'Projects/K2B-Vault'
+    monkeypatch.setattr(Path, 'resolve', lambda self, *a, **kw: self)
     monkeypatch.setattr(Path, 'home', staticmethod(lambda: home))
     monkeypatch.setattr(p.getpass, 'getuser', lambda: 'keithmbpm2')
     authority = {'schema_version':1, 'enabled':True, 'vault_root':str(vault),
