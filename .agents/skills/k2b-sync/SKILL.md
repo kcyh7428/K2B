@@ -9,7 +9,37 @@ description: Use when Keith asks to synchronize, update, or compare K2B across t
 
 K2B spans two authorized Macs: Keith's home MacBook and the SJM MacBook `GLPs-MacBook-Pro`. Reviewed code and skills move through Git and execute locally. Both Macs read one online NAS knowledge collection through the logical `Projects/K2B-Vault` aliases and exact SMB bindings in `AGENTS.md`. NAS is storage, not an execution server. Credentials and machine-local state stay on their owning machines; no automatic non-Codex chat capture is enabled.
 
-The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused on both Macs. Automatic local fallback, refresh and reconnection are not installed. Preserved originals are dated copies, not current fallback. Never treat a bare mount directory as NAS evidence or silently use it or an old copy when SMB is unavailable. Syncthing checks below apply only to an explicitly selected legacy local-replication mode.
+The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused on both Macs. No automatic write fallback, write return or reconnection is enabled. Preserved originals are dated copies, never fallback targets. Never treat a bare mount directory as NAS evidence or silently use it or an old copy when SMB is unavailable. Syncthing checks below apply only to an explicitly selected legacy local-replication mode.
+
+For active read/recall tasks, prefer the verified NAS. If its check fails, apply
+only the complete sole authoritative checklist in
+`.agents/skills/k2b-vault-writer/SKILL.md`, including its consumed-source recording
+and post-command hash gates. This summary is insufficient as a procedure and
+cannot authorize fallback on its own. Only completing that checklist permits
+selection without another routine permission question. The only eligible roots are Home
+`/Users/keithmbpm2/Projects/K2B-Vault-Offline` and SJM
+`/Users/keithcheung/Projects/K2B-Vault-Offline/SynologyDrive`. Verify the private
+schema-1 receipt's actual host/user/root/inode/device/time and bound comparison
+bytes/hash before selection; missing or unverifiable evidence stops fallback.
+Validate the local compared-source manifest against its comparison-receipt
+digest, then check the stable bytes of every consumed ordinary Vault input
+against its exact path entry before using output. Reuse bounded source manifests
+and local hashing, not a full-copy rehash or new helper. Missing or changed
+inputs stop the read for fresh comparison. Every fallback output labels the
+last-full-comparison UTC time/age and checked-unchanged local sources as
+potentially stale relative to NAS; no age cap or freshness guarantee. Strictly
+parse `verified_utc` as `YYYY-MM-DDTHH:MM:SSZ` UTC, rejecting invalid/future times.
+Eligibility is these checks, not another runtime activation marker. Announce
+path, pin that read root, recheck its identity and receipt bindings before and
+after each consuming command, and use operation-only
+explicit `K2B_VAULT_PATH` for existing bootstrap/gather. No alias/global-setting
+change, originals/shadows, hidden/client metadata or private-family fallback;
+generated `wiki/reference/minnie-family-memory` is outside this acceptance.
+Use actual `wiki/log.md`, never offline `System/log.md` as the current log.
+This snapshot does not prove ongoing freshness. Writes/publication remain
+verified-NAS-only; unavailable NAS leaves private drafts pending. A new operation
+may return to verified NAS after fresh checks; no mid-save diversion, offline
+write route, automatic write return or headless Drive completion is enabled.
 
 The former Mac Mini deployment lane remains retired. Keith authorized a separate
 supervised Mini browser/capture role on 25 October 2026 and reaffirmed it on
@@ -54,9 +84,9 @@ Use the storage/readback checks and existing writer in `k2b-vault-writer`. Set `
 
 The same-nonce/EEXIST and real SJM save, 44.566 seconds with matching Home hashes/marker and a simultaneous Home local compile lock, are bounded evidence only. General unattended/concurrent-client safety remains unaccepted until corrected invocations are installed and checked; latency target remains unmet. Home shared logs retain their separate lock, never the compile lock. Preserve mkdir/rmdir cleanup/busy refusal, private repair and real conflicts; 13 retained identical copies are not blanket resolved. No automatic stale deletion, new protocol/service/wrapper or runtime default is introduced.
 
-Syncthing owns transport only in the explicitly selected legacy local-replication mode. Its ordinary local-writer exception, including Home-offline saves, is retained for that mode and does not install automatic NAS fallback.
+Syncthing owns transport only in the explicitly selected legacy local-replication mode. Its ordinary local-writer exception, including Home-offline saves, is retained for that mode and does not enable NAS write fallback. The receipt-verified read-copy exception above is separate.
 
-After a host reconnects, reread the current NAS note and expected hash before writing. Compare any private pending draft with that version; unexpected divergence blocks overwrite and preserves both versions. Do not publish stale local copies or infer that automatic fallback/reconnection is installed. General unattended/concurrent-client writes remain outside this procedure until root accepts owner bindings; separately authorized native jobs retain their own authority and schedules.
+After a host reconnects, reread the current NAS note and expected hash before writing. Compare any private pending draft with that version; unexpected divergence blocks overwrite and preserves both versions. Do not publish stale local copies or infer that automatic write fallback/return or reconnection is installed. General unattended/concurrent-client writes remain outside this procedure until root accepts owner bindings; separately authorized native jobs retain their own authority and schedules.
 
 A `.sync-conflict-*.md` copy means both versions exist and must be preserved. Do not delete, rename, or hand-merge conflict files; the writer refuses to overwrite a conflicted target, and the SessionStart hook warns on real conflict copies. Resolution is Keith's call after both versions have been read.
 
