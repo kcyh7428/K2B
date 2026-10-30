@@ -17,7 +17,99 @@ Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct s
 
 ## Current online NAS target
 
-Both local writers use one online NAS collection through the exact Home/SJM aliases and mounts in `AGENTS.md`. NAS availability is required; Home availability is not required for an ordinary SJM save. The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused. Preserved originals are dated copies, not refreshed fallback. Automatic fallback/reconnection are not installed. Never select a shadow directory or old copy silently when the mounted target is unavailable.
+Both local writers use one online NAS collection through the exact Home/SJM aliases and mounts in `AGENTS.md`. NAS availability is required; Home availability is not required for an ordinary SJM save. The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused. Preserved originals are dated copies, never fallback targets. No automatic write fallback, write return or reconnection is enabled. Never select a shadow directory or old copy silently when the mounted target is unavailable.
+
+### Receipt-verified read fallback
+
+This is the sole authoritative read-fallback checklist. AGENTS.md and sync
+summaries are insufficient procedures; every gate here is required.
+
+For an active user-requested read/recall, prefer the exact approved NAS
+mount/alias after the online identity/readability checks below. If those checks
+fail, the assistant may select the downloaded local read copy without another
+routine permission question, only after checking the private regular receipt
+`~/.local/state/k2b/nas-offline-copy-verification.json`:
+
+- Require `schema` equal to integer `1`; `host` and `user` must equal the actual
+  hostname and operating-system user. Require `local_root` equal to Home
+  `/Users/keithmbpm2/Projects/K2B-Vault-Offline` or SJM
+  `/Users/keithcheung/Projects/K2B-Vault-Offline/SynologyDrive`, as applicable.
+  Use `lstat` to require a real directory, not a symlink, resolving to that exact
+  root; its `st_ino` and `st_dev` must equal receipt `inode` and `device`.
+- Require `verified_utc` in exact `YYYY-MM-DDTHH:MM:SSZ` format, parse it as
+  UTC and reject malformed, nonexistent or future timestamps. Verify the
+  bound `comparison_receipt` bytes against `comparison_sha256`, using retained
+  private evidence, not a Vault path. Require its `status` to be
+  `completed-observation`. `results` is a list: require exactly one entry labeled
+  `host: home` for the Home user/root or `host: sjm` for the SJM user/root,
+  with `matches_at_observation: true`; another host's match is insufficient.
+  Require matching `in_scope_count`/`in_scope_bytes` and that entry's
+  `source_count`/`source_bytes`, and consistent ordinary-file scope/exclusions
+  for hidden/client metadata, generated family memory and the log alias below.
+  The receipt's `nas_source`/`nas_root` describe the approved Home NAS source
+  hashed once for both comparisons, not an SJM mount of Home's path. Verify
+  this provenance against the approved Home binding in `AGENTS.md` separately
+  from the current host's local-root identity. The comparison receipt must be
+  readable retained private evidence on this host; no counterpart connection
+  is required for an eligible offline read. A missing, unreadable, malformed,
+  mismatched or inaccessible binding stops fallback; a client badge is not
+  evidence. Eligibility and the routine permission waiver depend exactly on
+  these evidence checks and the current-file checks below, not another runtime
+  activation marker. Do not create a readiness receipt here.
+- Validate the local `nas-source.jsonl` beside the bound comparison receipt
+  against `comparison_receipt.evidence_hashes['nas-source.jsonl']`. Parse its
+  regular-file entries (`kind: file`) by exact relative `path`, requiring unique
+  paths and `stable: true`, with valid `sha256` values. Reject malformed or
+  escaping paths. This is the compared-source manifest, not a new registry.
+- Before using fallback evidence, verify every ordinary Vault file actually
+  consumed by the current read against its bound manifest entry: require a
+  regular file within the pinned root, no symlink traversal, stable content
+  SHA-256 matching that entry and the bytes consumed. A complete consumed-file
+  list with source hashes recorded by the consuming command is an eligibility
+  precondition, including bootstrap/index inputs, not just cited passages.
+  Do not assume existing bootstrap/gather provides it: if a command cannot
+  supply complete recorded coverage and source hashes, fallback via that
+  command is ineligible; do not construct a helper to add it here.
+  After every consuming command, re-hash every command-recorded consumed
+  ordinary Vault file using normal local hashing. Require both its recorded
+  consumed-source hash and its stable post-command hash to match the same bound
+  manifest entry. Reject and discard output on any mismatch, instability or
+  unknown/unrecorded coverage. Keep the before-and-after root/receipt checks
+  below; directory identity alone does not verify file content.
+  Do not use bootstrap/gather output
+  until every consumed Vault file passes; if complete consumption accounting or
+  stable bytes cannot be verified, stop that read. Missing, unlisted, changed,
+  unreadable or unstable files require a fresh comparison, not a silent waiver.
+  Retain private drafts and explain the failed check. Hash only consumed files,
+  not the whole copy per read; no new helper, age cap or immutable-copy mechanism.
+- Announce the selected local-copy path and pin that root for the read
+  operation. Every fallback-sourced answer/output must carry the last full
+  comparison UTC time and elapsed age, explicitly describing historical local
+  source bytes checked unchanged since that observation, potentially stale
+  relative to NAS. Even a months-old unchanged file is historical evidence,
+  never current NAS knowledge or a continuously fresh mirror. Run existing
+  bootstrap and bounded gather
+  with explicit `K2B_VAULT_PATH="<verified-local-root>"` on each command for that
+  operation only; do not globally export it or change normal aliases/defaults.
+  Do not switch roots mid-operation or combine sources without identifying them.
+  Recheck the actual root's `lstat` identity, inode/device and receipt bindings
+  before each consuming command and after it. Stop and discard its output on
+  any change. This is operator procedure, not an atomic lease or new runtime
+  enforcement mechanism.
+- Read only bounded ordinary evidence within that root. Never traverse hidden
+  or client metadata, symlinks escaping the root, or a private family subtree.
+  Exclude generated `wiki/reference/minnie-family-memory` and case variants;
+  its owner-controlled acceptance is separate. Never select stale offline
+  `System/log.md` as the current log; read the actual `wiki/log.md` only.
+
+This is read fallback only. Ordinary saves still require the current verified
+NAS, expected hash and common NAS lock; Home publication is NAS-only. During
+NAS failure keep private local drafts marked pending, never write through the
+read copy or divert an in-flight save. A fresh operation may select NAS after
+fresh mount/alias/readability checks and, for writes, the existing lock/hash
+checks and pending-draft comparison. Offline writes and safe automatic write
+return require a separate concrete accepted route. Do not infer headless Drive
+completion, future freshness or reconnection from this snapshot.
 
 Before an authorized save, use this operating procedure, not a newly installed enforcement mechanism:
 
