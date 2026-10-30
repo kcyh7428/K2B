@@ -5,6 +5,12 @@ description: Default desktop path for creating or updating K2B vault notes with 
 
 # K2B Vault Writer
 
+Before any vault operation, read [Storage and writer operations](references/storage-and-writer-operations.md).
+It carries the scoped authority delegated by AGENTS.md. A missing or unreadable
+runbook stops the operation. This skill's complete offline-read checklist below
+remains the sole executable fallback procedure; the runbook is not a substitute.
+Other unresolved instruction conflicts stop the affected action for clarification.
+
 Codex and supervised Kimi Work use this same local procedure. In a fresh
 Kimi Work conversation, first read the project's AGENTS.md and run
 `scripts/k2b-bootstrap.py`. Save material decisions with a source reference

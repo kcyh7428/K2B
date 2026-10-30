@@ -7,6 +7,17 @@ description: Create, list, pause, resume, and delete registered host jobs for K2
 
 ## Live K2B Authority
 
+Before capture, scheduling or publication decisions, read
+[Native capture and automation](references/native-capture-and-automation.md).
+A missing or unreadable runbook stops the affected action. Its dated approvals
+preserve the existing narrow exception for the two named native automatic-memory
+jobs and isolated synthetic activation probes. Only within that scope, those
+approvals override the discovery-only, deterministic-script-only and no-interactive-
+session wording below, including the SJM entrypoint refusal in Host and Registration
+Rule 2 and Step 2 validation, solely for the approved SJM native job and its isolated
+synthetic activation probes. Every budget, role, receipt, provider and hold remains binding;
+this cross-reference authorizes no new job, activation or schedule change.
+
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the interactive commander; Kimi K2.7 is the background text worker.
 - OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
@@ -32,7 +43,7 @@ Two job types:
 ## Host and Registration Rules
 
 1. Identify the intended host from the requested workload and verify it live before registration.
-2. On SJM, refuse every unattended K2B job except the exact entrypoint `scripts/codex-discovery-job.sh sjm-source-only`. A request for any other SJM schedule is new scope and requires Keith's explicit authorization before registration.
+2. On SJM, refuse every unattended K2B job except the exact entrypoint `scripts/codex-discovery-job.sh sjm-source-only` and the already approved native automatic-memory job under `references/native-capture-and-automation.md`. Its separately authorized isolated activation probes retain only their existing bounded approval. Every other SJM schedule is new scope and requires Keith's explicit authorization before registration.
 3. The SJM discovery exception is local and source-only: it must not call a provider, edit the Vault or shared hubs, reconcile captures, or start another routine.
 4. Prefer the Codex automation/host-job control surface available in the current environment. If no supported registration surface is available, stop with a precise proposal; do not edit `crontab`, launchd, PM2, or service state ad hoc.
 5. Register only a deterministic script or command that can run without an interactive Codex session.
@@ -77,7 +88,7 @@ All times in Keith's LOCAL timezone (HKT, UTC+8).
 ### Step 2: Validate before registration
 
 - Confirm the entrypoint exists and has a bounded, non-interactive execution contract.
-- If the owner is SJM, require the exact entrypoint `scripts/codex-discovery-job.sh sjm-source-only`; refuse every other entrypoint unless Keith has explicitly opened new scope for that schedule.
+- If the owner is SJM, require the exact entrypoint `scripts/codex-discovery-job.sh sjm-source-only` or the already approved native automatic-memory job under `references/native-capture-and-automation.md`. Its separately authorized isolated activation probes retain only their existing bounded approval. Refuse every other entrypoint unless Keith has explicitly opened new scope for that schedule.
 - Confirm no OpenAI API key or unrelated global credential is inherited.
 - Confirm the receipt and machine-local failure/status paths are writable by the owner host.
 - Preview the exact job name, host, cadence, entrypoint, and receipt location.
