@@ -82,7 +82,7 @@ untouched.
 - SJM project: `/Users/keithcheung/Projects/K2B` on `GLPs-MacBook-Pro`, reached only
   through its existing authorized SSH configuration. SJM vault alias:
   `/Users/keithcheung/Projects/K2B-Vault` to `/Volumes/Keith-Work/K2B-Vault` on
-  `//keith.cheung@100.75.5.21/Keith-Work`.
+  `//cheung@100.75.5.21/Keith-Work`.
 - Both Macs use one online knowledge collection on NAS through those logical aliases.
   Code and skills stay installed locally and move through reviewed Git commits.
   Credentials and machine-local state stay on their owning machines.
