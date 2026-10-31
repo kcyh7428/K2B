@@ -224,6 +224,18 @@ Mini-owned generated projection: ordinary saves must refuse it and its case vari
 and only the configured Minnie exporter may update it after the exact NAS destination
 and scoped access are verified.
 
+Keith's 31 October offline-save exception permits ordinary edits to be retained
+privately with that writer's `stage` command when NAS is unavailable. Downloaded
+notes and indexes stay unchanged. This purpose-specific waiting-edit route is the
+only new exception to older general pending-queue prohibitions; it does not admit
+policy, publication, shared hubs or generated Minnie exports. At the next active
+user-requested K2B task, after fresh online preflight, use `pending` and `resume`
+as specified in the writer skill to deliver eligible edits through the existing
+NAS writer. Keep the original expected hash; changed same-note content stays
+waiting for the existing conflict decision. No scheduler, Drive upload, timestamp
+merge, background retry or mid-save destination switch is enabled. SJM needs NAS,
+not Home, for ordinary pending delivery. Read fallback retains its full checklist.
+
 Cross-Mac visibility claims require matching counterpart bytes. A helper's
 `saved locally; synchronization unverified` text, a failed ping, or an unavailable
 counterpart readback is unverified and never proof.
