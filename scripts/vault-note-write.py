@@ -42,15 +42,18 @@
 # Format rule: no em dashes anywhere. Use "--".
 
 import argparse
+import contextlib
 import errno
 import fcntl
 import hashlib
 import importlib.util
 import json
+import io
 import os
 import pwd
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -1330,6 +1333,362 @@ def rel_dirname(rel):
     return parent if parent else "."
 
 
+# Private waiting edits use the existing recovery/receipt store. They never
+# modify a downloaded mirror, and delivery uses the ordinary writer unchanged.
+PENDING_SCAN_LIMIT = 1000
+PENDING_RECORD_BYTES = 16384
+# Existing partial receipts may quote a bounded index diagnostic. JSON escaping
+# can expand each byte sixfold; their bound is separate from waiting metadata.
+NORMAL_RECEIPT_BYTES = 6 * MAX_INDEX_BYTES + 2 * PENDING_RECORD_BYTES
+PENDING_KEYS = {
+    "schema", "operation", "user", "path", "note_sha256", "summary",
+    "status", "section", "source_ref", "expected_sha256", "content",
+    "created_utc", "result", "writer_receipt", "writer_receipt_sha256",
+    "record_sha256", "time_utc",
+}
+PENDING_ID_FIELDS = (
+    "user", "path", "note_sha256", "summary", "status", "section",
+    "source_ref", "expected_sha256",
+)
+
+
+def _pending_digest(value):
+    return sha256_hex(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _pending_exclude_shared(path):
+    forbidden = [
+        "/Users/keithmbpm2/Projects/K2B-Vault",
+        "/Users/keithmbpm2/Projects/K2B-NAS",
+        "/Users/keithmbpm2/Projects/K2B-Vault-Offline",
+        "/Users/keithcheung/Projects/K2B-Vault",
+        "/Users/keithcheung/Projects/K2B-Vault-Offline",
+        "/Volumes",
+    ]
+    forbidden += [os.environ[k] for k in ("K2B_VAULT_PATH", "K2B_VAULT_ROOT")
+                  if os.environ.get(k)]
+    for root in forbidden:
+        root = os.path.abspath(root).casefold().rstrip("/")
+        if path.casefold() == root or path.casefold().startswith(root + "/"):
+            raise WriteError("pending storage/content must stay outside Vault and mirror paths")
+
+
+def _pending_local_path(path, directory=False, create=False):
+    if not os.path.isabs(path):
+        raise WriteError("pending local paths must be absolute")
+    path = os.path.abspath(path)
+    _pending_exclude_shared(path)
+    # macOS's two system aliases are local OS paths, not user-selected links.
+    if sys.platform == "darwin":
+        for alias, target in (("/tmp", "/private/tmp"), ("/var", "/private/var")):
+            if (path.startswith(alias + "/") and os.path.islink(alias)
+                    and os.readlink(alias) in (target, target.lstrip("/"))):
+                path = target + path[len(alias):]
+    current = os.sep
+    for part in path.split(os.sep)[1:]:
+        current = os.path.join(current, part)
+        if create and not os.path.lexists(current):
+            os.mkdir(current, 0o700)
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode):
+            raise WriteError("pending local path must not traverse symlinks")
+        if current != path or directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise WriteError("pending local directory is not a directory")
+        elif not stat.S_ISREG(info.st_mode):
+            raise WriteError("pending content/receipt is not a regular file")
+    return path
+
+
+def _pending_read(path, limit, private=True):
+    path = _pending_local_path(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size > limit
+                or before.st_uid != os.geteuid()
+                or private and stat.S_IMODE(before.st_mode) != 0o600):
+            raise WriteError("invalid private pending file identity, size or permissions")
+        chunks, remaining = [], limit + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after, named = os.fstat(fd), os.lstat(path)
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+        if len(data) > limit or identity(before) != identity(after) or identity(after) != identity(named):
+            raise WriteError("pending file changed while reading")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _pending_json(data):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise WriteError("duplicate pending JSON key")
+            result[key] = value
+        return result
+    try:
+        value = json.loads(data, object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as exc:
+        raise WriteError("invalid pending JSON: " + str(exc))
+    if not isinstance(value, dict):
+        raise WriteError("pending JSON must be an object")
+    return value
+
+
+def _pending_state(create=False):
+    root = os.path.abspath(state_root())
+    _pending_exclude_shared(root)
+    if not os.path.lexists(root) and not create:
+        return None
+    root = _pending_local_path(root, directory=True, create=create)
+    if os.lstat(root).st_uid != os.geteuid():
+        raise WriteError("pending state must belong to the current operator")
+    return root
+
+
+@contextlib.contextmanager
+def _pending_lock(create=False):
+    root = _pending_state(create)
+    if root is None:
+        yield None
+        return
+    lock = os.path.join(root, "note-pending.lock.d")
+    acquire_lock(lock)
+    try:
+        yield root
+    finally:
+        release_lock(lock)
+
+
+def _pending_record_path(operation):
+    if not isinstance(operation, str) or not re.fullmatch(r"[a-f0-9]{64}", operation):
+        raise WriteError("pending operation must be its exact 64-character ID")
+    return os.path.join(receipts_root(), "pending-" + operation + ".json")
+
+
+def _pending_seal(record):
+    return _pending_digest({k: v for k, v in record.items()
+                            if k not in ("record_sha256", "time_utc")})
+
+
+def _pending_save(record):
+    _pending_local_path(receipts_root(), directory=True, create=True)
+    record = dict(record)
+    record["record_sha256"] = _pending_seal(record)
+    sized = dict(record, time_utc=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"))
+    if len((json.dumps(sized, indent=2, sort_keys=True) + "\n").encode()) > PENDING_RECORD_BYTES:
+        raise WriteError("pending metadata exceeds its retained-record bound")
+    write_receipt_file("pending-" + record["operation"], record)
+
+
+def _pending_load(operation):
+    record = _pending_json(_pending_read(_pending_record_path(operation), PENDING_RECORD_BYTES))
+    if set(record) != PENDING_KEYS or type(record["schema"]) is not int or record["schema"] != 1:
+        raise WriteError("invalid pending record fields or schema")
+    if record["operation"] != operation or record["user"] != validate_operator():
+        raise WriteError("pending record operator/operation mismatch")
+    if record["record_sha256"] != _pending_seal(record):
+        raise WriteError("pending record integrity mismatch")
+    if not isinstance(record["path"], str) or validate_note_rel(record["path"]) != record["path"]:
+        raise WriteError("invalid pending note path")
+    for key, maximum, optional in (("summary", MAX_SUMMARY_CHARS, False),
+                                   ("source_ref", MAX_SOURCE_REF_CHARS, False),
+                                   ("status", MAX_STATUS_CHARS, True),
+                                   ("section", MAX_STATUS_CHARS, True)):
+        if not isinstance(record[key], str) and not (optional and record[key] is None):
+            raise WriteError("invalid pending field type: " + key)
+        if validate_line_field(key, record[key], maximum, allow_empty=optional) != record[key]:
+            raise WriteError("noncanonical pending field: " + key)
+    validate_expected(record["expected_sha256"])
+    digest = record["note_sha256"]
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise WriteError("invalid pending content hash")
+    if operation != _pending_digest({k: record[k] for k in PENDING_ID_FIELDS}):
+        raise WriteError("pending identity mismatch")
+    for key, fmt in (("created_utc", "%Y-%m-%dT%H:%M:%SZ"), ("time_utc", "%Y%m%dT%H%M%S.%fZ")):
+        if not isinstance(record[key], str):
+            raise WriteError("invalid pending UTC time")
+        parsed = datetime.strptime(record[key], fmt)
+        if parsed.strftime(fmt) != record[key]:
+            raise WriteError("noncanonical pending UTC time")
+    expected_content = "note-write-backups/after/" + digest + ".md"
+    alternate_content = "note-write-backups/before/" + digest + ".md"
+    if record["content"] not in (expected_content, alternate_content):
+        raise WriteError("invalid pending content path")
+    data = _pending_read(os.path.join(state_root(), record["content"]), MAX_NOTE_BYTES)
+    if sha256_hex(data) != digest:
+        raise WriteError("pending content hash mismatch")
+    if not data.strip() or b"\0" in data:
+        raise WriteError("invalid pending note content")
+    validate_frontmatter(data.decode("utf-8"))
+    if record["result"] not in ("waiting-local", "delivered"):
+        raise WriteError("invalid pending delivery state")
+    if record["result"] == "waiting-local":
+        if record["writer_receipt"] is not None or record["writer_receipt_sha256"] is not None:
+            raise WriteError("waiting edit must not claim a writer receipt")
+    else:
+        normal = operation_key(record["path"], data, record["summary"], record["status"], record["source_ref"], record["section"])
+        if record["writer_receipt"] != "note-write-receipts/" + normal + ".json":
+            raise WriteError("invalid delivered receipt path")
+        if not isinstance(record["writer_receipt_sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", record["writer_receipt_sha256"]):
+            raise WriteError("invalid delivered receipt hash")
+    return record, data
+
+
+def _pending_online():
+    # This preflight is specific to pending delivery, not a general mount lease.
+    actor = validate_operator()
+    if actor == "keithmbpm2":
+        mount, source, logical = (
+            "/Users/keithmbpm2/Projects/K2B-NAS", "//cheung@192.168.50.67/Keith-Work",
+            "/Users/keithmbpm2/Projects/K2B-Vault")
+    else:
+        mount, source, logical = ("/Volumes/Keith-Work", "//cheung@100.75.5.21/Keith-Work",
+                                  "/Users/keithcheung/Projects/K2B-Vault")
+    lines = subprocess.check_output(["/sbin/mount"], text=True).splitlines()
+    matches = [line for line in lines if line.startswith(source + " on " + mount + " (smbfs,")]
+    if len(matches) != 1 or "read-only" in matches[0]:
+        raise WriteError("pending delivery requires the approved writable SMB mount")
+    root = mount + "/K2B-Vault"
+    if (not os.path.islink(logical) or os.path.realpath(logical) != root
+            or vault_root() != root or os.path.realpath(compile_lock_dir()) != root + "/.k2b-compile-index.lock.d"):
+        raise WriteError("pending delivery NAS alias/root/lock binding mismatch")
+    helper = load_compile_index()
+    if str(helper.LOCK_DIR) != root + "/.k2b-compile-index.lock.d":
+        raise WriteError("pending delivery imported lock binding mismatch")
+
+
+def _pending_normal_receipt(record, data):
+    operation = operation_key(record["path"], data, record["summary"], record["status"], record["source_ref"], record["section"])
+    path = os.path.join(receipts_root(), operation + ".json")
+    if not os.path.lexists(path):
+        return None
+    raw = _pending_read(path, NORMAL_RECEIPT_BYTES)
+    normal = _pending_json(raw)
+    for key in PENDING_ID_FIELDS:
+        if normal.get(key) != record[key]:
+            raise WriteError("pending normal-writer receipt mismatch: " + key)
+    if normal.get("operation") != operation:
+        raise WriteError("pending normal-writer operation mismatch")
+    if normal.get("result") not in ("saved-local", "already-present"):
+        return None
+    return "note-write-receipts/" + operation + ".json", sha256_hex(raw)
+
+
+def _stage_pending(args):
+    actor = validate_operator()
+    record = {"schema": 1, "user": actor, "path": validate_note_rel(args.path),
+              "summary": validate_line_field("summary", args.summary, MAX_SUMMARY_CHARS),
+              "status": validate_line_field("status", args.status, MAX_STATUS_CHARS, allow_empty=True),
+              "section": validate_line_field("section", args.section, MAX_STATUS_CHARS, allow_empty=True),
+              "source_ref": validate_line_field("source_ref", args.source_ref, MAX_SOURCE_REF_CHARS),
+              "expected_sha256": validate_expected(args.expected_sha256)}
+    # Only local draft/state paths are examined; no Vault existence check occurs.
+    with _pending_lock(create=True):
+        data = _pending_read(args.content_file, MAX_NOTE_BYTES, private=False)
+        if not data.strip() or b"\0" in data:
+            raise WriteError("invalid empty or NUL-containing pending note")
+        validate_frontmatter(data.decode("utf-8"))
+        record["note_sha256"] = sha256_hex(data)
+        operation = _pending_digest({k: record[k] for k in PENDING_ID_FIELDS})
+        if os.path.lexists(_pending_record_path(operation)):
+            previous, _ = _pending_load(operation)
+            print(json.dumps({"result": previous["result"], "operation": operation, "path": record["path"]}))
+            return 0
+        _pending_local_path(os.path.join(backups_root(), "before"), directory=True, create=True)
+        _pending_local_path(os.path.join(backups_root(), "after"), directory=True, create=True)
+        content = durable_private_copy("after", data)
+        if _pending_read(os.path.join(state_root(), content), MAX_NOTE_BYTES) != data:
+            raise WriteError("pending recovery copy mismatch")
+        record.update(operation=operation, content=content, created_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      result="waiting-local", writer_receipt=None, writer_receipt_sha256=None)
+        _pending_save(record)
+        print(json.dumps({"result": "waiting-local", "operation": operation, "path": record["path"],
+                          "note": "kept privately on this Mac; not saved to NAS"}))
+    return 0
+
+
+def _list_pending(args):
+    validate_operator()
+    if not 1 <= args.limit <= 100:
+        raise WriteError("pending limit must be between 1 and 100")
+    rows = []
+    with _pending_lock() as root:
+        directory = os.path.join(root, "note-write-receipts") if root else None
+        if directory and os.path.lexists(directory):
+            _pending_local_path(directory, directory=True)
+            names = []
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.name.startswith("pending-"):
+                        names.append(entry.name)
+                        if len(names) > PENDING_SCAN_LIMIT:
+                            raise WriteError("pending inspection bound exceeded; preserve state")
+            for name in names:
+                match = re.fullmatch(r"pending-([a-f0-9]{64})\.json", name)
+                if not match:
+                    raise WriteError("invalid pending receipt filename")
+                record, _ = _pending_load(match.group(1))
+                if record["result"] == "waiting-local":
+                    rows.append({k: record[k] for k in ("operation", "path", "created_utc", "summary")})
+    rows.sort(key=lambda row: (row["created_utc"], row["operation"]))
+    print(json.dumps({"result": "pending", "edits": rows[:args.limit], "more": len(rows) > args.limit}))
+    return 0
+
+
+def _resume_pending(args):
+    validate_operator()
+    with _pending_lock() as root:
+        if root is None:
+            raise WriteError("pending operation not found")
+        record, data = _pending_load(args.operation)
+        _pending_online()
+        completed = _pending_normal_receipt(record, data)
+        if record["result"] == "delivered":
+            if completed != (record["writer_receipt"], record["writer_receipt_sha256"]):
+                raise WriteError("delivered pending receipt binding changed")
+        else:
+            if completed is None:
+                command = argparse.Namespace(**{k: record[k] for k in ("path", "summary", "status", "section", "source_ref", "expected_sha256")})
+                command.content_file = os.path.join(state_root(), record["content"])
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = cmd_write(command)
+                if code:
+                    print(json.dumps({"result": "pending-repair" if code == 3 else "waiting-local",
+                                      "operation": record["operation"], "writer_output": output.getvalue()}))
+                    return code
+                completed = _pending_normal_receipt(record, data)
+                if completed is None:
+                    raise WriteError("normal writer completion is unverified; pending edit retained")
+            record.update(result="delivered", writer_receipt=completed[0], writer_receipt_sha256=completed[1])
+            _pending_save(record)
+        print(json.dumps({"result": "delivered", "operation": record["operation"], "path": record["path"],
+                          "receipt": record["writer_receipt"], "receipt_sha256": record["writer_receipt_sha256"],
+                          "note": "saved through the NAS writer; counterpart readback separate"}))
+    return 0
+
+
+def cmd_pending_operation(args):
+    try:
+        return {"stage": _stage_pending, "pending": _list_pending, "resume": _resume_pending}[args.command](args)
+    except (ConflictError, TimeoutError, BackupError, WriteError, OSError,
+            ValueError, TypeError, UnicodeError, KeyError) as exc:
+        code = (2 if isinstance(exc, ConflictError) else
+                4 if isinstance(exc, TimeoutError) else
+                5 if isinstance(exc, BackupError) else 1)
+        sys.stderr.write("vault-note-write: " + str(exc) + "\n")
+        return code
+
+
 # --- conflicts command ------------------------------------------------------------
 
 
@@ -1416,6 +1775,18 @@ def build_parser():
     )
     conflicts.set_defaults(func=cmd_conflicts)
     write.set_defaults(func=cmd_write)
+    stage = sub.add_parser("stage", help="keep one ordinary edit privately, waiting for NAS")
+    for name in ("path", "content-file", "expected-sha256", "summary", "source-ref"):
+        stage.add_argument("--" + name, required=True)
+    stage.add_argument("--status", default=None)
+    stage.add_argument("--section", default=None)
+    stage.set_defaults(func=cmd_pending_operation)
+    pending = sub.add_parser("pending", help="list bounded waiting-edit metadata")
+    pending.add_argument("--limit", type=int, default=20)
+    pending.set_defaults(func=cmd_pending_operation)
+    resume = sub.add_parser("resume", help="deliver one waiting edit through the NAS writer")
+    resume.add_argument("--operation", required=True)
+    resume.set_defaults(func=cmd_pending_operation)
     return parser
 
 

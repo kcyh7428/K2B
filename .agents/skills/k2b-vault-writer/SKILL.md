@@ -147,6 +147,45 @@ Local/offline writer descriptions below apply only to an explicitly selected leg
 
 ## Desktop Capture Default
 
+### Ordinary edits waiting for NAS
+
+Keith approved this narrow private waiting-edit route on 31 October. When the
+online preflight fails during an active user-requested ordinary-note task, keep
+the complete proposed content in a private local draft and run the existing
+writer with `stage` instead of `write`, with the same path, content-file,
+expected-sha256, summary, source-ref and optional status/section arguments.
+Use the original known base hash or `missing` for a genuinely new note; do not
+invent or silently refresh a base hash. `stage` does not inspect or write NAS or
+the downloaded mirror. It returns `waiting-local`, an exact operation ID and a
+private content/receipt binding under the owning Mac's existing K2B state.
+Say that the edit is waiting on this Mac and is not yet saved to NAS. A private
+draft, historical offline read, interrupted online save and waiting edit are
+distinct; do not restage an interrupted online write or discard its receipt.
+
+At the start of the next active user-requested K2B task with verified NAS,
+run `vault-note-write.py pending --limit 20` using the host's ordinary-note
+interpreter. This lists bounded metadata, not draft bodies. For each eligible
+waiting ordinary edit, run `vault-note-write.py resume --operation <exact-id>`
+with the usual explicit NAS root and common compile-lock environment. If `more`
+is true, process another bounded list only after the previous batch delivered.
+Attempt each operation at most once in that active task. A nonzero result stops
+the automatic pass; report the blocked and remaining edits rather than reloading
+the same list or retrying. There is no new scheduled or headless replay.
+
+`resume` verifies the approved online mount/alias/root/lock and the private
+record/content, then uses the normal writer with the original expected hash.
+It updates indexes against current NAS contents, preserves normal recovery and
+conflict checks and binds the normal save receipt. A completed operation is
+idempotent; its record stays as history. Exit 2 keeps a changed same-note edit
+waiting for the existing conflict decision, without a silent overwrite. A partial
+save remains a pending repair through the same operation and original bytes;
+inspect its ordinary receipt before retry. Corrupt records or content stop
+delivery and are never treated as an empty list. Never purge waiting edits or
+use a mirrored note/index upload as this route. `delivered` means the normal NAS
+save has a bound receipt; verify current counterpart bytes separately. This
+purpose-specific ordinary-note exception does not broaden policy/shared-hub,
+native publication, generated family memory, credential or runtime access.
+
 Use this skill as the default desktop route for "save this", "capture this", "update K2B", "write this to the vault", and durable project/person/decision updates. Do not create a new capture skill for single-answer synthesis. Decide whether the material belongs directly in `wiki/` or should be saved as a raw source for later `/compile`:
 
 - Stable facts, project status, people context, decisions, and operating rules: update the existing wiki page directly.

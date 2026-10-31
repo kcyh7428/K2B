@@ -15,6 +15,288 @@ import sys
 import time
 
 import pytest
+from pathlib import Path
+
+
+def pending_test_stage(mod, env, tmp, capsys, path="wiki/work/work_new-note.md",
+                       expected="missing", content=None, source="pending-test"):
+    p = draft(tmp, env, NOTE_NEW if content is None else content)
+    assert mod.main(["stage", "--path", path, "--content-file", str(p),
+                     "--expected-sha256", expected, "--summary", "Waiting edit",
+                     "--source-ref", source]) == 0
+    return json.loads(capsys.readouterr().out)["operation"]
+
+
+def test_pending_absent_nas_and_idempotent_metadata(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    missing = tmp_path / "absent-nas"
+    monkeypatch.setenv("K2B_VAULT_PATH", str(missing))
+    monkeypatch.setenv("K2B_VAULT_ROOT", str(missing))
+    monkeypatch.setattr(mod, "vault_root", lambda: pytest.fail("NAS resolution during stage"))
+    monkeypatch.setattr(mod.subprocess, "check_output", lambda *a, **k: pytest.fail("mount probe during stage"))
+    mirror = tmp_path / "mirror.md"
+    mirror.write_text("original")
+    operation = pending_test_stage(mod, vault_env, tmp_path, capsys)
+    path = Path(mod._pending_record_path(operation))
+    before = path.read_bytes()
+    assert pending_test_stage(mod, vault_env, tmp_path, capsys) == operation
+    assert path.read_bytes() == before
+    second = pending_test_stage(mod, vault_env, tmp_path, capsys, expected="0" * 64)
+    assert second != operation and path.read_bytes() == before
+    assert not missing.exists() and mirror.read_text() == "original"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert mod.main(["pending", "--limit", "1"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["more"] and len(result["edits"]) == 1
+    assert NOTE_NEW not in json.dumps(result) and "content" not in result["edits"][0]
+
+
+def test_pending_resume_preserves_new_index_entry_and_duplicate(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    target = vault_env["vault"] / "wiki/work/work_kingdee-hris-recovery.md"
+    operation = pending_test_stage(mod, vault_env, tmp_path, capsys,
+                                   "wiki/work/work_kingdee-hris-recovery.md",
+                                   hashlib.sha256(target.read_bytes()).hexdigest(), NOTE_KINGDEE_V2)
+    assert inproc_write(mod, tmp_path, vault_env, "wiki/work/work_other.md", NOTE_NEW,
+                        "missing", "unrelated entry retained", "other") == 0
+    capsys.readouterr()
+    master = vault_env["vault"] / "wiki/index.md"
+    before_master = master.read_bytes()
+    monkeypatch.setattr(mod, "_pending_online", lambda: None)
+    assert mod.main(["resume", "--operation", operation]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["result"] == "delivered" and target.read_text() == NOTE_KINGDEE_V2
+    assert master.read_bytes() == before_master
+    assert "unrelated entry retained" in (vault_env["vault"] / "wiki/work/index.md").read_text()
+    record_bytes = Path(mod._pending_record_path(operation)).read_bytes()
+    monkeypatch.setattr(mod, "cmd_write", lambda args: pytest.fail("duplicate save"))
+    assert mod.main(["resume", "--operation", operation]) == 0
+    capsys.readouterr()
+    assert Path(mod._pending_record_path(operation)).read_bytes() == record_bytes
+    assert mod.main(["pending"]) == 0
+    assert json.loads(capsys.readouterr().out)["edits"] == []
+
+
+def test_pending_stale_note_and_partial_repair(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    target = vault_env["vault"] / "wiki/work/work_kingdee-hris-recovery.md"
+    operation = pending_test_stage(mod, vault_env, tmp_path, capsys,
+                                   "wiki/work/work_kingdee-hris-recovery.md",
+                                   hashlib.sha256(target.read_bytes()).hexdigest(), NOTE_KINGDEE_V2)
+    original = target.read_bytes()
+    target.write_text(NOTE_KINGDEE_V1 + "\nIntervening edit.\n")
+    changed = target.read_bytes()
+    monkeypatch.setattr(mod, "_pending_online", lambda: None)
+    assert mod.main(["resume", "--operation", operation]) == 2
+    assert json.loads(capsys.readouterr().out)["result"] == "waiting-local"
+    assert target.read_bytes() == changed
+    target.write_bytes(original)
+    real_replace = inject_first_index_replace_failure(mod)
+    assert mod.main(["resume", "--operation", operation]) == 3
+    assert json.loads(capsys.readouterr().out)["result"] == "pending-repair"
+    assert mod._pending_load(operation)[0]["result"] == "waiting-local"
+    mod.atomic_replace = real_replace
+    real_save = mod._pending_save
+    def interrupt(record):
+        if record["result"] == "delivered":
+            raise mod.BackupError("interruption after completed normal save")
+        real_save(record)
+    monkeypatch.setattr(mod, "_pending_save", interrupt)
+    assert mod.main(["resume", "--operation", operation]) == 5
+    capsys.readouterr()
+    monkeypatch.setattr(mod, "_pending_save", real_save)
+    monkeypatch.setattr(mod, "cmd_write", lambda args: pytest.fail("normal save already complete"))
+    assert mod.main(["resume", "--operation", operation]) == 0
+    assert json.loads(capsys.readouterr().out)["result"] == "delivered"
+
+
+@pytest.mark.parametrize("path", ["wiki/reference/minnie-family-memory/test.md",
+                                  "WIKI/REFERENCE/MINNIE-FAMILY-MEMORY/test.md",
+                                  "wiki/work/index.md", "wiki/work/../escape.md",
+                                  "System/memory/test.md", "wiki/work/.secret.md"])
+def test_pending_protected_targets(vault_env, tmp_path, capsys, path):
+    mod = load_module()
+    p = draft(tmp_path, vault_env, NOTE_NEW)
+    assert mod.main(["stage", "--path", path, "--content-file", str(p),
+                     "--expected-sha256", "missing", "--summary", "test", "--source-ref", "src"]) == 1
+    assert not list(vault_env["state"].glob("note-write-receipts/pending-*"))
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "schema_bool", "path_type", "path_escape",
+                                      "operator", "time", "content_escape", "state", "hash", "summary_type",
+                                      "malformed", "duplicate", "oversized", "content_bytes",
+                                      "record_symlink", "content_symlink", "state_symlink"])
+def test_pending_corrupt_state(vault_env, tmp_path, capsys, mutation):
+    mod = load_module()
+    operation = pending_test_stage(mod, vault_env, tmp_path, capsys)
+    path = Path(mod._pending_record_path(operation))
+    record = json.loads(path.read_text())
+    if mutation == "malformed":
+        path.write_text("{")
+    elif mutation == "duplicate":
+        path.write_text(path.read_text().replace('"schema": 1', '"schema": 1, "schema": 1'))
+    elif mutation == "oversized":
+        path.write_bytes(b" " * (mod.PENDING_RECORD_BYTES + 1))
+    elif mutation in ("record_symlink", "content_symlink"):
+        selected = path if mutation == "record_symlink" else vault_env["state"] / record["content"]
+        real = selected.with_suffix(".original")
+        selected.rename(real)
+        selected.symlink_to(real)
+    elif mutation == "state_symlink":
+        real = vault_env["state"].with_name("state-real")
+        vault_env["state"].rename(real)
+        vault_env["state"].symlink_to(real, target_is_directory=True)
+    elif mutation == "content_bytes":
+        (vault_env["state"] / record["content"]).write_text(NOTE_NEW + "\nTampered.\n")
+    else:
+        key, value = {"unknown": ("unknown", True), "schema_bool": ("schema", True),
+                      "path_type": ("path", True), "path_escape": ("path", "../bad.md"),
+                      "operator": ("user", "root"), "time": ("created_utc", "bad"),
+                      "summary_type": ("summary", []),
+                      "content_escape": ("content", "../../outside.md"),
+                      "state": ("result", "unknown"), "hash": ("note_sha256", "0" * 64)}[mutation]
+        record[key] = value
+        record["record_sha256"] = mod._pending_seal(record)
+        path.write_text(json.dumps(record))
+    assert mod.main(["pending"]) == 1
+    assert "Traceback" not in capsys.readouterr().err
+    assert not (vault_env["vault"] / "wiki/work/work_new-note.md").exists()
+
+
+@pytest.mark.parametrize("case", ["missing_mount", "read_only", "wrong_alias", "wrong_root", "wrong_lock", "helper_lock"])
+def test_pending_online_bindings(vault_env, monkeypatch, case):
+    from types import SimpleNamespace
+    mod = load_module()
+    root = "/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault"
+    line = "//cheung@192.168.50.67/Keith-Work on /Users/keithmbpm2/Projects/K2B-NAS (smbfs, nodev)"
+    monkeypatch.setattr(mod, "validate_operator", lambda: "keithmbpm2")
+    monkeypatch.setattr(mod.subprocess, "check_output", lambda *a, **k: "" if case == "missing_mount" else line.replace("nodev", "read-only") if case == "read_only" else line)
+    monkeypatch.setattr(mod.os.path, "islink", lambda p: True)
+    monkeypatch.setattr(mod.os.path, "realpath", lambda p: "wrong" if case == "wrong_alias" else p if p.endswith(".d") else root)
+    monkeypatch.setattr(mod, "vault_root", lambda: "wrong" if case == "wrong_root" else root)
+    monkeypatch.setattr(mod, "compile_lock_dir", lambda: "wrong.d" if case == "wrong_lock" else root + "/.k2b-compile-index.lock.d")
+    monkeypatch.setattr(mod, "load_compile_index", lambda: SimpleNamespace(LOCK_DIR="wrong" if case == "helper_lock" else root + "/.k2b-compile-index.lock.d"))
+    with pytest.raises(mod.WriteError):
+        mod._pending_online()
+
+
+def test_pending_limits_and_missing(vault_env, tmp_path, capsys, monkeypatch):
+    mod = load_module()
+    assert mod.main(["pending"]) == 0
+    assert json.loads(capsys.readouterr().out)["edits"] == []
+    assert mod.main(["resume", "--operation", "0" * 64]) == 1
+    capsys.readouterr()
+    for value in ("0", "101"):
+        assert mod.main(["pending", "--limit", value]) == 1
+        capsys.readouterr()
+    pending_test_stage(mod, vault_env, tmp_path, capsys)
+    pending_test_stage(mod, vault_env, tmp_path, capsys, source="another")
+    monkeypatch.setattr(mod, "PENDING_SCAN_LIMIT", 1)
+    assert mod.main(["pending"]) == 1
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("actor", ["keithmbpm2", "keithcheung"])
+def test_pending_online_valid_each_host(vault_env, monkeypatch, actor):
+    from types import SimpleNamespace
+    mod = load_module()
+    mount = "/Users/keithmbpm2/Projects/K2B-NAS" if actor == "keithmbpm2" else "/Volumes/Keith-Work"
+    source = "//cheung@192.168.50.67/Keith-Work" if actor == "keithmbpm2" else "//cheung@100.75.5.21/Keith-Work"
+    root = mount + "/K2B-Vault"
+    monkeypatch.setattr(mod, "validate_operator", lambda: actor)
+    monkeypatch.setattr(mod.subprocess, "check_output", lambda *a, **k: source + " on " + mount + " (smbfs, nodev)")
+    monkeypatch.setattr(mod.os.path, "islink", lambda p: True)
+    monkeypatch.setattr(mod.os.path, "realpath", lambda p: p if p.endswith(".d") else root)
+    monkeypatch.setattr(mod, "vault_root", lambda: root)
+    monkeypatch.setattr(mod, "compile_lock_dir", lambda: root + "/.k2b-compile-index.lock.d")
+    monkeypatch.setattr(mod, "load_compile_index", lambda: SimpleNamespace(LOCK_DIR=root + "/.k2b-compile-index.lock.d"))
+    mod._pending_online()
+
+
+@pytest.mark.parametrize("bad", [b"", b"\x00", b"\xff", b"no frontmatter", b"x" * (2 * 1024 * 1024 + 1)])
+def test_pending_invalid_content(vault_env, tmp_path, bad, capsys):
+    mod = load_module()
+    p = tmp_path / "bad.md"
+    p.write_bytes(bad)
+    assert mod.main(["stage", "--path", "wiki/work/work_bad.md", "--content-file", str(p),
+                     "--expected-sha256", "missing", "--summary", "test", "--source-ref", "src"]) == 1
+    assert not list(vault_env["state"].glob("note-write-receipts/pending-*"))
+
+
+def test_pending_normal_receipt_tamper_and_permissions(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    operation = pending_test_stage(mod, vault_env, tmp_path, capsys)
+    monkeypatch.setattr(mod, "_pending_online", lambda: None)
+    assert mod.main(["resume", "--operation", operation]) == 0
+    out = json.loads(capsys.readouterr().out)
+    receipt = vault_env["state"] / out["receipt"]
+    original = receipt.read_bytes()
+    receipt.write_text("{")
+    assert mod.main(["resume", "--operation", operation]) == 1
+    capsys.readouterr()
+    receipt.write_bytes(original)
+    receipt.chmod(0o644)
+    assert mod.main(["resume", "--operation", operation]) == 1
+    assert "Traceback" not in capsys.readouterr().err
+    receipt.chmod(0o600)
+    monkeypatch.setattr(mod, "NORMAL_RECEIPT_BYTES", 8)
+    assert mod.main(["resume", "--operation", operation]) == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_pending_large_normal_partial_receipt_can_repair(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    operation = pending_test_stage(mod, vault_env, tmp_path, capsys)
+    monkeypatch.setattr(mod, "_pending_online", lambda: None)
+    real_replace = mod.atomic_replace
+    def large_failure(path, data, mode):
+        if os.path.basename(path) == "index.md":
+            raise OSError("synthetic bounded index diagnostic " * 1000)
+        return real_replace(path, data, mode)
+    monkeypatch.setattr(mod, "atomic_replace", large_failure)
+    assert mod.main(["resume", "--operation", operation]) == 3
+    capsys.readouterr()
+    normal = [p for p in (vault_env["state"] / "note-write-receipts").glob("*.json") if not p.name.startswith("pending-")]
+    assert len(normal) == 1 and normal[0].stat().st_size > mod.PENDING_RECORD_BYTES
+    monkeypatch.setattr(mod, "atomic_replace", real_replace)
+    assert mod.main(["resume", "--operation", operation]) == 0
+    assert json.loads(capsys.readouterr().out)["result"] == "delivered"
+
+
+def test_pending_shared_state_and_record_size_refused(vault_env, tmp_path, monkeypatch, capsys):
+    mod = load_module()
+    monkeypatch.setenv("K2B_LOCAL_STATE", str(vault_env["vault"] / "bad-state"))
+    p = draft(tmp_path, vault_env, NOTE_NEW)
+    args = ["stage", "--path", "wiki/work/work_x.md", "--content-file", str(p),
+            "--expected-sha256", "missing", "--summary", "test", "--source-ref", "src"]
+    assert mod.main(args) == 1
+    assert not (vault_env["vault"] / "bad-state").exists()
+    capsys.readouterr()
+    monkeypatch.setenv("K2B_LOCAL_STATE", str(vault_env["state"]))
+    args[args.index("--path") + 1] = "wiki/work/" + "x" * 17000 + ".md"
+    assert mod.main(args) == 1
+    assert not list(vault_env["state"].glob("note-write-receipts/pending-*"))
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS system aliases")
+@pytest.mark.parametrize("alias,target", [("/tmp", "/private/tmp"), ("/var", "/private/var")])
+def test_pending_macos_local_system_aliases(tmp_path, alias, target):
+    import tempfile
+    mod = load_module()
+    # Ordinary disposable local files only. No system link is changed.
+    parent = target if alias == "/tmp" else target + "/tmp"
+    fd, name = tempfile.mkstemp(dir=parent, prefix="pending-alias-test-")
+    try:
+        os.write(fd, b"local test")
+        os.close(fd)
+        fd = None
+        spelling = alias + name[len(target):]
+        assert mod._pending_local_path(spelling) == name
+        assert mod._pending_read(spelling, 100) == b"local test"
+    finally:
+        if fd is not None:
+            os.close(fd)
+        os.unlink(name)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(REPO_ROOT, "scripts", "vault-note-write.py")
