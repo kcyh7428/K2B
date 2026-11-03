@@ -1,9 +1,25 @@
 ---
 name: k2b-send-to-pc
-description: Use when Keith asks to send approved text to SJM PC, the work PC, or the SJM Text Inbox Edge sidebar. Publishes the selected text from the SJM Mac using the existing local outbox. Sending to the sidebar does not send an email.
+description: Use when Keith asks to send approved text or a generated file to SJM PC, the work PC, or the SJM Inbox Edge sidebar. Publishes the selected text or one specific file from the SJM Mac. This does not send an email.
 ---
 
 # Send text to SJM PC
+
+## Send one generated file
+
+When Keith explicitly asks to send a file, resolve the exact approved local artifact first. If more than one file is plausible, ask which one. Do not pick the newest arbitrary file, a credential file, a folder or an archive of the whole project. Do not use the text stdin publisher for file bytes.
+
+On the configured SJM Mac, from `~/Projects/sjm-inbox`, run:
+
+```bash
+.venv/bin/python -m sjm_inbox.file_outbox publish /absolute/path/to/approved-report.pdf
+```
+
+The file must be regular, not a symlink, and no larger than 50000000 bytes. The publisher copies stable source bytes without changing the original. It replaces only the previous downloadable file; the latest text is separate. Confirm a successful exit and JSON status `published-on-mac`, ID, filename, bytes and SHA-256. On failure, report it without claiming receipt or retrying blindly. No initialization, credential changes, new HTTP calls or service restarts are part of ordinary publishing.
+
+Say: "File published. Click Refresh, then Download file in your SJM PC sidebar." This proves publication on the Mac, not a successful Windows download. Use actual download evidence or Keith's confirmation before claiming arrival.
+
+The file return path requires extension version 0.3.0 or newer and its reviewed receiver activation. Check the retained activation receipt and current installed module before publishing; code preparation or a ZIP alone is not activation. If it is not activated, stop and explain the missing setup rather than using another transfer service.
 
 Codex and Kimi use the same local publisher. The Edge sidebar shows only the latest text. Publishing replaces the previous message; Keith retrieves it with Refresh and copies it into Outlook or another app himself.
 
