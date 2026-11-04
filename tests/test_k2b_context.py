@@ -1885,6 +1885,230 @@ def test_memory_rich_broad_query_keeps_the_leading_note_source_linked(
     k2b_context._validate_packet(packet)
 
 
+@pytest.mark.parametrize("dropped_kind,reason", [
+    ("span_limit", "source_span_limit"), ("empty", "no_retained_spans"),
+])
+def test_prepared_note_beyond_source_limit_adds_no_preparation_reason(
+    tmp_path: Path, dropped_kind: str, reason: str
+) -> None:
+    vault = tmp_path / "vault"
+    selected = "wiki/work/a_atlas_owner.md"
+    dropped = "wiki/work/z_atlas_log.md"
+    _note(vault, selected, "# Atlas owner\n\nAtlas owner Mei is awaiting acceptance.\n")
+    body = "\n\n".join(f"Atlas routine record {i}." for i in range(20)) if dropped_kind == "span_limit" else "Office logistics only."
+    _note(vault, dropped, f"# Log\n\n{body}\n")
+    memory = tmp_path / "memory.json"
+    _apply(memory, _bundle(key="memory.fact.gardening.aaaa", value="Gardening was discussed.", quote="Gardening was discussed."))
+    _write_published_memory(vault, memory)
+
+    considered = k2b_context.gather("Atlas owner", vault, max_sources=2)
+    assert reason in considered["reasons"], "the fixture must actually produce the preparation warning"
+    capped = k2b_context.gather("Atlas owner", vault, max_sources=1)
+    assert [s["relative_path"] for s in capped["sources"]] == [selected]
+    assert capped["reasons"] == ["source_limit"]
+    assert reason not in capped["reasons"]
+
+
+def test_final_candidate_missing_preparation_records_time_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    # Reference is the final permitted note root; there is no later iteration
+    # available to mark candidate discovery truncated after this read expires.
+    selected = _note(vault, "wiki/reference/atlas_owner.md", "# Atlas owner\n\nAtlas owner Mei is awaiting acceptance.\n")
+    memory = tmp_path / "memory.json"
+    _apply(memory, _bundle(key="memory.fact.gardening.aaaa", value="Gardening was discussed.", quote="Gardening was discussed."))
+    _write_published_memory(vault, memory)
+    clock = [0.0]
+    preparations: list[float] = []
+    read = k2b_context._read_bounded
+    spans = k2b_context._spans
+
+    def delayed_read(path, limit):
+        text = read(path, limit)
+        if path == selected:
+            clock[0] = 6.0
+        return text
+
+    def observed_spans(*args, **kwargs):
+        preparations.append(clock[0])
+        return spans(*args, **kwargs)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_read_bounded", delayed_read)
+        local.setattr(k2b_context, "_spans", observed_spans)
+        packet = k2b_context.gather("Atlas owner", vault)
+    assert not preparations
+    assert packet["freshness"]["candidate_inventory"]["count"] == 1
+    assert packet["freshness"]["candidate_inventory"]["complete"] is True
+    assert not packet["sources"] and not packet["evidence"]
+    assert packet["partial"] is True
+    assert packet["reasons"] == ["time_budget"]
+
+
+def _gather_with_discovery_overrun(
+    tmp_path: Path, monkeypatch, *, early_match: bool = True,
+    mutate_source: bool = False, slow_preparation: str | None = None,
+) -> tuple[dict, Path, str, list[Path]]:
+    vault = (tmp_path / "vault").resolve()
+    relevant = "wiki/work/a_atlas.md" if early_match else "wiki/work/z_atlas.md"
+    noise = "wiki/work/z_gardening.md" if early_match else "wiki/work/a_gardening.md"
+    body = "# Atlas briefing\n\nAtlas deliverables are drafts/atlas-brief.md and exports/atlas-guide.pdf.\n"
+    _note(vault, relevant, body)
+    _note(vault, noise, "# Gardening\n\nSoil and watering observations.\n")
+    memory = tmp_path / "memory.json"
+    _apply(memory, _bundle(key="memory.fact.atlas_scope.aaaa", value="Atlas planning was discussed.", quote="Atlas planning was discussed."))
+    _write_published_memory(vault, memory)
+    clock = [0.0]
+    reads: list[Path] = []
+    read = k2b_context._read_bounded
+    spans = k2b_context._spans
+    answer = k2b_context._answer_note_spans
+    source_hash = k2b_context._sha256_bytes
+    identity_hash = k2b_context._sha256_hex
+    locator = k2b_context._span_locator
+
+    def bounded_read(path, limit):
+        assert clock[0] < 5.0, "new source read after the deadline"
+        reads.append(path)
+        text = read(path, limit)
+        if path == vault / noise:
+            if mutate_source:
+                (vault / relevant).write_text("# Atlas briefing\n\nThe deliverables changed.\n")
+            clock[0] = 6.0
+        return text
+
+    def bounded_spans(*args, **kwargs):
+        assert clock[0] < 5.0, "new quote selection after the deadline"
+        return spans(*args, **kwargs)
+
+    def bounded_answer(*args, **kwargs):
+        assert clock[0] < 5.0, "new answer selection after the deadline"
+        value = answer(*args, **kwargs)
+        if slow_preparation == "answer":
+            clock[0] = 6.0
+        return value
+
+    def bounded_hash(payload):
+        if payload == body.encode():
+            assert clock[0] < 5.0, "new source hashing after the deadline"
+        value = source_hash(payload)
+        if payload == body.encode() and slow_preparation == "source_hash":
+            clock[0] = 6.0
+        return value
+
+    def bounded_identity(value):
+        if isinstance(value, dict) and ("quote" in value or "content_hash" in value):
+            assert clock[0] < 5.0, "new source/evidence identity hashing after the deadline"
+        return identity_hash(value)
+
+    def bounded_locator(*args, **kwargs):
+        assert clock[0] < 5.0, "new locator generation after the deadline"
+        value = locator(*args, **kwargs)
+        if slow_preparation == "locator":
+            clock[0] = 6.0
+        return value
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_read_bounded", bounded_read)
+        local.setattr(k2b_context, "_spans", bounded_spans)
+        local.setattr(k2b_context, "_answer_note_spans", bounded_answer)
+        local.setattr(k2b_context, "_sha256_bytes", bounded_hash)
+        local.setattr(k2b_context, "_sha256_hex", bounded_identity)
+        local.setattr(k2b_context, "_span_locator", bounded_locator)
+        packet = k2b_context.gather("Where are the Atlas briefing deliverables?", vault)
+    return packet, vault, relevant, reads
+
+
+@pytest.mark.parametrize("mutate_source", [False, True])
+def test_discovery_overrun_keeps_prepared_note_and_source_binding(
+    tmp_path: Path, monkeypatch, mutate_source: bool
+) -> None:
+    packet, vault, relevant, reads = _gather_with_discovery_overrun(
+        tmp_path, monkeypatch, mutate_source=mutate_source,
+    )
+    assert reads.count(vault / relevant) == 1
+    assert packet["partial"] and "time_budget" in packet["reasons"]
+    source_ids = {s["source_id"] for s in packet["sources"] if s["relative_path"] == relevant}
+    assert source_ids, "an early matched note must survive later discovery exhaustion"
+    assert any("drafts/atlas-brief.md" in e["quote"] for e in packet["evidence"] if e["source_id"] in source_ids)
+    assert len(packet["sources"]) <= 20 and len(packet["evidence"]) <= 80
+    assert len(json.dumps(packet, ensure_ascii=False).encode()) <= 48_000
+    if mutate_source:
+        with pytest.raises(k2b_context.StalePacket):
+            k2b_context.validate_draft(packet, _draft(packet), vault_root=vault)
+    else:
+        assert k2b_context.validate_draft(packet, _draft(packet), vault_root=vault)["packet_id"] == packet["packet_id"]
+
+
+def test_discovery_overrun_without_a_relevant_read_stays_partial(tmp_path: Path, monkeypatch) -> None:
+    packet, vault, relevant, reads = _gather_with_discovery_overrun(tmp_path, monkeypatch, early_match=False)
+    assert vault / relevant not in reads
+    assert packet["partial"]
+    assert all(s["relative_path"] != relevant for s in packet["sources"])
+    assert packet["freshness"]["candidate_inventory"]["count"] == 0
+
+
+@pytest.mark.parametrize("phase", ["answer", "source_hash", "locator"])
+def test_note_preparation_finishing_after_deadline_is_discarded(tmp_path: Path, monkeypatch, phase: str) -> None:
+    packet, _, relevant, _ = _gather_with_discovery_overrun(tmp_path, monkeypatch, slow_preparation=phase)
+    assert packet["partial"]
+    assert all(s["relative_path"] != relevant for s in packet["sources"])
+
+
+@pytest.mark.parametrize("selection", ["topic", "raw"])
+@pytest.mark.parametrize("expires", ["during_read", "before_start"])
+def test_explicit_selection_finishes_started_binding_when_deadline_expires(
+    tmp_path: Path, monkeypatch, selection: str, expires: str
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    topic_ref = "wiki/projects/project_atlas.md"
+    raw_ref = "raw/meetings/atlas.md"
+    _note(vault, topic_ref, "# Atlas\n\nAtlas chosen decision remains pending.\n")
+    _note(vault, raw_ref, "# Atlas meeting\n\nAtlas chosen decision remains pending.\n")
+    selected = vault / (topic_ref if selection == "topic" else raw_ref)
+    clock = [0.0]
+    binding = [False]
+    reads: list[Path] = []
+    read = k2b_context._read_bounded
+    emit = k2b_context._emit_note_sources
+
+    def observed_emit(vault_arg, paths, terms, **kwargs):
+        binding[0] = selected in paths
+        if binding[0] and expires == "before_start":
+            clock[0] = 6.0
+        try:
+            return emit(vault_arg, paths, terms, **kwargs)
+        finally:
+            binding[0] = False
+
+    def delayed_read(path, limit):
+        text = read(path, limit)
+        if binding[0] and path == selected:
+            reads.append(path)
+            clock[0] = 6.0
+        return text
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_emit_note_sources", observed_emit)
+        local.setattr(k2b_context, "_read_bounded", delayed_read)
+        packet = k2b_context.gather(
+            "Atlas chosen decision", vault, topic_note=topic_ref,
+            raw_sources=[raw_ref] if selection == "raw" else None,
+        )
+    selected_ids = {s["source_id"] for s in packet["sources"] if s["relative_path"] == selected.relative_to(vault).as_posix()}
+    if expires == "before_start":
+        assert not reads and not selected_ids
+    else:
+        assert reads == [selected]
+        assert selected_ids, "an explicit source binding already in progress must finish"
+        assert any("chosen decision remains pending" in e["quote"] for e in packet["evidence"] if e["source_id"] in selected_ids)
+        assert k2b_context.validate_draft(packet, _draft(packet), vault_root=vault)["packet_id"] == packet["packet_id"]
+
+
 def test_selected_topic_note_reserves_head_without_hiding_later_match(
     tmp_path: Path,
 ) -> None:

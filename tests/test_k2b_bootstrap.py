@@ -75,6 +75,56 @@ def test_text_preserves_rules_index_and_same_profile_for_both_assistants(local_t
     assert "Kimi Work" in text and "Codex" in text
 
 
+def test_central_vision_is_a_source_manifest_reference_without_body(local_tree):
+    vision = local_tree[1] / "wiki/concepts/concept_k2b-agentic-os-vision.md"
+    vision.parent.mkdir(parents=True)
+    body = b"# Central vision\nBOUNDED VISION TOKEN\n"
+    vision.write_bytes(body)
+
+    packet = json.loads(run_bootstrap(local_tree, "--format", "json"))
+    source = next((s for s in packet["sources"] if s["id"] == "central_vision"), None)
+
+    assert source is not None
+    assert source["path"] == str(vision)
+    assert source["status"] == "available"
+    assert source["sha256"] == hashlib.sha256(body).hexdigest()
+    assert "text" not in source
+    assert "BOUNDED VISION TOKEN" not in json.dumps(packet)
+    rendered = load_bootstrap().render_bootstrap(packet)
+    assert f"central_vision: {vision}; status=available;" in rendered
+    assert "BOUNDED VISION TOKEN" not in rendered
+
+
+@pytest.mark.parametrize("kind,status", [
+    ("missing", "missing"), ("symlink", "unavailable"),
+    ("oversize", "unavailable"), ("invalid_utf8", "unavailable"),
+])
+def test_unavailable_central_vision_is_explicit_without_body(
+    local_tree, tmp_path, kind, status
+):
+    vision = local_tree[1] / "wiki/concepts/concept_k2b-agentic-os-vision.md"
+    vision.parent.mkdir(parents=True)
+    if kind == "symlink":
+        outside = tmp_path / "outside-vision.md"
+        outside.write_text("DO-NOT-INJECT-VISION")
+        vision.symlink_to(outside)
+    elif kind == "oversize":
+        vision.write_bytes(b"DO-NOT-INJECT-VISION" + b"x" * 65536)
+    elif kind == "invalid_utf8":
+        vision.write_bytes(b"DO-NOT-INJECT-VISION\xff\n")
+
+    packet = json.loads(run_bootstrap(local_tree, "--format", "json"))
+    source = next((s for s in packet["sources"] if s["id"] == "central_vision"), None)
+
+    assert source is not None
+    assert source["path"] == str(vision)
+    assert source["status"] == status
+    assert "sha256" not in source
+    assert "text" not in source
+    assert "DO-NOT-INJECT-VISION" not in json.dumps(packet)
+    assert f"central_vision: {vision}; status={status};" in load_bootstrap().render_bootstrap(packet)
+
+
 def test_missing_profile_and_status_are_explicit_not_success(local_tree):
     (local_tree[1] / "wiki/context/context_keith-profile.md").unlink()
     packet = json.loads(run_bootstrap(local_tree, "--format", "json"))
