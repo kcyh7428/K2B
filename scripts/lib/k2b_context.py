@@ -188,6 +188,9 @@ DISCOVERY_INDEX_RELS = (
     "wiki/work/index.md",
     "wiki/people/index.md",
     "wiki/projects/index.md",
+    "wiki/concepts/index.md",
+    "wiki/insights/index.md",
+    "wiki/reference/index.md",
 )
 # Bounded allowlist of human-capture raw subtrees considered for retrieval.
 # Technical/audit raw trees (backtests, orchestrator-results, investment
@@ -1376,7 +1379,11 @@ def _exchange_for_body(
     return sorted(kept, key=lambda span: span[1]), elided
 
 
-def _resolve_note_link(vault: Path, target: str, *, ambiguous: list[str] | None = None) -> Path | None:
+def _resolve_note_link(
+    vault: Path, target: str, *, ambiguous: list[str] | None = None,
+    owner: Path | None = None,
+    unresolved: list[str] | None = None,
+) -> Path | None:
     """Map a wikilink/markdown-link target to an ordinary note, or ``None``."""
 
     name = unquote(target.strip().strip("<>").split("#", 1)[0].split("|", 1)[0]).strip()
@@ -1388,12 +1395,15 @@ def _resolve_note_link(vault: Path, target: str, *, ambiguous: list[str] | None 
     candidates: list[Path] = []
     if "/" in name or name.endswith(".md"):
         candidates.append(vault / (name.lstrip("/") if name.endswith(".md") else name.lstrip("/") + ".md"))
+        if owner is not None and "/" in name and not name.startswith("/"):
+            candidates.append(owner.parent / (name if name.endswith(".md") else name + ".md"))
         if "/" not in name:
             candidates.extend(vault / root / name for root in ALLOWED_NOTE_ROOTS)
     else:
         for root in ALLOWED_NOTE_ROOTS:
             candidates.append(vault / root / f"{name}.md")
     resolved: list[Path] = []
+    eligible = False
     for candidate in candidates:
         try:
             rel = candidate.relative_to(vault).as_posix()
@@ -1402,6 +1412,7 @@ def _resolve_note_link(vault: Path, target: str, *, ambiguous: list[str] | None 
         if (not _within_note_roots(rel) or candidate.name == "index.md"
                 or _is_excluded(rel) or _symlinked_ancestor(vault, candidate)):
             continue
+        eligible = True
         if candidate.is_file() and _safe_within(vault, candidate):
             if candidate not in resolved:
                 resolved.append(candidate)
@@ -1409,17 +1420,20 @@ def _resolve_note_link(vault: Path, target: str, *, ambiguous: list[str] | None 
         if ambiguous is not None:
             ambiguous.append(target)
         return None
+    if not resolved and eligible and unresolved is not None:
+        unresolved.append(target)
     return resolved[0] if resolved else None
 
 
 def _index_candidates(
-    vault: Path, terms: list[str], deadline: float
+    vault: Path, terms: list[str], deadline: float,
+    *, remaining_bytes: int = MAX_CANDIDATE_BYTES,
 ) -> tuple[list[Path], int, bool]:
     """Discover notes via their folder ``index.md`` rows (ranking aid only).
 
     A matching index row names a candidate note; the index text itself is
     never returned as evidence.  Returns the discovered notes in row order,
-    the bytes read and whether the deadline stopped the scan.
+    the raw bytes read and whether budget/deadline prevented a complete scan.
     """
 
     discovered: list[Path] = []
@@ -1428,21 +1442,39 @@ def _index_candidates(
     truncated = False
     for rel in DISCOVERY_INDEX_RELS:
         index_path = vault / rel
-        if not index_path.is_file() or index_path.is_symlink():
+        if index_path.is_symlink():
+            continue
+        try:
+            index_path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            truncated = True
             continue
         if time.monotonic() >= deadline:
             truncated = True
             break
-        text = _read_bounded(index_path, MAX_SOURCE_FILE_BYTES)
-        if text is None:
+        size = _bounded_file_size(index_path, MAX_SOURCE_FILE_BYTES)
+        if size is None:
+            truncated = True
             continue
-        bytes_read += len(text.encode("utf-8"))
+        if size > remaining_bytes - bytes_read:
+            truncated = True
+            continue
+        raw = _read_bytes_bounded(index_path, min(MAX_SOURCE_FILE_BYTES, remaining_bytes - bytes_read))
+        if raw is None:
+            truncated = True
+            continue
+        bytes_read += len(raw)
+        text = raw.decode("utf-8", errors="replace")
         for line in text.splitlines():
             if not _matches(line, terms):
                 continue
             targets = LINK_RE.findall(line) + MD_LINK_TARGET_RE.findall(line)
             for target in targets:
-                path = _resolve_note_link(vault, target)
+                refused: list[str] = []
+                path = _resolve_note_link(vault, target, owner=index_path, ambiguous=refused, unresolved=refused)
+                truncated |= bool(refused)
                 if path is None or path in seen:
                     continue
                 seen.add(path)
@@ -1502,33 +1534,44 @@ def _candidate_note_files(
     documents: list[dict] = []
     truncated = False
     oversized = False
+    found: list[Path] = []
+    index_truncated = False
 
     if use_index:
-        found, index_bytes, index_truncated = _index_candidates(vault, terms, deadline)
-        if index_truncated or scanned_bytes + index_bytes > max_candidate_bytes:
-            truncated = True
-        else:
-            scanned_bytes += index_bytes
-            indexed.update(found)
+        found, index_bytes, index_truncated = _index_candidates(
+            vault, terms, deadline, remaining_bytes=max(0, max_candidate_bytes - scanned_bytes),
+        )
+        scanned_bytes += index_bytes
+        indexed.update(found)
 
     if time.monotonic() >= deadline or scanned_bytes >= max_candidate_bytes:
         return [], True, oversized, scanned_bytes, scanned_paths, discovery_head
 
-    # Give each existing root a turn under the one shared scan budget.
+    # Alternate indexed preparation with lexical round-robin turns, under
+    # the same guards and byte charge, so neither route drains the budget first.
+    priority = deque(found)
+    priority_turn = True
     root_files = deque(_lexical_note_paths(vault / root, deadline) for root in ALLOWED_NOTE_ROOTS)
-    while root_files:
-        for _ in range(len(root_files)):
+    while priority or root_files:
+        for _ in range(len(root_files) + bool(priority)):
             if time.monotonic() >= deadline or scanned_bytes >= max_candidate_bytes:
                 truncated = True
                 break
-            files = root_files.popleft()
-            path = next(files, None)
-            if time.monotonic() >= deadline:
-                truncated = True
-                break
-            if path is None:
+            if priority and (priority_turn or not root_files):
+                path = priority.popleft()
+                priority_turn = False
+            else:
+                priority_turn = True
+                files = root_files.popleft()
+                path = next(files, None)
+                if time.monotonic() >= deadline:
+                    truncated = True
+                    break
+                if path is None:
+                    continue
+                root_files.append(files)
+            if path in scanned_paths:
                 continue
-            root_files.append(files)
             rel = path.relative_to(vault).as_posix()
             if _is_excluded(rel) or path.is_symlink() or path.name == "index.md":
                 continue
@@ -1566,7 +1609,7 @@ def _candidate_note_files(
         if truncated:
             break
     ranked = _rank_note_documents(documents, terms)
-    return ranked, truncated, oversized, scanned_bytes, scanned_paths, discovery_head
+    return ranked, truncated or index_truncated, oversized, scanned_bytes, scanned_paths, discovery_head
 
 
 def _rank_note_documents(documents: list[dict], terms: list[str]) -> list[Path]:

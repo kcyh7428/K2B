@@ -3159,7 +3159,7 @@ def test_candidate_scan_skips_enumeration_when_resources_already_exhausted(
     with monkeypatch.context() as local:
         local.setattr(os, "scandir", observed_scandir)
         if exhausted == "index_bytes":
-            local.setattr(k2b_context, "_index_candidates", lambda *args: ([], cap, False))
+            _note(vault, "wiki/work/index.md", "x" * cap)
         result = k2b_context._candidate_note_files(
             vault, ["aurora"], time.monotonic() + (-1 if exhausted == "deadline" else 5),
             max_candidate_bytes=cap, start_bytes=start_bytes,
@@ -3893,6 +3893,241 @@ def test_index_discovery_is_a_ranking_aid_not_evidence(tmp_path: Path) -> None:
     assert all("active program row" not in span["quote"] for span in packet["evidence"])
     assert all("Atlas Orion effort" not in span["quote"] for span in packet["evidence"])
     assert any(source["source_type"] == "vault_note" for source in packet["sources"])
+
+
+@pytest.mark.parametrize("root", ["concepts", "insights", "reference"])
+def test_indexed_note_prepared_before_lexical_scan_exhausts_deadline(
+    tmp_path: Path, monkeypatch, root: str,
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    selected = f"wiki/{root}/z_records/decision.md"
+    _note(vault, selected, "# Aurora decision\n\nAurora requires a readiness check.\n")
+    _note(vault, f"wiki/{root}/index.md", "| [[z_records/decision]] | Aurora decision |\n")
+    _note(vault, "wiki/work/a_noise.md", "# Gardening\n\nWater the flowers.\n")
+    clock = [0.0]
+    read = k2b_context._read_bounded
+
+    def delayed_noise(path, limit):
+        text = read(path, limit)
+        if path.name == "a_noise.md":
+            clock[0] = 6.0
+        return text
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_read_bounded", delayed_noise)
+        packet = k2b_context.gather("Aurora decision", vault)
+    assert selected in {s["relative_path"] for s in packet["sources"]}
+    assert any("Aurora requires a readiness check." in e["quote"] for e in packet["evidence"])
+    assert all(s["relative_path"] != f"wiki/{root}/index.md" for s in packet["sources"])
+    assert packet["partial"] and "time_budget" in packet["reasons"]
+
+
+@pytest.mark.parametrize("case,incomplete", [
+    ("over-cap", True), ("read-failed", True), ("size-failed", True),
+    ("unresolved", True), ("ambiguous", True), ("clean", False),
+    ("duplicate", False), ("excluded", False), ("optional-missing", False),
+    ("unrelated-row", False),
+])
+def test_index_discovery_truthfully_signals_failed_eligible_inputs(
+    tmp_path: Path, monkeypatch, case: str, incomplete: bool,
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    selected = "wiki/work/aurora.md"
+    _note(vault, selected, "# Aurora\n\nAurora owner is Mei.\n")
+    index = vault / "wiki/projects/index.md"
+    row = "| [[wiki/work/aurora]] | Aurora |\n"
+    if case == "over-cap":
+        row += "x" * (2 * 1024 * 1024)
+    elif case == "unresolved":
+        row += "| [[missing_record]] | Aurora |\n"
+    elif case == "ambiguous":
+        _note(vault, "wiki/work/twin.md", "# First\n")
+        _note(vault, "wiki/people/twin.md", "# Second\n")
+        row += "| [[twin]] | Aurora |\n"
+    elif case == "duplicate":
+        row += row
+    elif case == "excluded":
+        _note(vault, "wiki/projects/Archive/record.md", "# Archive\n")
+        row += "| [[Archive/record]] | Aurora |\n"
+    elif case == "unrelated-row":
+        row += "| [[missing_record]] | Gardening |\n"
+    if case != "optional-missing":
+        _note(vault, "wiki/projects/index.md", row)
+    memory = tmp_path / "memory.json"
+    _apply(memory, _bundle(key="memory.fact.gardening.aaaa", value="Gardening was discussed.", quote="Gardening was discussed."))
+    _write_published_memory(vault, memory)
+    raw_read = k2b_context._read_bytes_bounded
+    size = k2b_context._bounded_file_size
+    with monkeypatch.context() as local:
+        if case == "read-failed":
+            local.setattr(k2b_context, "_read_bytes_bounded", lambda p, cap: None if p == index else raw_read(p, cap))
+        if case == "size-failed":
+            local.setattr(k2b_context, "_bounded_file_size", lambda p, cap: None if p == index else size(p, cap))
+        packet = k2b_context.gather("Aurora", vault)
+    assert packet["partial"] is incomplete
+    assert ("candidate_byte_limit" in packet["reasons"]) is incomplete
+    assert selected in {s["relative_path"] for s in packet["sources"]}
+    assert any("Aurora owner is Mei." in e["quote"] for e in packet["evidence"])
+
+
+@pytest.mark.parametrize("pressure", ["bytes", "deadline"])
+def test_many_index_hits_leave_fair_turns_for_unindexed_exact_match(
+    tmp_path: Path, monkeypatch, pressure: str,
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    body = "# Log\n\nOrdinary programme background.\n"
+    for i in range(24):
+        _note(vault, f"wiki/reference/z_records/log_{i:02d}.md", body)
+    index = _note(vault, "wiki/reference/index.md", "\n".join(
+        f"| [[z_records/log_{i:02d}]] | Aurora |" for i in range(24)
+    ))
+    exact = _note(vault, "wiki/people/a_aurora.md", "# Aurora\n\nAurora owner is Mei.\n")
+    clock = [0.0]
+    read = k2b_context._read_bounded
+
+    def slow_indexed_note(path, limit):
+        text = read(path, limit)
+        if path.parent.name == "z_records":
+            clock[0] += 1.0
+        return text
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_read_bounded", slow_indexed_note)
+        ranked, truncated, *_ = k2b_context._candidate_note_files(
+            vault, ["aurora"], 5.0,
+            max_candidate_bytes=index.stat().st_size + 4 * len(body) if pressure == "bytes" else 16 * 1024 * 1024,
+        )
+    assert exact in ranked
+    assert ranked[0] == exact
+    assert truncated
+
+
+def test_oversized_index_is_skipped_before_read_leaving_lexical_budget(tmp_path: Path, monkeypatch) -> None:
+    vault = (tmp_path / "vault").resolve()
+    selected = _note(vault, "wiki/projects/z_record.md", "# Aurora\n\nAurora owner is Mei.\n")
+    index = _note(vault, "wiki/projects/index.md", "| [[z_record]] | Aurora " + "x" * 200 + " |\n")
+    reads = []
+    read = k2b_context._read_bounded
+
+    def observed(path, limit):
+        text = read(path, limit)
+        if text is not None:
+            reads.append(path)
+        return text
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context, "_read_bounded", observed)
+        ranked, truncated, _, scanned_bytes, scanned_paths, _ = k2b_context._candidate_note_files(
+            vault, ["aurora"], time.monotonic() + 5, max_candidate_bytes=100,
+        )
+    assert index not in reads, "skip the oversized index before consuming its contents"
+    assert ranked == [selected] and truncated and scanned_paths == {selected}
+    assert scanned_bytes == selected.stat().st_size <= 100
+
+
+def test_index_reads_share_remaining_bytes_with_lexical_content(tmp_path: Path, monkeypatch) -> None:
+    vault = (tmp_path / "vault").resolve()
+    first = _note(vault, "wiki/work/index.md", "# Catalog\n" + "x" * 90)
+    skipped = _note(vault, "wiki/people/index.md", "# Catalog\n" + "y" * 90)
+    exact = _note(vault, "wiki/work/a_aurora.md", "# Aurora\n\nAurora owner is Mei.\n")
+    raw_read = k2b_context._read_bytes_bounded
+    text_read = k2b_context._read_bounded
+    consumed = []
+
+    def observed_raw(path, limit):
+        data = raw_read(path, limit)
+        if data is not None:
+            consumed.append((path, len(data)))
+        return data
+
+    def observed_text(path, limit):
+        text = text_read(path, limit)
+        if text is not None:
+            consumed.append((path, len(text.encode())))
+        return text
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context, "_read_bytes_bounded", observed_raw)
+        local.setattr(k2b_context, "_read_bounded", observed_text)
+        ranked, truncated, _, charged, *_ = k2b_context._candidate_note_files(
+            vault, ["aurora"], time.monotonic() + 5, max_candidate_bytes=200, start_bytes=40,
+        )
+    assert ranked == [exact] and truncated
+    assert {p for p, _ in consumed} == {first, exact}
+    assert skipped not in {p for p, _ in consumed}
+    assert charged == 40 + sum(size for _, size in consumed) <= 200
+
+
+def test_index_bytes_stay_charged_when_deadline_expires_mid_pass(tmp_path: Path, monkeypatch) -> None:
+    vault = (tmp_path / "vault").resolve()
+    first = _note(vault, "wiki/work/index.md", "# Catalog\n")
+    _note(vault, "wiki/people/index.md", "# More\n")
+    clock = [0.0]
+    raw_read = k2b_context._read_bytes_bounded
+    text_read = k2b_context._read_bounded
+
+    def expires(read):
+        def observed(path, limit):
+            data = read(path, limit)
+            if path == first:
+                clock[0] = 6.0
+            return data
+        return observed
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_read_bytes_bounded", expires(raw_read))
+        local.setattr(k2b_context, "_read_bounded", expires(text_read))
+        ranked, truncated, _, charged, *_ = k2b_context._candidate_note_files(
+            vault, ["aurora"], 5.0, start_bytes=7,
+        )
+    assert ranked == [] and truncated
+    assert charged == 7 + first.stat().st_size
+
+
+def test_index_relative_nested_link_preserves_ambiguity_and_path_guards(tmp_path: Path) -> None:
+    vault = (tmp_path / "vault").resolve()
+    selected = _note(vault, "wiki/reference/records/entry.md", "# Aurora\n\nApproved observation.\n")
+    owner = _note(vault, "wiki/reference/index.md", "| [[records/entry]] | Aurora |\n")
+    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == [selected]
+    _note(vault, "wiki/projects/records/entry.md", "# Other\n")
+    # Another folder's same suffix must not make the owner's relative link ambiguous.
+    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == [selected]
+    owner.write_text("| [[wiki/reference/records/entry]] | Aurora |\n")
+    duplicate = _note(vault, "wiki/reference/wiki/reference/records/entry.md", "# Duplicate\n")
+    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == []
+    duplicate.unlink()
+    outside = _note(tmp_path, "outside/entry.md", "# Private\n")
+    (vault / "wiki/reference/shortcut").symlink_to(outside.parent, target_is_directory=True)
+    owner.write_text("\n".join(f"| [[{target}]] | Aurora |" for target in [
+        "../projects/records/entry", "records/%2e%2e/entry", "shortcut/entry",
+        "Archive/entry", "index", "https://example.com/entry",
+    ]))
+    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == []
+
+
+def test_indexed_note_is_not_read_twice_or_exempt_from_byte_budget(tmp_path: Path, monkeypatch) -> None:
+    vault = (tmp_path / "vault").resolve()
+    selected = _note(vault, "wiki/projects/z_aurora.md", "# Aurora\n\nReadiness check.\n")
+    index = _note(vault, "wiki/projects/index.md", "| [[z_aurora]] | Aurora |\n")
+    reads = []
+    read = k2b_context._read_bounded
+
+    def observed(path, limit):
+        reads.append(path)
+        return read(path, limit)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context, "_read_bounded", observed)
+        result = k2b_context._candidate_note_files(vault, ["aurora"], time.monotonic() + 5)
+    assert reads.count(selected) == 1
+    assert result[3] == index.stat().st_size + selected.stat().st_size
+    capped = k2b_context._candidate_note_files(
+        vault, ["aurora"], time.monotonic() + 5, max_candidate_bytes=index.stat().st_size,
+    )
+    assert capped[0] == [] and capped[1]
 
 
 def test_bilingual_alias_lookup_finds_note_without_body_term(tmp_path: Path) -> None:
