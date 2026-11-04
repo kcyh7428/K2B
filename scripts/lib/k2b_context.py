@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import lru_cache
+from itertools import zip_longest
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -1484,11 +1485,19 @@ def _candidate_note_files(
             scanned_bytes += index_bytes
             indexed.update(found)
 
-    for root in ALLOWED_NOTE_ROOTS:
-        directory = vault / root
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.rglob("*.md")):
+    if time.monotonic() >= deadline or scanned_bytes >= max_candidate_bytes:
+        return [], True, oversized, scanned_bytes, scanned_paths, discovery_head
+
+    # Give each existing root a turn under the one shared scan budget.
+    root_files = [
+        iter(sorted(directory.rglob("*.md")))
+        for directory in (vault / root for root in ALLOWED_NOTE_ROOTS)
+        if directory.is_dir()
+    ]
+    for round_paths in zip_longest(*root_files):
+        for path in round_paths:
+            if path is None:
+                continue
             if time.monotonic() >= deadline:
                 truncated = True
                 break
