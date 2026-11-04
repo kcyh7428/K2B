@@ -75,6 +75,21 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    Use the explicit Home or
    `sjm-source-only` writer role, the host's local Codex sessions root, the
    machine-local automatic-memory state root, and an inclusive recovery range.
+   A worklist with source_scan_time_budget is a partial scan, never proof of no
+   backlog. Its scan.first_unverified_source identifies where scanning stopped.
+   Every selection scans from the configured source root's beginning, including
+   older-source appends and any previously unavailable sources. A clean partial
+   scan may be retried with --max-scan-seconds bounded by the time still available
+   before this run's original 18-minute selection cutoff, reserving 30 seconds
+   for private-record validation. Do not reset the
+   original start or exceed the 20-minute total. If the remaining budget cannot
+   finish scanning, retain the pending work and report the capacity limit.
+   source_persistence_time_budget is a separate private-record validation limit.
+   Keep pending records; retry only within this run's remaining original budget.
+   Save each actual worklist JSON in this run's existing private artifacts.
+   If a full scan cannot finish in the remaining budget, report the capacity
+   limit and leave work pending. Never claim empty coverage, skip unavailable
+   sources through a saved cursor, or add another progress store.
 2. For each returned input view, read all `dialogue_events` and `context_events` and
    produce extraction JSON conforming to `scripts/prompts/eod-capture-extract.md`.
    The automatic-memory destination accepts only `fact`, `decision`, `preference`
@@ -99,6 +114,14 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    "yes", "that", or similar reference. If an apparent durable decision needs
    omitted context, establish an ambiguity hold for operator review; do not
    guess or report reviewed-empty success for unresolved durable content.
+   A short explicit acceptance such as "yes" may be a decision when the
+   immediately preceding assistant event contains the actual proposal. Keep
+   the exact user quote and evidence_event_id, and add acceptance_context with
+   that proposal's event_id and an exact quote of the proposal. Read and resolve
+   the proposal before extracting the decision. Never pad the user quote or
+   infer approval from an ambiguous, qualified or unrelated reply. Missing
+   proposal evidence remains an ambiguity hold. Compression of a source to
+   .jsonl.zst is supported by the source reader; preserve the original files.
 3. Save that JSON to a private machine-local temporary file and call
    `scripts/eod-capture.py memory-record-extraction` with the returned work ID.
    Respect `waiting_retry` / `retry_backoff` and terminal `needs_attention`

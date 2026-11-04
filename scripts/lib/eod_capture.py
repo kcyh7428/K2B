@@ -26,6 +26,7 @@ from typing import Callable, Iterable
 
 import automatic_memory
 import native_job_status
+from codex_sources import SourceReaderUnavailable, open_session, session_paths
 
 
 # Canonical K2B timezone. See wiki/context/context_timezone-convention.md.
@@ -50,6 +51,7 @@ DEFAULT_MEMORY_TRANSPORT_TIMEOUT_SECONDS = 60
 MAX_MEMORY_TRANSPORT_STDOUT_BYTES = 8_000_000
 MAX_MEMORY_EXTRACTION_ATTEMPTS = 3
 MIN_EVIDENCE_QUOTE_CHARS = 10
+MAX_COMPRESSED_RECORD_BYTES = 64 * 1024 * 1024
 DEFAULT_DIALOGUE_CHUNK_CHARS = 4000
 INTERACTIVE_THREAD_SOURCES = {"cli", "codex_app", "desktop", "user", "vscode"}
 
@@ -61,6 +63,10 @@ class DialogueParseTimeout(RuntimeError):
     block far past a scan budget. Callers turn it into an honest partial
     result, never into "no backlog".
     """
+
+
+class SourceSnapshotChanged(ValueError):
+    """The source changed before parsing, so retry its next stable snapshot."""
 MEMORY_WORK_ID_RE = re.compile(r"^work:[0-9a-f]{64}$")
 SJM_MEMORY_SSH_ALIAS = "sjm-ai"
 SJM_MEMORY_REMOTE_PYTHON_REL = "Projects/K2B/venv/washing-machine/bin/python"
@@ -303,6 +309,7 @@ def _event_to_text(event: dict) -> str:
 def _read_complete_jsonl_records(
     session_path: Path, *, deadline: float | None = None,
     source_byte_limit: int | None = None,
+    retain_raw: bool = True,
 ) -> list[tuple[int, dict, bytes]]:
     """Read complete JSONL records, ignoring only an unterminated partial tail."""
     records: list[tuple[int, dict, bytes]] = []
@@ -310,33 +317,59 @@ def _read_complete_jsonl_records(
         type(source_byte_limit) is not int or source_byte_limit < 0
     ):
         raise ValueError("source byte limit must be a nonnegative integer")
-    with session_path.open("rb") as handle:
-        def snapshot_lines():
-            remaining = source_byte_limit
-            while remaining is None or remaining > 0:
-                raw = handle.readline(-1 if remaining is None else remaining)
-                if not raw:
-                    break
-                if remaining is not None:
-                    remaining -= len(raw)
-                yield raw
+    if session_path.name.endswith(".jsonl.zst"):
+        # The snapshot byte count binds compressed storage. Decoded records
+        # must be read in full rather than cut at the compressed byte count.
+        if source_byte_limit is not None and session_path.stat().st_size != source_byte_limit:
+            raise SourceSnapshotChanged("compressed source snapshot changed")
+        source_byte_limit = None
+    try:
+        source_handle = open_session(session_path, deadline=deadline)
+        with source_handle as handle:
+            return _read_jsonl_handle(
+                handle, session_path, deadline, source_byte_limit,
+                max_line_bytes=MAX_COMPRESSED_RECORD_BYTES if session_path.name.endswith(".jsonl.zst") else None,
+                retain_raw=retain_raw,
+            )
+    except TimeoutError as exc:
+        raise DialogueParseTimeout(str(exc)) from exc
 
-        for line_no, raw_line in enumerate(snapshot_lines(), 1):
-            if deadline is not None and time.monotonic() >= deadline:
-                raise DialogueParseTimeout("bounded dialogue parse exceeded its deadline")
-            if not raw_line.strip():
-                continue
-            try:
-                line = raw_line.decode("utf-8")
-                event = json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                if not raw_line.endswith((b"\n", b"\r")):
-                    break
-                raise ValueError(
-                    f"invalid JSON in transcript {session_path} line {line_no}: {exc}"
-                ) from exc
-            if isinstance(event, dict):
-                records.append((line_no, event, raw_line))
+
+def _read_jsonl_handle(handle, session_path, deadline, source_byte_limit, *, max_line_bytes=None, retain_raw=True):
+    records = []
+    def snapshot_lines():
+        remaining = source_byte_limit
+        while remaining is None or remaining > 0:
+            bound = -1 if remaining is None else remaining
+            if max_line_bytes is not None:
+                bound = max_line_bytes + 3 if bound < 0 else min(bound, max_line_bytes + 3)
+            raw = handle.readline(bound)
+            content = raw[:-1] if raw.endswith(b"\n") else raw
+            content = content[:-1] if content.endswith(b"\r") else content
+            if max_line_bytes is not None and len(content) > max_line_bytes:
+                raise ValueError("Codex source record exceeds line byte limit")
+            if not raw:
+                break
+            if remaining is not None:
+                remaining -= len(raw)
+            yield raw
+
+    for line_no, raw_line in enumerate(snapshot_lines(), 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DialogueParseTimeout("bounded dialogue parse exceeded its deadline")
+        if not raw_line.strip():
+            continue
+        try:
+            line = raw_line.decode("utf-8")
+            event = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if not raw_line.endswith((b"\n", b"\r")):
+                break
+            raise ValueError(
+                f"invalid JSON in transcript {session_path} line {line_no}: {exc}"
+            ) from exc
+        if isinstance(event, dict):
+            records.append((line_no, event, raw_line if retain_raw else b""))
     return records
 
 
@@ -419,7 +452,7 @@ def _stable_event_id(
     native_id = item.get("id") or event.get("id")
     if native_id:
         return f"event:{host_id.removeprefix('host:')}:{session_id}:{native_id}"
-    ordinal = event.get("ordinal", line_no)
+    ordinal = event["ordinal"] if type(event.get("ordinal")) is int else line_no
     seed = json.dumps(
         [host_id, session_id, ordinal, role, text],
         ensure_ascii=False,
@@ -476,7 +509,8 @@ def parse_completed_dialogue(
     if source_host not in {"home", "sjm"}:
         raise ValueError(f"unsupported source host: {source_host}")
     records = _read_complete_jsonl_records(
-        session_path, deadline=deadline, source_byte_limit=source_byte_limit
+        session_path, deadline=deadline, source_byte_limit=source_byte_limit,
+        retain_raw=False,
     )
     def check_deadline() -> None:
         if deadline is not None and time.monotonic() >= deadline:
@@ -546,7 +580,7 @@ def parse_completed_dialogue(
                 "turn_id": turn_id,
                 "role": role,
                 "text": text,
-                "ordinal": event.get("ordinal", line_no),
+                "ordinal": event["ordinal"] if type(event.get("ordinal")) is int else line_no,
             }
         )
 
@@ -572,10 +606,16 @@ def parse_completed_dialogue(
         )
         cursor = "cursor:" + hashlib.sha256(cursor_seed.encode("utf-8")).hexdigest()
         completed_date = (
-            _session_content_date(session_path)
+            next((_event_date(event) for line_no, event, _raw in records
+                  if line_no <= 200 and _event_date(event)), "")
             if mode == "legacy_whole_source"
             else _completed_at_date(completed_at)
         )
+        if (mode == "legacy_whole_source" and not completed_date
+                and not session_path.name.endswith(".jsonl.zst")):
+            # Preserve the legacy plain-prefix contract: its date probe was
+            # independent of a caller's captured byte boundary.
+            completed_date = _session_content_date(session_path, deadline=deadline)
         return {
             "turn_id": turn_id,
             "completed_at": completed_at,
@@ -747,12 +787,14 @@ def _source_changed_since(
     )
 
 
-def _source_snapshot_hash(path: Path, byte_count: int) -> str:
+def _source_snapshot_hash(path: Path, byte_count: int, deadline=None) -> str:
     """Hash exactly the captured bytes, excluding any later native append."""
     digest = hashlib.sha256()
     remaining = byte_count
     with path.open("rb") as handle:
         while remaining:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise DialogueParseTimeout("source hashing deadline exceeded")
             chunk = handle.read(min(remaining, 1024 * 1024))
             if not chunk:
                 raise OSError("source snapshot was shortened")
@@ -761,10 +803,17 @@ def _source_snapshot_hash(path: Path, byte_count: int) -> str:
     return digest.hexdigest()
 
 
-def _source_snapshot_changed(path: Path, source_stat: os.stat_result, digest: str) -> bool:
+def _source_snapshot_changed(path: Path, source_stat: os.stat_result, digest: str, deadline=None) -> bool:
     """Rewrites/shortening invalidate a snapshot; later appends do not."""
+    if path.name.endswith(".jsonl.zst"):
+        # Decoding consumes a whole immutable archive, not a byte-limited
+        # plain-log prefix. Even an append must invalidate that snapshot.
+        current = path.stat()
+        return (current.st_size != source_stat.st_size
+                or current.st_mtime_ns != source_stat.st_mtime_ns
+                or _source_snapshot_hash(path, source_stat.st_size, deadline) != digest)
     return (path.stat().st_size < source_stat.st_size
-            or _source_snapshot_hash(path, source_stat.st_size) != digest)
+            or _source_snapshot_hash(path, source_stat.st_size, deadline) != digest)
 
 
 def build_source_bundle(
@@ -862,6 +911,8 @@ def detect_source_app(session_path: Path, *, codex_root: Path | None = None) -> 
 
 
 def _safe_session_id(session_path: Path) -> str:
+    if session_path.name.endswith(".jsonl.zst"):
+        session_path = session_path.with_suffix("")
     stem = session_path.stem
     digest = hashlib.sha256(str(session_path).encode("utf-8")).hexdigest()[:16]
     if stem.startswith("rollout-"):
@@ -954,10 +1005,31 @@ def _event_cwd(event: dict) -> str:
     return ""
 
 
-def session_cwd(session_path: Path, *, max_lines: int = 80) -> str:
+@contextmanager
+def _open_source_metadata(path: Path, deadline=None):
+    """Use the full reader's record bound for compressed header probes."""
+    if not path.name.endswith(".jsonl.zst"):
+        with open_session(path, "r", deadline=deadline) as handle:
+            yield handle
+        return
+    with open_session(path, "rb", deadline=deadline) as handle:
+        def lines():
+            while True:
+                raw = handle.readline(MAX_COMPRESSED_RECORD_BYTES + 3)
+                if not raw:
+                    return
+                content = raw[:-1] if raw.endswith(b"\n") else raw
+                content = content[:-1] if content.endswith(b"\r") else content
+                if len(content) > MAX_COMPRESSED_RECORD_BYTES:
+                    raise ValueError(f"{path}: metadata record exceeds line byte limit")
+                yield raw.decode("utf-8")
+        yield lines()
+
+
+def session_cwd(session_path: Path, *, max_lines: int = 80, deadline=None) -> str:
     """Return the first cwd recorded in a Claude Code / Codex JSONL session."""
     try:
-        with session_path.open(encoding="utf-8") as f:
+        with _open_source_metadata(session_path, deadline=deadline) as f:
             for line_no, line in enumerate(f, 1):
                 if line_no > max_lines:
                     break
@@ -971,6 +1043,8 @@ def session_cwd(session_path: Path, *, max_lines: int = 80) -> str:
                     cwd = _event_cwd(event)
                     if cwd:
                         return cwd
+    except TimeoutError as exc:
+        raise DialogueParseTimeout(str(exc)) from exc
     except OSError:
         return ""
     return ""
@@ -981,8 +1055,8 @@ def _path_implies_project_scope(path: Path) -> bool:
     return bool(PROJECT_SCOPE_RE.search(s) or ENCODED_PROJECT_SCOPE_RE.search(s))
 
 
-def _is_k2b_scope(session_path: Path) -> bool:
-    cwd = session_cwd(session_path)
+def _is_k2b_scope(session_path: Path, *, deadline=None) -> bool:
+    cwd = session_cwd(session_path, deadline=deadline)
     if cwd:
         return bool(PROJECT_SCOPE_RE.search(cwd))
     return _path_implies_project_scope(session_path)
@@ -1048,9 +1122,9 @@ def _event_date(event: dict) -> str:
     return ""
 
 
-def _session_content_date(session_path: Path, *, max_lines: int = 200) -> str:
+def _session_content_date(session_path: Path, *, max_lines: int = 200, deadline=None) -> str:
     try:
-        with session_path.open(encoding="utf-8") as f:
+        with _open_source_metadata(session_path, deadline=deadline) as f:
             for line_no, line in enumerate(f, 1):
                 if line_no > max_lines:
                     break
@@ -1064,14 +1138,16 @@ def _session_content_date(session_path: Path, *, max_lines: int = 200) -> str:
                     parsed = _event_date(event)
                     if parsed:
                         return parsed
+    except TimeoutError as exc:
+        raise DialogueParseTimeout(str(exc)) from exc
     except OSError:
         return ""
     return ""
 
 
-def _session_relevant_dates(session_path: Path) -> set[str]:
+def _session_relevant_dates(session_path: Path, *, deadline=None) -> set[str]:
     """Return completion dates for modern sessions, or the legacy source date."""
-    parsed = parse_completed_dialogue(session_path, source_host="home")
+    parsed = parse_completed_dialogue(session_path, source_host="home", deadline=deadline)
     if not parsed.get("eligible"):
         return set()
     if parsed.get("explicit_turn_markers"):
@@ -1086,7 +1162,7 @@ def _session_relevant_dates(session_path: Path) -> set[str]:
             if diagnostic.get("completed_date")
         )
         return dates
-    legacy_date = _session_content_date(session_path)
+    legacy_date = _session_content_date(session_path, deadline=deadline)
     if not legacy_date:
         parts = session_path.parts
         for index in range(max(len(parts) - 2, 0)):
@@ -1114,22 +1190,33 @@ def discover_session_paths(
     *,
     run_date: str,
     codex_root: Path | None = None,
+    deadline: float | None = None,
 ) -> list[Path]:
     """Discover today's K2B/K2Bi Codex Desktop sessions only."""
     codex_root = _resolve_codex_root(codex_root)
+    if deadline is None:
+        deadline = time.monotonic() + 120
 
     found: list[Path] = []
     # The directory is a UTC creation date, not necessarily the HKT source day.
-    codex_candidates = sorted(codex_root.rglob("*.jsonl"))
+    codex_candidates = session_paths(codex_root)
     for path in codex_candidates:
+        if time.monotonic() >= deadline:
+            raise ValueError(f"{path}: source discovery deadline exceeded")
         resolved = path.resolve()
-        if not resolved.is_relative_to(codex_root) or not _is_k2b_scope(resolved):
+        if not resolved.is_relative_to(codex_root):
             continue
         try:
-            session_dates = _session_relevant_dates(resolved)
+            if not _is_k2b_scope(resolved, deadline=deadline):
+                continue
+            session_dates = _session_relevant_dates(resolved, deadline=deadline)
+        except DialogueParseTimeout as exc:
+            raise ValueError(f"{resolved}: source probe timed out") from exc
         except OSError:
             continue
         except ValueError:
+            if resolved.name.endswith(".jsonl.zst"):
+                raise
             session_dates = _fallback_session_dates(resolved)
         if run_date not in session_dates:
             continue
@@ -1161,19 +1248,32 @@ def discover_session_paths_between(
     since: str,
     through: str,
     codex_root: Path | None = None,
+    deadline: float | None = None,
 ) -> dict[str, list[Path]]:
     """Discover every in-scope Codex session in an inclusive date range."""
     root = _resolve_codex_root(codex_root)
     result = {run_date: [] for run_date in _date_range(since, through)}
-    for path in sorted(root.rglob("*.jsonl")):
+    for path in session_paths(root):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DialogueParseTimeout("source discovery deadline exceeded")
         resolved = path.resolve()
-        if not resolved.is_relative_to(root) or not _is_k2b_scope(resolved):
+        # Decode/provenance errors stop discovery. Never silently remove a bad
+        # source from the worklist and report successful or empty coverage.
+        if not resolved.is_relative_to(root):
             continue
         try:
-            run_dates = _session_relevant_dates(resolved)
+            if not _is_k2b_scope(resolved, deadline=deadline):
+                continue
+            run_dates = _session_relevant_dates(resolved, deadline=deadline)
+        except DialogueParseTimeout as exc:
+            if resolved.name.endswith(".jsonl.zst"):
+                raise ValueError(f"{resolved}: source probe timed out") from exc
+            raise
         except OSError:
             continue
         except ValueError:
+            if resolved.name.endswith(".jsonl.zst"):
+                raise
             run_dates = _fallback_session_dates(resolved)
         for run_date in sorted(run_dates):
             if run_date in result:
@@ -1434,7 +1534,44 @@ def verify_evidence_quotes(data: dict, payload: str, *, session_path: Path) -> N
             idx=idx,
             normalized_payload=normalized_payload,
             session_path=session_path,
+            dialogue_events=data.get("dialogue_events"),
         )
+
+
+def _validate_short_acceptance(item: dict, events: list[dict] | None) -> None:
+    """Bind a short affirmative to the immediately preceding assistant proposal.
+
+    Keep the user's exact quote and both event identities. The extractor must
+    resolve the meaning; this check refuses missing, ambiguous or invented links.
+    The proposal may be in the preceding turn. Only the current user acceptance
+    creates the new decision; earlier context is never redated as a new fact.
+    Decision values may retain rejection or qualifications. This checks the
+    evidence link; extraction must preserve the full reply and its meaning.
+    """
+    context = item.get("acceptance_context")
+    if (item.get("kind") != "decision" or item.get("speaker_source") != "keith"
+            or not isinstance(context, dict) or not events):
+        raise ValueError("short acceptance requires structured proposal evidence")
+    matches = [i for i, event in enumerate(events)
+               if event.get("event_id") == item.get("evidence_event_id")]
+    if len(matches) != 1 or matches[0] == 0:
+        raise ValueError("short acceptance lacks a unique preceding proposal")
+    index = matches[0]
+    acceptance, proposal = events[index], events[index - 1]
+    quote = _normalize_evidence_text(item["evidence_quote"])
+    if (acceptance.get("role") != "user"
+            or _normalize_evidence_text(acceptance.get("text", "")) != quote
+            or proposal.get("role") != "assistant"
+            or context.get("event_id") != proposal.get("event_id")
+            or type(proposal.get("ordinal")) is not int
+            or type(acceptance.get("ordinal")) is not int
+            or proposal["ordinal"] >= acceptance["ordinal"]):
+        raise ValueError("short acceptance has invalid proposal attribution")
+    proposal_quote = context.get("quote")
+    if (not isinstance(proposal_quote, str)
+            or len(proposal_quote.strip()) < MIN_EVIDENCE_QUOTE_CHARS
+            or proposal_quote not in proposal.get("text", "")):
+        raise ValueError("short acceptance proposal quote is not grounded")
 
 
 def _validate_item_evidence_quote(
@@ -1443,6 +1580,7 @@ def _validate_item_evidence_quote(
     idx: int,
     normalized_payload: str,
     session_path: Path,
+    dialogue_events: list[dict] | None = None,
 ) -> None:
     # Schema-class presence/non-empty/type guard runs first so missing,
     # empty, or non-string evidence_quote cannot fall through to the
@@ -1462,10 +1600,15 @@ def _validate_item_evidence_quote(
         raise ValueError(f"extractor item {idx} has empty evidence_quote")
     _validate_evidence_quote_controls(quote, idx=idx)
     normalized_quote = _normalize_evidence_text(quote)
-    if normalized_quote and len(normalized_quote) < MIN_EVIDENCE_QUOTE_CHARS:
-        raise ValueError(
-            f"evidence_quote for item {idx} in {session_path} is too short"
-        )
+    # Preserve the old contract for existing long quotes and receipts. A
+    # shorter quote needs proposal evidence; supplied context is always checked.
+    if normalized_quote and (len(normalized_quote) < MIN_EVIDENCE_QUOTE_CHARS or "acceptance_context" in item):
+        try:
+            _validate_short_acceptance(item, dialogue_events)
+        except ValueError as exc:
+            reason = ("is too short" if len(normalized_quote) < MIN_EVIDENCE_QUOTE_CHARS
+                      else "has invalid acceptance_context")
+            raise ValueError(f"evidence_quote for item {idx} {reason}: {exc}") from exc
     if normalized_quote and normalized_quote not in normalized_payload:
         raise EvidenceQuoteNotInTranscriptError(
             f"evidence_quote for item {idx} in {session_path} is not present "
@@ -1682,6 +1825,8 @@ def _filter_extraction_items(
                 raise ValueError(
                     f"extractor item {idx} for {session_path} is not an object"
                 )
+            if "acceptance_context" in item and not require_structured_attribution:
+                raise ValueError("contextual acceptance requires structured turn evidence")
             # All schema/contract checks run first across BOTH validators
             # (canonical_home content-class check is deferred). Then evidence
             # quote schema (control char, too short) + grounding. Then
@@ -1699,6 +1844,7 @@ def _filter_extraction_items(
                 idx=idx,
                 normalized_payload=normalized_payload,
                 session_path=session_path,
+                dialogue_events=dialogue_events,
             )
             _validate_speaker_attribution(
                 item,
@@ -1971,6 +2117,7 @@ def _validate_extraction_item(
         "confidence",
         "dedupe_key",
         "evidence_event_id",
+        "acceptance_context",
         "evidence_quote",
         "kind",
         "object",
@@ -2099,6 +2246,7 @@ def _existing_valid_extraction(
                     idx=idx,
                     normalized_payload=normalized_payload,
                     session_path=error_path,
+                    dialogue_events=dialogue_events or data.get("dialogue_events"),
                 )
                 _validate_speaker_attribution(
                     item,
@@ -3253,6 +3401,7 @@ def build_memory_worklist(
     writer_role: str,
     limit: int = 10,
     now: str | None = None,
+    max_scan_seconds: float = 120,
 ) -> dict:
     """Persist a bounded list of eligible immutable completed-turn sources."""
 
@@ -3261,31 +3410,55 @@ def build_memory_worklist(
         raise ValueError("automatic memory worklist limit must be from 1 through 100")
     selection_at = _memory_instant(now, "automatic memory worklist timestamp")
     source_host = "home" if role == "home" else "sjm"
-    discovered = discover_session_paths_between(
-        since=since, through=through, codex_root=codex_root
-    )
+    if (isinstance(max_scan_seconds, bool) or not isinstance(max_scan_seconds, (int, float))
+            or not math.isfinite(max_scan_seconds) or not 0 <= max_scan_seconds <= 1050):
+        raise ValueError("worklist scan budget must be from 0 through 1050 seconds (30-second persistence reserve)")
+    selection_deadline = time.monotonic() + max_scan_seconds
+    first_unverified_source = None
+    persistence_unverified_source = None
     requested_dates = set(_date_range(since, through))
     eligible: list[dict] = []
     excluded = 0
     parse_exception_counts: dict[str, int] = {}
-    source_paths = sorted(
-        {source_path for paths in discovered.values() for source_path in paths}
-    )
+    # Parse each source once. Its completed prefixes already carry dates; a
+    # separate discovery parse doubles the cost of every archived log.
+    root = _resolve_codex_root(codex_root)
+    source_paths = session_paths(root)
     source_stats: dict[str, os.stat_result] = {}
     for source_path in source_paths:
+        if time.monotonic() >= selection_deadline:
+            parse_exception_counts["source_scan_time_budget"] = 1
+            first_unverified_source = str(source_path)
+            break
         try:
+            source_path = source_path.resolve()
+            if not source_path.is_relative_to(root):
+                continue
             source_stat = source_path.stat()
-            source_hash = _source_snapshot_hash(source_path, source_stat.st_size)
+            if not _is_k2b_scope(source_path, deadline=selection_deadline):
+                continue
+            source_hash = _source_snapshot_hash(source_path, source_stat.st_size, selection_deadline)
             parsed = parse_completed_dialogue(
                 source_path, source_host=source_host,
                 source_byte_limit=source_stat.st_size,
+                deadline=selection_deadline,
             )
-            if _source_snapshot_changed(source_path, source_stat, source_hash):
+            if _source_snapshot_changed(source_path, source_stat, source_hash, selection_deadline):
                 excluded += 1
                 parse_exception_counts["source_changed_during_selection"] = (
                     parse_exception_counts.get("source_changed_during_selection", 0) + 1
                 )
                 continue
+        except DialogueParseTimeout:
+            parse_exception_counts["source_scan_time_budget"] = 1
+            first_unverified_source = str(source_path)
+            break
+        except SourceSnapshotChanged:
+            excluded += 1
+            parse_exception_counts["source_changed_during_selection"] = (
+                parse_exception_counts.get("source_changed_during_selection", 0) + 1
+            )
+            continue
         except OSError:
             excluded += 1
             parse_exception_counts["source_unavailable"] = (
@@ -3293,8 +3466,9 @@ def build_memory_worklist(
             )
             continue
         except ValueError:
-            excluded += 1
-            continue
+            # The writer freezes on malformed source data in either storage
+            # format. Read-only backlog may continue counting other sources.
+            raise
         if not parsed.get("eligible"):
             excluded += 1
             continue
@@ -3350,7 +3524,13 @@ def build_memory_worklist(
     lock_path = state_root / ".memory-worklist.lock"
     with _file_lock(lock_path):
         failed_sources: set[str] = set()
+        verified_sources: dict[str, tuple] = {}
+        persistence_deadline = time.monotonic() + 30
         for current_bundle in eligible:
+            if time.monotonic() >= persistence_deadline:
+                parse_exception_counts["source_persistence_time_budget"] = 1
+                persistence_unverified_source = current_bundle["session_path"]
+                break
             work_id = _memory_work_id(current_bundle)
             receipt_path = _memory_work_path(
                 state_root, work_id, "extraction-receipts"
@@ -3371,17 +3551,29 @@ def build_memory_worklist(
                 source_path = Path(current_bundle["session_path"])
                 root = _resolve_codex_root(codex_root)
                 try:
-                    source_path.stat()
-                    in_scope = (
-                        source_path.resolve().is_relative_to(root)
-                        and detect_source_app(source_path, codex_root=root) != "unknown"
-                        and _is_k2b_scope(source_path)
-                    )
-                    changed = _source_snapshot_changed(
-                        source_path, source_stats[str(source_path)],
-                        current_bundle["raw_source_sha256"],
-                    )
-                except (OSError, KeyError, ValueError):
+                    current_stat = source_path.stat()
+                    signature = (current_stat.st_dev, current_stat.st_ino,
+                                 current_stat.st_size, current_stat.st_mtime_ns,
+                                 current_stat.st_ctime_ns)
+                    if (verified_sources.get(str(source_path)) == signature
+                            and source_path.resolve().is_relative_to(root)):
+                        in_scope, changed = True, False
+                    else:
+                        source_path.stat()
+                        in_scope = (
+                            source_path.resolve().is_relative_to(root)
+                            and detect_source_app(source_path, codex_root=root) != "unknown"
+                            and _is_k2b_scope(source_path, deadline=persistence_deadline)
+                        )
+                        changed = _source_snapshot_changed(
+                            source_path, source_stats[str(source_path)],
+                            current_bundle["raw_source_sha256"], persistence_deadline,
+                        )
+                except DialogueParseTimeout:
+                    parse_exception_counts["source_persistence_time_budget"] = 1
+                    persistence_unverified_source = current_bundle["session_path"]
+                    break
+                except (OSError, KeyError):
                     failed_sources.add(current_bundle["session_path"])
                     excluded += 1
                     parse_exception_counts["source_unavailable"] = (
@@ -3402,6 +3594,9 @@ def build_memory_worklist(
                         parse_exception_counts.get("source_outside_scope", 0) + 1
                     )
                     continue
+                # All these prefixes were built from the same immutable parsed
+                # snapshot. Verify that source once before persisting its batch.
+                verified_sources[str(source_path)] = signature
                 bundle = current_bundle
                 _atomic_write_json(bundle_path, bundle)
             record = {
@@ -3477,6 +3672,12 @@ def build_memory_worklist(
         "selected": len(selected),
         "excluded": excluded,
         "skipped_receipted": skipped_receipted,
+        "scan": {"budget_exhausted": bool(parse_exception_counts.get("source_scan_time_budget")),
+                 "first_unverified_source": first_unverified_source,
+                 "budget_seconds": max_scan_seconds},
+        "persistence": {"budget_exhausted": bool(parse_exception_counts.get("source_persistence_time_budget")),
+                        "first_unverified_source": persistence_unverified_source,
+                        "budget_seconds": 30},
         "exception_counts": exception_counts,
         "parse_exception_counts": parse_exception_counts,
         "items": selected,
@@ -3515,7 +3716,8 @@ def prepare_memory_extraction_input(
         "completed_prefix_sha256", "completed_prefix_mode", "completed_date",
         "completed_at", "completed_turn_id", "host_id", "session_id",
     )}
-    prior = events[:events.index(current[0])]
+    prior = events[:next(i for i, event in enumerate(events)
+                         if event["turn_id"] == bundle["completed_turn_id"])]
     view.update(input_schema_version=1, work_id=work_id, dialogue_events=current,
                 context_events=[], context_omitted_events=len(prior))
 
@@ -4965,16 +5167,16 @@ def memory_backlog(
     seen: set[str] = set()
     invalid_receipts = source_errors = parse_exceptions = unverified_turns = 0
     empty_completed_turns = 0
-    for path in sorted(root.rglob("*.jsonl")):
+    for path in session_paths(root):
         if time.monotonic() >= deadline:
             complete = False
             break
         if path.is_symlink() or not path.resolve().is_relative_to(root):
             source_errors += 1
             continue
-        if not _is_k2b_scope(path):
-            continue
         try:
+            if not _is_k2b_scope(path, deadline=deadline):
+                continue
             before = path.stat()
             parsed = parse_completed_dialogue(
                 path, source_host=source_host, deadline=deadline)
@@ -4982,6 +5184,9 @@ def memory_backlog(
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 source_errors += 1
                 continue
+        except SourceReaderUnavailable:
+            # Host tooling failure must not masquerade as corrupt archives.
+            raise
         except DialogueParseTimeout:
             # Honest partial: the scan budget, not the backlog, ran out.
             timed_out += 1
@@ -6187,6 +6392,7 @@ def _reconcile_extractions_locked(vault_path: Path, *, run_date: str) -> dict:
                             idx=idx,
                             normalized_payload=normalized_structured_payload,
                             session_path=path,
+                            dialogue_events=data.get("dialogue_events"),
                         )
                         _validate_speaker_attribution(
                             item,
@@ -6205,6 +6411,7 @@ def _reconcile_extractions_locked(vault_path: Path, *, run_date: str) -> dict:
                         idx=idx,
                         normalized_payload=normalized_structured_payload,
                         session_path=path,
+                        dialogue_events=data.get("dialogue_events"),
                     )
                     _validate_speaker_attribution(
                         item,
@@ -7266,6 +7473,7 @@ def main(argv: list[str] | None = None) -> int:
         "--state-root", type=Path, default=_default_automatic_memory_state_root()
     )
     memory_worklist.add_argument("--limit", type=int, default=10)
+    memory_worklist.add_argument("--max-scan-seconds", type=float, default=120)
     memory_worklist.add_argument("--now")
     memory_worklist.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
@@ -7568,6 +7776,7 @@ def main(argv: list[str] | None = None) -> int:
                 writer_role=args.writer_role,
                 limit=args.limit,
                 now=args.now,
+                max_scan_seconds=args.max_scan_seconds,
             )
         except (OSError, ValueError, RuntimeError, PermissionError) as exc:
             print(f"eod-capture: memory worklist failed: {_sanitize_log_value(exc)}", file=sys.stderr)
