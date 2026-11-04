@@ -341,15 +341,15 @@ def test_memory_worklist_contains_source_unavailable_and_keeps_other_work(
     root = tmp_path / ".codex" / "sessions"
     missing = _modern_session(root, "2026-09-05", "a-vanished-source")
     available = _modern_session(root, "2026-09-05", "b-available-source")
-    original_discover = eod_capture.discover_session_paths_between
+    original_discover = eod_capture.session_paths
 
-    def discover_then_remove(**kwargs: object) -> dict[str, list[Path]]:
-        discovered = original_discover(**kwargs)
+    def discover_then_remove(source_root: Path) -> list[Path]:
+        discovered = original_discover(source_root)
         missing.unlink()
         return discovered
 
     monkeypatch.setattr(
-        eod_capture, "discover_session_paths_between", discover_then_remove
+        eod_capture, "session_paths", discover_then_remove
     )
 
     worklist = eod_capture.build_memory_worklist(
