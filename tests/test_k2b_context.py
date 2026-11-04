@@ -3138,6 +3138,106 @@ def test_topic_note_scope_excludes_shelf_and_path_escapes(tmp_path: Path) -> Non
         )
 
 
+@pytest.mark.parametrize("exhausted", ["deadline", "start_bytes", "index_bytes"])
+def test_candidate_scan_skips_enumeration_when_resources_already_exhausted(
+    tmp_path: Path, monkeypatch, exhausted: str
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    roots = ("wiki/work", "wiki/people", "wiki/projects", "wiki/concepts", "wiki/insights", "wiki/reference")
+    for root in roots:
+        _note(vault, f"{root}/a_note.md", "# Aurora\n\nAurora request stays pending.\n")
+    enumerated: list[Path] = []
+    rglob = Path.rglob
+    cap = 100
+    start_bytes = cap if exhausted == "start_bytes" else 0
+    counted_paths = {vault / "wiki/work/a_note.md"} if start_bytes else set()
+
+    def observed_rglob(directory, pattern, *args, **kwargs):
+        enumerated.append(directory)
+        return rglob(directory, pattern, *args, **kwargs)
+
+    with monkeypatch.context() as local:
+        local.setattr(Path, "rglob", observed_rglob)
+        if exhausted == "index_bytes":
+            local.setattr(k2b_context, "_index_candidates", lambda *args: ([], cap, False))
+        result = k2b_context._candidate_note_files(
+            vault, ["aurora"], time.monotonic() + (-1 if exhausted == "deadline" else 5),
+            max_candidate_bytes=cap, start_bytes=start_bytes,
+            scanned_paths=counted_paths, use_index=exhausted == "index_bytes",
+        )
+    assert enumerated == [], "an exhausted scan must not recursively enumerate any root"
+    assert result == ([], True, False, 0 if exhausted == "deadline" else cap, counted_paths, set())
+
+
+@pytest.mark.parametrize("selected_root", [
+    "wiki/work", "wiki/people", "wiki/projects", "wiki/concepts",
+    "wiki/insights", "wiki/reference",
+])
+@pytest.mark.parametrize("followup", [False, True])
+def test_candidate_scan_gives_each_root_a_turn_before_read_deadline(
+    tmp_path: Path, monkeypatch, selected_root: str, followup: bool
+) -> None:
+    roots = ("wiki/work", "wiki/people", "wiki/projects", "wiki/concepts", "wiki/insights", "wiki/reference")
+    vault = (tmp_path / "vault").resolve()
+    for root in roots:
+        for index in range(10):
+            _note(vault, f"{root}/z_log_{index:02d}.md", "# Chronicle\n\nRoutine archive item.\n")
+    selected = f"{selected_root}/a_signal.md"
+    _note(vault, selected, "# Aurora decision\n\nAurora decision requires readiness review.\n")
+    clock = [0.0]
+    reads: list[Path] = []
+    read = k2b_context._read_bounded
+
+    def timed_read(path, limit):
+        assert clock[0] < 5.0, "candidate content read started after the shared deadline"
+        text = read(path, limit)
+        reads.append(path)
+        clock[0] += 0.5
+        return text
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_read_bounded", timed_read)
+        packet = k2b_context.gather(
+            "Aurora decision", vault,
+            extra_terms=["readiness", "review"] if followup else [],
+        )
+    assert selected in {s["relative_path"] for s in packet["sources"]}
+    assert any("Aurora decision requires readiness review." in e["quote"] for e in packet["evidence"])
+    assert [path.parent.relative_to(vault).as_posix() for path in reads[:6]] == list(roots)
+    for root in roots:
+        per_root = [path.name for path in reads if path.parent == vault / root]
+        assert per_root == sorted(per_root)
+    assert packet["partial"] and "time_budget" in packet["reasons"]
+
+
+def test_interleaved_candidate_scan_keeps_one_shared_byte_bound(tmp_path: Path, monkeypatch) -> None:
+    roots = ("wiki/work", "wiki/people", "wiki/projects", "wiki/concepts", "wiki/insights", "wiki/reference")
+    vault = (tmp_path / "vault").resolve()
+    body = "# Aurora\n\nAurora request stays pending.\n"
+    for root in roots:
+        for name in ("b_note", "a_note"):
+            _note(vault, f"{root}/{name}.md", body)
+    reads: list[Path] = []
+    read = k2b_context._read_bounded
+
+    def observed_read(path, limit):
+        reads.append(path)
+        return read(path, limit)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context, "_read_bounded", observed_read)
+        ranked, truncated, _, scanned_bytes, scanned_paths, _ = k2b_context._candidate_note_files(
+            vault, ["aurora"], time.monotonic() + 5.0,
+            max_candidate_bytes=len(body.encode()) * 2, use_index=False,
+        )
+    assert truncated
+    assert scanned_bytes == len(body.encode()) * 2
+    assert reads == [vault / "wiki/work/a_note.md", vault / "wiki/people/a_note.md"]
+    assert scanned_paths == set(reads)
+    assert ranked == sorted(reads), "identical hits retain the existing lexical tie order"
+
+
 def test_candidate_scan_cumulative_cap_yields_partial_without_unbounded_read(
     tmp_path: Path,
 ) -> None:
