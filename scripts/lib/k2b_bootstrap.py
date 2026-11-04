@@ -76,6 +76,7 @@ def build_bootstrap(project_root: Path, vault_root: Path, state_root: Path,
     sources = [
         _source("authority", project_root, "AGENTS.md"),
         _source("knowledge_index", vault_root, "wiki/index.md"),
+        _source("central_vision", vault_root, "wiki/concepts/concept_k2b-agentic-os-vision.md"),
         _source("active_rules", vault_root, "System/memory/active_rules.md"),
         _source("profile", vault_root, "wiki/context/context_keith-profile.md", include=True),
         _source("preferences", vault_root, "wiki/context/preference-profile.md", include=True),

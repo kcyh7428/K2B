@@ -17,6 +17,7 @@ import posixpath
 import re
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -1457,11 +1458,14 @@ def _candidate_note_files(
     start_bytes: int = 0,
     scanned_paths: set[Path] | None = None,
     use_index: bool = True,
+    prepare_note: Callable[[Path, str, bool], None] | None = None,
 ) -> tuple[list[Path], bool, bool, int, set[Path], set[Path]]:
     """Score each bounded candidate once, independent of index row order.
 
     Index discovery never prevents a stronger name/title/alias match. Content
     reads share the existing byte/deadline bound with evidence emission.
+    The optional callback receives already-charged candidate text for bounded
+    preparation before that same deadline, without another source read.
     """
 
     scanned_bytes = start_bytes
@@ -1515,6 +1519,10 @@ def _candidate_note_files(
             documents.append(document)
             if path in indexed or _matches(title + " " + document["aliases"], terms):
                 discovery_head.add(path)
+            if (prepare_note is not None and time.monotonic() < deadline
+                    and (path in indexed or any(_matches(document[field], terms)
+                         for field in ("stem", "title", "aliases", "text")))):
+                prepare_note(path, text, path in discovery_head)
         if truncated:
             break
     ranked = _rank_note_documents(documents, terms)
@@ -2421,21 +2429,44 @@ def _emit_note_sources(
     max_evidence: int,
     max_candidate_bytes: int,
     deadline: float,
+    source_texts: dict[Path, str] | None = None,
+    prepared_notes: dict[Path, tuple[dict, list[dict], list[str]]] | None = None,
 ) -> int:
     """Bind note/raw paths to sources and evidence, sharing one byte budget.
 
     A ranked candidate only becomes a source when it keeps at least one
     evidence span, so a name-only match cannot crowd out a relevant one.
+    source_texts reuses already-read text. prepared_notes contains only fully
+    bound records completed in time and is assembled without source preparation.
     """
 
     spread = anchor_path is None and not head_all
+    # Legacy topic/raw binding finishes a started path; only the new in-memory
+    # preparation route aborts its work at intermediate deadline checks.
+    strict_preparation = source_texts is not None
     prepared: list[tuple[dict, list]] = []
+    if prepared_notes is not None:
+        # Only assemble records completed before expiry; no source preparation.
+        if time.monotonic() >= deadline:
+            reasons.append("time_budget")
+        for path in paths:
+            if path not in prepared_notes:
+                continue
+            if len(sources) + len(prepared) >= max_sources:
+                reasons.append("source_limit")
+                break
+            source, bound_spans, preparation_reasons = prepared_notes[path]
+            reasons.extend(preparation_reasons)
+            if not bound_spans:
+                continue
+            prepared.append((source, bound_spans))
+        paths = []
     for path in paths:
         if len(sources) + len(prepared) >= max_sources or time.monotonic() >= deadline:
             reasons.append("source_limit" if len(sources) + len(prepared) >= max_sources else "time_budget")
             break
         rel = path.relative_to(vault).as_posix()
-        text = _read_bounded(path, MAX_SOURCE_FILE_BYTES)
+        text = source_texts[path] if source_texts is not None else _read_bounded(path, MAX_SOURCE_FILE_BYTES)
         if text is None:
             reasons.append("oversized_or_unreadable_source")
             continue
@@ -2449,6 +2480,9 @@ def _emit_note_sources(
                 break
             scanned_bytes += current_bytes
             scanned_paths.add(path)
+        if strict_preparation and time.monotonic() >= deadline:
+            reasons.append("time_budget")
+            break
         # Compute spans before binding the source so a matched-only-in-name
         # candidate that keeps no span never consumes a source slot.
         spans, spans_truncated = _spans(
@@ -2457,12 +2491,18 @@ def _emit_note_sources(
             take_head=path in head_all,
             prefer_body=path == anchor_path,
         )
+        if strict_preparation and time.monotonic() >= deadline:
+            reasons.append("time_budget")
+            break
         if _within_note_roots(rel) and (spread or path == anchor_path):
             spans, answer_truncated = _answer_note_spans(
                 text, terms, spans,
                 include_summary=path in head_first or path == anchor_path,
             )
             spans_truncated = spans_truncated or answer_truncated
+        if strict_preparation and time.monotonic() >= deadline:
+            reasons.append("time_budget")
+            break
         if not spans and path in head_first:
             # A discovery-ranked note always contributes at least its head so
             # a matched entity is visible even when its body uses other words.
@@ -2481,7 +2521,13 @@ def _emit_note_sources(
         if len(evidence) >= max_evidence:
             reasons.append("evidence_limit")
             break
+        if strict_preparation and time.monotonic() >= deadline:
+            reasons.append("time_budget")
+            break
         content_hash = _sha256_bytes(text.encode("utf-8"))
+        if strict_preparation and time.monotonic() >= deadline:
+            reasons.append("time_budget")
+            break
         source_id = "src:" + _sha256_hex({"rel": rel, "content_hash": content_hash})
         source_date = _frontmatter_date(text)
         source_type = "raw_capture" if _within_raw_roots(rel) else "vault_note"
@@ -2545,10 +2591,21 @@ def _emit_note_sources(
             if len(evidence) >= max_evidence:
                 reasons.append("evidence_limit")
                 return scanned_bytes
-            if offset == 0:
-                sources.append(source)
+            if prepared_notes is not None:
+                if offset == 0:
+                    sources.append(source)
+                evidence.append(spans[offset])
+                continue
+            if strict_preparation and time.monotonic() >= deadline:
+                reasons.append("time_budget")
+                return scanned_bytes
             quote, start_line, end_line, byte_start, byte_end = spans[offset]
             locator = _span_locator(start_line, end_line, byte_start, byte_end)
+            if strict_preparation and time.monotonic() >= deadline:
+                reasons.append("time_budget")
+                return scanned_bytes
+            if offset == 0:
+                sources.append(source)
             source_id = source["source_id"]
             evidence.append({
                 "evidence_id": "ev:" + _sha256_hex({"source_id": source_id, "locator": locator, "quote": quote}),
@@ -2767,6 +2824,32 @@ def gather(
             deadline=deadline,
         )
     elif terms:
+        # Candidate-byte/deadline limits bound the documents entering this map;
+        # each retains at most MAX_SPANS_PER_SOURCE spans. Quotes and metadata
+        # amplify memory beyond input text. Final packet caps apply at assembly,
+        # and these transient artifacts are never persisted.
+        prepared_notes: dict[Path, tuple[dict, list[dict], list[str]]] = {}
+
+        def prepare_note(path: Path, text: str, discovered_head: bool) -> None:
+            bound_sources: list[dict] = []
+            bound_evidence: list[dict] = []
+            preparation_reasons: list[str] = []
+            _emit_note_sources(
+                vault, [path], terms, sources=bound_sources, evidence=bound_evidence,
+                reasons=preparation_reasons, scanned_bytes=0, scanned_paths={path},
+                head_all=set(), head_first={path} if discovered_head else set(),
+                max_sources=1, max_evidence=MAX_SPANS_PER_SOURCE,
+                max_candidate_bytes=max_candidate_bytes, deadline=deadline,
+                source_texts={path: text},
+            )
+            # A preparation that starts in time but finishes late is unusable.
+            if time.monotonic() >= deadline:
+                reasons.append("time_budget")
+            else:
+                prepared_notes[path] = (
+                    bound_sources[0] if bound_sources else {}, bound_evidence, preparation_reasons,
+                )
+
         (
             note_paths,
             truncated,
@@ -2775,7 +2858,7 @@ def gather(
             scanned_paths,
             discovery_head,
         ) = _candidate_note_files(
-            vault, terms, deadline, max_candidate_bytes
+            vault, terms, deadline, max_candidate_bytes, prepare_note=prepare_note,
         )
         if truncated:
             reasons.append("candidate_byte_limit")
@@ -2796,6 +2879,7 @@ def gather(
             max_evidence=note_max_evidence,
             max_candidate_bytes=max_candidate_bytes,
             deadline=deadline,
+            prepared_notes=prepared_notes,
         )
         raw_paths, raw_truncated, raw_oversized, scanned_bytes, scanned_paths = (
             _candidate_raw_files(
