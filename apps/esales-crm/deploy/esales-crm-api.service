@@ -1,0 +1,26 @@
+[Unit]
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/esales-crm/staging/current/.venv/bin/python
+ConditionPathExists=/etc/esales-crm/staging.env
+
+[Service]
+User=esales-crm
+Group=esales-crm
+WorkingDirectory=/opt/esales-crm/staging/current
+EnvironmentFile=/etc/esales-crm/staging.env
+Environment=CRM_DATA_DIR=/var/lib/esales-crm/staging
+Environment=CRM_PUBLIC_URL=https://crm.e-sales.app
+Environment=CRM_INTAKE_ENVIRONMENT=staging
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/esales-crm/staging /var/backups/esales-crm/staging
+Restart=on-failure
+RestartSec=5
+ExecStart=/opt/esales-crm/staging/current/.venv/bin/python -m uvicorn server.api:create_app --factory --host 127.0.0.1 --port 8765 --proxy-headers --forwarded-allow-ips=127.0.0.1
+
+[Install]
+WantedBy=multi-user.target

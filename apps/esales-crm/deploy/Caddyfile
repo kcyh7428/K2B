@@ -1,0 +1,17 @@
+{
+    email keith.cheung@signhub.io
+}
+
+crm.e-sales.app {
+    handle /healthz {
+        rewrite * /health
+        reverse_proxy 127.0.0.1:8765 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8765 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+}
