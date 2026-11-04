@@ -1913,8 +1913,8 @@ def test_final_candidate_missing_preparation_records_time_budget(
     tmp_path: Path, monkeypatch
 ) -> None:
     vault = (tmp_path / "vault").resolve()
-    # Reference is the final permitted note root; there is no later iteration
-    # available to mark candidate discovery truncated after this read expires.
+    # A lazy scan cannot prove the final iterator empty after its read expires.
+    # It must preserve the candidate while reporting incomplete discovery.
     selected = _note(vault, "wiki/reference/atlas_owner.md", "# Atlas owner\n\nAtlas owner Mei is awaiting acceptance.\n")
     memory = tmp_path / "memory.json"
     _apply(memory, _bundle(key="memory.fact.gardening.aaaa", value="Gardening was discussed.", quote="Gardening was discussed."))
@@ -1941,10 +1941,10 @@ def test_final_candidate_missing_preparation_records_time_budget(
         packet = k2b_context.gather("Atlas owner", vault)
     assert not preparations
     assert packet["freshness"]["candidate_inventory"]["count"] == 1
-    assert packet["freshness"]["candidate_inventory"]["complete"] is True
+    assert packet["freshness"]["candidate_inventory"]["complete"] is False
     assert not packet["sources"] and not packet["evidence"]
     assert packet["partial"] is True
-    assert packet["reasons"] == ["time_budget"]
+    assert packet["reasons"] == ["candidate_byte_limit", "time_budget"]
 
 
 def _gather_with_discovery_overrun(
@@ -3147,17 +3147,17 @@ def test_candidate_scan_skips_enumeration_when_resources_already_exhausted(
     for root in roots:
         _note(vault, f"{root}/a_note.md", "# Aurora\n\nAurora request stays pending.\n")
     enumerated: list[Path] = []
-    rglob = Path.rglob
+    scandir = os.scandir
     cap = 100
     start_bytes = cap if exhausted == "start_bytes" else 0
     counted_paths = {vault / "wiki/work/a_note.md"} if start_bytes else set()
 
-    def observed_rglob(directory, pattern, *args, **kwargs):
-        enumerated.append(directory)
-        return rglob(directory, pattern, *args, **kwargs)
+    def observed_scandir(directory):
+        enumerated.append(Path(directory))
+        return scandir(directory)
 
     with monkeypatch.context() as local:
-        local.setattr(Path, "rglob", observed_rglob)
+        local.setattr(os, "scandir", observed_scandir)
         if exhausted == "index_bytes":
             local.setattr(k2b_context, "_index_candidates", lambda *args: ([], cap, False))
         result = k2b_context._candidate_note_files(
@@ -3167,6 +3167,174 @@ def test_candidate_scan_skips_enumeration_when_resources_already_exhausted(
         )
     assert enumerated == [], "an exhausted scan must not recursively enumerate any root"
     assert result == ([], True, False, 0 if exhausted == "deadline" else cap, counted_paths, set())
+
+
+def test_candidate_scan_prepares_early_notes_before_expensive_deep_enumeration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Walking later subtrees must not consume every root's first content turn."""
+
+    vault = (tmp_path / "vault").resolve()
+    roots = ("wiki/work", "wiki/people", "wiki/projects", "wiki/concepts", "wiki/insights", "wiki/reference")
+    for root in roots:
+        _note(vault, f"{root}/a_signal.md", "# Aurora\n\nAurora approval awaits readiness review.\n")
+        _note(vault, f"{root}/z_deep/ledger.md", "# Ledger\n\nRoutine inventory entry.\n")
+    clock = [0.0]
+    enumerated: list[tuple[Path, float]] = []
+    reads: list[Path] = []
+    scandir, read = os.scandir, k2b_context._read_bounded
+
+    def slow_scandir(directory):
+        path = Path(directory)
+        enumerated.append((path, clock[0]))
+        if path.name == "z_deep":
+            clock[0] += 3.0
+        return scandir(directory)
+
+    def observed_read(path, limit):
+        assert clock[0] < 5.0, "content read started after the shared deadline"
+        reads.append(path)
+        return read(path, limit)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(os, "scandir", slow_scandir)
+        local.setattr(k2b_context, "_read_bounded", observed_read)
+        packet = k2b_context.gather("Aurora approval", vault)
+    assert {f"{root}/a_signal.md" for root in roots} <= {
+        source["relative_path"] for source in packet["sources"]
+    }
+    assert any("Aurora approval awaits readiness review." in span["quote"] for span in packet["evidence"])
+    assert reads[:6] == [vault / root / "a_signal.md" for root in roots]
+    assert all(started < 5.0 for _, started in enumerated)
+    assert packet["partial"] and "candidate_byte_limit" in packet["reasons"]
+
+
+@pytest.mark.parametrize("root", [
+    "wiki/work", "wiki/people", "wiki/projects", "wiki/concepts",
+    "wiki/insights", "wiki/reference",
+])
+def test_candidate_scan_marks_deadline_when_enumeration_yields_no_note(
+    tmp_path: Path, monkeypatch, root: str
+) -> None:
+    """An iterator expiring inside an empty subtree still makes discovery partial."""
+
+    vault = (tmp_path / "vault").resolve()
+    (vault / root / "z_empty").mkdir(parents=True)
+    clock = [0.0]
+    metadata_starts: list[float] = []
+    reads: list[Path] = []
+    scandir, read = os.scandir, k2b_context._read_bounded
+
+    def slow_scandir(directory):
+        metadata_starts.append(clock[0])
+        if Path(directory).name == "z_empty":
+            clock[0] = 6.0
+        return scandir(directory)
+
+    def observed_read(path, limit):
+        reads.append(path)
+        return read(path, limit)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(os, "scandir", slow_scandir)
+        local.setattr(k2b_context, "_read_bounded", observed_read)
+        result = k2b_context._candidate_note_files(vault, ["aurora"], 5.0, use_index=False)
+    assert result == ([], True, False, 0, set(), set())
+    assert all(started < 5.0 for started in metadata_starts)
+    assert reads == []
+
+
+def test_candidate_scan_stops_metadata_at_shared_byte_bound(tmp_path: Path, monkeypatch) -> None:
+    """Filling the content cap must stop advancement of the next root iterator."""
+
+    vault = (tmp_path / "vault").resolve()
+    body = "# Aurora\n\nAurora approval awaits review.\n"
+    first = _note(vault, "wiki/work/a_signal.md", body)
+    _note(vault, "wiki/people/a_signal.md", body)
+    enumerated: list[Path] = []
+    scandir = os.scandir
+
+    def observed_scandir(directory):
+        enumerated.append(Path(directory))
+        return scandir(directory)
+
+    with monkeypatch.context() as local:
+        local.setattr(os, "scandir", observed_scandir)
+        result = k2b_context._candidate_note_files(
+            vault, ["aurora"], time.monotonic() + 5.0,
+            max_candidate_bytes=len(body.encode()), use_index=False,
+        )
+    assert result[:5] == ([first], True, False, len(body.encode()), {first})
+    assert enumerated == [vault / "wiki/work"]
+
+
+def test_candidate_scan_skips_content_when_path_metadata_exhausts_deadline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A source's metadata overrun must not start a later payload read."""
+
+    vault = (tmp_path / "vault").resolve()
+    selected = _note(vault, "wiki/work/a_signal.md", "# Aurora\n\nAurora approval awaits review.\n")
+    clock = [0.0]
+    reads: list[Path] = []
+    stat, read = Path.stat, k2b_context._read_bounded
+
+    def delayed_stat(path, *args, **kwargs):
+        result = stat(path, *args, **kwargs)
+        if path == selected:
+            clock[0] = 6.0
+        return result
+
+    def observed_read(path, limit):
+        reads.append(path)
+        return read(path, limit)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(Path, "stat", delayed_stat)
+        local.setattr(k2b_context, "_read_bounded", observed_read)
+        result = k2b_context._candidate_note_files(vault, ["aurora"], 5.0, use_index=False)
+    assert reads == [], "metadata exhausted the deadline before content could start"
+    assert result == ([], True, False, 0, set(), set())
+
+
+def test_candidate_scan_preserves_lexical_paths_and_symlink_exclusions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Combined directory/file order matches sorted rglob, including .md directories."""
+
+    vault = (tmp_path / "vault").resolve()
+    root = vault / "wiki/work"
+    names = [".hidden.md", "C.md", "a/child.md", "a.md", "b.md/child.md", "b0.md"]
+    for name in reversed(names):
+        _note(vault, f"wiki/work/{name}", "# Aurora\n\nAurora approval awaits review.\n")
+    _note(vault, "wiki/work/z.MD", "# Aurora\n\nAurora unrelated case variant.\n")
+    _note(vault, "wiki/work/archive/old.md", "# Aurora\n\nAurora excluded archive.\n")
+    outside = _note(tmp_path, "outside/secret.md", "# Aurora\n\nAurora private sibling.\n")
+    (root / "c_link").symlink_to(outside.parent, target_is_directory=True)
+    (root / "d_file.md").symlink_to(outside)
+    (root / "a/back").symlink_to(root, target_is_directory=True)
+    reads: list[Path] = []
+    read = k2b_context._read_bounded
+
+    def observed_read(path, limit):
+        reads.append(path)
+        return read(path, limit)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context, "_read_bounded", observed_read)
+        result = k2b_context._candidate_note_files(
+            vault, ["aurora"], time.monotonic() + 5.0, use_index=False,
+        )
+    assert [path.relative_to(root).as_posix() for path in reads] == [
+        ".hidden.md", "C.md", "a/child.md", "a.md", "b.md", "b.md/child.md", "b0.md",
+    ]
+    assert result[0] == [root / name for name in [
+        ".hidden.md", "C.md", "a.md", "a/child.md", "b.md/child.md", "b0.md",
+    ]]
+    assert result[1:4] == (False, False, sum((root / name).stat().st_size for name in names))
 
 
 @pytest.mark.parametrize("selected_root", [
