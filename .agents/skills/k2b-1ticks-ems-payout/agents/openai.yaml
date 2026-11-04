@@ -1,0 +1,4 @@
+interface:
+  display_name: "1TICKS EMS Payout Settlement"
+  short_description: "Calculate EMS payouts, income and branded PDFs"
+  default_prompt: "Use $k2b-1ticks-ems-payout to prepare the annual 1TICKS EMS event payouts and summary."
