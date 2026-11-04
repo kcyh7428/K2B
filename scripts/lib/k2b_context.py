@@ -13,14 +13,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import posixpath
 import re
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from functools import lru_cache
-from itertools import zip_longest
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -1450,6 +1450,32 @@ def _index_candidates(
     return discovered, bytes_read, truncated
 
 
+def _lexical_note_paths(directory: Path, deadline: float) -> Iterator[Path]:
+    """Yield sorted-rglob order while deferring unvisited subtrees."""
+
+    pending = [(directory, None)]
+    while pending and time.monotonic() < deadline:
+        path, entry = pending.pop()
+        if entry is not None:
+            if entry.name.endswith(".md"):
+                yield path
+            if time.monotonic() >= deadline:
+                return
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+        if time.monotonic() >= deadline:
+            return
+        try:
+            with os.scandir(path) as entries:
+                children = sorted(entries, key=lambda item: item.name, reverse=True)
+            pending.extend((path / child.name, child) for child in children)
+        except OSError:
+            continue
+
+
 def _candidate_note_files(
     vault: Path,
     terms: list[str],
@@ -1489,18 +1515,20 @@ def _candidate_note_files(
         return [], True, oversized, scanned_bytes, scanned_paths, discovery_head
 
     # Give each existing root a turn under the one shared scan budget.
-    root_files = [
-        iter(sorted(directory.rglob("*.md")))
-        for directory in (vault / root for root in ALLOWED_NOTE_ROOTS)
-        if directory.is_dir()
-    ]
-    for round_paths in zip_longest(*root_files):
-        for path in round_paths:
-            if path is None:
-                continue
+    root_files = deque(_lexical_note_paths(vault / root, deadline) for root in ALLOWED_NOTE_ROOTS)
+    while root_files:
+        for _ in range(len(root_files)):
+            if time.monotonic() >= deadline or scanned_bytes >= max_candidate_bytes:
+                truncated = True
+                break
+            files = root_files.popleft()
+            path = next(files, None)
             if time.monotonic() >= deadline:
                 truncated = True
                 break
+            if path is None:
+                continue
+            root_files.append(files)
             rel = path.relative_to(vault).as_posix()
             if _is_excluded(rel) or path.is_symlink() or path.name == "index.md":
                 continue
@@ -1514,6 +1542,9 @@ def _candidate_note_files(
                 oversized = True
                 continue
             if scanned_bytes + size > max_candidate_bytes:
+                truncated = True
+                break
+            if time.monotonic() >= deadline:
                 truncated = True
                 break
             text = _read_bounded(path, MAX_SOURCE_FILE_BYTES)
