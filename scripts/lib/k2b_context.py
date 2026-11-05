@@ -36,7 +36,8 @@ MAX_EVIDENCE = 80
 MAX_PACKET_BYTES = 48_000
 MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
 MAX_CANDIDATE_BYTES = 16 * 1024 * 1024
-GATHER_DEADLINE_SECONDS = 5.0
+# One cooperative search window, including reads over the remote NAS route.
+GATHER_DEADLINE_SECONDS = 15.0
 FRESHNESS_THRESHOLD_SECONDS = 6 * 3600
 MAX_SPANS_PER_SOURCE = 12
 MAX_TEXT_CHARS = 20_000
@@ -1383,6 +1384,7 @@ def _resolve_note_link(
     vault: Path, target: str, *, ambiguous: list[str] | None = None,
     owner: Path | None = None,
     unresolved: list[str] | None = None,
+    deadline: float | None = None,
 ) -> Path | None:
     """Map a wikilink/markdown-link target to an ordinary note, or ``None``."""
 
@@ -1405,6 +1407,10 @@ def _resolve_note_link(
     resolved: list[Path] = []
     eligible = False
     for candidate in candidates:
+        if deadline is not None and time.monotonic() >= deadline:
+            if unresolved is not None:
+                unresolved.append(target)
+            return None
         try:
             rel = candidate.relative_to(vault).as_posix()
         except ValueError:
@@ -1428,19 +1434,20 @@ def _resolve_note_link(
 def _index_candidates(
     vault: Path, terms: list[str], deadline: float,
     *, remaining_bytes: int = MAX_CANDIDATE_BYTES,
-) -> tuple[list[Path], int, bool]:
-    """Discover notes via their folder ``index.md`` rows (ranking aid only).
+) -> tuple[list[tuple[Path, str]], int, bool]:
+    """Discover candidate links via their folder ``index.md`` rows.
 
     A matching index row names a candidate note; the index text itself is
-    never returned as evidence.  Returns the discovered notes in row order,
-    the raw bytes read and whether budget/deadline prevented a complete scan.
+    never returned as evidence.  Rank links before resolving their paths.
     """
 
-    discovered: list[Path] = []
-    seen: set[Path] = set()
+    matches: dict[tuple[Path, str], int] = {}
     bytes_read = 0
     truncated = False
     for rel in DISCOVERY_INDEX_RELS:
+        if time.monotonic() >= deadline:
+            truncated = True
+            break
         index_path = vault / rel
         if index_path.is_symlink():
             continue
@@ -1468,18 +1475,16 @@ def _index_candidates(
         bytes_read += len(raw)
         text = raw.decode("utf-8", errors="replace")
         for line in text.splitlines():
-            if not _matches(line, terms):
+            if time.monotonic() >= deadline:
+                return sorted(matches, key=matches.__getitem__, reverse=True), bytes_read, True
+            row_hits = _matching_terms(line, terms)
+            if not row_hits:
                 continue
-            targets = LINK_RE.findall(line) + MD_LINK_TARGET_RE.findall(line)
-            for target in targets:
-                refused: list[str] = []
-                path = _resolve_note_link(vault, target, owner=index_path, ambiguous=refused, unresolved=refused)
-                truncated |= bool(refused)
-                if path is None or path in seen:
-                    continue
-                seen.add(path)
-                discovered.append(path)
-    return discovered, bytes_read, truncated
+            for target in LINK_RE.findall(line) + MD_LINK_TARGET_RE.findall(line):
+                key = (index_path, target)
+                score = len(row_hits) + 2 * len(_matching_terms(unquote(target), terms))
+                matches[key] = max(score, matches.get(key, 0))
+    return sorted(matches, key=matches.__getitem__, reverse=True), bytes_read, truncated
 
 
 def _lexical_note_paths(directory: Path, deadline: float) -> Iterator[Path]:
@@ -1531,10 +1536,10 @@ def _candidate_note_files(
     scanned_paths = set(scanned_paths or ())
     discovery_head: set[Path] = set()
     indexed: set[Path] = set()
-    documents: list[dict] = []
+    documents: dict[Path, dict] = {}
     truncated = False
     oversized = False
-    found: list[Path] = []
+    found: list[tuple[Path, str]] = []
     index_truncated = False
 
     if use_index:
@@ -1542,7 +1547,6 @@ def _candidate_note_files(
             vault, terms, deadline, remaining_bytes=max(0, max_candidate_bytes - scanned_bytes),
         )
         scanned_bytes += index_bytes
-        indexed.update(found)
 
     if time.monotonic() >= deadline or scanned_bytes >= max_candidate_bytes:
         return [], True, oversized, scanned_bytes, scanned_paths, discovery_head
@@ -1558,8 +1562,23 @@ def _candidate_note_files(
                 truncated = True
                 break
             if priority and (priority_turn or not root_files):
-                path = priority.popleft()
+                owner, target = priority.popleft()
                 priority_turn = False
+                refused: list[str] = []
+                path = _resolve_note_link(vault, target, owner=owner, ambiguous=refused,
+                                          unresolved=refused, deadline=deadline)
+                index_truncated |= bool(refused)
+                if time.monotonic() >= deadline:
+                    truncated = True
+                    break
+                if path is None or path in indexed:
+                    continue
+                indexed.add(path)
+                if path in documents:
+                    documents[path]["indexed"] = True
+                    if prepare_note is not None and path not in discovery_head and time.monotonic() < deadline:
+                        prepare_note(path, documents[path]["text"], True)
+                    discovery_head.add(path)
             else:
                 priority_turn = True
                 files = root_files.popleft()
@@ -1599,7 +1618,7 @@ def _candidate_note_files(
             document = {"path": path, "stem": path.stem, "title": title,
                         "aliases": " ".join(sorted(_note_aliases(text))),
                         "text": text, "indexed": path in indexed}
-            documents.append(document)
+            documents[path] = document
             if path in indexed or _matches(title + " " + document["aliases"], terms):
                 discovery_head.add(path)
             if (prepare_note is not None and time.monotonic() < deadline
@@ -1608,7 +1627,7 @@ def _candidate_note_files(
                 prepare_note(path, text, path in discovery_head)
         if truncated:
             break
-    ranked = _rank_note_documents(documents, terms)
+    ranked = _rank_note_documents(list(documents.values()), terms)
     return ranked, truncated or index_truncated, oversized, scanned_bytes, scanned_paths, discovery_head
 
 
@@ -2657,13 +2676,12 @@ def _emit_note_sources(
             )
     if spread:
         # Keep both a direct answer and its current-summary context for the
-        # leading two subjects before broad incidental candidates consume the
-        # note reservation. Two distinct sources still receive their first
-        # span before either receives a second one.
+        # leading subjects before giving more space to incidental candidates.
         priority = [(i, 0) for i in range(min(2, len(prepared)))]
         priority += [(i, 1) for i in range(min(2, len(prepared)))]
         priority += [(i, 0) for i in range(2, min(4, len(prepared)))]
         priority += [(i, offset) for offset in (2, 3) for i in range(min(2, len(prepared)))]
+        priority += [(i, 1) for i in range(2, min(4, len(prepared)))]
         priority += [(i, 0) for i in range(4, len(prepared))]
         priority += [(i, offset) for offset in range(1, MAX_SPANS_PER_SOURCE)
                      for i in range(len(prepared)) if (i, offset) not in priority]
@@ -2929,6 +2947,7 @@ def gather(
             if time.monotonic() >= deadline:
                 reasons.append("time_budget")
             else:
+                # An indexed promotion replaces this path's lexical preparation.
                 prepared_notes[path] = (
                     bound_sources[0] if bound_sources else {}, bound_evidence, preparation_reasons,
                 )
@@ -3502,6 +3521,10 @@ def _lead_note_evidence_ids(
             ids.append(evidence_id)
         if len(ids) >= limit:
             break
+    for source_id in note_sources[2:4]:
+        source_spans = [span for span in evidence if span.get("source_id") == source_id]
+        if len(source_spans) > 1 and len(ids) < limit:
+            ids.append(source_spans[1]["evidence_id"])
     return frozenset(ids)
 
 
