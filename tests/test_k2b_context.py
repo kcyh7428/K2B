@@ -1885,6 +1885,33 @@ def test_memory_rich_broad_query_keeps_the_leading_note_source_linked(
     k2b_context._validate_packet(packet)
 
 
+@pytest.mark.parametrize("budget", [8, 12])
+def test_broad_query_balances_lead_depth_and_third_ranked_answer(tmp_path: Path, budget: int) -> None:
+    vault = tmp_path / "vault"
+    for name in ("alpha", "bravo", "delta", "gamma", "hotel", "india", "julie", "kappa"):
+        _note(vault, f"wiki/work/{name}.md", (
+            "# Aurora owner\n\n"
+            "Aurora owner was discussed.\n\n"
+            "Aurora coordination can start after review.\n\n"
+            "The Aurora record also covers timing.\n\n"
+            f"The Aurora decision names {name} as the contact for follow-up.\n"
+        ))
+
+    packet = k2b_context.gather("Aurora owner", vault, max_evidence=budget)
+    assert packet["sources"][0]["relative_path"] == "wiki/work/alpha.md"
+    lead_id = packet["sources"][0]["source_id"]
+    retained = k2b_context._lead_note_evidence_ids(packet["sources"], packet["evidence"], 8)
+    assert sum(e["source_id"] == lead_id and e["evidence_id"] in retained
+               for e in packet["evidence"]) >= 3
+    has_third_answer = any("names delta as the contact" in e["quote"] for e in packet["evidence"])
+    assert has_third_answer is (budget == 12)
+    if has_third_answer:
+        retained = k2b_context._lead_note_evidence_ids(packet["sources"], packet["evidence"], 20)
+        assert any("names delta as the contact" in e["quote"] and e["evidence_id"] in retained
+                   for e in packet["evidence"])
+    assert len(packet["evidence"]) <= budget and "evidence_limit" in packet["reasons"]
+
+
 @pytest.mark.parametrize("dropped_kind,reason", [
     ("span_limit", "source_span_limit"), ("empty", "no_retained_spans"),
 ])
@@ -1938,7 +1965,7 @@ def test_final_candidate_missing_preparation_records_time_budget(
         local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
         local.setattr(k2b_context, "_read_bounded", delayed_read)
         local.setattr(k2b_context, "_spans", observed_spans)
-        packet = k2b_context.gather("Atlas owner", vault)
+        packet = k2b_context.gather("Atlas owner", vault, deadline_seconds=5.0)
     assert not preparations
     assert packet["freshness"]["candidate_inventory"]["count"] == 1
     assert packet["freshness"]["candidate_inventory"]["complete"] is False
@@ -2018,7 +2045,7 @@ def _gather_with_discovery_overrun(
         local.setattr(k2b_context, "_sha256_bytes", bounded_hash)
         local.setattr(k2b_context, "_sha256_hex", bounded_identity)
         local.setattr(k2b_context, "_span_locator", bounded_locator)
-        packet = k2b_context.gather("Where are the Atlas briefing deliverables?", vault)
+        packet = k2b_context.gather("Where are the Atlas briefing deliverables?", vault, deadline_seconds=5.0)
     return packet, vault, relevant, reads
 
 
@@ -2097,7 +2124,7 @@ def test_explicit_selection_finishes_started_binding_when_deadline_expires(
         local.setattr(k2b_context, "_read_bounded", delayed_read)
         packet = k2b_context.gather(
             "Atlas chosen decision", vault, topic_note=topic_ref,
-            raw_sources=[raw_ref] if selection == "raw" else None,
+            raw_sources=[raw_ref] if selection == "raw" else None, deadline_seconds=5.0,
         )
     selected_ids = {s["source_id"] for s in packet["sources"] if s["relative_path"] == selected.relative_to(vault).as_posix()}
     if expires == "before_start":
@@ -3200,7 +3227,7 @@ def test_candidate_scan_prepares_early_notes_before_expensive_deep_enumeration(
         local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
         local.setattr(os, "scandir", slow_scandir)
         local.setattr(k2b_context, "_read_bounded", observed_read)
-        packet = k2b_context.gather("Aurora approval", vault)
+        packet = k2b_context.gather("Aurora approval", vault, deadline_seconds=5.0)
     assert {f"{root}/a_signal.md" for root in roots} <= {
         source["relative_path"] for source in packet["sources"]
     }
@@ -3369,6 +3396,7 @@ def test_candidate_scan_gives_each_root_a_turn_before_read_deadline(
         packet = k2b_context.gather(
             "Aurora decision", vault,
             extra_terms=["readiness", "review"] if followup else [],
+            deadline_seconds=5.0,
         )
     assert selected in {s["relative_path"] for s in packet["sources"]}
     assert any("Aurora decision requires readiness review." in e["quote"] for e in packet["evidence"])
@@ -3916,7 +3944,7 @@ def test_indexed_note_prepared_before_lexical_scan_exhausts_deadline(
     with monkeypatch.context() as local:
         local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
         local.setattr(k2b_context, "_read_bounded", delayed_noise)
-        packet = k2b_context.gather("Aurora decision", vault)
+        packet = k2b_context.gather("Aurora decision", vault, deadline_seconds=5.0)
     assert selected in {s["relative_path"] for s in packet["sources"]}
     assert any("Aurora requires a readiness check." in e["quote"] for e in packet["evidence"])
     assert all(s["relative_path"] != f"wiki/{root}/index.md" for s in packet["sources"])
@@ -4060,6 +4088,70 @@ def test_index_reads_share_remaining_bytes_with_lexical_content(tmp_path: Path, 
     assert charged == 40 + sum(size for _, size in consumed) <= 200
 
 
+def test_gather_keeps_early_indexed_passage_when_later_link_is_slow(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    vault = (tmp_path / "vault").resolve()
+    selected = "wiki/reference/records/z_aurora.md"
+    note = _note(vault, selected, "# Aurora\n\nAurora owner is Mei.\n")
+    first = _note(vault, "wiki/work/index.md", "| [[slow_record]] | Aurora |\n")
+    second = _note(vault, "wiki/reference/index.md", "| [[records/z_aurora]] | Aurora |\n")
+    clock = [0.0]
+    resolve = k2b_context._resolve_note_link
+    read = k2b_context._read_bounded
+    lexical = k2b_context._lexical_note_paths
+
+    def bounded_read(path, limit):
+        assert clock[0] < k2b_context.GATHER_DEADLINE_SECONDS
+        return read(path, limit)
+
+    def observe_lexical(directory, deadline):
+        for path in lexical(directory, deadline):
+            assert path != note, "the slow link expires before lexical scanning reaches this note"
+            yield path
+
+    def slow_link(vault, target, **kwargs):
+        if target == "slow_record":
+            clock[0] = k2b_context.GATHER_DEADLINE_SECONDS + 1.0
+        return resolve(vault, target, **kwargs)
+
+    with monkeypatch.context() as local:
+        local.setattr(k2b_context.time, "monotonic", lambda: clock[0])
+        local.setattr(k2b_context, "_resolve_note_link", slow_link)
+        local.setattr(k2b_context, "_read_bounded", bounded_read)
+        local.setattr(k2b_context, "_lexical_note_paths", observe_lexical)
+        packet = k2b_context.gather("Aurora", vault)
+    assert clock[0] > k2b_context.GATHER_DEADLINE_SECONDS
+    assert packet["coverage"]["scanned_bytes"] == sum(p.stat().st_size for p in (note, first, second))
+    assert packet["partial"] and "time_budget" in packet["reasons"]
+    source = next(s for s in packet["sources"] if s["relative_path"] == selected)
+    assert any(e["source_id"] == source["source_id"] and "Aurora owner is Mei." in e["quote"]
+               for e in packet["evidence"])
+
+
+def test_index_promotion_upgrades_lexical_evidence_without_rereading(tmp_path: Path, monkeypatch) -> None:
+    vault = (tmp_path / "vault").resolve()
+    note = _note(vault, "wiki/work/a_detail.md", (
+        "# Decision\n\nAurora was discussed.\n\n## Current status\n\nMei owns the decision.\n"
+    ))
+    _note(vault, "wiki/work/z_aurora.md", "# Aurora\n\nAurora was introduced.\n")
+    _note(vault, "wiki/work/index.md", "| [[z_aurora]] | Aurora |\n| [[a_detail]] | Aurora |\n")
+    reads = []
+    read = k2b_context._read_bounded
+
+    def observed_read(path, limit):
+        reads.append(path)
+        return read(path, limit)
+
+    monkeypatch.setattr(k2b_context, "_read_bounded", observed_read)
+    packet = k2b_context.gather("Aurora", vault)
+    sources = [s for s in packet["sources"] if s["relative_path"] == "wiki/work/a_detail.md"]
+    assert len(sources) == 1 and reads.count(note) == 1
+    spans = [e for e in packet["evidence"] if e["source_id"] == sources[0]["source_id"]]
+    assert sum("Mei owns the decision." in e["quote"] for e in spans) == 1
+    assert len({e["evidence_id"] for e in spans}) == len(spans)
+
+
 def test_index_bytes_stay_charged_when_deadline_expires_mid_pass(tmp_path: Path, monkeypatch) -> None:
     vault = (tmp_path / "vault").resolve()
     first = _note(vault, "wiki/work/index.md", "# Catalog\n")
@@ -4091,13 +4183,18 @@ def test_index_relative_nested_link_preserves_ambiguity_and_path_guards(tmp_path
     vault = (tmp_path / "vault").resolve()
     selected = _note(vault, "wiki/reference/records/entry.md", "# Aurora\n\nApproved observation.\n")
     owner = _note(vault, "wiki/reference/index.md", "| [[records/entry]] | Aurora |\n")
-    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == [selected]
+    def resolve_index():
+        targets, *_ = k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)
+        return [path for owner, target in targets
+                if (path := k2b_context._resolve_note_link(vault, target, owner=owner)) is not None]
+
+    assert resolve_index() == [selected]
     _note(vault, "wiki/projects/records/entry.md", "# Other\n")
     # Another folder's same suffix must not make the owner's relative link ambiguous.
-    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == [selected]
+    assert resolve_index() == [selected]
     owner.write_text("| [[wiki/reference/records/entry]] | Aurora |\n")
     duplicate = _note(vault, "wiki/reference/wiki/reference/records/entry.md", "# Duplicate\n")
-    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == []
+    assert resolve_index() == []
     duplicate.unlink()
     outside = _note(tmp_path, "outside/entry.md", "# Private\n")
     (vault / "wiki/reference/shortcut").symlink_to(outside.parent, target_is_directory=True)
@@ -4105,7 +4202,7 @@ def test_index_relative_nested_link_preserves_ambiguity_and_path_guards(tmp_path
         "../projects/records/entry", "records/%2e%2e/entry", "shortcut/entry",
         "Archive/entry", "index", "https://example.com/entry",
     ]))
-    assert k2b_context._index_candidates(vault, ["aurora"], time.monotonic() + 5)[0] == []
+    assert resolve_index() == []
 
 
 def test_indexed_note_is_not_read_twice_or_exempt_from_byte_budget(tmp_path: Path, monkeypatch) -> None:
