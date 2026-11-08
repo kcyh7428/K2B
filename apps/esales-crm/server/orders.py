@@ -113,9 +113,10 @@ def review_reason(order, merchant, business):
     return None
 
 
-def ingest(store, payload, business='converto', environment=None, manual_reason=None):
+def ingest(store, payload, business='converto', environment=None, manual_reason=None, intake_note=None):
     order = normalize(payload)
     if manual_reason is not None:text(manual_reason,'approval reason',1000)
+    if intake_note is not None:text(intake_note,'intake note',1000)
     if environment and order['environment'] != environment: raise ValueError('Environment not allowed on this intake')
     with store.transaction() as c:
         old = c.execute('SELECT * FROM orders WHERE business=? AND environment=? AND reference=?', (business, order['environment'], order['reference'])).fetchone()
@@ -138,6 +139,7 @@ def ingest(store, payload, business='converto', environment=None, manual_reason=
         if reason: hold(c, order_id, 'review', reason)
         else: issue(c, order_id, order, merchant, company)
         if manual_reason is not None:store.audit(c,'payment.manual_confirmation',order_id,manual_reason)
+        if intake_note is not None:store.audit(c,'order.intake_source',order_id,intake_note)
         store.audit(c, 'order.received', order_id, reason or 'Purchase accepted; receipt and delivery reserved once')
         return {'order_id':order_id, 'state':'review' if reason else 'accepted', 'duplicate':False}
 

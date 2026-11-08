@@ -105,9 +105,9 @@ def create_app(settings=None):
 
     @app.get('/api/readiness')
     def readiness():
-        from server.documents import FONT
+        from server.documents import FONT, SEMIBOLD_FONT
         company=store.one("SELECT issue_enabled FROM businesses WHERE id='converto'")
-        return {'checks':{'database':True,'receipt_font':FONT.is_file(),'web_build':(Path(__file__).resolve().parent.parent/'web/dist/index.html').exists(),'issuer_approved':bool(company['issue_enabled']),'smtp_configured':bool(settings.smtp_host and settings.smtp_from),'delivery_enabled':settings.delivery_enabled,'automation_enabled':get_policy(store)['enabled']},'legacy_receipts':store.one("SELECT count(*) n FROM orders WHERE state='legacy'")['n'],'cutover_accepted':False,'note':'Live source reconciliation, sender test and access-policy acceptance remain separate cutover gates.'}
+        return {'checks':{'database':True,'receipt_font':FONT.is_file() and SEMIBOLD_FONT.is_file(),'web_build':(Path(__file__).resolve().parent.parent/'web/dist/index.html').exists(),'issuer_approved':bool(company['issue_enabled']),'smtp_configured':bool(settings.smtp_host and settings.smtp_from),'delivery_enabled':settings.delivery_enabled,'automation_enabled':get_policy(store)['enabled']},'legacy_receipts':store.one("SELECT count(*) n FROM orders WHERE state='legacy'")['n'],'cutover_accepted':False,'note':'Live source reconciliation, sender test and access-policy acceptance remain separate cutover gates.'}
 
     @app.post('/api/login')
     def login(body:Login,request:Request):
@@ -204,6 +204,24 @@ def create_app(settings=None):
     def hook(body:dict,request:Request):
         hook_auth(request,settings.intake_secret)
         return ingest(store,body,environment=settings.intake_environment)
+
+    @app.post('/hooks/esales/1ticks-test')
+    def internal_test_hook(body:dict,request:Request):
+        hook_auth(request,settings.intake_secret)
+        if settings.intake_environment!='staging':raise HTTPException(404,'Test intake is unavailable')
+        data=body.get('data')
+        if body.get('env')!='production' or not isinstance(data,dict) or data.get('merchant_code')!='1ticks':
+            raise ValueError('Test intake accepts only production 1ticks orders')
+        if not store.one("SELECT id FROM merchants WHERE code='1ticks-test'"):
+            raise HTTPException(409,'Configure the isolated 1ticks-test merchant first')
+        # Keep the real purchase reference, prices and e-sales expiry. Only the
+        # destination account changes to the isolated CRM copy.
+        payload={**body,'env':'staging','data':{**data,'merchant_code':'1ticks-test'}}
+        result=ingest(store,payload,environment='staging',
+            intake_note='Production 1ticks purchase routed to staging 1ticks-test')
+        if result['state']!='accepted':
+            return JSONResponse({**result,'detail':'Purchase held in CRM; resolve its exception before retrying'},409)
+        return result
 
     @app.post('/hooks/email')
     def email_event(body:dict,request:Request):

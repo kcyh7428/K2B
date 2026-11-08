@@ -5,9 +5,23 @@ from email.parser import BytesParser
 from aiosmtpd.controller import Controller
 from pypdf import PdfReader
 from server.config import Settings
-from server.documents import render_receipt
+from server.documents import render_receipt, FONT, SEMIBOLD_FONT
 from server.delivery import process_delivery, retry_delivery
 from server.orders import ingest
+
+
+def test_receipt_assets_have_regular_and_semibold_static_weights():
+    # Read the SFNT directory without adding a build-only font dependency.
+    import struct
+    for path,weight in ((FONT,400),(SEMIBOLD_FONT,600)):
+        data=path.read_bytes()
+        count=struct.unpack_from('>H',data,4)[0]
+        tables={}
+        for index in range(count):
+            tag,checksum,offset,length=struct.unpack_from('>4sIII',data,12+index*16)
+            tables[tag]=(offset,length)
+        assert b'fvar' not in tables
+        assert struct.unpack_from('>H',data,tables[b'OS/2'][0]+4)[0]==weight
 
 
 def test_pdf_contains_paid_amount_reference_chinese_and_embedded_font(store, event, tmp_path):
