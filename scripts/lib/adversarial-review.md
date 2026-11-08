@@ -81,7 +81,7 @@ A finding should answer:
 Return only valid JSON matching the provided schema. No markdown wrapper, no prose before or after the JSON object.
 Keep the output compact and specific.
 Return a result object, never the schema or its annotations. Do not include `$schema`, `type`, `properties` or any field outside the result schema.
-An approval result has this shape: {"verdict":"approve","summary":"No material defects found.","findings":[],"next_steps":[]}.
+An approval result has this shape: {"verdict":"approve","summary":"No material defects found.","findings":[],"next_steps":["No action required."]}.
 Use `needs-attention` if there is any material risk worth blocking on.
 Use `approve` only if you cannot support any substantive adversarial finding from the provided context.
 Every finding must include:
