@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import pwd
@@ -29,6 +30,100 @@ def local_host() -> str:
     return {"keithmbpm2": "home", "keithcheung": "sjm"}.get(
         pwd.getpwuid(os.getuid()).pw_name, "unknown"
     )
+
+
+def is_local_read_copy(root: Path) -> bool:
+    target = str(Path(root).expanduser().resolve()).casefold()
+    approved = str((Path.home() / "Projects/K2B-Vault-Offline/SynologyDrive").resolve()).casefold()
+    return target == approved or target.startswith(approved + "/")
+
+
+def is_local_family_source(path: Path) -> bool:
+    """Check a candidate already resolved by the existing source guard."""
+    target = str(path).casefold()
+    excluded = str((Path.home() / "Projects/K2B-Vault-Offline/SynologyDrive"
+                    / "wiki/reference/minnie-family-memory").resolve()).casefold()
+    return target == excluded or target.startswith(excluded + "/")
+
+
+def default_read_vault() -> Path:
+    """Select the host's read preference without changing the NAS writer root."""
+    setting = Path.home() / ".local/state/k2b/read-vault.json"
+    if not setting.exists() and not setting.is_symlink():
+        root = Path(os.environ.get("K2B_VAULT_PATH", str(Path.home() / "Projects/K2B-Vault"))).expanduser()
+        if is_local_read_copy(root):
+            raise ValueError("local copy requires read-vault.json activation or explicit --vault diagnostics")
+        return root
+    return _validated_read_setting(setting)[0]
+
+
+def _validated_read_setting(setting: Path) -> tuple[Path, str]:
+    with os.fdopen(os.open(setting, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_size > 4096
+                or info.st_uid != os.getuid() or info.st_mode & 0o077):
+            raise ValueError("read-vault setting must be a private regular file")
+        raw = handle.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("read-vault setting exceeds its size limit")
+        value = json.loads(raw)
+    if set(value) != {"root", "verified_utc"} or local_host() != "sjm":
+        raise ValueError("read-vault setting is restricted to SJM")
+    root = Path(value["root"])
+    if (root != Path.home() / "Projects/K2B-Vault-Offline/SynologyDrive"
+            or root.is_symlink() or root.resolve(strict=True) != root):
+        raise ValueError("read-vault root does not match the approved local copy")
+    if not root.is_dir():
+        raise ValueError("local read copy is unavailable")
+    verified = datetime.strptime(value["verified_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    if verified.strftime("%Y-%m-%dT%H:%M:%SZ") != value["verified_utc"] or verified > datetime.now(timezone.utc):
+        raise ValueError("read-vault comparison time is in the future")
+    return root, value["verified_utc"]
+
+
+def read_copy_status(root: Path) -> dict | None:
+    if not is_local_read_copy(root):
+        return None
+    setting = Path.home() / ".local/state/k2b/read-vault.json"
+    compared = None
+    invalid = False
+    try:
+        if setting.exists() or setting.is_symlink():
+            configured, observed = _validated_read_setting(setting)
+            if str(configured.resolve()).casefold() == str(Path(root).resolve()).casefold():
+                compared = observed
+    except (OSError, ValueError, TypeError, KeyError):
+        invalid = True
+    age = recreated = running = None
+    if compared:
+        when = datetime.strptime(compared, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        age = max(0, int((datetime.now(timezone.utc) - when).total_seconds() / 86400))
+        try:
+            birth = getattr(Path(root).stat(), "st_birthtime", None)
+            recreated = birth > when.timestamp() + 1 if birth is not None else None
+        except OSError:
+            pass
+    try:
+        result = subprocess.run(["/bin/ps", "-A", "-ww", "-o", "comm="], capture_output=True,
+                                text=True, timeout=1, check=True)
+        running = any(Path(line.strip()).name == "cloud-drive-daemon" for line in result.stdout.splitlines())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"kind": "synology_local_copy", "last_nas_comparison_utc": compared,
+            "freshness": "may_lag_nas", "setting_invalid": invalid,
+            "comparison_age_days": age, "copy_created_after_comparison": recreated,
+            "sync_client_running": running}
+
+
+def read_copy_health_notice(status: dict) -> str:
+    running = status.get("sync_client_running")
+    client = "running" if running is True else "not running" if running is False else "unknown"
+    text = f"Synology client process: {client}; sync freshness unverified."
+    if status.get("comparison_age_days") is not None:
+        text += f" NAS comparison age: {status['comparison_age_days']} days."
+    if status.get("copy_created_after_comparison"):
+        text += " Copy folder was created after that comparison; compare it again."
+    return text
 
 
 def _source(name: str, root: Path, relative: str, *, include: bool = False) -> dict:
@@ -137,8 +232,13 @@ def build_bootstrap(project_root: Path, vault_root: Path, state_root: Path,
         "schema_version": 1, "host": host,
         "writer_role": {"home": "home", "sjm": "sjm-source-only"}.get(host, "unknown"),
         "project_root": str(project_root), "vault_root": str(vault_root),
+        "read_root": str(vault_root),
+        "write_vault_root": str(Path(os.environ.get("K2B_VAULT_PATH") or os.environ.get("K2B_VAULT_ROOT")
+                                    or str(Path.home() / "Projects/K2B-Vault")).expanduser().absolute()),
+        "write_vault_root_status": "configured_unverified",
         "implementation_root": str(IMPLEMENTATION_ROOT), "python_runtime": sys.executable,
         "state_root": str(state_root), "sources": sources,
+        "read_copy": read_copy_status(vault_root),
         "synchronization": "unverified", "home_availability": "not_checked_or_required",
         "capabilities": {
             "local_recall": "present_unverified" if context.is_file() else "unavailable",
@@ -156,6 +256,7 @@ def render_bootstrap(packet: dict) -> str:
         "K2B SHARED STARTUP (local read-only evidence)",
         f"host={packet['host']}; role={packet['writer_role']}; synchronization=unverified",
         f"Project: {packet['project_root']}", f"Vault: {packet['vault_root']}",
+        f"Configured save target (unverified): {packet['write_vault_root']}",
         f"Renderer implementation: {packet['implementation_root']}; Python: {packet['python_runtime']}",
         "Codex is the default and instruction authority. Kimi Work uses the same local authority and live skills.",
         "Read the current AGENTS.md before acting; this packet is context, not additional authority.",
@@ -166,6 +267,13 @@ def render_bootstrap(packet: dict) -> str:
     for source in packet["sources"]:
         lines.append(f"{source['id']}: {source['path']}; status={source['status']}; "
                      f"stale={source['stale']}; sha256={source.get('sha256', 'unavailable')}")
+    if packet.get("read_copy"):
+        lines.append(read_copy_health_notice(packet["read_copy"]))
+        lines.append("Synology local read copy. Last NAS comparison UTC " +
+                     str(packet["read_copy"]["last_nas_comparison_utc"]) +
+                     ". Local sources may lag NAS. Saves use the approved NAS writer root.")
+        if packet["read_copy"]["setting_invalid"]:
+            lines.append("Configured read setting is invalid; check ~/.local/state/k2b/read-vault.json.")
     for source in packet["sources"]:
         if "text" in source:
             lines.extend([f"LOCAL {source['id'].upper()} ({source['path']}):", source["text"]])

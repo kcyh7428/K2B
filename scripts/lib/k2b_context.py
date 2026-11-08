@@ -25,6 +25,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import automatic_memory
+from k2b_bootstrap import is_local_family_source
 
 
 PACKET_SCHEMA_VERSION = 1
@@ -675,10 +676,13 @@ def _is_excluded(rel: str) -> bool:
 
 def _safe_within(vault: Path, path: Path) -> bool:
     try:
+        base = vault.resolve()
         resolved = path.resolve()
     except OSError:
         return False
-    return resolved.is_relative_to(vault.resolve())
+    if not resolved.is_relative_to(base):
+        return False
+    return not is_local_family_source(resolved)
 
 
 def _symlinked_ancestor(base: Path, candidate: Path) -> bool:
@@ -739,6 +743,8 @@ def _bind_local_path(base: Path, rel: object, label: str) -> Path:
         raise InvalidInput("evidence_binding", f"{label} path is not resolvable") from exc
     if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
         raise InvalidInput("evidence_binding", f"{label} path escapes its root")
+    if is_local_family_source(resolved):
+        raise InvalidInput("evidence_binding", "generated family memory is outside local read scope")
     return resolved
 
 

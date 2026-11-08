@@ -154,6 +154,96 @@ def _note(vault: Path, rel: str, body: str) -> Path:
     return path
 
 
+@pytest.mark.parametrize("spelling", ["SynologyDrive", "synologydrive"])
+def test_local_read_copy_refuses_generated_family_evidence(tmp_path, monkeypatch, spelling):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    vault = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    vault.mkdir(parents=True)
+    vault = vault.with_name(spelling)
+    if not vault.exists():
+        pytest.skip("case-variant root requires a case-insensitive filesystem")
+    ordinary = _note(vault, "wiki/work/aurora.md", "# Aurora\n\nAurora owner is Mei.\n")
+    forbidden = _note(vault, "wiki/reference/Minnie-Family-Memory/approved.md", "# Aurora\n\nPrivate family observation.\n")
+    packet = k2b_context.gather("Aurora", vault)
+    assert {s["relative_path"] for s in packet["sources"]} == {ordinary.relative_to(vault).as_posix()}
+    assert not k2b_context._safe_within(vault, forbidden)
+    with pytest.raises(k2b_context.InvalidInput):
+        k2b_context._bind_local_path(vault, forbidden.relative_to(vault).as_posix(), "source")
+    with pytest.raises(k2b_context.InvalidInput):
+        k2b_context.gather("Aurora", vault, topic_note=forbidden.relative_to(vault).as_posix())
+
+
+@pytest.mark.parametrize("subroot", ["wiki", "wiki/reference/Minnie-Family-Memory", "../.."])
+def test_family_refusal_survives_diagnostic_subroot(tmp_path, monkeypatch, subroot):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    vault = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    forbidden = _note(vault, "wiki/reference/Minnie-Family-Memory/approved.md", "# Family\n")
+    base = (vault / subroot).resolve()
+    assert not k2b_context._safe_within(base, forbidden)
+    with pytest.raises(k2b_context.InvalidInput):
+        k2b_context._bind_local_path(base, forbidden.relative_to(base).as_posix(), "source")
+
+
+@pytest.mark.parametrize("destination", ["Projects/K2B-Vault", "Projects/K2B-NAS/K2B-Vault",
+                                         "Projects/K2B-VAULT", "Projects/K2B-NAS/k2b-vault"])
+@pytest.mark.parametrize("alias", [False, True])
+def test_local_read_cli_refuses_output_into_nas_vault(tmp_path, monkeypatch, destination, alias):
+    import runpy
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    cli = runpy.run_path(str(ROOT / "scripts/k2b-context.py"), run_name="context_output_test")
+    copy = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    copy.mkdir(parents=True)
+    target = tmp_path / destination / "packet.json"
+    if alias:
+        physical = tmp_path / "physical-nas"
+        physical.mkdir()
+        target.parent.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.symlink_to(physical, target_is_directory=True)
+    with pytest.raises(k2b_context.InvalidInput, match="outside the vault"):
+        cli["_reject_unsafe_output"](target, copy)
+
+
+@pytest.mark.parametrize("selected", ["other-vault", "Projects/K2B-Vault-Offline/SynologyDrive/wiki"])
+def test_output_never_enters_unselected_synced_copy(tmp_path, monkeypatch, selected):
+    import runpy
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    cli = runpy.run_path(str(ROOT / "scripts/k2b-context.py"), run_name="context_synced_output_test")
+    copy = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    copy.mkdir(parents=True)
+    with pytest.raises(k2b_context.InvalidInput, match="outside the vault"):
+        cli["_reject_unsafe_output"](copy / "packet.json", tmp_path / selected)
+
+
+def test_invalid_read_setting_has_actionable_cli_error(tmp_path, monkeypatch, capsys):
+    import runpy
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    setting = tmp_path / ".local/state/k2b/read-vault.json"
+    setting.parent.mkdir(parents=True)
+    setting.write_text("{")
+    setting.chmod(0o600)
+    cli = runpy.run_path(str(ROOT / "scripts/k2b-context.py"), run_name="context_setting_test")
+    assert cli["main"](["gather", "--query", "test", "--output", str(tmp_path / "packet.json")]) == 2
+    error = json.loads(capsys.readouterr().err)
+    assert error["reason"] == "invalid_read_setting"
+    assert "--vault" in error["detail"] and "mount preflight" in error["detail"]
+    assert not (tmp_path / "packet.json").exists()
+
+
+def test_render_discloses_local_copy_even_without_bootstrap(tmp_path, monkeypatch, capsys):
+    import runpy
+    cli = runpy.run_path(str(ROOT / "scripts/k2b-context.py"), run_name="context_disclosure_test")
+    globals_ = cli["main"].__globals__
+    monkeypatch.setitem(globals_, "read_copy_status", lambda root: {
+        "last_nas_comparison_utc": "2026-01-01T00:00:00Z", "freshness": "may_lag_nas", "setting_invalid": False})
+    monkeypatch.setitem(globals_, "_read_json", lambda *args: {})
+    monkeypatch.setattr(k2b_context, "render_brief", lambda *args, **kwargs: "Source-backed result\n")
+    assert cli["main"](["render", "--vault", str(tmp_path), "--brief", "fixture.json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.startswith("Source-backed result\n")
+    assert "may lag NAS" in captured.out and "2026-01-01T00:00:00Z" in captured.out
+    assert "may lag NAS" in captured.err and "2026-01-01T00:00:00Z" in captured.err
+
+
 def _fixture_preflight(state_root: Path, target: Path) -> dict:
     """Synthetic Home ownership for isolated roots.
 

@@ -6,6 +6,34 @@ lock decision or conflict-copy decision. This runbook carries the authority of
 
 ## Topology, bindings and read fallback
 
+Keith's 8 November 2026 SJM local-read approval adds one default read route.
+After a fresh ordinary-text comparison and verified Synology task/root/download
+checks, activate a mode-0600 SJM-owned regular
+`~/.local/state/k2b/read-vault.json` containing exactly `root` and
+`verified_utc`. The root is
+`/Users/keithcheung/Projects/K2B-Vault-Offline/SynologyDrive` and the time
+records the NAS comparison in UTC, not the last sync completion. The shared
+bootstrap and context CLI read this setting and reject an invalid configured
+root. This scoped route supersedes the older outage-only checklist for this
+configured SJM copy. Local reads require the real local directory, normal
+source/path/hash checks and local citation validation. They do not require an
+SMB mount or an immutable old manifest on every query. Startup and gather
+identify the read copy and its comparison time. When recency matters, disclose
+that local evidence may lag NAS. Verify a recent NAS change arrives through
+Synology Drive before activation. Generated Minnie family memory stays outside
+this scope. The NAS aliases and every save/publication/native-capture target
+retain their existing bindings. Home retains its NAS read default.
+Startup exposes `read_root` and the approved NAS `write_vault_root` separately;
+the existing `vault_root` field remains the read root for compatibility.
+Local status reports the client process, comparison age and whether the folder's
+creation time postdates comparison. These are local warning signals, not proof of
+completed synchronization. A stopped/unknown client or recreated copy remains
+explicitly unverified; recency-sensitive answers need a new NAS comparison.
+An explicit `--vault` remains a user-selected diagnostic source, including
+pre-activation testing after the same copy comparison. It does not assert a
+configured or fresh copy. Without the setting, its comparison is reported as
+unverified; it does not waive the operational comparison or NAS preflight.
+
 K2B is Keith's single-user knowledge and workflow system. Its current authorized topology is:
 
 - Home project: `/Users/keithmbpm2/Projects/K2B`

@@ -7,6 +7,13 @@ description: Use when Keith asks to synchronize, update, or compare K2B across t
 
 ## Operating contract
 
+Keith approved default local reads on SJM on 8 November 2026. Follow the
+storage runbook's `read-vault.json` activation and freshness procedure.
+Both hosts share code. SJM's configured read root is its downloaded Synology
+Drive copy and Home's default is NAS. Read defaults never select a save
+destination. Verify recent-change arrival before switching SJM. The paused
+legacy Syncthing vault connection keeps its existing state.
+
 K2B spans two authorized Macs: Keith's home MacBook and the SJM MacBook `GLPs-MacBook-Pro`. Reviewed code and skills move through Git and execute locally. Both Macs read one online NAS knowledge collection through the logical `Projects/K2B-Vault` aliases and exact SMB bindings in `AGENTS.md`. NAS is storage, not an execution server. Credentials and machine-local state stay on their owning machines; no automatic non-Codex chat capture is enabled.
 
 The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused on both Macs. No automatic write fallback, write return or reconnection is enabled. Preserved originals are dated copies, never fallback targets. Never treat a bare mount directory as NAS evidence or silently use it or an old copy when SMB is unavailable. Syncthing checks below apply only to an explicitly selected legacy local-replication mode.
