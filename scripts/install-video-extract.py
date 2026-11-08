@@ -102,7 +102,9 @@ def main():
             c.update(pins)
         (stage/'config.json').write_text(json.dumps(c,sort_keys=True,indent=2)+'\n'); (stage/'config.json').chmod(0o400)
         for folder in sorted((d for d in stage.rglob('*') if d.is_dir()),key=lambda d:len(d.parts),reverse=True): folder.chmod(0o500)
-        stage.chmod(0o500); stage.rename(release)
+        # Some supported macOS filesystems require owner-write on the source
+        # directory for rename. Freeze its root only after atomic publication.
+        stage.rename(release); release.chmod(0o500)
     launcher = home/'.local/libexec/k2b-video-v2'; no_symlinks(launcher)
     if a.activate:
         receipt = home/'.local/state/k2b/video-v2/acceptance.json'; no_symlinks(receipt)

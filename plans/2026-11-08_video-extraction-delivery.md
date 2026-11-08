@@ -146,6 +146,43 @@ removes only video-stream duration metadata and verifies successful preparation,
 reuse and status. Focused suite: 61 passed in 10.67 seconds. R4 exact-content review
 is pending. No installation or activation has occurred.
 
-Prepared: candidate. Tested: focused fixtures and Mini source/API preflights only. Reviewed: pending. Committed: no. Pushed: no. Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
+R4 approved the complete exact 19-file candidate in 2 minutes 8 seconds, no
+findings. Actual reviewer: DeepSeek desktop account, DeepSeek-V4.1-Flash High,
+Read Only, under Keith's explicit exception after bounded Kimi no-verdict runs.
+Full reviewed diff SHA-256:
+`55dd308dd1f7394e00fe1e6a29561ddb69fdd4944dc08542f87daaf18cd9adb5`.
+Packet SHA-256:
+`f65415b08beb50f4b2377af1e84c31e9b30081f436765a044e14fd9311adcc51`.
+All R1/R2/R3 findings were closed. Full verdict remains in the preserved desktop
+session and native CUA transcript; private index binds all exact hashes.
+
+Reviewed feature committed and pushed as
+`e00a1ad0a7ef066aa0c9ec40190765786127bb53` on `codex/video-extract`.
+SJM fetched that commit and installed candidate
+`9ddd00f63acb5a8da254f4fff7eec1017e824d7a94cf9183ebe944f73ab62104`
+from a private Git archive, preserving its dirty active checkout. No launcher
+was activated. Home and Mini candidate installation reached frozen staging but
+failed EACCES at directory rename. An isolated read-only-mode rename reproduced
+that platform behavior. Partial candidates remain retained, never counted as
+successful installations. The Mini compiled the actual recorder successfully.
+
+Installer publication-order correction: retain owner-write on the private staging
+root through its atomic rename, then freeze the published root to mode 0500.
+Children and files remain frozen before publication. An installer integration
+regression enforces the macOS rename requirement, checks all installed source
+hashes, root mode, idempotent reuse and absence of an active launcher. Six
+focused installer tests passed in 0.03 seconds. This small correction is pending
+renewed independent review before any new commit or candidate installation.
+
+Fresh native Mini preflight again observed the 45-second Chinese-subtitled Reel,
+clock 0:00 to 0:11, and actual Profile 9 through chrome://version. The fixed private
+profile receipt was saved mode 0600. Source was muted; an indicator did not prove
+sound. No login, challenge or permission prompt, installation or recording occurred.
+
+Prepared: candidate. Tested: 61 focused tests plus installer correction regression.
+Reviewed: e00a1ad approved; publication-order correction pending. Committed: e00a1ad.
+Pushed: e00a1ad. Candidate-installed-sjm: yes. Candidate-installed-home: failed.
+Candidate-installed-mini: failed. Activated-home: no. Activated-sjm: no.
+Activated-mini: no. Accepted: no.
 
 Live acceptance examples 1 through 8: untested. Fixtures cannot substitute for actual audio, source boundaries or independent SJM processing.

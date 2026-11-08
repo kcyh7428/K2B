@@ -42,3 +42,32 @@ def test_runtime_configuration_identity_binds_host_settings():
     config = {'package':identity,'files':files,'role':'mini','host_pins':pins,'browser_profile':'Profile 9'}
     assert v.validate_config_identity(config,identity)
     with pytest.raises(v.Blocked): v.validate_config_identity(dict(config,browser_profile='Default'),identity)
+
+
+def test_candidate_install_publishes_before_freezing_root(tmp_path,monkeypatch,capsys):
+    import json,stat
+    from types import SimpleNamespace
+    m = installer()
+    monkeypatch.setattr(m.pwd,'getpwuid',lambda uid:SimpleNamespace(pw_name='keithmbpm2',pw_dir=str(tmp_path)))
+    monkeypatch.setattr(m.sys,'argv',['install-video-extract.py','home'])
+    original = Path.rename
+    published = []
+    def macos_rename(source,destination):
+        assert source.stat().st_mode & stat.S_IWUSR, 'macOS requires a writable staging root for rename'
+        published.append(destination)
+        return original(source,destination)
+    monkeypatch.setattr(Path,'rename',macos_rename)
+    try:
+        m.main()
+        report = json.loads(capsys.readouterr().out)
+        release = Path(report['path'])
+        assert report['status'] == 'candidate_installed' and published == [release]
+        assert release.stat().st_mode & 0o777 == 0o500
+        assert not (tmp_path/'.local/libexec/k2b-video-v2').exists()
+        assert all(m.digest(release/name) == m.digest(Path(m.__file__).parent/name) for name in m.FILES)
+        m.main()
+        assert json.loads(capsys.readouterr().out)['package'] == report['package']
+        assert published == [release]
+    finally:
+        for path in sorted(tmp_path.rglob('*'),key=lambda p:len(p.parts)):
+            if path.is_dir():path.chmod(0o700)
