@@ -537,18 +537,23 @@ def validate_late_recovery(root,ledger,run,media_digest,context_digest,now):
 
 def publish_source(root,digest,deadline):
     manifest = verify(root,digest)
+    mount_check(NAS,'mini')
+    need(time.monotonic() < deadline,'run_deadline')
+    # Completed-copy reuse can skip every copy-loop monitor. Count the full
+    # local operation and existing NAS run before reporting publication again.
+    dest = nas_run(root.name);OPERATION_ROOTS.append(dest)
+    cumulative_budget(root)
     content = manifest.get('evidence_type') == 'caption_visual'
-    if not manifest.get('recovery') and not content:
-        return dict(legacy.transfer(root,digest,deadline),evidence_type='media')
-    mount_check(NAS,'mini'); legacy.space_check(root,legacy.MAX_BYTES)
-    dest = safe_dir(nas_run(root.name)); OPERATION_ROOTS.append(dest)
+    legacy.space_check(root,legacy.MAX_BYTES);safe_dir(dest)
     for item in [*manifest['files'],{'name':'manifest.json','sha256':digest}]:
+        need(time.monotonic() < deadline,'run_deadline')
         legacy.publish_file(child(root,item['name']),child(dest,item['name']),item['sha256'],dest,deadline)
     verify(dest,digest)
-    result = {'status':'content_evidence_published' if content else 'pending_content_verification','run_id':root.name,'manifest_sha256':digest,
+    need(time.monotonic() < deadline,'run_deadline');cumulative_budget(root)
+    result = {'status':'content_evidence_published' if content else 'pending_content_verification' if manifest.get('recovery') else 'captured','run_id':root.name,'manifest_sha256':digest,
         'nas_path':str(dest),'local_path':str(root),'bytes':size(root),'evidence_type':'caption_visual' if content else 'media'}
     if content:result['complete_media_available'] = False
-    else:result['recovery'] = manifest['recovery']
+    elif manifest.get('recovery'):result['recovery'] = manifest['recovery']
     write_json(root/'completion.json',result)
     return result
 

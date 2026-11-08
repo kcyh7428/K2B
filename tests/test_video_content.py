@@ -212,3 +212,35 @@ def test_home_reenforces_context_size_limit(tmp_path,monkeypatch):
     m=v.read_json(source/'manifest.json');m.pop('files');m['evidence_sha256']=v.sha(source/'evidence.json');digest=v.payload_manifest(source,m)
     home=tmp_path/'home';home.mkdir();v.configure({'role':'home'},'youtube',home)
     with pytest.raises(v.Blocked,match='content_evidence_size_limit'):v.process(first['run_id'],digest,home)
+
+
+def test_completed_publication_reuse_rechecks_local_plus_nas_bytes(tmp_path,monkeypatch):
+    v,root,c=publication_fixture(tmp_path,monkeypatch);digest=v.sha(root/'evidence.json')
+    first=v.publish_content(c['canonical_url'],c['request_id'],digest,tmp_path)
+    completion=tmp_path/first['run_id']/'completion.json';before=(completion.read_bytes(),completion.stat().st_mtime_ns)
+    # Existing source copies are complete, so no copy-loop monitor will run.
+    # Retained derived files on this same NAS run still count in the operation.
+    (v.nas_run(first['run_id'])/'retained-derived.bin').write_bytes(b'x'*32768)
+    v.legacy.MAX_BYTES=4*1024**2+16384
+    with pytest.raises(v.Blocked,match='run_byte_budget'):
+        v.publish_content(c['canonical_url'],c['request_id'],digest,tmp_path)
+    assert (completion.read_bytes(),completion.stat().st_mtime_ns)==before
+    assert v.read_json(v.request_path(tmp_path,c))['attempted']==['content']
+
+
+@pytest.mark.parametrize('platform',['facebook','youtube'])
+def test_completed_copy_reuse_checks_deadline_before_success_receipt(tmp_path,monkeypatch,platform):
+    v=load();v.configure({'role':'mini'},platform,tmp_path);nas=tmp_path/'nas';nas.mkdir()
+    monkeypatch.setattr(v,'NAS',nas);monkeypatch.setattr(v,'mount_check',lambda *a:None)
+    monkeypatch.setattr(v.legacy,'mount_check',lambda *a:None);monkeypatch.setattr(v.legacy,'nas_run',v.nas_run)
+    monkeypatch.setattr(v.legacy,'space_check',lambda *a:None)
+    run=('facebook-2372450313602638' if platform=='facebook' else 'youtube-bc7QaDmLmoA')+'-20261108T000000Z-abcdef01'
+    root=tmp_path/run;root.mkdir();(root/'source-proof.bin').write_bytes(b'synthetic publication payload')
+    kind='media' if platform=='facebook' else 'caption_visual'
+    digest=v.payload_manifest(root,{'platform':platform,'run_id':run,'evidence_type':kind})
+    first=v.publish_source(root,digest,v.time.monotonic()+60)
+    completion=root/'completion.json';before=(completion.read_bytes(),completion.stat().st_mtime_ns)
+    with pytest.raises(v.Blocked,match='run_deadline'):v.publish_source(root,digest,v.time.monotonic()-1)
+    assert (completion.read_bytes(),completion.stat().st_mtime_ns)==before
+    assert v.read_json(completion)['evidence_type']==kind
+    assert first['status']==('captured' if platform=='facebook' else 'content_evidence_published')
