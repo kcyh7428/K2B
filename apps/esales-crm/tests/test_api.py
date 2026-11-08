@@ -30,6 +30,46 @@ def test_intake_key_cannot_read_customer_api_and_wrong_environment_fails(tmp_pat
     assert c.post('/hooks/esales',json=event,headers={'Authorization':'Bearer '+'x'*40}).status_code==422
 
 
+def test_renewal_hook_reads_current_date_and_limits_exposed_fields(tmp_path,monkeypatch):
+    from datetime import date,datetime,timedelta
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls,tz=None):return cls(2026,11,9,12,tzinfo=tz)
+    monkeypatch.setattr('server.api.datetime',FixedClock)
+    c=client(tmp_path)
+    login(c)
+    merchant={'code':'1ticks-test','name':'1TICKS TEST','billing_name':'Private company','email':'private@example.test','phone':'+85363997300','service_end':'2026-11-10','access_status':'active'}
+    assert c.post('/api/merchants',json=merchant,headers={'Origin':'http://testserver'}).status_code==200
+    path='/hooks/merchants/1ticks-test/renewal'
+    assert c.get(path).status_code==401
+    headers={'Authorization':'Bearer '+'x'*40}
+    result=c.get(path,headers=headers)
+    assert result.status_code==200
+    today=date(2026,11,9)
+    assert result.json()=={'code':'1ticks-test','name':'1TICKS TEST','service_end':'2026-11-10','access_status':'active','phone':'+85363997300','as_of':'2026-11-09','days_until_end':1,'renewal_state':'due_soon'}
+    assert c.get('/hooks/merchants/missing/renewal',headers=headers).status_code==404
+    row=c.get('/api/merchants').json()[0]
+    merchant.update(service_end='2027-11-10',expected_updated_at=row['updated_at'],reason='Approved renewal')
+    assert c.put('/api/merchants/'+row['id'],json=merchant,headers={'Origin':'http://testserver'}).status_code==200
+    assert c.get(path,headers=headers).json()['service_end']=='2027-11-10'
+    from server.db import Store
+    store=Store(tmp_path/'crm.sqlite')
+    for delta,expected in ((-1,'overdue'),(0,'due_soon'),(1,'due_soon'),(30,'due_soon'),(31,'current')):
+        with store.transaction() as connection:
+            connection.execute('UPDATE merchants SET service_end=? WHERE code=?',((today+timedelta(days=delta)).isoformat(),'1ticks-test'))
+        context=c.get(path,headers=headers).json()
+        assert context['days_until_end']==delta
+        assert context['renewal_state']==expected
+    for value in (None,'invalid-date','2020-01-01'):
+        with store.transaction() as connection:
+            connection.execute('UPDATE merchants SET service_end=? WHERE code=?',(value,'1ticks-test'))
+        response=c.get(path,headers=headers)
+        assert response.status_code==200
+        context=response.json()
+        assert context['renewal_state']==('overdue' if value=='2020-01-01' else 'needs_review')
+        if value!='2020-01-01':assert context['days_until_end'] is None
+
+
 def test_manual_order_requires_confirmation_and_receipt_download_is_private(tmp_path,event):
     c=client(tmp_path);login(c);origin={'Origin':'http://testserver'}
     merchant={'code':'SAMPLE','name':'Sample','billing_name':'Company','email':'person@example.test','currency':'MOP','service_end':'2026-10-22'}

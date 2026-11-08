@@ -187,6 +187,19 @@ def create_app(settings=None):
         supplied=request.headers.get('authorization','')
         if not key or not secrets.compare_digest(supplied.encode(),('Bearer '+key).encode()):raise HTTPException(401,'Invalid intake credentials')
 
+    @app.get('/hooks/merchants/{code}/renewal')
+    def renewal_context(code:str,request:Request):
+        hook_auth(request,settings.intake_secret)
+        merchant=store.one('SELECT code,name,service_end,access_status,phone FROM merchants WHERE code=?',(code,))
+        if not merchant:raise HTTPException(404,'Merchant not found')
+        today=datetime.now(ZoneInfo('Asia/Macau')).date()
+        try:days_until_end=(date.fromisoformat(merchant['service_end'])-today).days
+        except (ValueError,TypeError):days_until_end=None
+        with store.transaction() as c:
+            store.audit(c,'hook.renewal_read',merchant['code'],'Read current renewal context for Make')
+        renewal_state='needs_review' if days_until_end is None else 'overdue' if days_until_end<0 else 'due_soon' if days_until_end<=30 else 'current'
+        return {**merchant,'as_of':today.isoformat(),'days_until_end':days_until_end,'renewal_state':renewal_state}
+
     @app.post('/hooks/esales')
     def hook(body:dict,request:Request):
         hook_auth(request,settings.intake_secret)
