@@ -432,6 +432,7 @@ def recording_seconds(native):
 def recording_handshake(root,native,recording,launched_epoch,completed_epoch):
     # Read only fixed run-local files. A callback marker is evidence of actual
     # output startup, while native CUA reports its own visible observations.
+    recording_ready(native)  # Visible source opening remains mandatory before capture.
     ready_path = child(root,'recording-started.json'); start_path = child(root,'native-playback-started.json')
     need(ready_path.is_file(),'recording_ready_marker_missing_or_invalid')
     need(start_path.is_file(),'native_playback_start_binding_missing')
@@ -449,14 +450,28 @@ def recording_handshake(root,native,recording,launched_epoch,completed_epoch):
     need(recording.get('ready_marker_sha256') == digest and recording.get('ready_epoch') == epoch,'recording_ready_output_mismatch')
     need(isinstance(start,dict) and all(start.get(k) == native.get(k) for k in ('request_id','canonical_url','title')) and
          start.get('ready_marker_sha256') == digest and start.get('control') == 'native_chrome','native_playback_start_binding_missing')
-    recording_ready(start); window_binding(ready['window'],start.get('window'))
+    need(start.get('version') == 2 and start.get('observation_clock_basis') == 'native_call_completion_epoch' and
+         'opening_picture_verified' not in start,'unsupported_native_start_observation_protocol')
+    need(start.get('source_reset') == 'paused_at_zero' and start.get('ad_state') == 'source_without_ad' and
+         start.get('audio_state') == 'unmuted_control_observed' and start.get('window_corroborated') is True and
+         start.get('source_identity_corroborated') is True,'native_post_ready_source_identity_or_control_unverified')
+    picture = start.get('picture_observation')
+    need(picture in ('source_picture_visible','ambiguous_black_during_capture'),'native_picture_observation_invalid')
+    window_binding(ready['window'],start.get('window'))
     observed = start.get('observed_epoch'); clock = start.get('playback_clock')
+    call_started = start.get('observation_call_started_epoch'); written = start.get('receipt_written_epoch')
+    need(type(call_started) in (int,float) and math.isfinite(call_started) and
+         type(observed) in (int,float) and math.isfinite(observed) and epoch <= call_started <= observed and
+         type(written) in (int,float) and math.isfinite(written) and observed <= written <= completed_epoch,
+         'native_observation_call_timing_invalid')
     need(type(observed) in (int,float) and math.isfinite(observed) and epoch <= observed <= min(epoch+30,completed_epoch) and
          type(clock) in (int,float) and math.isfinite(clock) and 0 < clock <= min(native['duration'],observed-epoch+1),
          'native_playback_start_missing_or_late')
     return {'ready_marker_sha256':digest,'ready_epoch':epoch,'native_start_observed_epoch':observed,
         'native_start_delay_seconds':observed-epoch,'observed_playback_clock':clock,
-        'source_clock_offset_status':'uncertain_observations_only','ending_and_source_speech_review_required':True}
+        'source_clock_offset_status':'uncertain_observations_only','ending_and_source_speech_review_required':True,
+        'native_observation_call_uncertainty_seconds':observed-call_started,'receipt_written_epoch':written,
+        'native_picture_observation':picture,'recorded_opening_and_ending_review_required':True}
 
 
 def run_recorder(args,root,deadline):

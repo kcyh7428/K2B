@@ -5,16 +5,16 @@ Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.
 Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; each active operation's local plus NAS files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB for the same per-operation scope. Keith explicitly confirmed this storage scope on 8 November; retained archives are reported separately, without an all-host private-copy ceiling.
 
-## Current checkpoint, recorder handshake correction
+## Current checkpoint, reviewed handshake candidates
 
 - Reviewed, committed and pushed feature: `e00a1ad`; independently approved
   installer correction: `8f07e303ccf46b472c8b9580906e37065c4cb48e`. Recorder
   startup correction R6 approved in 34 seconds, no findings, then committed/pushed
   as `e94043ef95bf5ba70b6f1b84373d16d14b465a81`.
 - All three candidates installed and version-verified. Home package
-  `1fdbdc168cb7c433cce7e78cf4027e1b2b85e105dbe01b47e5e084b6cb270bf1`;
-  SJM `4346f742643bb1b6b9b196d783646e9a42bbe8060a5d8df3770baf67414311bd`;
-  Mini `fdc4aab72d9a998fea229f34c87b570111b0daffe712d5f2e37fbdbfc1b95c0b`.
+  `8ccbba85ddcb57bfe297a6892ab3b2bae571272f9c99de915fbff78b42b64473`;
+  SJM `e9ba8a7dab58b861140f7004c1e70d1bf863b5abb92fd014d1c471bbdd130b28`;
+  Mini `75bc1fd7cd7785940c8c284cae7e8df1088347798279c6bfa368762ef34ea4ba`.
   No active launcher, live checkout update or routine activation.
 - Fresh short-Reel run `facebook-2372450313602638-20261108T063408Z-1ef39758`:
   source digest `dfe4179364567698684dcf7acee5c1b3618f79288013e5a8ea86efc54e6f0a62`,
@@ -78,7 +78,13 @@ Authority: Keith's develop and deploy request in the source chat, supplied in th
   Native control must observe the source ending and pause playback. The invalid
   native-hearing premise is replaced by observed unmuted controls; actual retained
   speech and boundaries still require analysis and source corroboration. This
-  exact correction is in preparation, not yet reviewed or installed. The
+  exact correction received R7 approval in 1 minute 50 seconds with no findings,
+  then was committed/pushed as `082f8dd` and candidate-installed on all hosts.
+  The new named short-source handshake case failed the opening-picture and
+  timing gates. Its recording is retained, without manifest/NAS publication or
+  acceptance receipt. The actual callback marker validated, but the native
+  source-opening claim was false and its later write-time receipt was 40.18
+  seconds after ready. Recording/fallback is paused at the architect checkpoint. The
   original YouTube attempt ended bounded `run_deadline` during metadata/session
   handling, no source manifest or retry. Its failed run
   `youtube-bc7QaDmLmoA-20261108T064036Z-3c8a6956` is retained. Native Chrome
@@ -97,10 +103,10 @@ The actual Mini Swift typecheck passed. Authority and whitespace checks passed.
 Twelve new handshake tests failed before implementation and now pass.
 
 Prepared: yes. Tested: focused fixtures plus the bounded live evidence above.
-Reviewed: approved through `e94043e`. Committed: `e00a1ad`, `8f07e30`,
-`e94043e`. Pushed: all three. Keith confirmed the active-operation local-plus-NAS
-byte-accounting boundary; archive totals are separate. Uncommitted handshake and
-audio-observation corrections require independent review before delivery.
+Reviewed: approved through `082f8dd`. Committed: `e00a1ad`, `8f07e30`,
+`e94043e`, `082f8dd`. Pushed: all four. Keith confirmed the active-operation local-plus-NAS
+byte-accounting boundary; archive totals are separate. The exact handshake and
+audio-observation correction is reviewed and candidate-installed, not accepted.
 Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
 
 ## Acceptance matrix
@@ -111,7 +117,7 @@ Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
 | 2. Facebook share/r and Chinese Reel | Fresh Chinese Reel captured and Home reviewed; exact share/r/1MFtSe4XWL/ freshly resolved natively to the same canonical Reel, identity, 45 seconds and advancing playback | Home passed |
 | 3. Facebook over ten minutes | Fresh 688.865-second source, complete acquisition and Home preparation within unchanged cap | Home passed; SJM blocked |
 | 4. Missing accessible captions | Both new Facebook sources reported no caption tracks; complete actual audio reached Home Groq | Home passed |
-| 5. Recording after direct failure | AppKit repair captured actual source speech; delayed playback left the ending unverified | Handshake correction and fresh short test pending |
+| 5. Recording after direct failure | New callback validates; native opening-picture and start-timing checks failed honestly | Controller checkpoint blocked; no accepted recorder |
 | 6. SJM independence | Own NAS source verification passed; actual own-host STT returned HTTP 403 | Blocked |
 | 7. Reuse | Short Home preparation reused with identical response hash and mtime | Home passed |
 | 8. Precise failures | Live wrong digest refused; direct deadline and SJM HTTP 403 did not produce success; other classes have fixture coverage | Partial |
@@ -347,3 +353,55 @@ The prior 55-second bootstrap is retained as run `facebook-2372450313602638-2026
 The architect relayed Keith's explicit approval of per-operation limits: Facebook 256 MiB and YouTube 2 GiB for active local plus NAS operation files. Separately retained archive sizes are reported without claiming a combined ceiling over every host's private copies. The earlier cross-host question is resolved, not a reason to change numeric limits.
 
 Implementation checkpoint: the compiled recorder now hashes its own executable, validates the worker context and writes a fixed private ready marker only in `recordingOutputDidStartRecording`. It binds request, URL, deadline, duration, package, actual binary hash, window/process/geometry and callback wall/uptime. The worker requires the corresponding fresh native start observation within 30 seconds and rejects old hearing claims. The component reserves 60 seconds and remains under the original source-plus-120 ceiling. Inventory labels the operation scope and reports existing local/NAS v2 archive bytes separately, with other-host private copies explicitly unmeasured. No protocol result is source-speech or ending acceptance.
+
+## R7 delivery checkpoint
+
+DeepSeek-V4.1-Flash High, Read Only, approved the exact seven-file correction in 1 minute 50 seconds, no findings. Packet `1d699a4f03f4416972c7ce0fec3469c7db88846a41167ee70b7e0c04d5204d10`, diff `2cd17d706a4ad9dec8ff0e76d1575604ef8575db58659e800b7fc631f3c4790d`, manifest `f28e95a0a5c8485080dd3a20182f7bc21d1eeb86d5dab7d01e89c8dc30b308bd`. Commit `082f8dd` was pushed to `origin/codex/video-extract`. Exact staged hashes were checked immediately before commit.
+
+New supervised candidate packages: Home `8ccbba85ddcb57bfe297a6892ab3b2bae571272f9c99de915fbff78b42b64473`; SJM `e9ba8a7dab58b861140f7004c1e70d1bf863b5abb92fd014d1c471bbdd130b28`; Mini `75bc1fd7cd7785940c8c284cae7e8df1088347798279c6bfa368762ef34ea4ba`. All role/version readbacks report processor `62a675b795cced107a4442d4`, unchanged limits and explicit active-operation local-plus-NAS scope. No launcher or live checkout activation. The new processor identity intentionally retains older preparation archives rather than copying their cache into the new version.
+
+Final-version long-source Home preparation also completed: processor `62a675b795cced107a4442d4`, prepared digest `0e27673b39e231fc84e28f5606bfb4e6209e8e252232dee3c5c0c1a02eed951a`, three new actual Groq responses, 374 segments and no empty-word gaps. Every ASR segment list, complete timed transcript, all 44 sheets and the final frame are identical to the already fully read retained preparation; only provider x_groq response metadata differs. Thus the prior content/subtitle/seam/crop/boundary review carries to these exact matching bytes. Older archives remain retained, not copied into the new cache.
+
+## Failed handshake case and bounded diagnosis
+
+Run `facebook-2372450313602638-20261108T072735Z-a9e82b71` completed its single 105-second component invocation and retained 17,618,998-byte `source.mp4`. The request/source/deadline/package/actual-binary/window-bound callback marker validated. The native start file marked opening-picture verification false because its post-ready paused-zero screenshot was reported black, and its timestamp was explicitly the later receipt-write time, 40.180173 seconds after ready. The worker stopped with `native_recording_opening_picture_unverified`; no decode/export, source manifest, NAS transfer or acceptance receipt exists. No retry was sent.
+
+Native clocks later included 0:30, 0:36, 0:41 and wrap to 0:02. The exact last frame was missed. A pause action was rejected for an external Chrome change; final pause at 0:13 of the loop was subsequently confirmed stable. These remain observations with raw padding/loop, not source-boundary acceptance.
+
+Read-only diagnostic extraction from the retained partial at 0 and 5 seconds shows the expected opening interview, doorway artwork and Chinese title; 20 seconds shows the male speaker and early subtitle. Thus those actual output frames are not black. This does not replace the failed native preflight or establish precise playback timing. No actual observation timestamp was retroactively reconstructed. The architect received the repeated delayed-start checkpoint and this distinction before any further controller change.
+
+Separately reported retained v2 archives at this checkpoint: Home local runs/preflights 92,310,722 bytes; SJM local 1,711,899; Mini local 123,825,091; shared NAS v2 runs 198,504,927, independently read through each host's checked mount. The NAS number is the same shared archive, not three copies. Other-host private copies remain unmeasured by any single host's inventory. These are inventory snapshots, not a global all-host budget claim. No cleanup occurred.
+
+
+## Observation-protocol checkpoint correction
+
+The architect ruled that the prior case remains failed, without receipt retrofit.
+Keep visible opening proof before capture, then freshly recheck exact source
+URL/title, same window, paused-zero/no-ad and unmuted controls after the callback.
+A black native screenshot during simultaneous capture is ambiguous picture
+evidence, not a falsely verified image or automatically a changed source identity.
+Source-identity ambiguity still stops before Play. The finished recording must
+prove its actual first-episode opening, first/last speech, full episode and ending.
+Native control observes the end clock or wrap and pauses, without needing an exact
+last image from the ambiguous concurrent screenshot surface.
+
+Native observation protocol version 2 captures call-start and call-completion
+epochs inside the same CUA call that obtains positive advancing playback, then
+persists those returned values later with a separately labelled write epoch.
+Both native call bounds must remain within the existing 30-second ready window;
+call uncertainty is retained, not converted to a precise source-clock offset.
+The pre-record visible opening remains enforced separately. Old or unversioned
+start records, write-time substitutes, late calls and unverified identity/opening
+are rejected. The actual failed screenshot was re-inspected by its native task:
+its source area was black, supporting that screenshot observation only. No native
+observation timestamp was captured in that attempt and none was backfilled.
+
+The new focused regression failed before implementation, and 36 recording tests
+now pass. Full focused suite: 81 passed in 17.89 seconds. Authority and whitespace checks
+passed. Renewed independent review is next.
+No timer, window scope, permission, provider, attempt count or deadline changes.
+After exact independent approval, one fresh named short case is authorized. If it
+fails again, stop recording work and deliver the accepted direct Facebook portion
+with the precise remaining blocker for a new design decision. Routine YouTube
+fallback cannot start before that short case passes; its original deadline is
+immutable even if it expires during this work.

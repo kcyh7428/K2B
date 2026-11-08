@@ -141,6 +141,10 @@ def handshake(tmp_path):
         'control':'native_chrome','window':window(),'title':n['title'],'source_reset':'paused_at_zero','ad_state':'source_without_ad',
         'audio_state':'unmuted_control_observed','opening_picture_verified':True,'window_corroborated':True,
         'observed_epoch':1005.0,'playback_clock':2.0}
+    n.update(audio_state='unmuted_control_observed',source_reset='paused_at_zero',ad_state='source_without_ad',opening_picture_verified=True,window_corroborated=True)
+    start.pop('opening_picture_verified',None)
+    start.update(version=2,source_identity_corroborated=True,picture_observation='source_picture_visible',
+        observation_clock_basis='native_call_completion_epoch',observation_call_started_epoch=1004.5,receipt_written_epoch=1006)
     v.write_json(tmp_path/'native-playback-started.json',start)
     recording = {'window':window(),'ready_marker_sha256':v.sha(tmp_path/'recording-started.json'),'ready_epoch':now}
     return v,n,recording,ready,start
@@ -172,3 +176,34 @@ def test_missing_or_mismatched_recording_handshake_never_accepts(tmp_path,change
     v.write_json(tmp_path/'native-playback-started.json',start)
     with pytest.raises((v.Blocked,OSError)):
         v.recording_handshake(tmp_path,n,recording,995,1100)
+
+
+def native_observation_v2(tmp_path):
+    v,n,recording,ready,start = handshake(tmp_path)
+    n.update(audio_state='unmuted_control_observed',source_reset='paused_at_zero',ad_state='source_without_ad',opening_picture_verified=True,window_corroborated=True)
+    start.pop('opening_picture_verified',None)
+    start.update(version=2,source_identity_corroborated=True,picture_observation='ambiguous_black_during_capture',
+        observation_clock_basis='native_call_completion_epoch',observation_call_started_epoch=1004.5,receipt_written_epoch=1040)
+    v.write_json(tmp_path/'native-playback-started.json',start)
+    return v,n,recording,start
+
+
+def test_native_call_timestamp_is_distinct_from_later_receipt_and_black_is_ambiguous(tmp_path):
+    v,n,recording,start = native_observation_v2(tmp_path)
+    result=v.recording_handshake(tmp_path,n,recording,995,1100)
+    assert result['native_start_delay_seconds']==5
+    assert result['native_observation_call_uncertainty_seconds']==0.5
+    assert result['native_picture_observation']=='ambiguous_black_during_capture'
+    assert result['recorded_opening_and_ending_review_required'] is True
+
+
+@pytest.mark.parametrize('change',['unversioned','write_time_basis','late_call','missing_identity','unverified_prerecord_opening'])
+def test_revised_native_protocol_refuses_old_or_unverified_observations(tmp_path,change):
+    v,n,recording,start = native_observation_v2(tmp_path)
+    if change=='unversioned':start.pop('version')
+    elif change=='write_time_basis':start['observation_clock_basis']='receipt_write_time'
+    elif change=='late_call':start.update(observation_call_started_epoch=1031,observed_epoch=1032)
+    elif change=='missing_identity':start['source_identity_corroborated']=False
+    else:n['opening_picture_verified']=False
+    v.write_json(tmp_path/'native-playback-started.json',start)
+    with pytest.raises(v.Blocked):v.recording_handshake(tmp_path,n,recording,995,1100)

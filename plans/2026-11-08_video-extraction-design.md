@@ -223,3 +223,21 @@ Fixtures can prove validation and recovery mechanics. They cannot replace the
 real capture, audio permission, source review and host independence examples.
 Record unavailable acceptance sources as untested, not passed. Retain working
 Facebook v1 and its records until the replacement passes its relevant examples.
+
+
+Observation-protocol checkpoint, 8 November 2026: the new handshake case stayed
+failed after a black concurrent native screenshot and a 40.18-second receipt-write
+time. Actual retained frames at zero/five seconds showed the expected opening,
+so neither the black screenshot nor later write time reliably describes what the
+recorder captured. The architect ruled: preserve that failure without retrofit;
+keep visible opening proof before capture; freshly recheck exact URL/title,
+window, paused-zero/no-ad controls after ready; treat a black concurrent screenshot
+as explicitly ambiguous picture evidence while identity must remain unambiguous.
+Actual observation timing is captured inside the same native CUA call, with its
+interval uncertainty retained separately from later persistence. Finished output
+must establish the full first episode, opening, first/last speech and ending.
+Native control must observe the end clock or wrap and pause. No timer widening,
+permission/window expansion or automatic retry. Independently review this exact
+protocol, then one fresh named short test; if it fails again, stop recording work
+and deliver the accepted direct Facebook portion with the precise remaining
+blocker for a new design decision. Original YouTube deadline stays immutable.

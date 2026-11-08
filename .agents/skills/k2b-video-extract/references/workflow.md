@@ -139,24 +139,45 @@ duration, installed package and actual recorder hash, and the unique window's
 actual SCK ID/process/title/geometry. A UI indicator or a returned start command
 is insufficient. No callback within ten seconds blocks and preserves partials.
 
-Once the marker exists, freshly corroborate that same paused-at-zero source,
-URL/title, opening picture, no-ad state and visibly unmuted source control with
-native CUA. Start playback and observe an actually advancing positive source
-clock within 30 seconds of `ready_epoch`. Write fixed run-local
-`native-playback-started.json` with `request_id`, `canonical_url`, full source
-`title`, `ready_marker_sha256`, `control: native_chrome`, exact `window`,
-`source_reset: paused_at_zero`, `ad_state: source_without_ad`,
-`audio_state: unmuted_control_observed`, `opening_picture_verified: true`,
-`window_corroborated: true`, actual `observed_epoch` and `playback_clock`.
-Those readiness fields describe the fresh check immediately before Play; the
-clock describes the advancing observation after Play. Never claim hearing or
-invent a precise source-clock offset from delayed tool timing. Missing, changed
-or late evidence blocks publication, retaining output for diagnosis.
+Keep the visibly verified source opening in native evidence before recording.
+Once the marker exists, freshly corroborate the same exact source URL/title,
+unique window, paused-zero control, no-ad state and visible unmuted control.
+A visible source change or ambiguous identity stops before Play. A black native
+video screenshot during simultaneous capture is explicitly ambiguous picture
+evidence, not a verified opening or automatically a changed source identity.
+The finished recording must establish the actual first-episode opening.
+
+Start playback and observe an actually advancing positive source clock within
+30 seconds of `ready_epoch`. In the same CUA call that obtains that advancing
+observation, take `observation_call_started_epoch = Date.now()/1000` immediately
+before the native observation and `observed_epoch = Date.now()/1000` immediately
+afterward. Return both with the actual observed clock text. Persist those exact
+returned timestamps later, retaining the call interval as uncertainty; never
+substitute the later receipt-write time or infer an exact source offset.
+
+Write fixed run-local `native-playback-started.json` with `version: 2`,
+`request_id`, `canonical_url`, full source `title`, `ready_marker_sha256`,
+`control: native_chrome`, exact `window`, `source_reset: paused_at_zero`,
+`ad_state: source_without_ad`, `audio_state: unmuted_control_observed`,
+`window_corroborated: true`, `source_identity_corroborated: true`,
+`picture_observation` set honestly to `source_picture_visible` or
+`ambiguous_black_during_capture`, `observation_clock_basis:
+native_call_completion_epoch`, both returned native observation timestamps,
+actual positive `playback_clock`, and actual later `receipt_written_epoch`.
+The readiness fields describe the fresh check before Play, while the clock and
+call timestamps describe the advancing observation after Play. Do not include
+`opening_picture_verified` in this versioned post-ready record; the pre-record
+opening remains separately required and the actual recorded opening remains
+mandatory. Old failed receipts are never converted or retrospectively accepted.
+Missing, changed or late identity/start evidence blocks publication, retaining
+output for diagnosis. Native CUA never claims hearing.
 
 The component reserves 60 seconds beyond verified source duration, with an
 absolute source-plus-120-second command ceiling, original deadline and byte cap.
-This allowance is not proof of complete capture. Native control watches the first
-source ending and pauses playback to prevent unrelated autoplay. Retain the
+This allowance is not proof of complete capture. Native control observes the first source clock reaching its end or wrapping,
+then pauses playback to prevent unrelated autoplay. It need not obtain the exact
+ending image through the ambiguous concurrent screenshot surface; the actual
+recorded ending is mandatory. Retain the
 observed ending/pause, raw leading/trailing padding and any labelled loops in the
 native task record. Acceptance requires actual opening/ending frames and first
 and last source speech from the first complete episode, with source/subtitle
