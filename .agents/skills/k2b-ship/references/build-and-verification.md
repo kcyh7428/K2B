@@ -47,4 +47,12 @@ bash tests/vault-note-authority.test.sh
 
 Run focused tests before broader suites. Shell tests use `mktemp -d`, clean up through traps, and redirect real paths through `K2B_*` overrides. Python 3.12 is the target. TypeScript is strict and uses ES modules.
 
+Unified video extraction has focused contract, processing, recording and installer
+tests in `tests/test_video_*.py`. Fixtures do not establish real source sound,
+boundaries, native browser access or independent SJM processing. Consult
+`plans/2026-11-08_video-extraction-delivery.md` for the exact live acceptance and
+separate candidate-install versus active-route state. Preserve Facebook v1 until
+its replacement passes the relevant examples. The Mini package contains media
+tools only, never a restored K2B checkout or new background runtime.
+
 Use `apply_patch` for hand edits. Bash scripts start with `set -euo pipefail`, resolve paths from the script, and lock shared writers. Raw vault captures are immutable after creation.

@@ -32,6 +32,16 @@ arrival as Mini-local and unintegrated. Never treat failed partials as evidence.
 
 ## SJM local adaptations
 
+The approved unified-video replacement is specified in
+`plans/2026-11-08_video-extraction-design.md`; read `k2b-video-extract` and its
+delivery record before using it. Its SJM media preparation uses the independent
+capture mount `//cheung@100.75.5.21/k2b-captures` at `/Volumes/k2b-captures`.
+The older Home-relay rule above does not satisfy this replacement's independent
+processing acceptance. Only reviewed, live-accepted installation enables the new
+route. Missing SJM mount or owning-host credential is an explicit local blocker.
+The exception writes derived media under `prepared-sjm`, not the vault, semantic
+memory or shared indexes. The Mini receives only the reviewed media package.
+
 SJM intentionally has local `AGENTS.md` and `.codex/hooks.json` adaptations. Preserve and reconcile those changes deliberately before updating its checkout. Never blind-pull, overwrite, or copy home configuration onto SJM.
 
 ## SJM workstation configuration

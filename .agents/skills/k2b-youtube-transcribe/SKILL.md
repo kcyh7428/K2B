@@ -5,6 +5,16 @@ description: Transcribe or closely summarize one YouTube video from a URL during
 
 # K2B YouTube transcription
 
+For the unified retained-video replacement, use `../k2b-video-extract/SKILL.md`
+and its delivery-state gate. It owns the maintained Mini acquisition, recording,
+source manifests and Home/SJM preparation procedure. The command below remains
+a compatibility text-only helper until that replacement is accepted. Text alone
+does not establish duration, original media review, visual demonstrations or full
+timed speech coverage. Name any third-party transcript and unresolved coverage.
+Never substitute third-party prose for original-video inspection or describe a
+separate model's analysis as personal viewing. No Home browser is selected by a
+routine source submission.
+
 Use this for an explicitly supplied single video. Work on the current authorized Home or SJM Mac. Do not create a vault note, run a playlist job, or activate a background routine unless Keith separately requests it. The YouTube Data API login used by `yt-search.py` and playlist operations is not needed to transcribe a public URL.
 
 ## Public-first command

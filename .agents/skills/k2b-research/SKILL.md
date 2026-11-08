@@ -83,6 +83,14 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 
 Detect URL type and handle accordingly:
 
+For requested Facebook or YouTube retained-video analysis, first read
+`../k2b-video-extract/SKILL.md`. It owns the unified replacement and its explicit
+acceptance gate. Until accepted, the procedures below are compatibility routes:
+Facebook v1 remains installed and YouTube's local helper supplies text only.
+Do not treat either as acceptance of the new cross-platform recorder or SJM
+processing route. Keep third-party transcript text, source sound and observed
+visual evidence distinct.
+
 **Facebook Reels, videos and posts:**
 The following evidence procedure applies to every separately authorized Mini
 capture, with Facebook as the current routing case. It grants no new source scope.
