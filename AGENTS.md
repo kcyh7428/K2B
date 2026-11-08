@@ -258,6 +258,99 @@ counterpart readback is unverified and never proof.
 - Stage 2 local-model work is separate: do not install Ollama/MLX, download models,
   benchmark local inference, or design remote inference without separate authorization.
 
+## Explain the system before building
+
+For build, development, ship and handoff work undertaken through K2B, including
+work on other projects, Keith needs enough system understanding
+to assess whether the design meets his requirements. Treat this as part of the work,
+not an explanation supplied only after coding or disappointing results. Apply it to
+new work, changes to existing systems and handoffs to builders.
+
+Before implementation, give a plain-English system explanation, scaled to the change:
+
+1. **Goal and behaviour:** what the user needs, what happens today, and what they will
+   experience after the change. Walk through a concrete request and a follow-up.
+2. **How it works:** the main components and information flow, where information is
+   stored, how it reaches the system, which component decides what to do, and what
+   runs automatically or needs a person. Explain differences between affected hosts,
+   shared code, machine settings, read/write locations and update timing when relevant.
+3. **Choices and limits:** the meaningful design choices, recommendation and trade-offs,
+   plus what happens with missing information, delays, failures or conflicting edits.
+   Separate confirmed existing behaviour, proposed behaviour and assumptions. Mark
+   assistant-selected choices as recommendations, not decisions Keith already made.
+4. **Proof:** observable examples that will establish the intended behaviour, including
+   an important exception or failure. Confirm the intended examples together with
+   the design for new or changed user-visible behaviour or any material choice
+   defined below. At delivery, check actual
+   results against those examples on each affected host. A failed or unverified
+   example blocks the deliverable that example covers unless Keith explicitly
+   accepts the gap or changes the requirement. The builder cannot remove an example
+   from scope to bypass this check. Preserve the checkpoint and report the mismatch.
+   A generic instruction to ship does not accept a known failed or unverified example.
+   It authorizes delivery within the agreed requirements. Keith can override a
+   requirement explicitly; an instruction naming the gap or waived requirement
+   takes precedence over this rule under the direct-user-instruction authority above.
+   This interprets the scope of general instructions, not a limit on an explicit
+   user override. Record an accepted gap or waiver with its date and source in the
+   applicable design or private operation record before proceeding with delivery.
+
+For AI systems, explain separately how relevant knowledge is retrieved and whether
+the model chooses reusable tools or code routes predefined cases. A database or
+Markdown collection does not automatically reach the model. Terms such as RAG or
+agent are insufficient descriptions. State what the model decides and what code
+enforces. Permissions, validation and budgets can remain deterministic controls;
+do not equate those controls with coding an answer path for every question. Do not
+assume that every AI task needs an agent, vector database or particular framework.
+
+Choices are material when they change what users can do or expect, how AI selects
+actions or tools, retrieval or memory, information flow or storage, host or write
+authority, automation, cost, access, or failure behaviour. When a proposed change
+affects one of these outside the agreed design, present the concrete recommendation
+and obtain Keith's confirmation before implementing that dependent part. Explain
+an uncertain classification briefly and resolve the choice with Keith. A request
+to build or a general approval of requirements does not establish agreement to an
+unexplained design choice. Existing approval of the same explained design and
+assumptions persists within its task scope and affected hosts. A material change to
+those assumptions requires confirmation of the change, not the whole design again.
+Update the written design with a confirmed material change before dependent work.
+Do not ask again for routine details or each implementation step. Read-only
+investigation and work independent of an unresolved choice can continue. Honour an
+explicit instruction to use the assistant's judgement within the named task or
+choices, stating significant choices before dependent implementation. A bare
+"proceed" does not grant open-ended design authority or cover future tasks.
+
+A fix or routine implementation within an agreed design needs only a short
+explanation and can reuse its existing acceptance examples. A change introducing
+or revising a material choice needs a concise, self-contained project-local written
+design in `plans/` at the affected repository root, unless Keith or that project's
+instructions specify another exact location. If repository writing is outside the
+authorized scope, retain the design privately under the host's K2B operations
+directory and identify that location in the handoff. Record the actual
+confirmed choices, acceptance examples,
+assumptions, affected hosts, confirmation date and source chat reference. Existing
+chat confirmation is sufficient for work within an agreed design. Restate confirmed
+content in handoffs when the recipient cannot access the chat; a source pointer
+alone is insufficient. Builders, reviewers and delivery handoffs must identify the
+applicable design or chat and any changes to it. The builder must include available
+acceptance evidence in the review context. Reviewers check that the reported evidence
+matches the confirmed examples and is consistent with the diff; they need not access
+or rerun commands on another host. For instruction-only changes, inspect the diff
+and the supplied authority/startup evidence available before activation. After
+activation, the builder repeats affected checks before claiming acceptance.
+Reuse that record rather than restarting the whole discussion. Task approval covers
+its stated deliverables; completing them does not authorize further material changes.
+
+Pause the affected implementation for a structural explanation and confirmation
+when the same behaviour failure occurs again after one special-case fix, a new constraint
+contradicts a confirmed assumption, an acceptance failure reveals a design mismatch,
+or a proposed fix changes one of the material choices above. Passing tests and an
+approving code review do not by themselves establish that the system matches Keith's
+intended behaviour. A code-only repair within the agreed design can continue without
+another design approval.
+
+This communication requirement does not grant commit, push, deployment, provider,
+host, spending or data-access authority. Existing delivery and safety rules apply.
+
 ## Review and delivery
 
 Every commit needs an independent adversarial review:
