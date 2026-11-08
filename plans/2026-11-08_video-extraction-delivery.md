@@ -7,17 +7,138 @@ Authority: Keith's develop and deploy request in the source chat, supplied in th
 
 ## Current content-first checkpoint
 
-The latest approved/pushed code checkpoint is24ece38. The current content-first
-candidate is uncommitted and not installed/activated. R14 returned needs_attention
-with four material corrections and two smaller gaps; all are corrected with
-failure-first regressions. The corrected suite passes156tests in24.48seconds;
-renewed exact review is next. Current acceptance uses stable named capabilities,
-separate named SJM deferral and Home vault binding/recall, not historical example
-numbers. The architect clarified that Home reads the immutable caption NAS bundle
-directly, without another derived-caption publication transaction. Facebook keeps
-its accepted media preparation. All sections below retain dated development
-history; previous example numbers and media/recording requirements are historical,
-superseded by the current design. No failed media is used or recording activated.
+The approved content-first release is activated and accepted on Home and Mini.
+Source commit `e2378157326cabf016181e6d2404b8fe5bc4b55a` is pushed on
+`origin/codex/video-extract`; preservation-aware Home integration
+`9730b926632bc000995eb12beff556b461f7cd3f` is pushed on
+`origin/codex/video-extract-home-20261108` and checked out on Home.
+The final focused suite passed 159 tests in 24.90 seconds. Independent DeepSeek
+R15, R16 and R17 returned approve for the exact source, Home integration,
+preservation overlays and final publication guards. Both active launchers and
+their package bytes were independently read back by the architect.
+
+YouTube now uses native captions and relevant native visual checks, retained as
+a timestamped paraphrase with provenance and coverage. Home validates and reads
+the immutable NAS bundle directly, without a derived-caption publication step.
+Facebook keeps direct Mini acquisition and Home media preparation. Recording and
+recovery are experimental and disabled in the default procedure for both sites.
+SJM processing and activation are deliberately deferred by Keith, not completed.
+The stable named acceptance capabilities below supersede historical example
+numbers. All later historical sections retain dated development evidence and
+failed checkpoints; they do not reinstate the old recording/media requirements.
+No failed YouTube media has been repaired, decoded, transcribed or published.
+
+## Final content-first delivery and acceptance
+
+Home package:
+`5ee5db81117138876553f044a4e80d45da715ad7ec52864386ff7f0d45f6fc02`.
+Mini package:
+`3fc58122bf1416dd1d558a384d12fbec065b66ef5d3a82eaa3982997a0b078b0`.
+Both active launchers report runtime `18ac44a5595a1b3f3e17f49a`, contract
+`content_first_2026-11-08`, the unchanged duration/byte limits and recording
+disabled. The Mini default package contains no recorder executable. Its reviewed
+five-file media-only archive has SHA-256
+`8536c7a3d8d47dd0c8309c321d4f281f2a38d133bbe943c60fe02c4ece5b5151`;
+no retired K2B checkout, vault replication or background service was restored.
+
+| Named capability | Actual evidence and limits | Result |
+| --- | --- | --- |
+| youtube_native_caption_visual | Original source `bc7QaDmLmoA`, 1,362 seconds; all 177 exposed auto-generated caption rows inspected, starts 0 to 1,359 seconds; seven additional native scene notes, five actual clocks and two null clocks | Accepted typed content evidence |
+| facebook_native_identity | Fresh canonical Chinese Reel and exact share/r link resolution; publisher, native duration and changing playback retained | Accepted |
+| facebook_long_direct_media | User-supplied Reel `2177961246267847`, native 11:29, actual 688.865 seconds, complete direct source and Home speech/visual review within 256 MiB | Accepted |
+| facebook_no_caption_speech | Both direct Facebook examples lacked accessible caption tracks; actual retained source audio reached Home Groq and was reviewed | Accepted, no SJM claim |
+| verified_reuse | Facebook preparation retained response hashes/mtime; final Mini content runtime reused the same committed YouTube publication and request before its unchanged deadline | Accepted, one content attempt |
+| typed_failures | Live role, wrong-digest, YouTube direct-capture and recording refusals; focused tests cover missing/invalid caption evidence, identity, hashes, immutable deadlines and operation byte caps | Accepted bounded failures |
+| home_mini_nas_and_roles | Actual Home and Mini capture mounts and matching source bytes; native browsing remains Mini, knowledge processing/answers Home | Accepted |
+| home_vault_binding_and_recall | Fresh Home alias/mount check and source-backed gather retrieved the actual SJM deferral note; bounded result explicitly partial | Accepted bounded recall |
+| truthful_coverage | Paraphrase, automatic-caption provenance, excerpts-only retention, unknown caption ends/speech completeness, sampled visuals and no complete-media claim survive active status/readback | Accepted |
+
+The typed YouTube request is `65add382-370b-4c08-9d0f-6c604f6d548f`, with
+unchanged deadline epoch `1794136911`. Its single content attempt published run
+`youtube-bc7QaDmLmoA-20261108T104928Z-2b619b3f` at
+`/Volumes/k2b-captures/youtube/bc7QaDmLmoA/youtube-bc7QaDmLmoA-20261108T104928Z-2b619b3f`.
+Source manifest SHA-256 is
+`12af699680b5ad468d84585e6bbf3d5c4c7c49f272a4236c7c5cf37c102548c4`;
+evidence digest is
+`5c346d0092ee9167a632fffd16f3712ef24fe90d125d5c859881755de5063828`;
+random marker digest is
+`c345297dde20c96abbe6e4ee93311f24e594e8d80486c408d9d9d7d4f14536f6`.
+All seven manifest payloads total 32,504 bytes and match their independently
+returned hashes. All five research files match the actual inspected originals.
+The caption observation interval remains `1794130496` to `1794130761`, not a
+fresh media-capture time. Home read the complete 2,339-word analysis and claims;
+the architect separately inspected them for the original content explanation.
+
+No full verbatim transcript is retained. The analysis is a worker paraphrase,
+not independently verified source claims. Caption language/provenance is English
+(United States), auto-generated. Caption ends and completeness against speech
+remain unknown. Visual notes are bounded native observations, not retained video
+frames or complete visual viewing. A follow-up reads retained timestamps and
+analysis, then reopens a relevant source moment when coverage is insufficient.
+Missing captions, blocked direct Facebook acquisition and a request requiring an
+actual complete YouTube media file stop as unsupported/deferred. There is no
+automatic recording, alternative provider or silent media-completeness claim.
+
+R15 approved the corrected full candidate in 8 minutes 29 seconds, manifest
+`c285f19faf78c8ecc8b423bd18bd391d3cf60c06f6e96ce0baddb7cb7dd5104a`.
+R16 approved the exact Home combination and three preservation overlays in
+5 minutes 6 seconds, manifest
+`5171c6d888d50d95d8e633047138e1730a2332158ca74b89a7145da40e5d4daa`.
+R17 approved the final two-file publication correction and both final Git trees
+in 4 minutes 59 seconds, manifest
+`703bebbb751589621a6e3b360ea7a4d0f07809c1a171e8806203160b33ce0f02`.
+The reviewer was DeepSeek-V4.1-Flash High, Read Only, independent of the OpenAI
+builder, under Keith's explicit fallback exception after unusable bounded Kimi
+attempts. No transport-only success was treated as a verdict.
+
+The final correction first reproduced completed-copy reuse bypassing byte and
+deadline checks. Every publication branch now checks the actual Mini mount,
+immutable deadline and complete local plus existing NAS operation budget before
+reporting success. Earlier completion receipts and the attempt ledger survive a
+later refusal. The source tree is `7de5982e5c725b71ea4beca39fa42292494eaca1`;
+the approved Home integration tree is `802d3ec1b4f751a8d2fad23fa688a13de9fd76bf`,
+from Home parent `15bc65d374ab041f92f9a8d143e0dbe4eff31d4d`.
+
+Home activation preserved the newer committed review/explain-system/SJM rules.
+Only the two expected dirty video-skill overlaps conflicted. Their exact reviewed
+working bytes and the reviewed AGENTS overlay were restored; unrelated finance
+and provider text remains unstaged. `.gitignore` and all original untracked files
+remain untouched, staged state is empty, and private recovery copies retain the
+complete original overlays. No unrelated provider or explain-system change was
+introduced by this release.
+
+Post-activation Home and Mini launcher checks passed for the actual version,
+role refusals, disabled recording, caption reader and source digest. The final
+Home authority and whitespace checks passed. Home vault resolves to its approved
+Keith-Work mount; its index remains SHA-256
+`09a6b263694bf36ed878a430831aa270ad88a0af732e1a4a8ced7034ca2d111d`.
+The returned SJM deferral note remains SHA-256
+`df52e8ee4a8fd1e618c311e7460f8255c979c9da1be10c08160d1433db9d18f5`.
+Root independently repeated active package/file hashes, capture mounts, source
+digest, analysis bytes, Home authority and source-backed recall, and confirmed
+both actual remote branches. Its private receipt is
+`root-final-active-verification.json` in the operation directory below.
+
+The frozen v1 library remains SHA-256
+`e320dc76c3a1370e912c7b3c71ace1f778a3b1032cde2c3c9145dbd61924bbf2`;
+experimental Swift source remains SHA-256
+`c32a2a0155511dd5e2294ec8bb933f5fc41cebb0601e3215d1839e69f3aee7a8`.
+R13 and failed YouTube request/media evidence remain intact and unused. SJM's
+dated HTTP 403 access/egress distinction stays recorded; Keith selected Home
+until a later SJM repair. No SJM contact, new provider, account, credentials,
+network, permission, paid fallback or scheduler change occurred in final rollout.
+The dated provider-context note still contains an older YouTube route; current
+live instructions and this approved design take precedence. It was not silently
+edited through an unauthorized writer.
+
+Private receipts, reviewed snapshots, source hashes and activation evidence are
+under `/Users/keithmbpm2/.local/state/k2b/operations/video-extract-20261108`.
+Prepared: yes. Tested: yes, 159 focused tests plus the attributed live examples.
+Reviewed: yes. Committed: yes. Pushed: yes. Activated-home: yes.
+Activated-mini: yes. Activated-sjm: deliberately deferred, untouched.
+Accepted: the approved Home/Mini content-first release, with explicit coverage
+limits and unsupported complete-YouTube-media behavior. No operator action is
+required for this release; resuming SJM or experimental recording is separate.
 
 ## Historical R9 checkpoint
 
