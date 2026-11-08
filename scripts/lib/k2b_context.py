@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import posixpath
@@ -25,7 +26,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import automatic_memory
-from k2b_bootstrap import is_local_family_source
+from k2b_bootstrap import is_local_family_source, local_host
 
 
 PACKET_SCHEMA_VERSION = 1
@@ -1971,7 +1972,7 @@ def _freshness_stale(observed_at: object) -> bool:
     if when is None:
         return True
     age = (datetime.now(timezone.utc) - when).total_seconds()
-    return age > FRESHNESS_THRESHOLD_SECONDS
+    return age < 0 or age > FRESHNESS_THRESHOLD_SECONDS
 
 
 def _validated_backlog_aggregate(data: object) -> dict | None:
@@ -2039,29 +2040,92 @@ def _latest_backlog_aggregate(state_root: Path | None) -> dict | None:
             return None
     except OSError:
         return None
-    candidates = sorted(
-        state_root.glob("backlog-aggregate-*.json"), reverse=True
-    )[:MAX_BACKLOG_RECEIPTS]
+    candidates = list(state_root.glob("backlog-aggregate-*.json"))
+    scan_limited = False
+    containers = [state_root]
+    for name in ("native-run-artifacts", "native-runs"):
+        directory = state_root / name
+        if not directory.is_symlink() and directory.is_dir():
+            containers.append(directory)
+    for directory in containers:
+        try:
+            runs = list(directory.iterdir())
+        except OSError:
+            scan_limited = True
+            continue
+        for run in runs:
+            if directory == state_root and not run.name.startswith(("heartbeat-", "timed-recovery-")):
+                continue
+            if not run.is_symlink() and run.is_dir():
+                candidates.extend(run / name for name in ("backlog.json", "backlog-recheck.json"))
+    ranked = []
+    for candidate in candidates:
+        try:
+            if not candidate.is_symlink() and not _symlinked_ancestor(state_root, candidate):
+                info = candidate.stat()
+                ranked.append((info.st_mtime_ns, candidate, info.st_size))
+        except FileNotFoundError:
+            continue  # The optional recheck report need not exist.
+        except OSError:
+            scan_limited = True
+            continue
+    native_seen = any(path.parent != state_root for _, path, _ in ranked)
+    native_valid = False
+    # Keep the former maximum byte allowance, but small reports need not
+    # lose their place to fifty newer mtimes from older or invalid audits.
+    remaining = MAX_BACKLOG_RECEIPTS * MAX_COVERAGE_RECEIPT_BYTES
+    expected_role = {"home": "home", "sjm": "sjm-source-only"}.get(local_host())
     latest: dict | None = None
     latest_at: datetime | None = None
-    for candidate in candidates:
-        raw = _read_bytes_bounded(candidate, MAX_COVERAGE_RECEIPT_BYTES)
-        if raw is None:
+    for _, candidate, size in sorted(ranked, reverse=True):
+        if size > MAX_COVERAGE_RECEIPT_BYTES:
+            scan_limited = scan_limited or latest is None
             continue
+        if size > remaining:
+            scan_limited = True
+            continue
+        raw = _read_bytes_bounded(candidate, min(remaining, MAX_COVERAGE_RECEIPT_BYTES))
+        if raw is None:
+            scan_limited = scan_limited or latest is None
+            continue
+        remaining -= len(raw)
         try:
-            parsed = _validated_backlog_aggregate(
-                json.loads(raw.decode("utf-8", errors="replace"))
-            )
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+            parsed = _validated_backlog_aggregate(data)
         except ValueError:
+            scan_limited = scan_limited or latest is None
             continue
         if parsed is None:
+            scan_limited = scan_limited or latest is None
             continue
         observed = _parse_aware(parsed["checked_at"])
-        if observed is None:
+        if observed is None or observed > datetime.now(timezone.utc):
             continue
-        if latest_at is None or observed > latest_at:
+        native = candidate.parent != state_root
+        if native and (data.get("status") != "ok" or expected_role is None
+                       or parsed["writer_role"] != expected_role
+                       or parsed["pending_turns"] + parsed["extracted_turns"] != parsed["eligible_turns"]
+                       or any(type(data.get(key)) is not int or data[key] != 0 for key in (
+                           "invalid_receipts", "source_errors", "parse_exceptions", "unverified_turns", "timed_out_sources"))):
+            scan_limited = scan_limited or latest is None
+            continue
+        native_valid = native_valid or native
+        if latest_at == observed and latest["native_report"] == native and any(latest[key] != parsed[key] for key in ("pending_turns", "oldest_pending_at", "eligible_turns", "extracted_turns", "window")):
+            latest["conflicting_observation"] = True
+        if latest is None or (native, observed) > (latest["native_report"], latest_at):
             latest = parsed
+            latest["native_report"] = native
             latest_at = observed
+    if scan_limited:
+        logging.getLogger(__name__).warning(
+            "Capture report check incomplete (read, validation or byte limit); "
+            "newest observation across all reports is unverified.")
+    if native_seen and not native_valid:
+        logging.getLogger(__name__).warning(
+            "No valid native capture report in the bounded check; "
+            "retaining older or unknown coverage (local role: %s).", expected_role)
+    if latest is not None:
+        latest["scan_limited"] = scan_limited or latest.get("conflicting_observation", False)
     return latest
 
 
@@ -2124,6 +2188,12 @@ def _coverage_receipt(path: Path | None, *, state_root: Path | None = None) -> d
 
     backlog = _latest_backlog_aggregate(state_root)
     if backlog is not None:
+        if (backlog.get("native_report") and (not result["available"] or
+                (_parse_aware(capture_observed) is not None and
+                 _parse_aware(backlog["checked_at"]) > _parse_aware(capture_observed)))):
+            capture_observed = None
+            result.update(capture_observed_at=None, failed=None, label="native completed-turn capture audit")
+            result.pop("session_waiting", None)
         result.update(
             {
                 "available": True,
@@ -2154,8 +2224,11 @@ def _coverage_receipt(path: Path | None, *, state_root: Path | None = None) -> d
     # overall receipt is stale when either contributing observation is.
     pending_observed = result["pending_observed_at"]
     result["pending_stale"] = (
-        _freshness_stale(pending_observed) if pending_observed else None
+        _freshness_stale(pending_observed) if pending_observed else (True if state_root is not None else None)
     )
+    if backlog is not None and backlog.get("scan_limited"):
+        result["pending_stale"] = True
+        result["label"] += " (report check incomplete)"
     result["observed_stale"] = _freshness_stale(result["observed_at"])
     result["stale"] = bool(result["observed_stale"] or result["pending_stale"])
     return result
