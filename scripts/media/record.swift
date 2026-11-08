@@ -4,6 +4,7 @@ import Foundation
 import ScreenCaptureKit
 import CoreGraphics
 import AVFoundation
+import AppKit
 
 enum Failure: Error { case blocked(String) }
 
@@ -33,9 +34,12 @@ struct Recorder {
         print(String(decoding:data,as:UTF8.self))
     }
 
-    static func main() async {
+    @MainActor static func main() async {
         do {
             guard #available(macOS 15.0, *) else { throw Failure.blocked("macos_15_required") }
+            // A standalone CLI has no Xcode-generated AppKit entry point.
+            // Establish its WindowServer connection before constructing filters.
+            _ = NSApplication.shared
             guard CGPreflightScreenCaptureAccess() else { throw Failure.blocked("recorder_screen_audio_permission_required") }
             let args = CommandLine.arguments
             let probing = args.count == 3 && args[1] == "probe"
@@ -55,6 +59,8 @@ struct Recorder {
             let bounds = window.frame
             let binding: [String:Any] = ["id":window.windowID,"process_id":app.processID,"app":app.bundleIdentifier,
                 "title":window.title ?? "","x":bounds.origin.x,"y":bounds.origin.y,"width":bounds.width,"height":bounds.height]
+            // Probe the same filter constructor as recording, without a stream.
+            let filter = SCContentFilter(desktopIndependentWindow: window)
             if probing {
                 try emit(["status":"window_candidate","window":binding])
                 return
@@ -76,7 +82,6 @@ struct Recorder {
                 guard values.isSymbolicLink != true else { throw Failure.blocked("symlink_output") }
                 ancestor.deleteLastPathComponent()
             }
-            let filter = SCContentFilter(desktopIndependentWindow: window)
             let config = SCStreamConfiguration()
             let scale = min(1280 / bounds.width, 720 / bounds.height, 1)
             config.width = max(2, Int(bounds.width * scale) / 2 * 2)

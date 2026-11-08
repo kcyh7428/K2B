@@ -5,6 +5,100 @@ Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.
 Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; cumulative run files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB cumulative run files.
 
+## Current checkpoint at 06:51 UTC
+
+- Reviewed, committed and pushed feature: `e00a1ad`; independently approved
+  installer correction: `8f07e303ccf46b472c8b9580906e37065c4cb48e`.
+- All three candidates installed and version-verified. Home package
+  `25174471d6a643151eadb0f1dfe6a4401de6249b77244791d064c0ec919cb266`;
+  SJM `9ddd00f63acb5a8da254f4fff7eec1017e824d7a94cf9183ebe944f73ab62104`;
+  Mini `5dd9d8499b7d89b00ff57044cae88d94083e902bae119eb9fb23d0cc8efc351b`.
+  No active launcher, live checkout update or routine activation.
+- Fresh short-Reel run `facebook-2372450313602638-20261108T063408Z-1ef39758`:
+  source digest `dfe4179364567698684dcf7acee5c1b3618f79288013e5a8ea86efc54e6f0a62`,
+  4,337,894 bytes, actual source 44.837 seconds. Home completed real Groq
+  preparation, digest `c228d342d796ac0610dc22c83162989233a73ad569f389360fce316aa5595a3d`,
+  full measured speech 44.839125 seconds, 30 segments, no empty-word chunks.
+  All three sheets (45 valid one-second cells), final observed frame 44.8 seconds
+  and uncropped frames 0/22/44 were inspected. Opening, subtitle sequence and
+  ending align. One idiom at 5.48 seconds is misrecognized by ASR; source subtitle
+  correction is retained privately without rewriting raw evidence. Reuse returned
+  true with unchanged successful response hash and nanosecond modification time.
+- SJM independently verified the same new source through its own capture mount,
+  then actual STT failed `transcription_http_403`. Its own failed chunk is retained.
+  A bounded no-proxy/no-redirect models comparison returned HTTP 403,
+  `application/json`, null structured type/code for both unauthenticated and
+  owning-key requests. No key, response headers or arbitrary error body was
+  printed in this comparison. This does not prove invalid credentials or a
+  Whisper-only setting. Inference: broader service/egress denial is more likely.
+  Operator must restore authorized SJM access to `api.groq.com` or obtain a Groq
+  explanation before retry. No route, proxy, account, permission, key or STT
+  provider changed. Home processing does not satisfy SJM acceptance.
+- Fresh long-Reel run `facebook-2177961246267847-20261108T063703Z-609c655c`:
+  source digest `c15829a9a642b9414da34c2db8a80102b91875a7c971f5dd000574f4d453bb85`,
+  86,572,984 source-bundle bytes, actual source 688.865 seconds. It qualifies
+  as longer than ten minutes and was acquired under unchanged 256 MiB cap,
+  without truncation. Home completed full measured 688.867813-second audio,
+  three actual Groq chunks and 374 segments, 44 visual sheets, no empty-word
+  chunks. Prepared digest `783740ffc29d5d85aa9bc13403f0706e68bcf4a27cc566e706c44dc0da159c2a`.
+  Full transcript, all 44 sheets (689 valid one-second cells), ending frame at
+  688.8 seconds and uncropped 0/344/688-second frames were inspected. Cropping
+  removes dark margins without observed loss of pictures/subtitles. Five-second
+  overlaps at 235 and 470 seconds were reconciled in interpretation. Classical
+  Chinese ASR homophones are corrected against visible subtitles in separate
+  private review notes; raw evidence remains unchanged. Home source preparation
+  and this bounded content review passed; SJM remains blocked. This is not
+  every-frame viewing or independent historical fact checking.
+- Actual installed Mini recorder probe returned the unique native-corroborated
+  Chrome window, SCK ID 1544, PID 59196, title `(1) Facebook`, geometry
+  x487/y36/1301x959, without a permission prompt. No system-sound acceptance yet. The one 55-second bootstrap launch failed
+  before capture: `record` exited -6 with `CGS_REQUIRE_INIT` / `did_initialize`.
+  Failed run `facebook-2372450313602638-20261108T064658Z-2e163ff3` retains
+  diagnostics and native evidence, but no source.mp4, manifest, NAS transfer or
+  acceptance receipt. Crash symbols isolate `SCContentFilter` construction before
+  stream startup. The earlier probe returned before that constructor and therefore
+  did not establish recording feasibility. A restricted read-only initialization
+  test passed on Mini: initializing `NSApplication.shared` on MainActor before
+  SCK enabled construction of the same unique-window filter, exit 0 and empty
+  stderr. No stream, capture, permission request, app activation or installed-code
+  change occurred. This supports the isolated initialization cause. A source
+  correction now initializes AppKit early and makes the read-only probe construct
+  the same filter before returning. Updated recorder typechecked on Mini; authority
+  and whitespace checks passed. Exact-content review is pending before commit or
+  installation. Actual recorded sound/boundaries remain untested. The
+  original YouTube attempt ended bounded `run_deadline` during metadata/session
+  handling, no source manifest or retry. Its failed run
+  `youtube-bc7QaDmLmoA-20261108T064036Z-3c8a6956` is retained. Native Chrome
+  independently verified exact URL, publisher/title and 0:00 to 0:03 / 22:42.
+  Recording fallback remains pending, not accepted from native playback alone.
+- Live wrong-digest status returned `manifest_digest_mismatch` without success.
+  Other failure classes retain focused fixture coverage, not live outage claims.
+- Feature-only Git integration was prepared read-only with private indexes on
+  both hosts, preserving unrelated branch history and dirty adaptations. Only
+  the 19 feature paths are affected. Full branch merge into SJM was rejected by
+  a read-only merge-tree check because it would mix older unrelated history;
+  no checkout was changed. Final integration review/activation remain pending.
+
+Final focused suite after the installer correction: 62 passed in 11.77 seconds.
+
+Prepared: yes. Tested: focused fixtures plus the bounded live evidence above.
+Reviewed: code/installer approved through `8f07e30`; recorder initialization
+correction pending. Committed: `e00a1ad` and `8f07e30`. Pushed: both.
+Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
+
+## Acceptance matrix
+
+| Example | Current evidence | State |
+| --- | --- | --- |
+| 1. Original YouTube | Native identity/playback verified; direct attempt timed out; no manifest | Fallback pending |
+| 2. Facebook share/r and Chinese Reel | Fresh Chinese Reel captured and Home reviewed; share/r input not yet exercised live | Partial |
+| 3. Facebook over ten minutes | Fresh 688.865-second source, complete acquisition and Home preparation within unchanged cap | Home passed; SJM blocked |
+| 4. Missing accessible captions | Both new Facebook sources reported no caption tracks; complete actual audio reached Home Groq | Home passed |
+| 5. Recording after direct failure | Actual component aborted before media; isolated filter-initialization correction passed read-only test | Repair review and actual recording pending |
+| 6. SJM independence | Own NAS source verification passed; actual own-host STT returned HTTP 403 | Blocked |
+| 7. Reuse | Short Home preparation reused with identical response hash and mtime | Home passed |
+| 8. Precise failures | Live wrong digest refused; direct deadline and SJM HTTP 403 did not produce success; other classes have fixture coverage | Partial |
+
 ## Initial evidence
 
 - Preserved installed v1 source at content-addressed release `e320dc76c3a1370e912c7b3c71ace1f778a3b1032cde2c3c9145dbd61924bbf2`, 714 lines. No installed v1 changes.
@@ -185,4 +279,18 @@ Pushed: e00a1ad. Candidate-installed-sjm: yes. Candidate-installed-home: failed.
 Candidate-installed-mini: failed. Activated-home: no. Activated-sjm: no.
 Activated-mini: no. Accepted: no.
 
-Live acceptance examples 1 through 8: untested. Fixtures cannot substitute for actual audio, source boundaries or independent SJM processing.
+Live acceptance is partial as itemized in the current matrix. Fixtures cannot substitute for actual recording audio, source boundaries or independent SJM processing.
+
+## Recorder startup correction research
+
+The actual Mini crash report identifies `SCContentFilter.init(desktopIndependentWindow:)`
+as the first capture-framework caller above the `CGS_REQUIRE_INIT` assertion. The
+[Apple NSApplication.shared documentation](https://developer.apple.com/documentation/appkit/nsapplication/shared)
+explains that the shared application initialization connects a standalone program
+to WindowServer and should occur early in main. A restricted native Mini test
+confirmed this exact constructor succeeds after that initialization. The proposed
+fix changes startup and probe depth only, preserving unique Chrome-window scope,
+exact binding recheck, system audio, microphone off, source budgets and all live
+acceptance gates. This is the first recorder repair after the real bootstrap
+failure. A repeat of the same behavior after it requires the architect checkpoint;
+no display capture or alternate recorder is introduced.

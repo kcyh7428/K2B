@@ -45,6 +45,8 @@ which can contain display ellipses. Do not invent an ID or claim CUA/SCK ID
 parity: the tested CUA inventory does not expose comparable window metadata.
 The helper rechecks the actual SCK ID/process/title/geometry before recording,
 and the recorder independently repeats that check immediately before capture.
+The read-only probe initializes the CLI's WindowServer connection and constructs
+the same source filter used by recording, without creating a capture stream.
 A changed or ambiguous target stops. Output preserves the window aspect within
 1280 by 720 and retains original/output geometry. This observation-method ruling
 was supplied by the architect within the approved scope on 8 November 2026;
