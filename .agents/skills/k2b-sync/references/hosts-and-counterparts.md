@@ -32,15 +32,16 @@ arrival as Mini-local and unintegrated. Never treat failed partials as evidence.
 
 ## SJM local adaptations
 
-The approved unified-video replacement is specified in
+The current content-first video design is specified in
 `plans/2026-11-08_video-extraction-design.md`; read `k2b-video-extract` and its
-delivery record before using it. Its SJM media preparation uses the independent
-capture mount `//cheung@100.75.5.21/k2b-captures` at `/Volumes/k2b-captures`.
-The older Home-relay rule above does not satisfy this replacement's independent
-processing acceptance. Only reviewed, live-accepted installation enables the new
-route. Missing SJM mount or owning-host credential is an explicit local blocker.
-The exception writes derived media under `prepared-sjm`, not the vault, semantic
-memory or shared indexes. The Mini receives only the reviewed media package.
+delivery record. YouTube uses native Mini captions/visual observations and typed
+NAS evidence; Facebook uses direct Mini media plus Home preparation. Home reads
+through its own verified capture mount. Mini receives only a reviewed worker
+package, never a restored K2B checkout. Automatic recording is disabled.
+Keith explicitly deferred SJM processing/activation for this release. Preserve
+its candidate, failed chunk and dated403 diagnosis without contacting/updating
+it. Home output is not SJM acceptance. A future separately authorized SJM rollout
+still needs its own independent capture mount and relevant host proof, not a relay.
 
 SJM intentionally has local `AGENTS.md` and `.codex/hooks.json` adaptations. Preserve and reconcile those changes deliberately before updating its checkout. Never blind-pull, overwrite, or copy home configuration onto SJM.
 

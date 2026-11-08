@@ -5,7 +5,21 @@ Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.
 Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; each active operation's local plus NAS files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB for the same per-operation scope. Keith explicitly confirmed this storage scope on 8 November; retained archives are reported separately, without an all-host private-copy ceiling.
 
-## Current checkpoint, R9 committed and processing correction prepared
+## Current content-first checkpoint
+
+The latest approved/pushed code checkpoint is24ece38. The current content-first
+candidate is uncommitted and not installed/activated. R14 returned needs_attention
+with four material corrections and two smaller gaps; all are corrected with
+failure-first regressions. The corrected suite passes156tests in24.48seconds;
+renewed exact review is next. Current acceptance uses stable named capabilities,
+separate named SJM deferral and Home vault binding/recall, not historical example
+numbers. The architect clarified that Home reads the immutable caption NAS bundle
+directly, without another derived-caption publication transaction. Facebook keeps
+its accepted media preparation. All sections below retain dated development
+history; previous example numbers and media/recording requirements are historical,
+superseded by the current design. No failed media is used or recording activated.
+
+## Historical R9 checkpoint
 
 - R9 SJM-deferral reconciliation independently approved in 42 seconds and
   committed/pushed as `b875d66`. The VFR/provider-uncertainty correction is
@@ -62,7 +76,8 @@ Authority: Keith's develop and deploy request in the source chat, supplied in th
   totals are separate inventory snapshots, not an all-host private-copy ceiling.
 - Home/Mini activation-receipt reconciliation for Keith's explicit SJM deferral
   is prepared, not reviewed or committed. It lists genuine passed relevant
-  examples and separately defers example 6; YouTube/recording gates remain.
+  examples and separately defers the old media-first example6 (SJM). Those
+  historical numbers are not the current typed acceptance contract.
   Latest focused suite: 92 passed in 15.03 seconds; authority/whitespace passed.
 
 Prepared: yes. Tested: fixtures plus bounded live evidence above. Reviewed,
@@ -396,8 +411,9 @@ distinction before STT, without proving a country rule or account defect. No key
 replacement, provider switch or network/account/credential change is justified.
 
 A narrow activation-receipt correction is being prepared so Home/Mini list only
-passed relevant examples, with example 6 explicitly deferred by Keith's dated
-instruction. Recording and YouTube gates remain required. The original YouTube
+passed relevant examples, with the historical media-first SJM example explicitly
+deferred by Keith's dated instruction. Those earlier recording/media gates were
+later superseded by the approved content-first design. The original YouTube
 request now lacks its source-plus-120-second admission reserve before its
 immutable deadline; it has not been silently refreshed or retried.
 
@@ -579,3 +595,149 @@ calling the recorder or mutating the original files/attempt ledger. A real
 media preparation/status case retains the warning and original failed predicate
 through hash-bound local and NAS preparation. The single YouTube capture remains
 in progress; no recovery installation, new recording or activation occurred.
+
+
+## R13 checkpoint and distinct hard-timeout outcome
+
+R13 returned explicit approve in 12 minutes 24 seconds, no findings, for all six
+exact files. Manifest 8bdad1233d72b08a4a60a9eb67a5f21f31aebc8efade24887396d367927eac6b,
+packet 0c46ce2d681d189b93519dd122951b2b4b5a33956fae64c59f1ac91786fe5229,
+diff b70c24a53fcaf93ce4a701dfe4bd1f99deea4829c00ae65695f88f6217d5bd5b.
+Approval covers commit and supervised Home processing-candidate update only;
+it does not approve new Mini installation, capture/content acceptance or activation.
+The exact reviewed checkpoint is committed as 24ece38 and pushed on codex/video-extract.
+No candidate or live launcher was changed after this review.
+
+The one YouTube recording instead ended with exit 2 and exact result
+{"status":"blocked","reason":"run_deadline"} after 1,482,410 milliseconds.
+Completion was observed at epoch 1794130169.788. This is a hard command-duration
+failure, not the late-confirmation predicate; Keith's late-only recovery approval
+does not admit it. Recording work is paused. No retry, repaired container, decode,
+provider transcription, source manifest, successful completion receipt or NAS
+publication has occurred. The original request/deadline/consumed attempt remain
+unchanged. No recorder process remains.
+
+Raw source.mp4 remains on Mini, 586,567,498 bytes, SHA-256
+3131a108c51a8a6dcad3d08761e73e7c3496c9a0855eb70e02ff62a8efbbceac.
+Original source/ready/start/progress/final-ending/result/duration evidence remains
+mode 0600 and independently read back. Private evidence record
+youtube-postrepair-hard-failure.json has SHA-256
+41e04d18c96e5effbebde716516fed9608cfe1d1bf285f63b0c7524b70d5fcae.
+Native Chrome did reach 22:42/Replay with autoplay off. A muted source control
+was observed around source12:00 and subsequently restored, with unknown onset
+and recorded-speech effect. Repeated/decreased AX clocks and an external Chrome
+change notice are retained as uncertainty, without assigning an unproved cause.
+Native ending is not proof of a finalized recording or full recorded content.
+
+Swift sleeps source-plus60, awaits stopCapture, then polls recording completion
+for up to ten seconds before emitting final stdout. The parent monitors the hard
+source-plus120 deadline and kills a still-live child on timeout. No stop-phase
+marker exists, so this result does not isolate sleep, stop await or finalization
+as the exact stalled phase. No timer or recording architecture was changed.
+
+The architect separately authorized read-only native Show transcript research on
+the same page for the original content question. It uses no failed media, download,
+recording or provider transcription. Actual caption language/provenance, first/last
+coverage and observed native visual moments will be retained with limits. This
+is caption research, not accepted extraction or full visual review.
+
+Current delivery state: prepared and tested (125 focused tests); reviewed,
+committed and pushed through 24ece38. Home candidate c68e32ae remains installed
+but not activated; Mini a402 remains installed with the accepted short-recorder
+receipt but no routine launcher activation. SJM is explicitly deferred and
+untouched. Direct short/share-form/long Facebook and the bounded short first
+recorded episode have accepted evidence. YouTube and the full release remain
+unaccepted. Home integration is private/read-only pending a concrete partial/full
+release decision. All unrelated dirty host state and v1 remain preserved.
+
+
+## Native caption research handoff, separate from extraction acceptance
+
+The named Mini task inspected all 177 exposed native caption rows, from 0:00
+to 22:39 across 27 chapters, with both endpoints visually reached. The actual
+label is English (United States) (auto-generated). Caption start times are ordered
+and distinct; caption end times and completeness against actual source speech
+remain unverified. The full verbatim third-party transcript was not retained
+because of copyright limits. No failed media or provider transcription was used.
+
+Home private operation evidence byte-matches the independently returned Mini hashes:
+
+- native-caption-research-metadata.json: 0a24b7bca3e276839ad52740c07690c6d66bf824f1c7e3b8c1b19d06452dfb13.
+- native-caption-research-visual-notes.json: 9883893d764c8c3f8f6d7cedebb215b10cce7a453e2bbd1ec669c9060f23cf0a.
+- native-caption-research-summary.md: 37b45889c85d06d2997c87e774e3f73b8f1be728b354e114da2ed093d1d3e592.
+- native-caption-research-claims.json: 6078c9ee232c11497ec98481d859b494c11d959f18d05a93798502bdb8112c3b.
+
+The builder read the complete 2,339-word transformative paraphrase and handed its
+verified Home paths to the architect for the original content explanation. It
+contains 14 timestamped claim groups, separates presenter claims from researcher
+interpretation, and preserves uncertain captioned model names, prices and technical
+terms. Visual corroboration is limited to the actual native moments listed in
+the companion note; no hearing, full visual/audio viewing, accepted recording or
+new extraction is claimed. No installation, new capture, provider call or SJM
+contact occurred. The sole uncommitted file is this factual delivery append;
+all code remains at independently approved and pushed 24ece38.
+
+
+## Confirmed content-first release revision
+
+Keith explicitly chose content extraction as the default after the concrete
+choice was explained: YouTube native captions plus relevant native visual
+checks, Facebook direct Mini download plus Home processing, truthful retained
+timestamps/provenance/coverage, no complete YouTube media claim and precise
+unsupported results. This supersedes the earlier default recorder/media examples,
+not the hard limits or preservation obligations. SJM remains deferred. The
+current written design and implementation plan were rewritten before new code.
+Existing native caption research will retain its actual observation time and
+provenance; a separate bounded native scene check will improve relevant visual
+coverage. The custom recorder/R13/failed media stay unactivated and unused.
+Home integration remains preservation-aware and no unrelated work is included.
+
+Content adapter checkpoint: 146 focused tests passed in 23.81 seconds; authority,
+both changed video skills and whitespace checks passed. Tests first failed for
+the absent typed path, then proved actual file publication, Home validation,
+preparation/status and reuse with probe/STT/recorder calls forbidden. They also
+cover source/type/claim/clock/deadline/hash failures, incomplete caption sequence,
+byte-limit preservation, default recording refusal and typed activation gates.
+Default Mini installation no longer compiles or installs the recorder executable.
+The frozen v1 library remains SHA-256 e320dc76c3a1370e912c7b3c71ace1f778a3b1032cde2c3c9145dbd61924bbf2;
+Swift source remains unchanged and experimental.
+
+All actual retained caption/summary/claim/prior-visual bytes and seven fresh native
+scene notes validate through the candidate adapter. Caption count is177, starts
+0to1359seconds, source1362seconds. Actual scene clocks are219,714,853,1038,1272;
+the requested370/585samples retain null clocks and explicit uncertainty. Scene
+file SHA-256 beaa3672959de5c2c1ce3cb01b56f3ace2d213b32edcf0164f9ce9e6b74a1473.
+The caption observation interval remains the actual earlier native research turn,
+1794130496to1794130761, not a fresh media observation. Validation is private and
+read-only: no publication UUID, installation or activation has been created yet.
+Independent exact review precedes all such delivery.
+
+## R14 findings and corrected direct caption reader
+
+R14 returned needs_attention after11minutes20seconds. Its complete15-file
+snapshot and findings remain retained; nothing from it was committed/installed.
+The corrected contract uses named deferred_scopes without historical example
+numbers and requires Home vault binding/recall explicitly. SJM candidate
+installation now refuses before filesystem mutation. Expired first requests pin
+their original deadline and creation time before validation. A remaining research
+offload reference to the retired YouTube helper was removed.
+
+The architect clarified that the Mini bundle already contains the actual analysis
+and visual observations. Home now verifies and reads that immutable NAS bundle
+directly, returning its source digest/paths, reader version, identity, provenance
+and coverage. It creates no copied caption cache, transcript or derived-publication
+transaction. This removes the reported interrupted Home publication state and
+the separately reproduced post-validation copy race. Facebook media preparation
+and publication remain unchanged.
+
+Two further reproduced source-binding defects are fixed: the staging context is
+parsed from the exact bounded bytes matching the independently supplied digest,
+then rechecked after copying; Home process/status compare the inner canonical
+source with the outer run and independently revalidate bytes after reading.
+Both hosts enforce the1MiB context cap. All new regressions first failed before
+correction. The final156-test suite passed in24.48seconds; earlier authority,
+skill and whitespace gates passed, and the frozen v1/Swift bytes remain unchanged.
+Actual retained source validation still passes for177caption rows and7native
+scene observations. The final bundle will label raw retention excerpts_only:
+brief endpoint excerpts exist, but no full verbatim transcript is retained.
+No live publication UUID, installation, activation or SJM contact has occurred.

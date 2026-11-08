@@ -73,29 +73,66 @@ def test_candidate_install_publishes_before_freezing_root(tmp_path,monkeypatch,c
             if path.is_dir():path.chmod(0o700)
 
 
+def content_acceptance(m,role='home'):
+    return {'package':'a'*64,'role':role,'workflow_contract':m.CONTENT_CONTRACT,'live_checks':list(m.LIVE_CHECKS),'independent_review':'approve',
+        'deferred_scopes':[{'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}]}
+
+
 @pytest.mark.parametrize('role',['home','mini'])
-def test_explicit_sjm_release_deferral_is_separate_from_passed_examples(role):
-    m=installer()
-    receipt={'package':'a'*64,'role':role,'live_examples':[1,2,3,4,5,7,8],'independent_review':'approve',
-        'deferred_examples':[{'example':6,'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}]}
-    m.validate_acceptance(receipt,'a'*64,role)
+def test_content_first_acceptance_and_explicit_sjm_deferral(role):
+    m=installer();m.validate_acceptance(content_acceptance(m,role),'a'*64,role)
 
 
-@pytest.mark.parametrize('change',['sjm_role','missing_authority','missing_youtube','missing_recording','extra_waiver','missing_review'])
-def test_sjm_deferral_never_waives_other_hosts_or_checks(change):
-    m=installer();role='home'
-    receipt={'package':'a'*64,'role':role,'live_examples':[1,2,3,4,5,7,8],'independent_review':'approve',
-        'deferred_examples':[{'example':6,'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}]}
+@pytest.mark.parametrize('change',['sjm_role','missing_authority','missing_youtube','missing_facebook','extra_waiver','missing_review','legacy_contract','numeric_deferral'])
+def test_typed_activation_cannot_waive_other_hosts_or_checks(change):
+    m=installer();receipt=content_acceptance(m);role='home'
     if change=='sjm_role':role='sjm';receipt['role']=role
-    elif change=='missing_authority':receipt['deferred_examples'][0].pop('authority')
-    elif change=='missing_youtube':receipt['live_examples'].remove(1)
-    elif change=='missing_recording':receipt['live_examples'].remove(5)
-    elif change=='extra_waiver':receipt['deferred_examples'].append({'example':8})
+    elif change=='missing_authority':receipt['deferred_scopes'][0].pop('authority')
+    elif change=='missing_youtube':receipt['live_checks'].remove('youtube_native_caption_visual')
+    elif change=='missing_facebook':receipt['live_checks'].remove('facebook_long_direct_media')
+    elif change=='extra_waiver':receipt['deferred_scopes'].append({'scope':'other'})
+    elif change=='legacy_contract':receipt.pop('workflow_contract');receipt['live_examples']=list(range(1,9))
+    elif change=='numeric_deferral':receipt['deferred_examples']=[{'example':6}]
     else:receipt['independent_review']='needs_attention'
     with pytest.raises(ValueError):m.validate_acceptance(receipt,'a'*64,role)
 
 
 @pytest.mark.parametrize('role',['home','mini','sjm'])
-def test_complete_real_acceptance_contract_remains_supported(role):
+def test_legacy_media_acceptance_never_activates_content_first_release(role):
     m=installer()
-    m.validate_acceptance({'package':'a'*64,'role':role,'live_examples':list(range(1,9)),'independent_review':'approve'},'a'*64,role)
+    with pytest.raises(ValueError):m.validate_acceptance({'package':'a'*64,'role':role,'live_examples':list(range(1,9)),'independent_review':'approve'},'a'*64,role)
+
+
+def test_default_mini_package_never_compiles_or_installs_recorder(tmp_path,monkeypatch,capsys):
+    import json
+    from types import SimpleNamespace
+    m=installer();tool=tmp_path/'official-test-downloader';tool.write_bytes(b'pinned fixture')
+    monkeypatch.setattr(m,'DOWNLOADER_SHA256',m.digest(tool))
+    monkeypatch.setattr(m,'host_pins',lambda *a:{'workflow_contract':m.CONTENT_CONTRACT,'downloader_sha256':m.digest(tool),'deno_sha256':'a'*64})
+    monkeypatch.setattr(m.pwd,'getpwuid',lambda uid:SimpleNamespace(pw_name='fastshower',pw_dir=str(tmp_path)))
+    monkeypatch.setattr(m.sys,'argv',['install-video-extract.py','mini','--downloader',str(tool)])
+    def forbidden(*a,**k):raise AssertionError('Default installation must not compile or execute a recorder')
+    monkeypatch.setattr(m.subprocess,'run',forbidden)
+    try:
+        m.main();report=json.loads(capsys.readouterr().out);release=Path(report['path'])
+        config=json.loads((release/'config.json').read_text())
+        assert config['workflow_contract']==m.CONTENT_CONTRACT and 'recorder_sha256' not in config
+        assert (release/'tools/yt-dlp').is_file() and not (release/'tools/record').exists()
+        assert not (tmp_path/'.local/libexec/k2b-video-v2').exists()
+    finally:
+        for p in tmp_path.rglob('*'):
+            if p.is_dir():p.chmod(0o700)
+
+
+def test_current_contract_requires_home_vault_recall():
+    m=installer();assert 'home_vault_binding_and_recall' in m.LIVE_CHECKS
+    receipt=content_acceptance(m);receipt['live_checks'].remove('home_vault_binding_and_recall')
+    with pytest.raises(ValueError):m.validate_acceptance(receipt,'a'*64,'home')
+
+
+def test_sjm_candidate_installation_is_deferred_before_filesystem_changes(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    m=installer();monkeypatch.setattr(m.pwd,'getpwuid',lambda uid:SimpleNamespace(pw_name='keithcheung',pw_dir=str(tmp_path)))
+    monkeypatch.setattr(m.sys,'argv',['install-video-extract.py','sjm'])
+    with pytest.raises(ValueError,match='SJM installation is explicitly deferred'):m.main()
+    assert list(tmp_path.iterdir())==[]

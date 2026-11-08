@@ -1,336 +1,147 @@
-# Unified K2B video extraction design
+# Unified K2B content extraction design
 
-Date: 8 November 2026. Owner: Keith. Implementation authority: this chat's
-instruction to prepare the plan and hand it off to develop and deploy.
+Date: 8 November 2026. Owner: Keith. This revision records Keith's explicit
+approval of content extraction as the default, relayed by the architect in the
+active source chat after the concrete media-versus-content choice. Existing
+develop-and-deploy authority covers reviewed Home/Mini delivery. SJM remains
+explicitly deferred. This current revision supersedes the earlier media-first
+YouTube and automatic-recording acceptance requirements. Their exact source and
+review history remain in Git through 24ece38 and the delivery record.
 
-## Agreed outcome
+## Goal and concrete behavior
 
-Keith pastes a Facebook or YouTube link into K2B on Home or SJM. One discoverable
-skill, `k2b-video-extract`, obtains the actual content, explains it, and states
-its evidence coverage. It replaces competing capture instructions, while
-preserving the working Mini Facebook machinery as its starting point.
+Keith supplies a Facebook or YouTube URL and asks what ideas it offers. One
+maintained k2b-video-extract skill establishes source identity on the named Mini,
+obtains the supported content evidence, and lets Home read it to answer with
+provenance and coverage limits. YouTube uses the actual native Show transcript
+panel plus relevant native visual checks. Facebook uses its existing direct
+Mini download and Home speech/visual processing. Neither site automatically
+falls back to recording.
 
-Example: Keith asks what ideas the Jack Roberts video gives. K2B verifies the
-source, captures it, reads the transcript and relevant visual evidence, and
-answers. A follow-up asking about a particular minute reads the retained run.
-An inaccessible video produces an exact access failure, not an unlabelled
-third-party transcript presented as a reviewed video.
+For the Jack Roberts YouTube source, the Mini reads the actual caption sequence,
+retains its language/automatic label, timestamp facts and a source-linked
+paraphrase, then checks selected demonstrations on the actual source. Home
+independently verifies the returned NAS bundle digest and reads its analysis,
+claims and visual observations. The answer says it is caption-and-visual
+evidence, not a complete video/audio extraction or verbatim transcript.
+A follow-up first reads retained timestamps and observations, then reopens a
+relevant source moment if the retained coverage cannot support the answer.
 
-## Components and ownership
+## Components, decisions and roles
 
-- Home and SJM run the same reviewed skill and media-processing code locally.
-  The requesting Mac verifies and processes its requested capture. SJM must not
-  need Home to be awake for the accepted SJM path.
-- The named Mini Codex task remains the browser and capture worker. It uses
-  native Chrome controls, its own local session, and a fixed installed media
-  helper. No old Mini K2B checkout, vault sync, Telegram runtime or scheduler is
-  restored.
-- The dedicated NAS capture share retains source media and derived artifacts.
-  Both knowledge Macs need their own independently verified route to this share.
-  NAS arrival is checked against a manifest digest independently returned by the
-  Mini. A directory alone is not a mount.
-- The assistant reads transcripts and images through its actual tools. Storage
-  alone does not put them into the model's context. The assistant interprets
-  content and chooses relevant moments. Code enforces supported sources,
-  manifests, roles, budgets, deadlines, locks and validation.
-- Media processing on SJM is a scoped new exception to the existing Home-only
-  media rule. It applies only to requested media runs on the capture share, not
-  vault raw captures, shared hubs, automatic memory or knowledge reconciliation.
+- The named Mini task owns native Chrome browsing and visual observations.
+  It selects relevant moments from the user's question and actual captions.
+  It interprets source content and produces a timestamped paraphrase, without
+  inventing missing captions, hearing, complete speech or every-frame review.
+- A fixed installed Python adapter validates allowed hosts, canonical source
+  identity, typed evidence fields, file hashes, request deadlines, roles and
+  byte limits. Code does not decide the ideas or hard-code answer paths.
+- The existing NAS capture share retains hash-bound evidence bundles. The
+  Mini independently returns the manifest digest; Home compares every file
+  and random arrival marker through its own verified mount. Storage alone
+  does not put evidence in the model: Home must actually read the files.
+- Home validates and reads the immutable YouTube NAS bundle directly, without
+  a derived caption copy or another prepared-publication transaction, ffprobe,
+  audio, Groq or recorder acceptance. Its typed reader result exposes the source
+  digest, provenance, coverage, actual source paths and reader version.
+  For Facebook media it retains the accepted existing
+  full-audio chunking, ASR uncertainty and observed visual preparation.
+- Code and skills stay local through reviewed Git delivery. Mini receives
+  only the versioned worker package, not a K2B checkout or vault. Credentials
+  and local browser state remain on the owning host. No scheduler is added.
+- SJM is deliberately untouched/deferred under Keith's explicit decision.
+  Home output is Home evidence, never proof of completed SJM processing.
 
-## Acquisition decisions
+## Typed evidence contract
 
-1. Verify the requested source on the Mini through native Chrome. Retain the
-   submitted and canonical URL, identity, publisher/title, duration and evidence
-   of advancing playback. Resolve Facebook share/r paths from the actual page.
-2. Use direct media extraction where it works. Preserve available timed native
-   or automatic captions and their provenance. Verify and pin the official
-   downloader and required JavaScript components; do not silently update code
-   or fetch unreviewed plugins during ordinary requests.
-3. Approved Mini-local session access is available for these on-demand requests
-   when necessary. Cookies/tokens never move to Home, SJM, NAS, logs or another
-   service. Use the selected Mini profile, not broad automatic profile discovery.
-   A persistent browser session can expire. An actual login or security prompt
-   remains an operator step; never automate a CAPTCHA or weaken protections.
-4. When the source is playable but direct extraction fails, use a tested local
-   screen/window and system-audio recorder. For a short social source already
-   known to reject direct extraction, go straight to the accepted recorder.
-   An absent official download button is not proof extraction will fail.
-5. Recording is labelled playback recording, not original media. It runs at
-   playback speed. The Mac implementation must be tested; Social Scout's Linux
-   ffmpeg recorder is not a portable Mac recording implementation.
+YouTube bundles use evidence_type caption_visual and method
+native_captions_and_visual_checks. They contain source/request metadata,
+original caption metadata, timestamped analysis/claims, retained earlier visual
+notes, fresh relevant native visual observations, a random marker and manifest.
+No video/audio file is required or represented as present.
 
-Use one maintained acquisition interface and one verified bundle format across
-both methods. Do not add a cloud computer, proxy change, external transcript
-subscription, new model provider, or new usage-billed OpenAI dependency.
+Retain the actual caption label, language, auto/manual/unknown provenance,
+caption count and ordered start timestamps, whether first/last exposed rows
+were inspected, raw-caption retention status, unknown caption end times and
+speech completeness. A worker paraphrase is identified as a paraphrase, not
+caption text or a verbatim transcript. Retaining a summary does not prove the
+correctness of a source's claims. Home and answer artifacts retain that distinction.
 
-Window-observation ruling, 8 November 2026: the actual CUA app inventory does not
-expose comparable window IDs, so the initial CUA/SCK parity assumption is
-invalidated. The architect accepted a narrow read-only ScreenCaptureKit query
-for the approved Chrome app and visible source, refusing zero/multiple matches.
-Native CUA freshly corroborates the requested URL, full page title and opening
-picture in that unique window. Retain the actual SCK ID, app/process, full SCK
-window title and geometry separately from the page title. The helper and recorder
-independently recheck the same target immediately before capture; changed or
-ambiguous targets stop. This changes the observation method within the approved
-scope, without wider window access, permission grants or sound/coverage claims.
-Actual system-audio and start/end acceptance remain required.
+Native visual observations carry actual source clocks or explicit uncertainty,
+actual observation timing and a description of what was seen. Prior notes retain
+their original provenance and timing limits. Relevant-scene notes are not stored
+video frames and are never called full visual viewing. Existing source evidence
+is reused with its actual observation interval, not rewritten as fresh capture.
 
-Audio-observation ruling, 8 November 2026: actual native CUA supplies pictures,
-controls and indicators, without hearing source audio. The architect replaced
-the invalid native-hearing premise with `unmuted_control_observed` as preflight
-evidence. It binds only the actual source control, alongside fresh identity,
-paused-at-zero, no-ad and exact window readiness. Unsupported older hearing
-claims are rejected rather than converted. Actual sound acceptance follows
-capture: retained audio must yield source speech, with first/last speech and
-visible source or subtitles corroborated where available, explicit unclear
-ranges/gaps, and attribution to ASR or the actual analysis tool. A volume value
-or audio stream alone is insufficient. Microphone-off, one recording attempt,
-all limits and actual source-boundary acceptance remain unchanged.
+Facebook bundles remain evidence_type media, method direct_media. Source
+media, timed speech, visual sampling, gaps and prepared hashes retain their
+existing separate meaning. Existing v1 bytes and accepted artifacts remain intact.
 
-Recorder/controller checkpoint, 8 November 2026: the first repaired 55-second
-component test retained real source speech but about 14.3 seconds of leading
-paused picture exhausted the assumed ten-second padding. The verified source
-ending was not established, so no recorder acceptance receipt was written.
-The architect ruled that recording output must publish a request-bound ready
-marker only from its actual successful-start callback, including recorder
-identity, actual window/process/geometry and timing. Native CUA waits for that
-marker, freshly confirms the same paused source and starts playback, retaining
-an actual advancing-playback observation within 30 seconds of ready. Reserve
-60 seconds of padding while keeping the source-plus-120-second ceiling,
-original request deadline, byte cap and one recording attempt. Missing or late
-ready/start evidence preserves partials and blocks acceptance. Native control
-observes the ending and pauses the source to avoid unrelated autoplay. Retain
-padding/loops and uncertainty instead of deriving an exact source offset from
-a delayed tool call. Verify the first complete source episode's opening,
-first/last speech and actual ending frames before accepting the recorder.
+The adapter stages a fixed caption draft under a UUID-bound private directory,
+validates its independently supplied evidence digest, commits it once to a new
+publication run and publishes through the existing NAS channel. A repeated
+publication only resumes that exact committed digest; it never browses,
+downloads, records or calls a provider. Home reads that retained source bundle
+directly and revalidates its immutable digest. Facebook media preparation remains
+isolated by processor/source digest and reuses unchanged successful artifacts.
 
-## Initial limits
+## Limits, failures and exclusions
 
-Transport amendment confirmed on 8 November 2026: Keith answered the precise
-Mini transport question with "Approve the narrow exception" in the source chat,
-relayed by the architect to this builder. After actual route and TLS checks,
-the existing Mini-only `198.18.0.0/15` allowance may cover the fixed supported
-YouTube source hosts and `googlevideo.com` media hosts. Normal certificate and
-hostname verification remain required. Every other private range stays blocked.
-No proxy, DNS, router, fake-IP range or unrelated domain change is authorized.
-The amendment and exact updated source hashes require independent review before
-commit or activation. The existing reviewed snapshot and findings are preserved.
+Facebook source duration is at most 1200 seconds, separate from the 256 MiB
+active-operation local-plus-NAS cap. A twenty-minute source may still exceed
+the byte cap, in which case stop rather than truncate. YouTube source duration
+is at most 3600 seconds and its operation cap is 2 GiB in the same scope.
+Retained archives are reported separately, without a global all-host ceiling.
+Require twice the operation cap free and the exact owning SMB binding.
+Requests retain their original deadlines: Facebook 45 minutes, YouTube 90 minutes.
+Native evidence can be reused with explicitly dated observation provenance;
+reuse never renews an expired publication request or pretends to be a fresh source.
 
-- Facebook maximum source duration: 1,200 seconds (20 minutes), explicitly
-  requested by Keith after the proposed ten-minute limit.
-- Facebook active-operation file budget: retain the current 256 MiB cap initially,
-  counting that operation's local files plus its NAS run files.
-  The twenty-minute duration does not imply every bitrate fits. A source that
-  cannot fit returns a clear size-limit failure, never a partial-success digest.
-- YouTube maximum source duration: 3,600 seconds (60 minutes); active-operation
-  local-plus-NAS source/derived run-file budget: 2 GiB, as proposed to Keith in the limits question.
-  Treat the final user reply as the Facebook-duration correction to that proposal.
-- Require at least twice the active byte budget free on Mini-local storage and
-  its verified NAS destination before acquisition. Account for all run files,
-  including failed partials, copies, audio and frame outputs. Recheck before writes.
-  Keith explicitly confirmed this per-operation scope on 8 November 2026 after
-  the cross-host boundary question. Retained archive size is reported separately;
-  the cap is not a combined ceiling across every host's private retained copies.
-- One direct acquisition and one recording attempt maximum in a request. An
-  uncertain dispatch is collected, not resent. Provider failures do not trigger
-  repeat downloads. No automatic limit expansion or automatic cleanup.
-- The existing Facebook helper retains its ten-minute watchdog until the
-  reviewed replacement is activated. For the replacement, acquisition deadline
-  is 45 minutes for Facebook and 90 minutes for YouTube, covering preflight,
-  direct attempt, recording and publication. Native source preflight is at most
-  four minutes; direct extraction is at most ten minutes. Recording itself is
-  bounded by verified source duration plus two minutes. All phases also obey
-  the remaining acquisition deadline. Completion collection may add at most
-  five minutes. No expired or late-delivered dispatch starts work.
-- Processing stays separately bounded per command and audio chunk. Reuse the
-  existing accepted Groq chunk/retry limits; do not increase retries or submit
-  the same successful chunks again just because publication failed.
+Missing/incomplete inaccessible native captions, blocked Facebook direct
+acquisition, requests requiring a complete actual media file, changed identity,
+unsupported hosts, expired requests, wrong/unmounted NAS, exhausted budget or
+hash mismatch produce a precise unsupported/deferred result. No hidden
+provider, downloader retry, recorder fallback or complete-media claim is allowed.
+A login/security/permission prompt stays an exact operator handoff.
 
-The duration and watchdog changes are named replacements for the older Reel
-limits only after reviewed installation. Preserve old bounds on old commands.
+The custom recorder, R13 recovery and failed YouTube media remain experimental
+and unactivated. Default record/recover actions refuse explicitly. Do not
+record again, repair, decode, transcribe or publish that failed media. No app,
+service, provider, paid fallback, credential, network, permission or scheduler
+change is part of this revision. The previously approved narrow Mini transport
+exception and normal TLS checks remain unchanged for supported direct media.
 
-## Evidence and recovery
+## Observable acceptance
 
-Each run has a new platform-qualified ID, immutable source metadata, media,
-caption provenance where available, timing/coverage information, file hashes,
-random arrival marker, and a source manifest digest. Derived results bind the
-source manifest and processor version. Do not persist signed delivery URLs,
-browser cookies or tokens in the bundle.
+1. Original YouTube source bc7QaDmLmoA: actual caption panel identity,
+  177 ordered starts from 0:00 to 22:39, explicit English United States auto-generated
+   label, complete inspected exposed sequence, timestamped paraphrase and
+   bounded relevant native demonstration checks. Retain actual timing, unknown
+   caption ends, absent complete media and limited visual coverage.
+2. The independently returned typed bundle digest, every payload and random
+   marker match through Home's own capture mount. Home processing/status
+   retain the same evidence type, provenance, uncertainty and no-media claim.
+3. Accepted Facebook share-form/short and longer-than-ten-minute direct cases
+   retain canonical identity, full supported speech/visual/boundary proof and
+   the separate twenty-minute/256-MiB limits. No reacquisition is needed merely
+   to replace code with identical proven algorithms.
+4. Verified reuse preserves successful response bytes and performs no new
+   browsing, acquisition or provider work. A follow-up reopens a scene only
+   when the existing evidence is insufficient.
+5. Missing captions, unsupported complete-media requests, blocked direct media,
+   disabled recording, source/hash/mount/budget/deadline failures cannot issue
+   a content-complete or accepted-media receipt or silently select another route.
+6. Home and Mini role/package/NAS proof and bounded Home vault recall pass
+   after activation; SJM deferral is recorded separately from passed checks.
 
-Retain the existing exclusive Mini worker lock. Serialize capture through the
-named Mini task. Requester processing uses host-local locks and separate,
-content-addressed preparation directories so Home and SJM cannot overwrite one
-another. Reuse unchanged, verified artifacts; source changes require fresh
-acquisition. Do not invent distributed locks, always-on queues or new daemons.
+Activation uses stable named capabilities, including Home vault binding/recall,
+and a separate named SJM deferral scope. The current numbered Home/Mini acceptance
+item is never waived by a historical SJM example number. Both SJM candidate
+installation and activation are deferred. Repeat the affected storage/recall and
+role/package checks after activation before calling the release accepted.
 
-NAS writes use unique partial paths, hash readback and atomic publication.
-Interrupted or mismatched writes preserve originals and report unverified arrival.
-Receipts never certify unattempted or incomplete work. Recovery resumes completed
-stages. No automatic deletion, force overwrite, stale-lock clearing or credential
-transfer is authorized.
-
-For recordings, verify opening/ending frames and seams against the source
-timeline, real audio content and beginning/ending speech, ads, loops and stalls.
-An audio stream or volume reading alone is insufficient. Silence is not assumed
-from an empty ASR result. Retain explicit audio gaps and inspect available visual
-subtitles. Distinguish audio duration from video duration and recording padding.
-
-Read the whole transcript and all prepared contact sheets, plus source frames
-needed for demonstrations, uncertainty and crop checks. State the actual sampling
-coverage, not every-frame viewing. Attribute separate media-model analysis to
-that model. Extraction prompts stay neutral; fact-checking follows separately.
-
-Saving an ordinary knowledge note remains a separate designated-writer action.
-Media storage and an answer do not establish vault integration or cross-Mac recall.
-
-## Standing request scope and deployment
-
-An ordinary Facebook/YouTube video link submitted for analysis authorizes native
-Mini dispatch, capture/recording, authorized existing speech processing and reading
-the retained evidence within these limits after activation and acceptance. It
-does not authorize account changes, publishing, bulk subscriptions, background
-scraping, unrelated browsing, permission widening or a new paid fallback.
-
-Keith authorized development and deployment. Ship reviewed Git commits, preserve
-dirty host adaptations, and deliberately activate Home, SJM and the Mini package.
-Every commit requires the independent reviewer family specified in AGENTS.md.
-An unavailable reviewer, permission prompt, missing per-host credential or failed
-live acceptance blocks the affected activation. Continue independent work and
-report precise remaining state. Never call prepared code deployed.
-
-## Acceptance examples
-
-1. Original YouTube source `https://www.youtube.com/watch?v=bc7QaDmLmoA`:
-   actual media, identity/duration, timed speech coverage and visual demonstration
-   checks, without third-party text masquerading as video review.
-2. Facebook share/r source and known Chinese-subtitled Reel: native canonical
-   identity, capture, independent NAS arrival, subtitle/ASR comparison and ending.
-3. At least one Facebook source longer than ten minutes, up to twenty minutes:
-   complete acquisition and processing within the declared byte/time limits.
-4. Source without accessible captions: full captured audio reaches existing
-   Groq processing, with timed uncertainty and gaps retained.
-5. Force direct acquisition failure for a playable known source: recording
-   delivers both picture and actual source sound, with boundary checks.
-6. From SJM, acquire/verify/process a requested source through its own NAS
-   connection without using Home as a relay or processor. Read matching retained
-   bytes from Home separately; verify relevant vault binding/recall per ship rules.
-7. Reuse a verified run in a later active request without redundant transcription.
-8. Expired login, unreachable Mini, unmounted/wrong NAS, exhausted budget,
-   partial transfer and mismatched hash: precise bounded failure, no success
-   receipt, no repeated uncertain dispatch and no lost evidence.
-
-Fixtures can prove validation and recovery mechanics. They cannot replace the
-real capture, audio permission, source review and host independence examples.
-Record unavailable acceptance sources as untested, not passed. Retain working
-Facebook v1 and its records until the replacement passes its relevant examples.
-
-
-Observation-protocol checkpoint, 8 November 2026: the new handshake case stayed
-failed after a black concurrent native screenshot and a 40.18-second receipt-write
-time. Actual retained frames at zero/five seconds showed the expected opening,
-so neither the black screenshot nor later write time reliably describes what the
-recorder captured. The architect ruled: preserve that failure without retrofit;
-keep visible opening proof before capture; freshly recheck exact URL/title,
-window, paused-zero/no-ad controls after ready; treat a black concurrent screenshot
-as explicitly ambiguous picture evidence while identity must remain unambiguous.
-Actual observation timing is captured inside the same native CUA call, with its
-interval uncertainty retained separately from later persistence. Finished output
-must establish the full first episode, opening, first/last speech and ending.
-Native control must observe the end clock or wrap and pause. No timer widening,
-permission/window expansion or automatic retry. Independently review this exact
-protocol, then one fresh named short test; if it fails again, stop recording work
-and deliver the accepted direct Facebook portion with the precise remaining
-blocker for a new design decision. Original YouTube deadline stays immutable.
-
-
-SJM release deferral confirmed by Keith on 8 November 2026 in the active user
-conversation, relayed by the architect: leave SJM transcription repair for now
-and use Home until a later fix. SJM processing and activation are deliberately
-deferred, no longer required for this release's Home acceptance. Preserve its
-candidate, retained failed chunk and dated verified-TLS HTTP 403 diagnosis.
-No SJM provider, credential or network change is authorized. Home processing is
-accepted as Home work under this explicit selection, never as completed SJM work.
-
-Home/Mini delivery still requires the relevant actual examples 1, 2, 3, 4, 5, 7
-and 8. Their activation receipts must list only genuinely passed examples and
-separately record example 6 as Keith's dated SJM-processing/activation deferral.
-The installer will recognize only this narrow named release exception for Home
-or Mini; it cannot use it to activate SJM or waive recording/YouTube, source
-boundaries, independent review, package binding or any other live check.
-
-
-VFR and provider-uncertainty checkpoint, 8 November 2026: the final version2
-short recording passed its actual callback/native-start protocol, full decode,
-complete speech export and source publication. Its 111.464958-second container
-has a 73.21-second variable-frame-rate video track, with a held opening and a
-separate trailing audio span. The inherited per-sheet input truncation falsely
-ended a sampling interval before the next actual VFR frame. The v2 correction
-samples the full stream once into the same one-per-second 4x4 sheets, then reuses
-v1 progress/hash/coverage verification. Preserve incomplete passes as partials.
-Held decoded pictures between real frames may repeat in samples; do not call
-those distinct source frames. Stop at the actual video extent, preserve the
-actual last decoded PTS, and label the trailing audio as unpictured. Never clone
-that tail into newly observed pictures. The source ending can be proved inside
-the real track; the final paused-loop picture is not the first-episode ending.
-No new recording, timer, access scope or broader architecture is introduced.
-
-The architect also approved explicit provider uncertainty within the existing
-gaps contract: only a structurally valid, finite, ordered interval outside its
-actual submitted chunk becomes a timestamp anomaly. Preserve the retained raw
-response bytes and exact raw segment index/text/times; exclude the entire
-unsupported segment from normalized source-speech claims, retaining its actual
-audio intersection as unverified. Never clip/redistribute words, infer silence
-or automatically retry. Missing fields, malformed structures, nonfinite and
-reversed intervals still hard-fail. Hash-bind anomaly and coverage records and
-make preparation/status visibly unverified. A first episode can be accepted
-only with actual opening, supported first/last speech, source pictures/subtitles
-and ending, and no unresolved anomaly intersecting required source content.
-An anomaly confined to retained padding or a later loop does not invalidate
-separately proved source content. ASR timestamps spanning the paused lead are
-not precise speech-onset evidence. This ruling was relayed in the active chat
-by the architect before dependent implementation.
-
-
-Fresh post-repair YouTube deployment validation, 8 November 2026: the architect
-confirmed that Keith's existing develop-and-deploy instruction includes testing
-the original supplied YouTube source after the recorder repair. The previous
-request remains closed with its unchanged deadline and failed direct attempt.
-Once the reviewed Home/Mini candidates and actual recorder-acceptance receipt
-are ready, create one new, explicitly labelled deployment-validation request and
-ninety-minute deadline, then dispatch promptly. This is recording-only: do not
-repeat direct extraction, so that source has one direct and one recording
-attempt in total. Preserve and link both request records. Announce the new case
-clearly before starting; do not silently refresh the old request, automatically
-retry an uncertain dispatch or allow a further routine recording retry. The
-source, hosts, method, limits and provider stay unchanged. A new material choice
-still requires Keith's decision. This ruling was supplied in the active chat
-before new request creation or dispatch.
-
-
-## Confirmed late-confirmation warning and exact retained-run recovery
-
-Keith explicitly approved warning plus full-content proof on 8 November 2026,
-including conditional recovery of the current retained YouTube recording. Its
-request e7a2c9fd-666f-4a81-92fc-0ffd972a09c9, original 10:33:11.541629 UTC
-deadline, consumed recording attempt and hard source-plus-120-second/2-GiB
-per-operation limits stay unchanged. Native observation interval 29.522480 to
-30.217480 seconds after ready straddled the existing 30-second target. The
-original failed predicate remains false and retained, without rounding or retrofit.
-A structurally valid late confirmation becomes a visible warning, never proof
-of complete capture. Missing readiness, changed source/window, invalid timing
-structure/sound route and hard limits remain blockers.
-
-Recovery is restricted to youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed and
-its exact old a402 package. It requires independently returned raw/context
-hashes, unchanged existing ledger and original command failure, bound native
-source/startup observations and pinned capture code/binary. Old control-flow
-evidence proves only earlier successful command/JSON/window checks. Discarded
-final stdout is explicitly unavailable, not reconstructed. Fresh full decode,
-actual media/audio validation and original deadline precede normal NAS staging
-and Home processing. New records say pending_content_verification and expose
-the original failed predicate/timing warning in prepared/status metadata.
-No accepted capture receipt or new recording is permitted. Final linked recovery
-acceptance requires complete identity/opening, supported first/last speech, actual
-ending and full-episode coverage, with explicit ads/loops/padding/stalls and
-unresolved ranges. Exact code/docs/tests require independent review before install.
-SJM remains deliberately deferred and untouched.
+Every commit requires independent adversarial approval. Keith authorized the
+DeepSeek desktop account exception after bounded Kimi attempts returned no usable
+verdict; it remains opposite-family review, not a missing-verdict waiver.
+Activation is distinct from commit/push and must preserve all unrelated dirty
+Home changes, concurrent commits, local adaptations and working Facebook v1.

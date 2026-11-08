@@ -83,113 +83,31 @@ On-demand research that scans externally for new tools, techniques, and ideas, a
 
 Detect URL type and handle accordingly:
 
-For requested Facebook or YouTube retained-video analysis, first read
-`../k2b-video-extract/SKILL.md`. It owns the unified replacement and its explicit
-acceptance gate. Until accepted, the procedures below are compatibility routes:
-Facebook v1 remains installed and YouTube's local helper supplies text only.
-Do not treat either as acceptance of the new cross-platform recorder or SJM
-processing route. Keep third-party transcript text, source sound and observed
-visual evidence distinct.
+For a requested Facebook or YouTube source, read
+`../k2b-video-extract/SKILL.md` and its current workflow. It owns the single
+maintained content extraction path and actual delivery-state gate.
 
-**Facebook Reels, videos and posts:**
-The following evidence procedure applies to every separately authorized Mini
-capture, with Facebook as the current routing case. It grants no new source scope.
-Use the separately authorized Mini browser/capture worker. Home and SJM supply
-the bounded task context and verify returned evidence; browser login stays on
-the Mini. The former Mini K2B deployment remains retired. Read
-`wiki/reference/2026-10-25_k2b-multi-machine-operating-model.md` in the local
-vault for the latest tested connection and remaining limits. Verify the actual
-computer-use connection and visible page;
-do not infer automatic routing from installed apps or a public download. If the
-Mini route is blocked, stop and report the exact blocker. Use another desktop
-for signed-in browsing only when Keith explicitly selects it for the task.
-Use a unique per-capture directory and manifest; never overwrite another run.
-Before dispatch, name a byte budget for the run and check free space on both
-Mini-local storage and the mounted share. Require at least twice that budget
-free on each, and stop dispatching if the check fails or the budget is unknown.
-Use a capture-tool limit that bounds cumulative run output, or monitored
-cumulative run size, and stop capture at the byte budget. A per-file limit alone
-does not satisfy this bound. If neither is available, report the capture blocked.
-Immediately before NAS writes, measure the actual cumulative run size and
-require at least twice that size free on each store. An exceeded budget or
-failed recheck means stop, preserve partials and report unverified/unintegrated;
-continuing with a larger budget requires Keith's approval for that run.
-After such approval, require at least twice the new budget free on both stores
-before any capture or transfer resumes; otherwise remain stopped and report it.
-Report retained run sizes and low-space blockers. Deleting originals or partials
-requires Keith's approval for the exact paths; this procedure enables no sweep.
-Before dispatch, state the task deadline and maximum attempts in the brief.
-Stop and report unverified/unintegrated when either bound is reached or the
-current task ends. The coordinator reports a stalled or disconnected worker
-as unverified, rather than treating silence as progress or success.
-Hash the final Mini-local originals before transfer and retain those hashes in
-a source/method/date/hash manifest beside the media. Return that manifest's
-SHA-256 or full expected hash list to the coordinator in the task completion
-message, independently of NAS retrieval. Copy the same manifest
-with NAS results; never replace its expected hashes using the NAS copy.
-Also retain the digest in a Mini-local completion record. A later explicitly
-authorized task may retrieve that original record and manifest through the
-existing SSH route; lack of automatic retries does not forbid authorized recovery.
-The capturing session verifies the NAS share is actually mounted on the Mini,
-using the live mount table to match the expected NAS server and share, rather
-than checking only that its directory exists. Write a unique random run marker
-and include its hash in the manifest. The coordinator must read the same marker
-through its own NAS connection before accepting NAS arrival.
-After mount verification, the capturing session reads back stored files and
-compares SHA-256 hashes with the Mini-local
-pre-transfer manifest before reporting NAS arrival. Any mount, write, read-back
-or hash failure means arrival failed: preserve the originals, record the failed
-files and expected/observed hashes or read error, and mark NAS partials unverified
-without treating them as source evidence or silently deleting them. Tell the
-requesting Home/SJM chat that storage status is Mini-local and knowledge remains
-unintegrated. Preserve Mini-local originals and their manifest; cleanup is not
-part of this capture procedure. Before the requesting knowledge host accepts a
-returned capture, it independently retrieves the expected manifest and selected
-stored files, checks the manifest against the Mini's separately returned digest
-or hash list, verifies file hashes and reads the content. For NAS verification,
-Home must use its own NAS mount, and SJM may read that mount through the Home
-relay; neither may reuse the Mini's mounted filesystem view. The existing SSH
-route to the Mini is only for retrieving its source manifest and completion
-record. If the independent NAS connection is unavailable, report NAS arrival
-unverified and preserve the results. Never copy
-credentials with results. A capture or transfer is not completed knowledge
-integration: ordinary synthesis requires the designated note-writer receipt,
-and raw vault capture remains Home-owned under its existing save procedure.
-If coordinator retrieval or verification is unavailable, including an offline
-Home relay, do not accept the capture; report unverified and unintegrated with
-the exact blocker. A transfer may be retried within the active authorized task
-using preserved originals and a new run directory. No later-session retry,
-cleanup or background job is automatically activated by this procedure.
-Keep the source's claims and Keith's reason for sharing it distinct.
+**YouTube:** native Mini captions plus relevant native visual checks. Retain
+actual source identity, caption language/provenance, timestamps and coverage,
+a timestamped paraphrase and honest visual observations. Home independently
+validates the typed NAS bundle and reads it before answering. Do not call a
+paraphrase a verbatim transcript or claim complete speech, full video/audio
+files or every-frame viewing. Missing captions and actual-media requirements
+stop unsupported/deferred. Do not invoke the old audio-download/Groq/transcript
+connector fallback as the default.
 
-**YouTube URLs:**
-1. Follow `k2b-youtube-transcribe` for a single video's transcript. Start with its public-first, no-login command and use the shared helper, not the transcript MCP:
-   ```bash
-   set -euo pipefail
-   ERRFILE=$(mktemp -t yt-transcript-err.XXXXXX.log)
-   trap 'rm -f "$ERRFILE"' EXIT
-   trap 'exit 130' INT TERM
-   if TRANSCRIPT=$(K2B_YT_COOKIES_FILE=none YT_DLP_COOKIE_BROWSER=none K2B_YT_CURRENT_DLP_FALLBACK=1 ~/Projects/K2B/scripts/yt-transcript.sh "<youtube-url>" 2>"$ERRFILE"); then
-     :
-   else
-     cat "$ERRFILE" >&2
-     echo "No verified transcript; stop before analysis" >&2
-     exit 1
-   fi
-   METHOD=$(awk '$1 == "METHOD:" { method = $2 } END { print method }' "$ERRFILE")
-   if [[ -z "$TRANSCRIPT" || -z "$METHOD" || "$METHOD" == "failed" ]]; then
-     echo "No verified transcript; stop before analysis" >&2
-     exit 1
-   fi
-   ```
-   This invocation tries public captions, then local Groq Whisper, then temporary current yt-dlp plus Groq when the installed downloader fails. It does not use YouTube login, browser cookies, a remote host, or a paid API route.
-   Expected methods are `captions-en`, `captions-zh`, `groq-whisper`, `groq-whisper-current-dlp`, and `failed`.
-   This `METHOD=` parsing pattern is for explicit shell use of `yt-transcript.sh`; the Codex hook path only consumes stdout, not stderr.
-   If `yt-transcript.sh` exits non-zero or returns empty stdout, inspect stderr for the concrete failure before trying the transcript MCP as a last resort.
-2. Analyze the full transcript
-3. Extract key concepts, techniques, tools mentioned
-4. Map each to K2B applicability
-5. Note timestamps for the most relevant segments when they are present in the transcript or source metadata
+**Facebook:** native Mini canonical identity, direct bounded media acquisition,
+independent Home NAS validation and accepted speech/visual processing. Preserve
+its separate1200-second source and256-MiB per-operation limits, actual speech,
+subtitles, boundary checks and gaps. A direct failure stops, without recording.
+
+For both sites use only the named Mini task from the video workflow, never SSH
+UI scripting or a Home browser without Keith's explicit host selection. Keep
+source claims separate from Keith's reason for sharing them. Follow-ups use
+retained timestamps/analysis, reopening a relevant native moment when needed.
+No automatic recording, provider fallback, new app/permission/network change,
+scheduler or SJM deployment is authorized; SJM remains explicitly deferred.
+Ordinary knowledge-note integration remains a separate designated writer action.
 
 **GitHub repo URLs:**
 1. Fetch and read the README
@@ -1712,7 +1630,7 @@ raw research and compile outputs. On SJM, use the current conversation and its
 source tools directly, then answer or save ordinary wiki synthesis through
 `k2b-vault-writer`. Do not invoke this extractor or append its ledger on SJM.
 
-**Why**: Bulk extraction (TLDR, key claims, entities) is pattern-matching work that consumes interactive context on long sources (YouTube transcripts, papers, READMEs). Offload the extraction to Kimi K2.7 Code and keep Codex focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the full rationale, provenance contract, and phase-gate protocol.
+**Why**: Bulk extraction (TLDR, key claims, entities) consumes interactive context on long papers, READMEs and articles. Offload that extraction to Kimi K2.7 Code and keep Codex focused on K2B applicability analysis, which requires identity-aware judgment. See `wiki/projects/project_minimax-offload.md` for the rationale and provenance contract. Single YouTube sources are excluded: use the native caption-and-visual workflow, its paraphrase/claims and actual coverage, with no raw-transcript or provider fallback.
 
 **Contract**:
 - Kimi produces a compressed, citation-backed digest: `{tldr, source_type, key_claims[], entities[], methodology_notes[], open_questions[]}`.
@@ -1722,12 +1640,12 @@ source tools directly, then answer or save ordinary wiki synthesis through
 
 **When to use (size gate)**:
 - URL deep-dive mode (`/research <url>`) when the fetched source exceeds **~10,000 chars**.
-- Long YouTube transcripts, full papers, READMEs for large repos, long-form articles.
+- Full papers, READMEs for large repos and long-form articles. YouTube caption evidence stays in its dedicated native workflow.
 - SKIP for short topic-scan findings, landing pages, or anything under 10K chars. On short sources, Kimi's structured digest is typically LARGER than the original, so there are no context savings (this was measured empirically on 2026-04-10 against 3-9KB K2B research notes where the digest ran 1.0x-2.8x the input size). In that range, Codex-direct is cheaper and faster.
 - Rule of thumb: if you would only read the source once to extract, Codex-direct wins. If you would read it multiple times or the source is longer than Keith would skim in one sitting, Kimi-extract wins.
 
 **Workflow**:
-1. Fetch the source content as usual (`scripts/yt-transcript.sh` for YouTube, WebFetch for articles, Read for GitHub README, etc.).
+1. Fetch an article, paper or GitHub README through its supported source tools. Do not enter this offload for a YouTube source; read k2b-video-extract and its native caption/visual evidence instead.
 2. If fetched content is under 10K chars, skip the offload entirely and extract in Codex. See size gate above.
 3. Otherwise, write the fetched content to a temp file, e.g. `/tmp/k2b-research-input-$(date +%s).txt`, remembering the exact filename for the next step.
 4. Call the extractor with the SAME filename from step 3:
@@ -1806,6 +1724,6 @@ python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-rese
 - No em dashes, no AI cliches, no sycophancy
 - Be specific in recommendations -- "improve the meeting processor" is useless, "add an explicit instruction for formatting action items with owner names in brackets" is actionable
 - External findings should be filtered for relevance -- don't dump every search result
-- When scanning one YouTube video, follow the public-first command and failure gate in URL Mode above. Inspect the helper's stderr before using a transcript connector as a last resort.
+- For one YouTube source, use the native caption-and-visual workflow in URL Mode. Missing captions stop; there is no automatic transcript-service, audio-download or recording fallback.
 - When scanning GitHub repos, focus on README, key source files, and patterns
 - Always cross-link findings to existing vault notes where relevant

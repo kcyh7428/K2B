@@ -15,6 +15,9 @@ import sys
 FILES = ('video-extract.py','lib/video_extract.py','lib/video_legacy.py','media/record.swift')
 DOWNLOADER_SHA256 = 'e51e69e89489f199530f13d32a4342da3ddb2cf34842f364603a066db05afbf3'
 OWNERS = {'home':'keithmbpm2','sjm':'keithcheung','mini':'fastshower'}
+CONTENT_CONTRACT = 'content_first_2026-11-08'
+LIVE_CHECKS = ['youtube_native_caption_visual','facebook_native_identity','facebook_long_direct_media',
+    'facebook_no_caption_speech','verified_reuse','typed_failures','home_mini_nas_and_roles','home_vault_binding_and_recall','truthful_coverage']
 
 
 def digest(path):
@@ -38,11 +41,10 @@ def release_identity(files,role,pins):
 
 
 def host_pins(role,home,downloader):
-    if role != 'mini': return {}
+    if role != 'mini': return {'workflow_contract':CONTENT_CONTRACT}
     if downloader is None or downloader.is_symlink() or digest(downloader) != DOWNLOADER_SHA256:
         raise ValueError('official pinned 2026.10.26 downloader required')
-    pins = {'downloader_sha256':DOWNLOADER_SHA256,'deno_sha256':digest(Path('/opt/homebrew/bin/deno').resolve()),
-            'swift_version_sha256':hashlib.sha256(subprocess.check_output(['/usr/bin/swiftc','--version'],timeout=20)).hexdigest()}
+    pins = {'workflow_contract':CONTENT_CONTRACT,'downloader_sha256':DOWNLOADER_SHA256,'deno_sha256':digest(Path('/opt/homebrew/bin/deno').resolve())}
     profile_receipt = home/'.local/state/k2b/video-v2/browser-profile.json'; no_symlinks(profile_receipt)
     if profile_receipt.is_file():
         import re
@@ -54,15 +56,11 @@ def host_pins(role,home,downloader):
 
 
 def validate_acceptance(receipt, package, role):
-    passed = receipt.get('live_examples'); deferred = receipt.get('deferred_examples',[])
-    complete = passed == list(range(1,9)) and deferred == []
-    # Keith's explicit 8 November release decision defers only SJM processing
-    # and activation. Never represent that example as a passed live check.
-    home_mini_with_sjm_deferred = (role in ('home','mini') and passed == [1,2,3,4,5,7,8] and
-        deferred == [{'example':6,'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}])
     if (receipt.get('package') != package or receipt.get('role') != role or receipt.get('independent_review') != 'approve' or
-            not (complete or home_mini_with_sjm_deferred)):
-        raise ValueError('activation requires matching approval and relevant live examples; only the explicit SJM release deferral is permitted')
+        role not in ('home','mini') or receipt.get('workflow_contract') != CONTENT_CONTRACT or receipt.get('live_checks') != LIVE_CHECKS or
+        'deferred_examples' in receipt or 'live_examples' in receipt or
+        receipt.get('deferred_scopes') != [{'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}]):
+        raise ValueError('activation requires matching content-first approval, typed live checks and explicit SJM deferral')
 
 
 def no_symlinks(path):
@@ -77,6 +75,7 @@ def main():
     p.add_argument('--activate',action='store_true')
     a = p.parse_args(); os.umask(0o077)
     user = pwd.getpwuid(os.getuid()).pw_name; validate_owner(a.role,user)
+    if a.role == 'sjm':raise ValueError('SJM installation is explicitly deferred for this release')
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     source = Path(__file__).resolve().parent
     hashes = {name:digest(source/name) for name in FILES}
@@ -98,15 +97,14 @@ def main():
             shutil.copyfile(source/name,target); target.chmod(0o400)
             if digest(target) != hashes[name]: raise ValueError('installed source hash mismatch')
         c = {'version':'2','role':a.role,'package':identity,'files':hashes,'host_pins':pins,'recorder_accepted':False}
+        c.update(pins)
         if a.role == 'mini':
             if a.downloader is None or a.downloader.is_symlink() or digest(a.downloader) != DOWNLOADER_SHA256:
                 raise ValueError('official pinned 2026.10.26 downloader required')
             tools = stage/'tools'; tools.mkdir(mode=0o700)
             shutil.copyfile(a.downloader,tools/'yt-dlp'); (tools/'yt-dlp').chmod(0o500)
             c['downloader_sha256'] = DOWNLOADER_SHA256
-            subprocess.run(['/usr/bin/swiftc','-parse-as-library',str(stage/'media/record.swift'),'-o',str(tools/'record')],check=True,timeout=120)
-            (tools/'record').chmod(0o500); c['recorder_sha256'] = digest(tools/'record')
-            c.update(pins)
+            c['recorder_status'] = 'experimental_not_installed_in_default_package'
         (stage/'config.json').write_text(json.dumps(c,sort_keys=True,indent=2)+'\n'); (stage/'config.json').chmod(0o400)
         for folder in sorted((d for d in stage.rglob('*') if d.is_dir()),key=lambda d:len(d.parts),reverse=True): folder.chmod(0o500)
         # Some supported macOS filesystems require owner-write on the source

@@ -49,6 +49,8 @@ BYTE_BUDGET_SCOPE = 'active_operation_local_plus_nas'
 PACKAGE = Path(__file__).resolve().parent.parent
 CURRENT = {}
 OPERATION_ROOTS = []
+CONTENT_CONTRACT = 'content_first_2026-11-08'
+CONTENT_FILES = ('caption-metadata.json','analysis.md','claims.json','prior-visual-notes.json','visual-observations.json')
 # Keith's explicit recovery authority covers this retained attempt only.
 LATE_RECOVERY_RUN = 'youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed'
 LATE_RECOVERY_REQUEST = 'e7a2c9fd-666f-4a81-92fc-0ffd972a09c9'
@@ -173,7 +175,9 @@ def install_config(package=None):
         p = child(package, name); s = p.stat()
         need(s.st_uid == os.getuid() and not s.st_mode & 0o222 and sha(p) == digest, 'installed_code_changed')
     if role == 'mini':
-        for name, field in (('yt-dlp','downloader_sha256'),('record','recorder_sha256')):
+        artifacts = [('yt-dlp','downloader_sha256')]
+        if c.get('workflow_contract') != CONTENT_CONTRACT:artifacts.append(('record','recorder_sha256'))
+        for name, field in artifacts:
             artifact = child(package,'tools/'+name)
             need(artifact.is_file() and not artifact.stat().st_mode & 0o222 and sha(artifact) == c.get(field), 'installed_tool_changed')
         need(sha(Path('/opt/homebrew/bin/deno').resolve()) == c.get('deno_sha256'), 'pinned_deno_changed')
@@ -260,6 +264,7 @@ def request_receipt(state,native):
     parse_source(native['canonical_url'])
     need(type(native.get('deadline_epoch')) in (int,float) and math.isfinite(native['deadline_epoch']) and native['deadline_epoch'] > 0,'invalid_request_binding')
     binding = {k:native[k] for k in ('request_id','canonical_url','deadline_epoch')}
+    if 'request_created_epoch' in native:binding['request_created_epoch'] = native['request_created_epoch']
     exists = path.exists()
     receipt = read_json(path) if exists else dict(binding,attempted=[])
     need(all(receipt.get(k) == v for k,v in binding.items()),'immutable_request_binding_changed')
@@ -269,7 +274,7 @@ def request_receipt(state,native):
 
 def reserve_attempt(state, native, method, run=None):
     path,receipt = request_receipt(state,native)
-    need(method in ('direct','record') and method not in receipt['attempted'], 'attempt_already_dispatched_collect_existing')
+    need(method in ('direct','record','content') and method not in receipt['attempted'], 'attempt_already_dispatched_collect_existing')
     receipt['attempted'].append(method)
     if run is not None:
         run_identity(run)
@@ -532,16 +537,166 @@ def validate_late_recovery(root,ledger,run,media_digest,context_digest,now):
 
 def publish_source(root,digest,deadline):
     manifest = verify(root,digest)
-    if not manifest.get('recovery'): return legacy.transfer(root,digest,deadline)
+    content = manifest.get('evidence_type') == 'caption_visual'
+    if not manifest.get('recovery') and not content:
+        return dict(legacy.transfer(root,digest,deadline),evidence_type='media')
     mount_check(NAS,'mini'); legacy.space_check(root,legacy.MAX_BYTES)
     dest = safe_dir(nas_run(root.name)); OPERATION_ROOTS.append(dest)
     for item in [*manifest['files'],{'name':'manifest.json','sha256':digest}]:
         legacy.publish_file(child(root,item['name']),child(dest,item['name']),item['sha256'],dest,deadline)
     verify(dest,digest)
-    result = {'status':'pending_content_verification','run_id':root.name,'manifest_sha256':digest,
-        'nas_path':str(dest),'local_path':str(root),'bytes':size(root),'recovery':manifest['recovery']}
+    result = {'status':'content_evidence_published' if content else 'pending_content_verification','run_id':root.name,'manifest_sha256':digest,
+        'nas_path':str(dest),'local_path':str(root),'bytes':size(root),'evidence_type':'caption_visual' if content else 'media'}
+    if content:result['complete_media_available'] = False
+    else:result['recovery'] = manifest['recovery']
     write_json(root/'completion.json',result)
     return result
+
+
+def finite_number(value):
+    return type(value) in (int,float) and math.isfinite(value)
+
+
+def content_context(path,digest):
+    need(path.is_file() and not path.is_symlink(),'content_evidence_missing_or_invalid')
+    need(path.stat().st_size <= 1024**2,'content_evidence_size_limit')
+    with path.open('rb') as stream:data = stream.read(1024**2+1)
+    need(len(data) <= 1024**2,'content_evidence_size_limit')
+    need(isinstance(digest,str) and re.fullmatch('[a-f0-9]{64}',digest) and hashlib.sha256(data).hexdigest() == digest,'content_evidence_digest_mismatch')
+    return json.loads(data)
+
+
+def validate_content_evidence(root,evidence,now=None):
+    need(isinstance(evidence,dict) and evidence.get('version') == 1 and evidence.get('evidence_type') == 'caption_visual','invalid_content_evidence_type')
+    source = parse_source(evidence.get('canonical_url',''))
+    request_path(root,evidence)
+    need(source['platform'] == 'youtube' and evidence.get('submitted_url') == source['url'] == evidence['canonical_url'],'content_source_identity_mismatch')
+    need(evidence.get('host') == 'Macmini' and evidence.get('user') == 'fastshower' and evidence.get('control') == 'native_chrome','native_content_control_unverified')
+    duration = validate_duration('youtube',evidence.get('source_duration'))
+    need(all(isinstance(evidence.get(k),str) and 0 < len(evidence[k]) <= 2048 for k in ('title','publisher')),'source_description_missing')
+    created = evidence.get('request_created_epoch'); deadline = evidence.get('deadline_epoch')
+    need(finite_number(created) and finite_number(deadline) and 0 < created < deadline <= created+LIMITS['youtube'][2],'invalid_content_request_deadline')
+    if now is not None:need(finite_number(now) and created <= now < deadline,'expired_content_publication_request')
+    observed = evidence.get('caption_observation_window')
+    need(isinstance(observed,dict) and isinstance(observed.get('basis'),str) and observed['basis'].strip() and
+         finite_number(observed.get('start_epoch')) and finite_number(observed.get('end_epoch')) and
+         0 < observed['start_epoch'] <= observed['end_epoch'] <= created,'invalid_caption_observation_window')
+    need(evidence.get('analysis_kind') == 'timestamped_paraphrase' and evidence.get('complete_media_available') is False and
+         evidence.get('full_visual_review') is False and evidence.get('caption_end_times') == 'not_exposed' and
+         evidence.get('speech_completeness') == 'unverified','unsupported_content_completeness_claim')
+    need(evidence.get('raw_caption_retention_status') in ('not_retained','excerpts_only') and
+         isinstance(evidence.get('raw_caption_retention_reason'),str) and evidence['raw_caption_retention_reason'].strip(),'raw_caption_retention_unspecified')
+    files = evidence.get('files')
+    need(isinstance(files,dict) and set(files) == set(CONTENT_FILES),'invalid_content_payload_set')
+    for name,digest in files.items():
+        p = child(root,name)
+        need(p.is_file() and p.stat().st_size <= 2*1024**2 and isinstance(digest,str) and re.fullmatch('[a-f0-9]{64}',digest) and sha(p) == digest,'content_payload_hash_mismatch')
+    metadata = read_json(root/'caption-metadata.json'); claims = read_json(root/'claims.json')
+    previous = read_json(root/'prior-visual-notes.json'); visuals = read_json(root/'visual-observations.json')
+    for data in (metadata,claims,previous,visuals):
+        need(isinstance(data,dict) and data.get('source_url') == source['url'],'content_payload_source_mismatch')
+    for data in (metadata,claims,visuals):
+        need(all(data.get(k) == evidence[k] for k in ('title','publisher')),'content_description_mismatch')
+    need(metadata.get('source_duration_seconds') == claims.get('duration_seconds') == visuals.get('source_duration_seconds') == duration,'content_duration_mismatch')
+    need(metadata.get('control') == visuals.get('control') == 'native_chrome' and previous.get('full_visual_viewing') is False and
+         visuals.get('full_visual_viewing') is False,'native_visual_control_or_coverage_invalid')
+    starts = metadata.get('caption_start_seconds_in_sequence'); count = metadata.get('observed_caption_count')
+    need(type(count) is int and 0 < count <= 20000 and isinstance(starts,list) and len(starts) == count and
+         all(finite_number(t) and 0 <= t < duration for t in starts) and starts == sorted(starts),'invalid_caption_start_sequence')
+    need(metadata.get('first_caption_reached') is True and metadata.get('last_caption_reached') is True and
+         evidence.get('caption_sequence_status') == 'all_exposed_rows_inspected','native_caption_sequence_incomplete')
+    label = metadata.get('provenance_label_exact'); language = metadata.get('caption_language'); provenance = evidence.get('caption_provenance_kind')
+    need(isinstance(label,str) and 0 < len(label) <= 512 and isinstance(language,str) and 0 < len(language) <= 256 and
+         provenance in ('auto_generated','manual','unknown'),'caption_provenance_missing')
+    if provenance == 'auto_generated':need('auto-generated' in label.lower(),'caption_auto_label_mismatch')
+    if provenance == 'manual':need(metadata.get('caption_provenance') == 'manual' and 'auto-generated' not in label.lower(),'caption_manual_provenance_unverified')
+    need(isinstance(claims.get('claims'),list) and 0 < len(claims['claims']) <= 1000,'timestamped_claims_missing')
+    for claim in claims['claims']:
+        need(isinstance(claim,dict) and isinstance(claim.get('range'),str) and isinstance(claim.get('claim'),str) and claim['claim'].strip(),'invalid_timestamped_claim')
+        if claim['range'] == 'whole source':continue  # Source-wide interpretation, never a visual-coverage claim.
+        span = re.fullmatch(r'([0-9]{1,2}):([0-5][0-9])-([0-9]{1,2}):([0-5][0-9])',claim['range'])
+        need(span is not None,'invalid_claim_timestamp')
+        begin,end = int(span[1])*60+int(span[2]),int(span[3])*60+int(span[4])
+        need(0 <= begin <= end <= duration,'claim_timestamp_outside_source')
+    analysis = (root/'analysis.md').read_text()
+    need(source['url'] in analysis and len(analysis.strip()) > len(source['url'])+10,'source_linked_paraphrase_missing')
+    observations = visuals.get('observations')
+    need(isinstance(observations,list) and 0 < len(observations) <= 128,'native_visual_observations_missing')
+    for item in observations:
+        need(isinstance(item,dict) and finite_number(item.get('requested_second')) and 0 <= item['requested_second'] <= duration and
+             finite_number(item.get('observation_call_started_epoch')) and finite_number(item.get('observed_epoch')) and
+             0 < item['observation_call_started_epoch'] <= item['observed_epoch'] <= created,'invalid_visual_observation_timing')
+        clock = item.get('clock_seconds')
+        need(clock is None or (finite_number(clock) and 0 <= clock <= duration),'invalid_observed_source_clock')
+        need(all(isinstance(item.get(k),str) and 0 < len(item[k]) <= 16384 for k in ('description','uncertainty')),'visual_description_or_uncertainty_missing')
+    return {'evidence_type':'caption_visual','method':'native_captions_and_visual_checks','complete_media_available':False,
+        'analysis_kind':'timestamped_paraphrase','raw_caption_retention_status':evidence['raw_caption_retention_status'],
+        'raw_caption_retention_reason':evidence['raw_caption_retention_reason'],'caption_end_times':'not_exposed','speech_completeness':'unverified',
+        'caption_count':count,'first_caption_start':starts[0],'last_caption_start':starts[-1],'caption_language':language,
+        'caption_provenance_kind':provenance,'caption_provenance_label':label,'caption_observation_window':observed,
+        'caption_sequence_status':evidence['caption_sequence_status'],'caption_coverage_notes':metadata.get('coverage_notes',[]),
+        'source_uncertainties':[item.get('limits','Unverified source claim') for item in claims['claims']],
+        'prior_visual_limitations':previous.get('limitations','Prior native observations only; timing may be uncertain'),
+        'visual_observation_count':len(observations),'visual_observations':observations,'full_visual_review':False,
+        'visual_artifacts':'native_observation_notes_not_retained_video_frames',
+        'source_uncertainty':'Caption evidence and worker paraphrase are not independently verified source claims or complete speech'}
+
+
+def publish_content(url,request_id,evidence_digest,state):
+    need(parse_source(url)['platform'] == 'youtube','content_requires_youtube')
+    request_path(state,{'request_id':request_id})
+    draft = child(state,'content-drafts/'+request_id); path = child(draft,'evidence.json')
+    evidence = content_context(path,evidence_digest)
+    need(isinstance(evidence,dict) and evidence.get('request_id') == request_id and evidence.get('canonical_url') == parse_source(url)['url'],'content_request_binding_mismatch')
+    # Preserve the first syntactically valid request, even when expiry or a
+    # source prerequisite fails. A corrected draft cannot renew its clock.
+    ledger_path,ledger = request_receipt(state,evidence)
+    coverage = validate_content_evidence(draft,evidence,time.time())
+    deadline = time.monotonic()+remaining_deadline(evidence['deadline_epoch'],time.time(),60)
+    mount_check(NAS,'mini'); legacy.space_check(state,LIMITS['youtube'][1])
+    old_run = ledger.get('by_method',{}).get('content')
+    if old_run:
+        root = child(state,old_run); digest = committed_source(root,old_run); manifest = verify(root,digest)
+        need(manifest.get('evidence_type') == 'caption_visual' and manifest.get('evidence_sha256') == evidence_digest,'content_committed_binding_mismatch')
+        OPERATION_ROOTS[:] = [draft,root,nas_run(old_run)]
+        return dict(publish_source(root,digest,deadline),reused=True)
+    source = parse_source(url)
+    run = f"youtube-{source['video_id']}-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}-{secrets.token_hex(4)}"
+    reserve_attempt(state,evidence,'content',run)
+    root = safe_dir(state/run); OPERATION_ROOTS[:] = [draft,root,nas_run(run)]
+    for name in (*CONTENT_FILES,'evidence.json'):
+        source_file = child(draft,name); target = child(root,name)
+        with source_file.open('rb') as inp,target.open('xb') as out:
+            out.write(inp.read(2*1024**2+1));out.flush();os.fsync(out.fileno())
+        need(sha(target) == sha(source_file),'content_staging_hash_mismatch');cumulative_budget(root)
+    copied = content_context(root/'evidence.json',evidence_digest)
+    need(copied == evidence and validate_content_evidence(root,copied,time.time()) == coverage,'content_staging_context_changed')
+    (root/'run-marker.txt').write_text(secrets.token_hex(32)+'\n')
+    digest = payload_manifest(root,{'version':VERSION,'platform':'youtube','run_id':run,'video_id':source['video_id'],
+        'source_duration':evidence['source_duration'],'evidence_type':'caption_visual','method':'native_captions_and_visual_checks',
+        'evidence_sha256':evidence_digest,'marker_sha256':sha(root/'run-marker.txt'),'coverage':coverage})
+    write_json(root/'source-commit.json',{'run_id':run,'manifest_sha256':digest})
+    return publish_source(root,digest,deadline)
+
+
+def read_content_bundle(run,digest,manifest):
+    src = nas_run(run); evidence = content_context(child(src,'evidence.json'),manifest.get('evidence_sha256'))
+    source = parse_source(evidence.get('canonical_url',''))
+    need((source['platform'],source['video_id']) == run_identity(run),'content_run_source_identity_mismatch')
+    need(sha(src/'run-marker.txt') == manifest.get('marker_sha256'),'content_manifest_binding_mismatch')
+    coverage = validate_content_evidence(src,evidence)
+    need(manifest.get('coverage') == coverage and manifest.get('source_duration') == evidence['source_duration'] and
+         manifest.get('method') == 'native_captions_and_visual_checks','content_manifest_claims_mismatch')
+    # The immutable source already is the retained analysis. Read it directly;
+    # no copied caption cache, transcript or second publication state machine.
+    need(verify(src,digest) == manifest,'content_source_changed_during_read')
+    return dict(coverage,status='content_evidence_verified_for_assistant_read',run_id=run,source_manifest_sha256=digest,
+        reader_version=processor_id(),reader_host=CURRENT['role'],source_duration=evidence['source_duration'],
+        canonical_url=evidence['canonical_url'],title=evidence['title'],publisher=evidence['publisher'],source_evidence=str(src/'evidence.json'),
+        source_bundle=str(src),analysis=str(src/'analysis.md'),claims=str(src/'claims.json'),caption_metadata=str(src/'caption-metadata.json'),
+        visual_notes=str(src/'visual-observations.json'),prior_visual_notes=str(src/'prior-visual-notes.json'),
+        source_payloads=manifest['files'],reused=True,nas_publication_verified=True,
+        content_review_status='requires_assistant_read_and_source_interpretation')
 
 
 def recover_recording(run,media_digest,context_digest,state):
@@ -672,7 +827,7 @@ def capture(url, state, record_only=False):
     write_json(root/'acquisition.json',dict(native,method=method,coverage=coverage,captions=captions))
     (root/'run-marker.txt').write_text(secrets.token_hex(32)+'\n')
     digest = payload_manifest(root,{'version':VERSION,'platform':platform,'run_id':run,'video_id':source['video_id'],'duration':actual,
-        'source_duration':duration,'method':method,'marker_sha256':sha(root/'run-marker.txt'),'coverage':coverage})
+        'source_duration':duration,'evidence_type':'media','method':method,'marker_sha256':sha(root/'run-marker.txt'),'coverage':coverage})
     write_json(root/'source-commit.json',{'run_id':run,'manifest_sha256':digest})
     return publish_source(root,digest,deadline)
 
@@ -908,7 +1063,8 @@ def prepare_source(run,digest,local,manifest):
     coverage = prepare_visuals(src/'source.mp4',root,duration,digest,deadline)
     coverage['unpictured_audio_tail_seconds'] = max(0,audio_start+audio_duration-coverage['visual_duration'])
     write_json(root/'visual-coverage.json',coverage)
-    result = {'status':'prepared_for_assistant_review','run_id':run,'source_manifest_sha256':digest,'processor_id':processor_id(),'processing_host':CURRENT['role'],
+    result = {'status':'prepared_for_assistant_review','evidence_type':'media','complete_media_available':True,
+        'run_id':run,'source_manifest_sha256':digest,'processor_id':processor_id(),'processing_host':CURRENT['role'],
         'source_method':manifest['method'],'timeline_basis':basis,'source_time_map_status':'requires_actual_boundary_review' if manifest['method'] == 'playback_recording' else 'direct_media',
         'transcript':str(root/'transcript.txt'),'visual_coverage':str(root/'visual-coverage.json'),'sheets':coverage['sheets'],'ending':coverage['ending'],
         'duration':duration,'source_duration':manifest['source_duration'],'media_duration':timing['media_duration'],'video_duration':timing['video_duration'],
@@ -927,6 +1083,12 @@ def process(run,digest,state):
     platform, identity = run_identity(run); mount_check(NAS,CURRENT['role'])
     manifest = verify(nas_run(run),digest)
     need(manifest.get('platform') == platform and manifest.get('video_id') == identity and manifest.get('run_id') == run, 'source_binding_mismatch')
+    if manifest.get('evidence_type') == 'caption_visual':
+        need(platform == 'youtube','caption_visual_requires_youtube')
+        need({f['name'] for f in manifest['files']} == set(CONTENT_FILES)|{'evidence.json','run-marker.txt'},'unexpected_content_manifest_payload')
+        return read_content_bundle(run,digest,manifest)
+    need(platform == 'facebook' and manifest.get('method') == 'direct_media' and manifest.get('evidence_type','media') == 'media',
+         'unsupported_media_method_content_first_workflow')
     names = {f['name'] for f in manifest['files']}
     need({'source.mp4','speech.flac','run-marker.txt','acquisition.json','native-source.json'} <= names, 'incomplete_source_manifest')
     validate_duration(platform,manifest.get('source_duration'))
@@ -974,7 +1136,12 @@ def validate_source_timing(manifest,media_duration,speech_duration,audio_stream_
 
 
 def read_status(run,digest,state):
-    mount_check(NAS,CURRENT['role']); verify(nas_run(run),digest)
+    mount_check(NAS,CURRENT['role']); manifest = verify(nas_run(run),digest)
+    platform,identity = run_identity(run)
+    need(manifest.get('platform') == platform and manifest.get('video_id') == identity and manifest.get('run_id') == run,'source_binding_mismatch')
+    if manifest.get('evidence_type') == 'caption_visual':
+        need(platform == 'youtube' and {f['name'] for f in manifest['files']} == set(CONTENT_FILES)|{'evidence.json','run-marker.txt'},'unexpected_content_manifest_payload')
+        return read_content_bundle(run,digest,manifest)
     if CURRENT['role'] == 'mini':
         result = read_json(child(state,run)/'completion.json')
         need(result['manifest_sha256'] == digest, 'completion_digest_mismatch')
@@ -1053,6 +1220,7 @@ def arguments(argv=None):
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='action',required=True)
     for action in ('version','inventory'): sub.add_parser(action)
     for action in ('capture','record'): sub.add_parser(action).add_argument('url')
+    a = sub.add_parser('publish-content');a.add_argument('url');a.add_argument('request_id');a.add_argument('evidence_sha256')
     for action in ('process','status','save-digest'):
         a = sub.add_parser(action); a.add_argument('run_id'); a.add_argument('manifest_sha256')
     a = sub.add_parser('recover-recording'); a.add_argument('run_id'); a.add_argument('media_sha256'); a.add_argument('context_sha256')
@@ -1063,24 +1231,32 @@ def main():
     os.umask(0o077)
     try:
         a = arguments(); c = install_config(); role = c['role']
-        platform = parse_source(a.url)['platform'] if a.action in ('capture','record') else run_identity(a.run_id)[0] if hasattr(a,'run_id') else 'facebook'
+        platform = parse_source(a.url)['platform'] if hasattr(a,'url') else run_identity(a.run_id)[0] if hasattr(a,'run_id') else 'facebook'
         state = safe_dir(legacy.own_home()/'.local/state/k2b/video-v2'); configure(c,platform,state)
         seconds = LIMITS[platform][2] if a.action in ('capture','record') else processing_budget(LIMITS[platform][0]+120) if a.action == 'process' else 600
         # The v1 owning worker lock is shared, so v1/v2 acquisitions serialize.
         lock_root = safe_dir(legacy.own_home()/'.local/state/k2b/reels-v1') if role == 'mini' else state
         with legacy.operation_timeout(seconds), (contextlib.nullcontext() if a.action in ('version','inventory','status') else legacy.lock(lock_root)):
-            if a.action == 'version': result = {'version':VERSION,'role':role,'processor_id':processor_id(),'limits':LIMITS,'byte_budget_scope':BYTE_BUDGET_SCOPE,'recorder_accepted':recorder_accepted(state) if role == 'mini' else False}
+            if a.action == 'version': result = {'version':VERSION,'role':role,'processor_id':processor_id(),'limits':LIMITS,'byte_budget_scope':BYTE_BUDGET_SCOPE,
+                'workflow_contract':CONTENT_CONTRACT,'youtube_method':'native_captions_and_visual_checks','facebook_method':'direct_media',
+                'recording_default_enabled':False,'recorder_status':'experimental_not_activated'}
             elif a.action == 'inventory': result = inventory(state,role)
-            elif a.action in ('capture','record'):
-                need(role == 'mini','capture_requires_mini'); result = capture(a.url,state,a.action == 'record')
+            elif a.action == 'capture':
+                need(role == 'mini','capture_requires_mini')
+                need(platform == 'facebook','youtube_requires_native_caption_visual_evidence')
+                result = capture(a.url,state)
+            elif a.action == 'publish-content':
+                need(role == 'mini','content_publication_requires_mini')
+                result = publish_content(a.url,a.request_id,a.evidence_sha256,state)
+            elif a.action == 'record':raise Blocked('recording_experimental_not_in_default_workflow')
             elif a.action == 'recover-recording':
-                need(role == 'mini','recovery_requires_mini')
-                result = recover_recording(a.run_id,a.media_sha256,a.context_sha256,state)
+                raise Blocked('recording_recovery_experimental_not_activated')
             elif a.action == 'process':
                 need(role in ('home','sjm'),'process_requires_knowledge_host'); result = process(a.run_id,a.manifest_sha256,state)
             elif a.action == 'status': result = read_status(a.run_id,a.manifest_sha256,state)
             else:
                 need(role in ('home','sjm'),'save_requires_knowledge_host')
+                need(platform == 'facebook','caption_paraphrase_save_requires_vault_writer')
                 # Digest storage reuses the writer's provenance and hash checks.
                 result = legacy.save_digest(a.run_id,a.manifest_sha256,preparation_state(state,a.manifest_sha256))
         print(json.dumps(result,ensure_ascii=False)); return 0
