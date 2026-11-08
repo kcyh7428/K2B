@@ -198,6 +198,46 @@ Use this skill as the default desktop route for "save this", "capture this", "up
 - External research briefings, transcript-like material, or broad session handoffs that need digestion across multiple pages: save to the appropriate `raw/` folder and leave `compiled: false` for `/compile`.
 - If the user explicitly invokes `/meeting`, `/daily`, `/linkedin`, or `/youtube`, use that dormant lane. Otherwise keep desktop capture here.
 
+### Supervised personal-understanding capture
+
+During an active owner conversation, when Keith asks or agrees to retain understanding
+about himself, read his admitted source and relevant existing ordinary subject note.
+Update the relevant existing note instead of creating a duplicate. Record date, source and context; distinguish his
+verbatim words from summary. Keep stated beliefs/values, temporary states, aspirations,
+reported practices and observed outcomes distinct. Do not infer permanent traits or
+success from an intention. Label AI interpretations as open to correction. Sharing or
+liking material does not endorse all its claims. State material unknowns; the owner’s
+utterance can support a reaction even when its external reference remains unidentified.
+Retain later qualifications with their dates/sources and earlier history. Follow explicit
+owner correction or withdrawal instructions under existing authority and writer rules;
+if the intended correction or withdrawal is unclear, clarify before treating it as a
+qualification or changing retained content. Hold a qualification unsaved if its earlier
+account and suitable target cannot yet be identified.
+
+Show the exact target, existing/proposed wording and supporting source for content
+approval. A draft remains unsaved until its exact wording is approved; task approval,
+extraction and parsing are not content approval. Use the existing expected-hash writer,
+locks, recovery, receipts and note/index readback. A changed base stops for the existing
+conflict decision: show the new existing/proposed text and obtain fresh content approval
+before any resolution writes. During NAS failure, use only the existing private
+stage/resume route, retaining approved draft bytes, original expected hash and operation
+identity. Approval does not waive preflight or permit writing the offline read copy.
+
+After saving, test one relevant question and one differently worded question that should
+recover the approved understanding through the existing source-backed recall path.
+Read supporting passages; preserve dates and uncertainty. A correctly unsupported answer
+to an overbroad claim is a passing negative check. For content with stated limits,
+include an overbroad check: asserting an unsupported generalisation fails, as does missing or
+misrepresented expected support. Report the target, receipt and failed question; keep
+acceptance unverified and diagnose saved bytes versus retrieval using existing receipts
+and note/index readback before updates relying on the failed result. If recall coverage
+is unavailable, report that limit and leave acceptance pending; unrelated captures can
+continue under this same procedure. Corrective writes still need content
+approval and conflict checks; do not repeat a successful save as a retrieval repair. Personal
+understanding informs independent reasoning, not agreement with or imitation of Keith.
+Use existing notes and representations; scheduled extraction, memory kinds, profile
+rules and background jobs remain unchanged.
+
 ## System Reference
 
 Before writing a note, review [[context_k2b-note-lifecycle]] (`wiki/context/context_k2b-note-lifecycle.md`) for data conventions under current AGENTS.md. Historical routing descriptions in that note are evidence, not live instruction authority.
