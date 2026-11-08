@@ -109,6 +109,14 @@ untouched.
   read-only for the shared vault except ordinary notes under the paths listed in the
   storage runbook, saved during active user-requested conversations through
   `scripts/vault-note-write.py`. Any other SJM vault write stops and is handed to Home.
+- The content extraction design explicitly approved on 8 November 2026 uses
+  native Mini YouTube captions plus relevant visual checks and direct Facebook
+  media with Home processing. Read `k2b-video-extract` and its delivery record.
+  Typed NAS evidence retains provenance, timestamps and coverage; a paraphrase is
+  not a verbatim transcript or complete video/audio. No automatic recording or
+  provider fallback is enabled. Keith explicitly deferred SJM processing and
+  activation for this release: preserve its candidate/failed chunk and dated403
+  diagnosis without contacting/updating it. Home evidence is not SJM acceptance.
 - The Mini's former deployment topology stays retired. Keith authorized the Mini as a
   supervised signed-in browser and media-capture worker on 25 October 2026 and
   reaffirmed that scope on 26 October 2026. Facebook browsing belongs on the Mini under

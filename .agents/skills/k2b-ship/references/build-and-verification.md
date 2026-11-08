@@ -47,4 +47,15 @@ bash tests/vault-note-authority.test.sh
 
 Run focused tests before broader suites. Shell tests use `mktemp -d`, clean up through traps, and redirect real paths through `K2B_*` overrides. Python 3.12 is the target. TypeScript is strict and uses ES modules.
 
+Content extraction has focused typed-content, contract, media-processing,
+experimental-recording and installer tests in `tests/test_video_*.py`. YouTube
+caption/visual bundles need no media probe, STT or recorder acceptance. Facebook
+retains real direct-media speech/visual proof. Fixtures do not establish actual
+native observations, source sound or full content coverage. Consult
+`plans/2026-11-08_video-extraction-delivery.md` for the exact live acceptance and
+separate candidate-install versus active-route state. Preserve Facebook v1 until
+its replacement passes the relevant typed examples. Default Mini installation
+does not compile/install the experimental recorder. Preserve old packages and
+failed media. SJM remains explicitly deferred. No restored checkout or new daemon.
+
 Use `apply_patch` for hand edits. Bash scripts start with `set -euo pipefail`, resolve paths from the script, and lock shared writers. Raw vault captures are immutable after creation.
