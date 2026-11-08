@@ -169,8 +169,10 @@ call timestamps describe the advancing observation after Play. Do not include
 `opening_picture_verified` in this versioned post-ready record; the pre-record
 opening remains separately required and the actual recorded opening remains
 mandatory. Old failed receipts are never converted or retrospectively accepted.
-Missing, changed or late identity/start evidence blocks publication, retaining
-output for diagnosis. Native CUA never claims hearing.
+Missing or changed identity/start evidence blocks publication, retaining output
+for diagnosis. A valid late confirmation retains its exact interval and failed
+30-second target as a warning requiring full-content proof. Never round its time
+or relabel the target as passed. Native CUA never claims hearing.
 
 The component reserves 60 seconds beyond verified source duration, with an
 absolute source-plus-120-second command ceiling, original deadline and byte cap.
@@ -285,3 +287,52 @@ required source content blocks acceptance. A padding/later-loop anomaly remains
 labelled without invalidating independently proved first-episode content. The
 last picture of a paused loop is not the first source ending. ASR timestamps
 across a paused lead can establish returned words, but not precise speech onset.
+
+
+## Named post-repair deployment validation
+
+For this release, the architect confirmed a fresh validation case for the original
+YouTube source under Keith's existing develop-and-deploy authority. Keep its old
+failed direct request closed with the original deadline. Only after reviewed
+candidates and the actual short-source recorder receipt are ready, create and
+announce one new recording-only request with a fresh ninety-minute deadline.
+Do not repeat direct extraction. Preserve/link both records; the source still
+has one direct and one recording attempt total. Collect uncertain dispatch;
+no further routine recording retry or silent deadline renewal. Source, hosts,
+method, duration/byte caps and provider remain unchanged.
+
+
+## Approved retained-recording recovery
+
+Keith explicitly approved warning plus full-content proof on 8 November 2026.
+The 30-second confirmation target remains unchanged. Valid late observations
+retain measured delay, call interval, target_met false and a visible warning.
+Missing readiness, changed source/window, malformed/nonfinite/reversed times,
+invalid sound route and hard source-plus-120-second, original-deadline or
+per-operation byte limits still block. Incomplete content cannot be accepted.
+
+A narrowly scoped recover-recording action may stage only the already consumed
+request e7a2c9fd-666f-4a81-92fc-0ffd972a09c9 and run
+youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed from its pinned a402 capture
+package. Preserve the exact original command result in original-command-result.json
+with exit_code, result and actual observed_epoch. Recovery-context.json version 1
+binds that request/run, authority keith_2026-11-08_late_confirmation and exact
+SHA-256 values under files for source.mp4, native-source.json,
+recording-started.json, native-playback-started.json and original-command-result.json.
+The coordinator must independently return raw-media and context hashes.
+
+The existing ledger, deadline, capture package/code/binary, source/context hashes,
+recording duration and full decode must pass before normal NAS staging and Home
+processing. The old named failure proves only the earlier recorder command,
+JSON parse and returned-window checks in that exact hash-pinned old control flow.
+Unretained final recorder stdout stays unavailable and is never reconstructed.
+Sound-route provenance comes from retained bound startup and the exact pinned
+recorder configuration; actual source speech still requires real ASR/picture review.
+
+Staging/completion and prepared/status metadata say pending_content_verification,
+retain the original failed predicate and late warning, and issue no accepted
+capture receipt. Do not change original evidence, restart recording, refresh
+a clock or consume another attempt. A later linked acceptance record may be
+created only after complete identity, opening, supported first/last speech, actual
+ending and full-episode coverage proof. Explicitly account for ads, loops, padding,
+stalls, uncertain observations and unresolved ranges.

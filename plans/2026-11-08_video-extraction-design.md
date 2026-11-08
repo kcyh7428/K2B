@@ -289,3 +289,48 @@ An anomaly confined to retained padding or a later loop does not invalidate
 separately proved source content. ASR timestamps spanning the paused lead are
 not precise speech-onset evidence. This ruling was relayed in the active chat
 by the architect before dependent implementation.
+
+
+Fresh post-repair YouTube deployment validation, 8 November 2026: the architect
+confirmed that Keith's existing develop-and-deploy instruction includes testing
+the original supplied YouTube source after the recorder repair. The previous
+request remains closed with its unchanged deadline and failed direct attempt.
+Once the reviewed Home/Mini candidates and actual recorder-acceptance receipt
+are ready, create one new, explicitly labelled deployment-validation request and
+ninety-minute deadline, then dispatch promptly. This is recording-only: do not
+repeat direct extraction, so that source has one direct and one recording
+attempt in total. Preserve and link both request records. Announce the new case
+clearly before starting; do not silently refresh the old request, automatically
+retry an uncertain dispatch or allow a further routine recording retry. The
+source, hosts, method, limits and provider stay unchanged. A new material choice
+still requires Keith's decision. This ruling was supplied in the active chat
+before new request creation or dispatch.
+
+
+## Confirmed late-confirmation warning and exact retained-run recovery
+
+Keith explicitly approved warning plus full-content proof on 8 November 2026,
+including conditional recovery of the current retained YouTube recording. Its
+request e7a2c9fd-666f-4a81-92fc-0ffd972a09c9, original 10:33:11.541629 UTC
+deadline, consumed recording attempt and hard source-plus-120-second/2-GiB
+per-operation limits stay unchanged. Native observation interval 29.522480 to
+30.217480 seconds after ready straddled the existing 30-second target. The
+original failed predicate remains false and retained, without rounding or retrofit.
+A structurally valid late confirmation becomes a visible warning, never proof
+of complete capture. Missing readiness, changed source/window, invalid timing
+structure/sound route and hard limits remain blockers.
+
+Recovery is restricted to youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed and
+its exact old a402 package. It requires independently returned raw/context
+hashes, unchanged existing ledger and original command failure, bound native
+source/startup observations and pinned capture code/binary. Old control-flow
+evidence proves only earlier successful command/JSON/window checks. Discarded
+final stdout is explicitly unavailable, not reconstructed. Fresh full decode,
+actual media/audio validation and original deadline precede normal NAS staging
+and Home processing. New records say pending_content_verification and expose
+the original failed predicate/timing warning in prepared/status metadata.
+No accepted capture receipt or new recording is permitted. Final linked recovery
+acceptance requires complete identity/opening, supported first/last speech, actual
+ending and full-episode coverage, with explicit ads/loops/padding/stalls and
+unresolved ranges. Exact code/docs/tests require independent review before install.
+SJM remains deliberately deferred and untouched.

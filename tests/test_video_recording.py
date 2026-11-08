@@ -158,7 +158,7 @@ def test_actual_started_marker_and_fresh_native_start_are_request_bound(tmp_path
     assert v.recording_seconds(n) == 120
 
 
-@pytest.mark.parametrize('change',['missing','request','window','recorder','package','future_ready','late_start','old_hearing','no_advancing','marker_hash','not_reset'])
+@pytest.mark.parametrize('change',['missing','request','window','recorder','package','future_ready','old_hearing','no_advancing','marker_hash','not_reset'])
 def test_missing_or_mismatched_recording_handshake_never_accepts(tmp_path,change):
     v,n,recording,ready,start = handshake(tmp_path)
     if change == 'missing':(tmp_path/'recording-started.json').unlink()
@@ -167,7 +167,6 @@ def test_missing_or_mismatched_recording_handshake_never_accepts(tmp_path,change
     elif change == 'recorder':ready['recorder_sha256'] = 'c'*64
     elif change == 'package':ready['package'] = 'c'*64
     elif change == 'future_ready':ready['ready_epoch'] = 1200
-    elif change == 'late_start':start['observed_epoch'] = 1030.01
     elif change == 'old_hearing':start['audio_state'] = 'unmuted_source_sound_observed'
     elif change == 'no_advancing':start['playback_clock'] = 0
     elif change == 'marker_hash':start['ready_marker_sha256'] = 'c'*64
@@ -197,13 +196,118 @@ def test_native_call_timestamp_is_distinct_from_later_receipt_and_black_is_ambig
     assert result['recorded_opening_and_ending_review_required'] is True
 
 
-@pytest.mark.parametrize('change',['unversioned','write_time_basis','late_call','missing_identity','unverified_prerecord_opening'])
+@pytest.mark.parametrize('change',['unversioned','write_time_basis','missing_identity','unverified_prerecord_opening'])
 def test_revised_native_protocol_refuses_old_or_unverified_observations(tmp_path,change):
     v,n,recording,start = native_observation_v2(tmp_path)
     if change=='unversioned':start.pop('version')
     elif change=='write_time_basis':start['observation_clock_basis']='receipt_write_time'
-    elif change=='late_call':start.update(observation_call_started_epoch=1031,observed_epoch=1032)
     elif change=='missing_identity':start['source_identity_corroborated']=False
     else:n['opening_picture_verified']=False
     v.write_json(tmp_path/'native-playback-started.json',start)
     with pytest.raises(v.Blocked):v.recording_handshake(tmp_path,n,recording,995,1100)
+
+
+def test_late_confirmation_preserves_failed_target_as_warning_not_pass(tmp_path):
+    v,n,recording,ready,start = handshake(tmp_path)
+    start.update(observation_call_started_epoch=1029.52248,observed_epoch=1030.21748,receipt_written_epoch=1047)
+    v.write_json(tmp_path/'native-playback-started.json',start)
+    result = v.recording_handshake(tmp_path,n,recording,995,1100)
+    assert result['native_start_target_seconds'] == 30
+    assert result['native_start_target_met'] is False
+    assert result['warnings'] == ['late_native_playback_confirmation_requires_full_content_proof']
+    assert result['native_start_delay_seconds'] == pytest.approx(30.21748)
+    assert result['native_observation_call_uncertainty_seconds'] == pytest.approx(.695)
+    assert result['full_episode_content_proof_required'] is True
+
+
+@pytest.mark.parametrize('field,value', [('observed_epoch',float('nan')),('observation_call_started_epoch',float('inf')),
+    ('observed_epoch',999),('playback_clock',float('nan')),('playback_clock',0),('receipt_written_epoch',999)])
+def test_warning_never_relaxes_invalid_observation_timing(tmp_path,field,value):
+    v,n,recording,ready,start=handshake(tmp_path)
+    import json
+    start[field]=value;(tmp_path/'native-playback-started.json').write_text(json.dumps(start))
+    with pytest.raises(v.Blocked):v.recording_handshake(tmp_path,n,recording,995,1100)
+
+
+def recovery_fixture(tmp_path):
+    v,n,recording,ready,start=handshake(tmp_path)
+    n.update(request_id=v.LATE_RECOVERY_REQUEST,verified_epoch=995)
+    ready.update(request_id=n['request_id'],package=v.LATE_RECOVERY_PACKAGE)
+    v.write_json(tmp_path/'recording-started.json',ready)
+    start.update(request_id=n['request_id'],ready_marker_sha256=v.sha(tmp_path/'recording-started.json'),
+        observation_call_started_epoch=1029.52248,observed_epoch=1030.21748,receipt_written_epoch=1047)
+    v.write_json(tmp_path/'native-playback-started.json',start)
+    v.write_json(tmp_path/'native-source.json',n)
+    v.write_json(tmp_path/'original-command-result.json',{'exit_code':2,'result':{'status':'blocked','reason':'native_playback_start_missing_or_late'},'observed_epoch':1100})
+    (tmp_path/'source.mp4').write_bytes(b'unchanged retained media')
+    context={'version':1,'run_id':v.LATE_RECOVERY_RUN,'request_id':n['request_id'],
+        'authority':'keith_2026-11-08_late_confirmation','files':{name:v.sha(tmp_path/name) for name in
+        ('source.mp4','native-source.json','recording-started.json','native-playback-started.json','original-command-result.json')}}
+    v.write_json(tmp_path/'recovery-context.json',context)
+    return v,n,context
+
+
+def test_recovery_requires_exact_existing_attempt_hashes_and_failure(tmp_path):
+    v,n,c=recovery_fixture(tmp_path)
+    ledger={'request_id':n['request_id'],'canonical_url':n['canonical_url'],'deadline_epoch':n['deadline_epoch'],
+        'attempted':['record'],'runs':[v.LATE_RECOVERY_RUN],'by_method':{'record':v.LATE_RECOVERY_RUN}}
+    result=v.validate_late_recovery(tmp_path,ledger,v.LATE_RECOVERY_RUN,v.sha(tmp_path/'source.mp4'),v.sha(tmp_path/'recovery-context.json'),1101)
+    assert result['original_result']['reason']=='native_playback_start_missing_or_late'
+    assert result['status']=='pending_content_verification'
+    assert result['unretained_recorder_stdout']=='unavailable_not_reconstructed'
+    assert ledger['attempted']==['record']
+
+
+@pytest.mark.parametrize('change',['media','native','context_hash','wrong_run','ledger','deadline','different_failure'])
+def test_recovery_never_renews_retries_or_rebinds_retained_evidence(tmp_path,change):
+    v,n,c=recovery_fixture(tmp_path)
+    ledger={'request_id':n['request_id'],'canonical_url':n['canonical_url'],'deadline_epoch':n['deadline_epoch'],
+        'attempted':['record'],'runs':[v.LATE_RECOVERY_RUN],'by_method':{'record':v.LATE_RECOVERY_RUN}}
+    raw=v.sha(tmp_path/'source.mp4'); digest=v.sha(tmp_path/'recovery-context.json');run=v.LATE_RECOVERY_RUN;now=1101
+    if change=='media':(tmp_path/'source.mp4').write_bytes(b'changed')
+    elif change=='native':v.write_json(tmp_path/'native-source.json',dict(n,title='different source'))
+    elif change=='context_hash':digest='0'*64
+    elif change=='wrong_run':run=run[:-1]+'a'
+    elif change=='ledger':ledger['by_method']['record']='another run'
+    elif change=='deadline':now=2000
+    else:
+        v.write_json(tmp_path/'original-command-result.json',{'exit_code':2,'result':{'status':'blocked','reason':'recording_audio_route_unverified'},'observed_epoch':1100})
+        c['files']['original-command-result.json']=v.sha(tmp_path/'original-command-result.json');v.write_json(tmp_path/'recovery-context.json',c);digest=v.sha(tmp_path/'recovery-context.json')
+    with pytest.raises(v.Blocked):v.validate_late_recovery(tmp_path,ledger,run,raw,digest,now)
+
+
+def test_recovery_publishes_pending_bundle_and_reuses_without_recording(tmp_path,monkeypatch):
+    state=tmp_path/'state';state.mkdir()
+    run='youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed';root=state/run;root.mkdir()
+    v,n,c=recovery_fixture(root)
+    v.CURRENT.update(role='mini',package='c'*64,recorder_sha256='d'*64)
+    ledger={'request_id':n['request_id'],'canonical_url':n['canonical_url'],'deadline_epoch':n['deadline_epoch'],
+        'attempted':['record'],'runs':[run],'by_method':{'record':run}}
+    v.write_json(v.request_path(state,n),ledger)
+    before={p.name:v.sha(p) for p in root.iterdir()}
+    v.NAS=tmp_path/'nas';v.NAS.mkdir();monkeypatch.setattr(v,'mount_check',lambda *a:None)
+    monkeypatch.setattr(v.time,'time',lambda:1101)
+    monkeypatch.setattr(v,'install_config',lambda *a:{'role':'mini','package':v.LATE_RECOVERY_PACKAGE,
+        'files':{'lib/video_extract.py':v.LATE_RECOVERY_CODE},'recorder_sha256':'b'*64})
+    monkeypatch.setattr(v.legacy,'space_check',lambda *a:None)
+    monkeypatch.setattr(v.legacy,'mount_check',lambda *a:None)
+    monkeypatch.setattr(v.legacy,'nas_run',v.nas_run)
+    monkeypatch.setattr(v.legacy,'probe',lambda *a:{'format':{'duration':'120'},'streams':[{'codec_type':'audio'},{'codec_type':'video'}]})
+    calls=[]
+    def command(args,*unused):
+        calls.append(args)
+        if args[-1].endswith('speech.flac'):root.joinpath('speech.flac').write_bytes(b'new export')
+        return b''
+    monkeypatch.setattr(v.legacy,'command',command)
+    raw=v.sha(root/'source.mp4');digest=v.sha(root/'recovery-context.json')
+    result=v.recover_recording(run,raw,digest,state)
+    assert result['status']=='pending_content_verification'
+    assert result['recovery']['handshake']['native_start_target_met'] is False
+    assert result['recovery']['original_result']['reason']=='native_playback_start_missing_or_late'
+    assert len(calls)==2 and all('record' not in args[0] for args in calls)
+    assert not (root/'recording.json').exists() and not (state/'acceptance.json').exists()
+    assert {name:v.sha(root/name) for name in before}==before
+    assert v.read_json(v.request_path(state,n))==ledger
+    assert v.verify(v.nas_run(run),result['manifest_sha256'])['recovery']['status']=='pending_content_verification'
+    assert v.recover_recording(run,raw,digest,state)['manifest_sha256']==result['manifest_sha256']
+    assert len(calls)==2

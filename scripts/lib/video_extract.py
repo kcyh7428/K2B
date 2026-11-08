@@ -49,6 +49,11 @@ BYTE_BUDGET_SCOPE = 'active_operation_local_plus_nas'
 PACKAGE = Path(__file__).resolve().parent.parent
 CURRENT = {}
 OPERATION_ROOTS = []
+# Keith's explicit recovery authority covers this retained attempt only.
+LATE_RECOVERY_RUN = 'youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed'
+LATE_RECOVERY_REQUEST = 'e7a2c9fd-666f-4a81-92fc-0ffd972a09c9'
+LATE_RECOVERY_PACKAGE = 'a4027401f8b37a511c0f07f55fb29fcbcb3b3ff4c3691be61c9c2a6672155e5e'
+LATE_RECOVERY_CODE = '8bf7971b71b34b594c59c18a903b639e944a273756450ae969560f02b747ce3c'
 
 
 def parse_source(value):
@@ -156,19 +161,20 @@ def nas_run(run):
     return child(NAS, platform+'/'+identity+'/'+run)
 
 
-def install_config():
-    c = read_json(PACKAGE/'config.json')
+def install_config(package=None):
+    package = PACKAGE if package is None else package
+    c = read_json(child(package,'config.json'))
     need(c.get('role') in ('home','sjm','mini'), 'invalid_install_role')
-    validate_config_identity(c,PACKAGE.name)
+    validate_config_identity(c,package.name)
     role = c['role']; expected = {'home':'keithmbpm2','sjm':'keithcheung','mini':'fastshower'}[role]
     need(pwd.getpwuid(os.getuid()).pw_name == expected, 'wrong_host_user')
     need(set(c.get('files', {})) == {'video-extract.py','lib/video_extract.py','lib/video_legacy.py','media/record.swift'}, 'invalid_package_file_set')
     for name, digest in c['files'].items():
-        p = child(PACKAGE, name); s = p.stat()
+        p = child(package, name); s = p.stat()
         need(s.st_uid == os.getuid() and not s.st_mode & 0o222 and sha(p) == digest, 'installed_code_changed')
     if role == 'mini':
         for name, field in (('yt-dlp','downloader_sha256'),('record','recorder_sha256')):
-            artifact = child(PACKAGE,'tools/'+name)
+            artifact = child(package,'tools/'+name)
             need(artifact.is_file() and not artifact.stat().st_mode & 0o222 and sha(artifact) == c.get(field), 'installed_tool_changed')
         need(sha(Path('/opt/homebrew/bin/deno').resolve()) == c.get('deno_sha256'), 'pinned_deno_changed')
     return c
@@ -464,10 +470,14 @@ def recording_handshake(root,native,recording,launched_epoch,completed_epoch):
          type(observed) in (int,float) and math.isfinite(observed) and epoch <= call_started <= observed and
          type(written) in (int,float) and math.isfinite(written) and observed <= written <= completed_epoch,
          'native_observation_call_timing_invalid')
-    need(type(observed) in (int,float) and math.isfinite(observed) and epoch <= observed <= min(epoch+30,completed_epoch) and
+    need(type(observed) in (int,float) and math.isfinite(observed) and epoch <= observed <= completed_epoch and
          type(clock) in (int,float) and math.isfinite(clock) and 0 < clock <= min(native['duration'],observed-epoch+1),
-         'native_playback_start_missing_or_late')
+         'native_playback_start_missing_or_invalid')
+    target_met = observed <= epoch+30
     return {'ready_marker_sha256':digest,'ready_epoch':epoch,'native_start_observed_epoch':observed,
+        'native_start_target_seconds':30,'native_start_target_met':target_met,
+        'warnings':[] if target_met else ['late_native_playback_confirmation_requires_full_content_proof'],
+        'full_episode_content_proof_required':True,
         'native_start_delay_seconds':observed-epoch,'observed_playback_clock':clock,
         'source_clock_offset_status':'uncertain_observations_only','ending_and_source_speech_review_required':True,
         'native_observation_call_uncertainty_seconds':observed-call_started,'receipt_written_epoch':written,
@@ -489,6 +499,101 @@ def run_recorder(args,root,deadline):
         raise error
 
 
+def validate_late_recovery(root,ledger,run,media_digest,context_digest,now):
+    need(run == LATE_RECOVERY_RUN,'recovery_not_authorized_for_run')
+    need(re.fullmatch('[a-f0-9]{64}',media_digest or '') and re.fullmatch('[a-f0-9]{64}',context_digest or ''),'invalid_recovery_digest')
+    context_path = child(root,'recovery-context.json')
+    need(sha(context_path) == context_digest,'recovery_context_hash_mismatch')
+    context = read_json(context_path)
+    need(context.get('version') == 1 and context.get('run_id') == run and context.get('request_id') == LATE_RECOVERY_REQUEST and
+         context.get('authority') == 'keith_2026-11-08_late_confirmation','recovery_authority_binding_mismatch')
+    files = context.get('files'); expected = {'source.mp4','native-source.json','recording-started.json','native-playback-started.json','original-command-result.json'}
+    need(isinstance(files,dict) and set(files) == expected,'invalid_recovery_file_set')
+    for name,digest in files.items():
+        need(isinstance(digest,str) and re.fullmatch('[a-f0-9]{64}',digest) and sha(child(root,name)) == digest,'recovery_payload_hash_mismatch')
+    need(files['source.mp4'] == media_digest,'recovery_media_hash_mismatch')
+    native = read_json(root/'native-source.json'); ready = read_json(root/'recording-started.json')
+    need(native.get('request_id') == LATE_RECOVERY_REQUEST and all(ledger.get(k) == native.get(k) for k in ('request_id','canonical_url','deadline_epoch')) and
+         ledger.get('attempted') == ['record'] and ledger.get('runs') == [run] and ledger.get('by_method') == {'record':run},'recovery_existing_attempt_mismatch')
+    need(parse_source(native.get('canonical_url','')) == {'platform':'youtube','video_id':'bc7QaDmLmoA','url':'https://www.youtube.com/watch?v=bc7QaDmLmoA'},'recovery_source_mismatch')
+    need(ready.get('package') == LATE_RECOVERY_PACKAGE,'recovery_capture_package_mismatch')
+    original = read_json(root/'original-command-result.json')
+    need(original.get('exit_code') == 2 and original.get('result') == {'status':'blocked','reason':'native_playback_start_missing_or_late'},'recovery_original_failure_mismatch')
+    started = native.get('verified_epoch'); finished = original.get('observed_epoch')
+    need(type(started) in (int,float) and math.isfinite(started) and type(finished) in (int,float) and math.isfinite(finished) and
+         started <= ready.get('ready_epoch',-1) <= finished <= now < native['deadline_epoch'] and
+         finished-started <= validate_duration('youtube',native.get('duration'))+120,'recovery_hard_timing_violation')
+    return {'status':'pending_content_verification','request_id':native['request_id'],'run_id':run,'context_sha256':context_digest,
+        'raw_media_sha256':media_digest,'original_result':original['result'],'original_result_sha256':files['original-command-result.json'],
+        'unretained_recorder_stdout':'unavailable_not_reconstructed',
+        'prior_checks_proven_by_pinned_control_flow':['recorder_command_success','recorder_json_parsed','returned_window_binding'],
+        'complete_source_identity_opening_speech_ending_and_episode_coverage_required':True}
+
+
+def publish_source(root,digest,deadline):
+    manifest = verify(root,digest)
+    if not manifest.get('recovery'): return legacy.transfer(root,digest,deadline)
+    mount_check(NAS,'mini'); legacy.space_check(root,legacy.MAX_BYTES)
+    dest = safe_dir(nas_run(root.name)); OPERATION_ROOTS.append(dest)
+    for item in [*manifest['files'],{'name':'manifest.json','sha256':digest}]:
+        legacy.publish_file(child(root,item['name']),child(dest,item['name']),item['sha256'],dest,deadline)
+    verify(dest,digest)
+    result = {'status':'pending_content_verification','run_id':root.name,'manifest_sha256':digest,
+        'nas_path':str(dest),'local_path':str(root),'bytes':size(root),'recovery':manifest['recovery']}
+    write_json(root/'completion.json',result)
+    return result
+
+
+def recover_recording(run,media_digest,context_digest,state):
+    root = child(state,run); native = read_json(child(root,'native-source.json'))
+    ledger_path = request_path(state,native); need(ledger_path.is_file(),'recovery_existing_attempt_missing')
+    ledger = read_json(ledger_path); ledger_digest = sha(ledger_path)
+    recovery = validate_late_recovery(root,ledger,run,media_digest,context_digest,time.time())
+    old_package = child(PACKAGE.parent,LATE_RECOVERY_PACKAGE); old = install_config(old_package)
+    need(old['role'] == 'mini' and old['files']['lib/video_extract.py'] == LATE_RECOVERY_CODE,'recovery_old_capture_code_mismatch')
+    ready = read_json(root/'recording-started.json')
+    need(old.get('recorder_sha256') == ready.get('recorder_sha256'),'recovery_recorder_hash_mismatch')
+    deadline = time.monotonic()+remaining_deadline(native['deadline_epoch'],time.time(),60)
+    mount_check(NAS,'mini'); OPERATION_ROOTS[:] = [root,nas_run(run)]
+    if (root/'source-commit.json').exists():
+        digest = committed_source(root,run); manifest = verify(root,digest)
+        need(manifest.get('recovery',{}).get('context_sha256') == context_digest,'recovery_commit_context_mismatch')
+        return publish_source(root,digest,deadline)
+    need(not (root/'manifest.json').exists() and not (root/'recording.json').exists(),'recovery_unexpected_committed_or_recording_state')
+    # The old failure proves those prior checks, not unretained stdout fields.
+    # This explicitly derived envelope is never attributed to recorder output.
+    evidence = {'window':ready['window'],'ready_marker_sha256':sha(root/'recording-started.json'),'ready_epoch':ready['ready_epoch']}
+    original = read_json(root/'original-command-result.json')
+    current = dict(CURRENT)
+    try:
+        CURRENT.update(package=old['package'],recorder_sha256=old['recorder_sha256'])
+        handshake = recording_handshake(root,native,evidence,native['verified_epoch'],original['observed_epoch'])
+    finally:
+        CURRENT.clear(); CURRENT.update(current)
+    need(handshake['native_start_target_met'] is False,'recovery_not_a_late_confirmation_case')
+    recovery.update(handshake=handshake,capture_package=old['package'],capture_code_sha256=LATE_RECOVERY_CODE,
+        recorder_sha256=old['recorder_sha256'],sound_route_basis='hash_verified_pinned_recorder_configuration_microphone_false_system_audio_true')
+    media = legacy.probe(root/'source.mp4',root,deadline)
+    coverage = validate_recording(media,{'platform':'youtube','microphone':False,'system_audio':True},native['duration'])
+    legacy.command([legacy.TOOLS['ffmpeg'],'-nostdin','-v','error','-xerror','-i',str(root/'source.mp4'),'-map','0:v:0','-map','0:a:0','-f','null','-'],root,deadline)
+    speech = root/'speech.flac'
+    if speech.exists():
+        # An interrupted export is retained, never silently reused or deleted.
+        speech.rename(safe_dir(root/'partials')/('speech-interrupted-'+secrets.token_hex(8)+'.flac'))
+    legacy.command([legacy.TOOLS['ffmpeg'],'-nostdin','-v','error','-n','-i',str(root/'source.mp4'),'-map','0:a:0','-ac','1','-ar','16000','-c:a','flac',str(speech)],root,deadline)
+    validate_late_recovery(root,read_json(ledger_path),run,media_digest,context_digest,time.time())
+    need(sha(root/'source.mp4') == media_digest and sha(ledger_path) == ledger_digest,'recovery_media_or_ledger_changed')
+    # All original evidence remains untouched. These are new pending records.
+    write_json(root/'recovery-staging.json',recovery)
+    write_json(root/'acquisition.json',dict(native,method='playback_recording',coverage=coverage,captions=[],recovery=recovery))
+    marker = root/'run-marker.txt'
+    if not marker.exists():marker.write_text(secrets.token_hex(32)+'\n')
+    digest = payload_manifest(root,{'version':VERSION,'platform':'youtube','run_id':run,'video_id':'bc7QaDmLmoA','duration':float(media['format']['duration']),
+        'source_duration':native['duration'],'method':'playback_recording','marker_sha256':sha(marker),'coverage':coverage,'recovery':recovery})
+    write_json(root/'source-commit.json',{'run_id':run,'manifest_sha256':digest})
+    return publish_source(root,digest,deadline)
+
+
 def capture(url, state, record_only=False):
     native = native_source(url, state); source = parse_source(native['canonical_url']); platform = source['platform']
     mount_check(NAS,'mini'); legacy.space_check(state, LIMITS[platform][1])
@@ -505,7 +610,7 @@ def capture(url, state, record_only=False):
             need(old_manifest.get('run_id') == old_run and old_manifest.get('video_id') == source['video_id'] and
                  old_manifest.get('platform') == platform and abs(old_manifest.get('source_duration',0)-native['duration']) < 1,'source_changed_recovery_refused')
             OPERATION_ROOTS[:] = [child(state,r) for r in receipt.get('runs',[])]
-            result = legacy.transfer(old_root,digest,deadline)
+            result = publish_source(old_root,digest,deadline)
             return dict(result,reused=True,recovery='verified_source_publication_only')
     probe_root = None
     if record_only:
@@ -555,7 +660,9 @@ def capture(url, state, record_only=False):
         write_json(root/'recording.json', recording)
     media = legacy.probe(root/'source.mp4',root,deadline)
     actual = float(media['format']['duration'])
-    if record_only: coverage = validate_recording(media,recording,duration)
+    if record_only:
+        coverage = validate_recording(media,recording,duration)
+        coverage['playback_confirmation'] = recording['handshake']
     else:
         need(abs(actual-duration) < 1, 'source_duration_mismatch')
         need({'audio','video'} <= {s.get('codec_type') for s in media['streams']}, 'missing_media_stream')
@@ -567,7 +674,7 @@ def capture(url, state, record_only=False):
     digest = payload_manifest(root,{'version':VERSION,'platform':platform,'run_id':run,'video_id':source['video_id'],'duration':actual,
         'source_duration':duration,'method':method,'marker_sha256':sha(root/'run-marker.txt'),'coverage':coverage})
     write_json(root/'source-commit.json',{'run_id':run,'manifest_sha256':digest})
-    return legacy.transfer(root,digest,deadline)
+    return publish_source(root,digest,deadline)
 
 
 def persist_prepared(root, run, deadline=None):
@@ -807,7 +914,9 @@ def prepare_source(run,digest,local,manifest):
         'duration':duration,'source_duration':manifest['source_duration'],'media_duration':timing['media_duration'],'video_duration':timing['video_duration'],
         'speech_duration':audio_duration,'audio_start_second':audio_start,'chunks':len(chunks),'segments':len(all_segments),'audio_gaps':gaps,'provider_timestamp_anomalies':anomalies,
         'transcription_coverage_status':'unverified_provider_timestamp_anomalies' if anomalies else 'requires_source_speech_review',
-        'content_review_status':'pending_assistant_speech_visual_and_boundary_review'}
+        'content_review_status':'pending_assistant_speech_visual_and_boundary_review',
+        'source_capture_review':manifest.get('coverage',{}),'source_recovery':manifest.get('recovery'),
+        'source_recovery_status':'pending_content_verification' if manifest.get('recovery') else None}
     write_json(root/'prepared-claims.json',result)
     pd = payload_manifest(root,{'source_manifest_sha256':digest,'run_id':run})
     result = dict(result,prepared_manifest_sha256=pd); write_json(receipt,result)
@@ -946,6 +1055,7 @@ def arguments(argv=None):
     for action in ('capture','record'): sub.add_parser(action).add_argument('url')
     for action in ('process','status','save-digest'):
         a = sub.add_parser(action); a.add_argument('run_id'); a.add_argument('manifest_sha256')
+    a = sub.add_parser('recover-recording'); a.add_argument('run_id'); a.add_argument('media_sha256'); a.add_argument('context_sha256')
     return p.parse_args(argv)
 
 
@@ -963,6 +1073,9 @@ def main():
             elif a.action == 'inventory': result = inventory(state,role)
             elif a.action in ('capture','record'):
                 need(role == 'mini','capture_requires_mini'); result = capture(a.url,state,a.action == 'record')
+            elif a.action == 'recover-recording':
+                need(role == 'mini','recovery_requires_mini')
+                result = recover_recording(a.run_id,a.media_sha256,a.context_sha256,state)
             elif a.action == 'process':
                 need(role in ('home','sjm'),'process_requires_knowledge_host'); result = process(a.run_id,a.manifest_sha256,state)
             elif a.action == 'status': result = read_status(a.run_id,a.manifest_sha256,state)

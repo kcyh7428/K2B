@@ -28,8 +28,8 @@ def test_empty_words_remain_unverified_and_invalid_segments_fail():
     with pytest.raises(v.Blocked): v.legacy.segments({'text':'words','segments':[]},0,True)
 
 
-@pytest.mark.parametrize('duration,audio_duration,missing_video_duration',[(2,2,False),(260,260,False),(4,2,False),(2,2,True)])
-def test_real_media_preparation_reuses_successful_provider_chunks(tmp_path,monkeypatch,duration,audio_duration,missing_video_duration):
+@pytest.mark.parametrize('duration,audio_duration,missing_video_duration,recovery',[(2,2,False,False),(260,260,False,False),(4,2,False,False),(2,2,True,False),(2,2,False,True)])
+def test_real_media_preparation_reuses_successful_provider_chunks(tmp_path,monkeypatch,duration,audio_duration,missing_video_duration,recovery):
     import subprocess
     v = load(); nas = tmp_path/'nas'; nas.mkdir()
     monkeypatch.setattr(v,'NAS',nas)
@@ -42,8 +42,11 @@ def test_real_media_preparation_reuses_successful_provider_chunks(tmp_path,monke
     subprocess.run(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-i',str(src/'source.mp4'),'-ac','1','-ar','16000',str(src/'speech.flac')],check=True)
     for name in ('acquisition.json','native-source.json'): (src/name).write_text('{}')
     (src/'run-marker.txt').write_text('random-marker')
+    warning = {'status':'pending_content_verification','original_result':{'status':'blocked','reason':'native_playback_start_missing_or_late'},
+        'handshake':{'native_start_target_met':False,'native_start_delay_seconds':30.21748}}
     digest = v.payload_manifest(src,{'platform':'youtube','run_id':run,'video_id':'bc7QaDmLmoA','source_duration':duration,'duration':duration,
-        'method':'direct_media','marker_sha256':v.sha(src/'run-marker.txt')})
+        'method':'playback_recording' if recovery else 'direct_media','marker_sha256':v.sha(src/'run-marker.txt'),
+        **({'recovery':warning} if recovery else {})})
     calls = []
     def provider(path):
         calls.append(v.sha(path)); return {'text':'fixture speech','segments':[{'start':0,'end':1.9,'text':'fixture speech'}]}
@@ -65,7 +68,12 @@ def test_real_media_preparation_reuses_successful_provider_chunks(tmp_path,monke
         assert any(g['reason'] == 'no_audio_stream_in_media_range' for g in first['audio_gaps'])
     again = v.process(run,digest,state)
     assert again['reused'] is True and len(calls) == expected
-    assert v.read_status(run,digest,state)['nas_publication_verified'] is True
+    status=v.read_status(run,digest,state)
+    assert status['nas_publication_verified'] is True
+    if recovery:
+        assert first['source_recovery']==warning and status['source_recovery']==warning
+        assert status['source_recovery_status']=='pending_content_verification'
+        assert status['content_review_status']=='pending_assistant_speech_visual_and_boundary_review'
     root = v.preparation_state(state,digest)/run
     receipt = v.read_json(root/'prepared.json'); receipt['duration'] = duration+100
     v.write_json(root/'prepared.json',receipt)

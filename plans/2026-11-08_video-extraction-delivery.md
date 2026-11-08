@@ -499,3 +499,83 @@ negative regressions prove all original valid bytes remain preserved and no
 corrupt state is silently cleared. No new recording, provider retry or activation.
 
 Verified stale-state recovery checks: 110 focused tests passed in 23.19 seconds. Authority, skill validation and whitespace passed. The matching-old-partial case failed before correction; missing/modified partials and mismatched current files remain blocked.
+
+
+## Reviewed Home processing and bounded short-source acceptance
+
+R12 approved the complete corrected candidate in 1 minute 17 seconds, no findings.
+Packet `c076df1144270d031dba1e2121cac0d73d4fa8d65771799b73a15b2e9e5a2904`,
+delta `9ccea704a6cedc26f1c7d9e475ae8194276af54b957cb040adf1367f98bbfcda`,
+full diff `72333fce080d79cb3dc6914206cb4aff258044eed6c61c99ce8eae059c611a94`,
+manifest `80af748a5be505e2d4c9dfd96c1ea9860c68de595a1c1b9777df31a704f44403`.
+Commit `4156277` is pushed; Home candidate is
+`c68e32aecc7e194cddb008382e25421e042c3636f0029e534905e0a6789e8a2f`, processor
+`ecf81537354bebb476606978`. Mini retains exact reviewed R9/a402 capture runtime.
+
+Same-source preparation completed and published, digest
+`f535af6e94ec62c2222b6061760e0d5c9b5336bcbfa3b12e9830b0592548d828`.
+All five sheets and final image byte-match the already fully inspected diagnostics.
+The new real Groq response's segment list matches the fully read retained response:
+39 supported segments, one impossible tail segment retained raw and excluded.
+Source/prepared/status verification passed; root independently verified all 16
+prepared payloads locally and on NAS and read the normalized transcript/anomaly
+record. Actual opening/subtitle frames and cleared ending before the loop match
+the retained direct reference. Conservative episode bounds 18.703333 to 63.711667
+have no intersecting unverified range. First ASR onset remains imprecise, later
+loop/padding remain labelled, and the final paused-loop image is not the source
+ending. This establishes bounded first-source-episode picture/speech/boundary
+acceptance, not complete transcription or every-frame viewing. The private
+hash-bound review receipt is being finalized before enabling the next validation.
+
+The architect explicitly authorized one fresh post-repair recording-only YouTube
+deployment validation under Keith's existing delivery authority. The old failed
+direct request remains closed and unchanged. No new identity/deadline is created
+until candidates and recorder receipt are ready; no second direct attempt or
+further routine recording retry is permitted. Source/host/method/provider/limits
+are unchanged. The new case will be announced and both request records retained.
+No Home/Mini launcher or checkout activation, and SJM remains deferred.
+
+## Recorder receipt and fresh YouTube case dispatched
+
+Private short-source review SHA-256 `bb6914a19d8f274b2b349fdb175c1e9e9a8370bd520e45f19c1c1dd3f448fe7a`; Mini receipt SHA-256 `c426441992dd04ba2b63c027393d9f1180312d5531f8139384fcac7315317559`. Mini independently verified the source and Home prepared payloads, actual capture package/binary and old YouTube direct-only request ledger before storing the receipt. Version readback now reports recorder_accepted true; no routine launcher exists. Final Home processor reuse preserved the successful raw response hash and nanosecond mtime.
+
+Fresh recording-only YouTube deployment-validation request `e7a2c9fd-666f-4a81-92fc-0ffd972a09c9` was announced and dispatched promptly after all factual gates passed. Created `2026-11-08T09:03:11.541629+00:00`, immutable deadline `2026-11-08T10:33:11.541629+00:00`. Previous request `5958d65b-7728-42d4-af5e-b8da77eb430f` remains closed with its original deadline and sole failed direct attempt. No second direct attempt or further routine recording retry is allowed. The exact prompt and both linked request records remain private operation evidence. Source, hosts, method, duration/byte caps and provider remain unchanged. Current case is in progress, with no YouTube or overall release acceptance yet.
+
+
+## Confirmed late-confirmation warning and exact retained-run recovery
+
+Keith explicitly approved warning plus full-content proof on 8 November 2026,
+including conditional recovery of the current retained YouTube recording. Its
+request e7a2c9fd-666f-4a81-92fc-0ffd972a09c9, original 10:33:11.541629 UTC
+deadline, consumed recording attempt and hard source-plus-120-second/2-GiB
+per-operation limits stay unchanged. Native observation interval 29.522480 to
+30.217480 seconds after ready straddled the existing 30-second target. The
+original failed predicate remains false and retained, without rounding or retrofit.
+A structurally valid late confirmation becomes a visible warning, never proof
+of complete capture. Missing readiness, changed source/window, invalid timing
+structure/sound route and hard limits remain blockers.
+
+Recovery is restricted to youtube-bc7QaDmLmoA-20261108T090447Z-d57543ed and
+its exact old a402 package. It requires independently returned raw/context
+hashes, unchanged existing ledger and original command failure, bound native
+source/startup observations and pinned capture code/binary. Old control-flow
+evidence proves only earlier successful command/JSON/window checks. Discarded
+final stdout is explicitly unavailable, not reconstructed. Fresh full decode,
+actual media/audio validation and original deadline precede normal NAS staging
+and Home processing. New records say pending_content_verification and expose
+the original failed predicate/timing warning in prepared/status metadata.
+No accepted capture receipt or new recording is permitted. Final linked recovery
+acceptance requires complete identity/opening, supported first/last speech, actual
+ending and full-episode coverage, with explicit ads/loops/padding/stalls and
+unresolved ranges. Exact code/docs/tests require independent review before install.
+SJM remains deliberately deferred and untouched.
+
+Recovery verification checkpoint: 125 focused tests passed in 26.29 seconds.
+Authority and whitespace checks passed. New regressions first failed before
+implementation. Tests preserve the measured straddling interval and failed target,
+reject changed raw/context/native evidence, wrong run/ledger, expired deadline
+and a different original failure, and publish/reuse a pending bundle without
+calling the recorder or mutating the original files/attempt ledger. A real
+media preparation/status case retains the warning and original failed predicate
+through hash-bound local and NAS preparation. The single YouTube capture remains
+in progress; no recovery installation, new recording or activation occurred.
