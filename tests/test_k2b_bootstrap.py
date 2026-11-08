@@ -8,11 +8,100 @@ import sys
 import time
 import shutil
 import signal
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "scripts/k2b-bootstrap.py"
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import k2b_bootstrap
+
+
+def test_sjm_read_preference_is_separate_from_writer_environment(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(k2b_bootstrap, "local_host", lambda: "sjm")
+    nas = tmp_path / "Projects/K2B-Vault"
+    copy = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    copy.mkdir(parents=True)
+    setting = tmp_path / ".local/state/k2b/read-vault.json"
+    setting.parent.mkdir(parents=True)
+    setting.write_text(json.dumps({"root": str(copy), "verified_utc": "2026-01-01T00:00:00Z"}))
+    setting.chmod(0o600)
+    monkeypatch.setenv("K2B_VAULT_PATH", str(nas))
+    assert k2b_bootstrap.default_read_vault() == copy
+    assert os.environ["K2B_VAULT_PATH"] == str(nas)
+    assert k2b_bootstrap.read_copy_status(copy)["freshness"] == "may_lag_nas"
+    spelling = copy.parent / "unused/../SynologyDrive"
+    assert k2b_bootstrap.read_copy_status(spelling)["last_nas_comparison_utc"] == "2026-01-01T00:00:00Z"
+    assert k2b_bootstrap.read_copy_status(copy / "wiki")["last_nas_comparison_utc"] is None
+    setting.write_text("{}")
+    status = k2b_bootstrap.read_copy_status(copy)
+    assert status["setting_invalid"] and status["last_nas_comparison_utc"] is None
+    setting.unlink()
+    assert k2b_bootstrap.default_read_vault() == nas
+    monkeypatch.setenv("K2B_VAULT_PATH", str(copy))
+    with pytest.raises(ValueError):
+        k2b_bootstrap.default_read_vault()
+    assert not k2b_bootstrap.read_copy_status(copy)["setting_invalid"]
+
+
+@pytest.mark.parametrize("failure", ["public-setting", "symlink", "wrong-root", "missing-root", "future", "home"])
+def test_invalid_read_preference_stops_selection(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(k2b_bootstrap, "local_host", lambda: "home" if failure == "home" else "sjm")
+    root = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    root.mkdir(parents=True)
+    setting = tmp_path / ".local/state/k2b/read-vault.json"
+    setting.parent.mkdir(parents=True)
+    setting.write_text(json.dumps({
+        "root": str(tmp_path if failure == "wrong-root" else root),
+        "verified_utc": "2099-01-01T00:00:00Z" if failure == "future" else "2026-01-01T00:00:00Z",
+    }))
+    setting.chmod(0o644 if failure == "public-setting" else 0o600)
+    if failure == "symlink":
+        actual = setting.with_suffix(".actual")
+        setting.rename(actual)
+        setting.symlink_to(actual)
+    if failure == "missing-root":
+        root.rmdir()
+    with pytest.raises((ValueError, OSError)):
+        k2b_bootstrap.default_read_vault()
+    assert k2b_bootstrap.read_copy_status(root)["setting_invalid"]
+
+
+@pytest.mark.parametrize("state", [True, False, None])
+def test_local_read_copy_health_discloses_stopped_or_unknown_client(tmp_path, monkeypatch, state):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    root.mkdir(parents=True)
+    def process(*args, **kwargs):
+        if state is None:
+            raise subprocess.TimeoutExpired("ps", 1)
+        return subprocess.CompletedProcess([], 0, stdout="/client/cloud-drive-daemon\n" if state else "")
+    monkeypatch.setattr(k2b_bootstrap.subprocess, "run", process)
+    status = k2b_bootstrap.read_copy_status(root)
+    assert status["sync_client_running"] is state
+    notice = k2b_bootstrap.read_copy_health_notice(status)
+    assert ("not running" if state is False else "unknown" if state is None else "running") in notice
+    assert "sync freshness unverified" in notice and status["freshness"] == "may_lag_nas"
+
+
+def test_local_read_copy_health_warns_when_folder_postdates_comparison(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(k2b_bootstrap, "local_host", lambda: "sjm")
+    root = tmp_path / "Projects/K2B-Vault-Offline/SynologyDrive"
+    root.mkdir(parents=True)
+    setting = tmp_path / ".local/state/k2b/read-vault.json"
+    setting.parent.mkdir(parents=True)
+    setting.write_text(json.dumps({"root": str(root), "verified_utc": (
+        datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")}))
+    setting.chmod(0o600)
+    status = k2b_bootstrap.read_copy_status(root)
+    assert status["comparison_age_days"] == 7
+    if hasattr(root.stat(), "st_birthtime"):
+        assert status["copy_created_after_comparison"]
+        assert "compare it again" in k2b_bootstrap.read_copy_health_notice(status)
 
 
 @pytest.fixture

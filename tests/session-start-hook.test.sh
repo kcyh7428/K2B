@@ -279,6 +279,22 @@ out="$(env PATH="$stub_bin:/usr/bin:/bin" HOME="$home_dir" K2B_PROJECT_ROOT="$RE
   || fail "broken python3 must degrade to an explicit unavailable summary"
 echo "PASS: broken python3 degrades without aborting the hook"
 
+# New local-copy setup must never be bypassed by the legacy shell fallback.
+mkdir -p "$home_dir/.local/state/k2b"
+printf '{}' > "$home_dir/.local/state/k2b/read-vault.json"
+chmod 600 "$home_dir/.local/state/k2b/read-vault.json"
+out="$(env PATH="$stub_bin:/usr/bin:/bin" HOME="$home_dir" K2B_PROJECT_ROOT="$REPO_ROOT" K2B_VAULT_PATH="$vault" /bin/bash "$SCRIPT")"
+[[ "$out" == *"local-copy setup is unavailable"* && "$out" != *"BROKEN-PYTHON RULE TOKEN"* ]] \
+  || fail "configured local-copy failure must not enter NAS shell fallback"
+rm "$home_dir/.local/state/k2b/read-vault.json"
+copy="$home_dir/Projects/K2B-Vault-Offline/SynologyDrive"
+mkdir -p "$copy/System/memory"
+printf 'UNAPPROVED-COPY TOKEN\n' > "$copy/System/memory/active_rules.md"
+out="$(env PATH="$stub_bin:/usr/bin:/bin" HOME="$home_dir" K2B_PROJECT_ROOT="$REPO_ROOT" K2B_VAULT_PATH="$copy" /bin/bash "$SCRIPT")"
+[[ "$out" == *"local-copy setup is unavailable"* && "$out" != *"UNAPPROVED-COPY TOKEN"* ]] \
+  || fail "ambient local-copy failure must not enter shell fallback"
+echo "PASS: local-copy failures refuse legacy shell fallback"
+
 # --- Syncthing conflict-copy warning ---------------------------------------
 
 root="$(mktmp)"

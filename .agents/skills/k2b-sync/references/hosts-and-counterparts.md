@@ -36,6 +36,13 @@ SJM intentionally has local `AGENTS.md` and `.codex/hooks.json` adaptations. Pre
 
 ## SJM workstation configuration
 
+The 8 November 2026 approved SJM read preference may select the downloaded
+Synology Drive copy through the shared bootstrap/context CLI. See the storage
+runbook for activation. Ordinary searches use the root reported by startup,
+while explicit NAS writer bindings continue to target the online collection.
+The older NAS-default statements below describe the write binding and the
+unconfigured read default.
+
 When this checkout runs on `GLPs-MacBook-Pro` as `keithcheung`:
 
 - Project: `/Users/keithcheung/Projects/K2B`. Vault: `/Users/keithcheung/Projects/K2B-Vault`.

@@ -86,6 +86,15 @@ untouched.
 - Both Macs use one online knowledge collection on NAS through those logical aliases.
   Code and skills stay installed locally and move through reviewed Git commits.
   Credentials and machine-local state stay on their owning machines.
+- Keith approved SJM local reads on 8 November 2026. A verified Synology Drive
+  copy at `/Users/keithcheung/Projects/K2B-Vault-Offline/SynologyDrive` may be
+  the default for startup and recall through the private `read-vault.json`
+  setting described in the storage runbook. Use the root reported by startup
+  for ordinary searches. This scoped read route applies while NAS is online
+  as well as offline and supersedes NAS-first reading on SJM. Local evidence
+  may lag NAS. Saves, publication and native capture retain their approved NAS
+  targets and writer rules. Generated Minnie family memory has separate
+  ownership and remains excluded from this local read route.
 - Before any online read or write, perform the mount and alias preflight in
   `.agents/skills/k2b-vault-writer/references/storage-and-writer-operations.md`.
   A directory alone is not mount evidence. If the mount is unavailable, mismatched or

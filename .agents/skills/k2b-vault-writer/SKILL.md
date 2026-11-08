@@ -27,6 +27,12 @@ Both local writers use one online NAS collection through the exact Home/SJM alia
 
 ### Receipt-verified read fallback
 
+The separately approved 8 November SJM default local-read route is defined in
+`references/storage-and-writer-operations.md`. When its private read setting
+is activated, use the shared bootstrap/context CLI with their normal read
+defaults. Keep the NAS alias and explicit NAS writer bindings for saves.
+The older checklist below governs other outage-fallback reads.
+
 This is the sole authoritative read-fallback checklist. AGENTS.md and sync
 summaries are insufficient procedures; every gate here is required.
 

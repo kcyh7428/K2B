@@ -18,12 +18,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
 import k2b_context  # noqa: E402
+from k2b_bootstrap import default_read_vault, read_copy_status, read_copy_health_notice  # noqa: E402
 
 
 def _default_vault() -> Path:
-    return Path(
-        os.environ.get("K2B_VAULT_PATH", str(Path.home() / "Projects" / "K2B-Vault"))
-    ).expanduser()
+    try:
+        return default_read_vault()
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise k2b_context.InvalidInput(
+            "invalid_read_setting",
+            "Check ~/.local/state/k2b/read-vault.json and its local root; "
+            "or use --vault with the approved NAS alias after mount preflight.",
+        ) from exc
 
 
 def _default_state_root() -> Path:
@@ -61,6 +67,17 @@ def _reject_unsafe_output(path: Path, vault: Path) -> None:
         raise k2b_context.InvalidInput(
             "output_not_private", "output path must not be a symlink"
         )
+    copy_root = Path.home() / "Projects/K2B-Vault-Offline/SynologyDrive"
+    protected_paths = (Path.home() / "Projects/K2B-Vault", Path.home() / "Projects/K2B-NAS/K2B-Vault",
+                       copy_root, Path("/Volumes"))
+    def within(path, roots):
+        folded = str(path).casefold()
+        return any(folded == str(root).casefold() or folded.startswith(str(root).casefold() + "/")
+                   for root in roots)
+    # Refuse a supplied NAS alias before resolution can erase its spelling.
+    # Fixed physical bindings also catch outputs reached through other links.
+    if within(raw.absolute(), protected_paths):
+        raise k2b_context.InvalidInput("output_not_private", "output artifact must stay outside the vault")
     try:
         resolved = raw.resolve()
         vault_resolved = Path(vault).expanduser().resolve()
@@ -68,7 +85,8 @@ def _reject_unsafe_output(path: Path, vault: Path) -> None:
         raise k2b_context.InvalidInput(
             "output_not_private", "output path is not resolvable"
         ) from exc
-    if resolved == vault_resolved or resolved.is_relative_to(vault_resolved):
+    protected = (vault_resolved, copy_root.resolve(), *protected_paths)
+    if within(resolved, protected):
         raise k2b_context.InvalidInput(
             "output_not_private", "output artifact must stay outside the vault"
         )
@@ -115,7 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="vault-relative raw capture explicitly selected for this topic",
     )
-    gather.add_argument("--vault", type=Path, default=_default_vault())
+    gather.add_argument("--vault", type=Path)
     gather.add_argument("--published-memory", type=Path, default=None)
     gather.add_argument("--semantic-shelf", type=Path, default=None)
     gather.add_argument(
@@ -145,7 +163,7 @@ def _build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="validate a draft against its packet")
     validate.add_argument("--packet", type=Path, required=True)
     validate.add_argument("--draft", type=Path, required=True)
-    validate.add_argument("--vault", type=Path, default=_default_vault())
+    validate.add_argument("--vault", type=Path)
     validate.add_argument("--published-memory", type=Path, default=None)
     validate.add_argument(
         "--provisional-root",
@@ -164,7 +182,7 @@ def _build_parser() -> argparse.ArgumentParser:
     render = sub.add_parser("render", help="render a validated brief")
     render.add_argument("--brief", type=Path, required=True)
     render.add_argument("--format", choices=("markdown", "json"), default="markdown")
-    render.add_argument("--vault", type=Path, default=_default_vault())
+    render.add_argument("--vault", type=Path)
     render.add_argument("--output", type=Path)
     return parser
 
@@ -172,6 +190,16 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
+        if args.vault is None:
+            args.vault = _default_vault()
+        read_status = read_copy_status(args.vault)
+        if read_status:
+            read_notice = "Reading Synology Drive local copy; it may lag NAS. Last NAS comparison: " + str(
+                read_status["last_nas_comparison_utc"] or "unverified")
+            if read_status["setting_invalid"]:
+                read_notice += ". Configured read setting is invalid; check ~/.local/state/k2b/read-vault.json."
+            read_notice += ". " + read_copy_health_notice(read_status)
+            print(read_notice, file=sys.stderr)
         if args.cmd == "gather":
             if args.max_sources < 0 or args.max_evidence < 0 or args.max_bytes < 1024:
                 raise k2b_context.InvalidInput(
@@ -208,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
                         "evidence": packet["coverage"]["evidence"],
                         "partial": packet["partial"],
                         "reasons": packet["reasons"],
+                        "read_copy": read_copy_status(args.vault),
                     },
                     sort_keys=True,
                 )
@@ -238,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                         "output": str(args.output),
                         "warnings": brief["warnings"],
                         "partial": brief["partial"],
+                        "read_copy": read_status,
                     },
                     sort_keys=True,
                 )
@@ -250,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
             text = k2b_context.render_brief(
                 brief, fmt=args.format, vault_root=args.vault
             )
+            if read_status and args.format == "markdown":
+                text += "\n" + read_notice + "\n"
             if args.output:
                 _reject_unsafe_output(args.output, args.vault)
                 args.output.parent.mkdir(parents=True, exist_ok=True)
