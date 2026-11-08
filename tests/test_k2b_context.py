@@ -1079,6 +1079,321 @@ def test_incomplete_backlog_aggregate_stays_unknown_not_zero(tmp_path: Path) -> 
     assert coverage["pending_reason"] == "turn_level_backlog_unavailable"
 
 
+def _native_backlog_report(pending=7, role="home"):
+    now = datetime.now(timezone.utc)
+    return {"status": "ok", "complete": True, "checked_at": now.isoformat(),
+            "pending_turns": pending, "oldest_pending_at": (now - timedelta(days=1)).isoformat() if pending else None,
+            "eligible_turns": 10, "extracted_turns": 10 - pending,
+            "since": "2026-09-13", "through": now.date().isoformat(), "writer_role": role,
+            "invalid_receipts": 0, "source_errors": 0, "parse_exceptions": 0,
+            "unverified_turns": 0, "timed_out_sources": 0}
+
+
+@pytest.mark.parametrize("folder,host", [
+    ("native-run-artifacts/heartbeat-run", "home"),
+    ("timed-recovery-run", "sjm"),
+    ("heartbeat-run", "sjm"),
+    ("native-runs/run", "sjm"),
+])
+def test_current_native_report_replaces_legacy_coverage_warning(tmp_path, monkeypatch, folder, host):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: host, raising=False)
+    vault = tmp_path / "vault"
+    _note(vault, "wiki/projects/project_atlas.md", "# Atlas\n\nThe deadline is 5 October.\n")
+    legacy = tmp_path / "capture-status.json"
+    legacy.write_text(json.dumps({"checked_at": "2026-09-11T00:00:00Z", "counts": {"waiting": 50, "failed": 1}}))
+    state = tmp_path / "state"
+    report = state / folder / "backlog.json"
+    report.parent.mkdir(parents=True)
+    value = _native_backlog_report(role="home" if host == "home" else "sjm-source-only")
+    report.write_text(json.dumps(value))
+    packet = k2b_context.gather("Atlas", vault, topic_note="wiki/projects/project_atlas.md",
+                               coverage_receipt=legacy, coverage_state_root=state)
+    coverage = packet["coverage"]["coverage_receipt"]
+    assert coverage["pending_turns"] == 7 and coverage["pending_observed_at"] == value["checked_at"]
+    assert coverage["stale"] is False and coverage["label"] == "native completed-turn capture audit"
+    assert coverage.get("session_waiting") is None and coverage["failed"] is None
+    draft = _draft(packet, goal=[_item("Finish Atlas.", [packet["evidence"][0]["evidence_id"]])])
+    brief = k2b_context.validate_draft(packet, draft, vault_root=vault)
+    assert "coverage_stale" not in brief["warnings"]
+    assert "global pending turns (not this topic): 7" in k2b_context.render_brief(brief)
+
+
+@pytest.mark.parametrize("bad", ["partial", "counts", "future", "errors", "foreign", "symlink", "parent-link", "oversize"])
+def test_unreliable_native_report_cannot_clear_coverage_warning(tmp_path, monkeypatch, bad):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home", raising=False)
+    state = tmp_path / "state"
+    state.mkdir()
+    old = _native_backlog_report(2)
+    old["checked_at"] = "2026-09-28T00:00:00Z"
+    (state / "backlog-aggregate-old.json").write_text(json.dumps(old))
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    value = _native_backlog_report(0)
+    if bad == "partial": value["complete"] = False
+    if bad == "counts": value["extracted_turns"] = 8
+    if bad == "future": value["checked_at"] = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    if bad == "errors": value["source_errors"] = 1
+    if bad == "foreign": value["writer_role"] = "sjm-source-only"
+    report.write_text(json.dumps(value))
+    if bad == "symlink":
+        target = tmp_path / "outside.json"
+        report.rename(target)
+        report.symlink_to(target)
+    if bad == "parent-link":
+        target = tmp_path / "outside"
+        report.parent.rename(target)
+        report.parent.symlink_to(target, target_is_directory=True)
+    if bad == "oversize": report.write_text(" " * (k2b_context.MAX_COVERAGE_RECEIPT_BYTES + 1))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 2 and coverage["stale"]
+
+
+def test_native_report_uses_checked_time_and_ignores_counterpart_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home", raising=False)
+    state = tmp_path / "state"
+    run = state / "native-run-artifacts/run"
+    run.mkdir(parents=True)
+    new = _native_backlog_report(3)
+    old = _native_backlog_report(8)
+    old["checked_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    (run / "backlog-recheck.json").write_text(json.dumps(new))
+    (run / "backlog.json").write_text(json.dumps(old))
+    (run / "sjm-backlog.json").write_text(json.dumps(_native_backlog_report(9, "sjm-source-only")))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["pending_observed_at"] == new["checked_at"]
+
+
+def test_bounded_report_check_discloses_possible_excluded_observations(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    monkeypatch.setattr(k2b_context, "MAX_BACKLOG_RECEIPTS", 1)
+    monkeypatch.setattr(k2b_context, "MAX_COVERAGE_RECEIPT_BYTES", 1024)
+    state = tmp_path / "state"
+    state.mkdir()
+    for i in range(3):
+        (state / f"backlog-aggregate-{i}.json").write_text(json.dumps(_native_backlog_report()) + " " * 250)
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 7 and coverage["pending_stale"] is True
+    assert "newest observation across all reports is unverified" in caplog.text
+
+
+@pytest.mark.parametrize("clutter", ["old", "invalid"])
+def test_native_report_selection_survives_mtime_clutter(tmp_path, monkeypatch, clutter):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    monkeypatch.setattr(k2b_context, "MAX_BACKLOG_RECEIPTS", 2)
+    state = tmp_path / "state"
+    run = state / "native-run-artifacts/first"
+    run.mkdir(parents=True)
+    newest = _native_backlog_report(3)
+    (run / "backlog.json").write_text(json.dumps(newest))
+    for i in range(3):
+        run = state / f"native-run-artifacts/old-{i}"
+        run.mkdir()
+        value = _native_backlog_report(8)
+        value["checked_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        if clutter == "invalid": value["source_errors"] = 1
+        (run / "backlog.json").write_text(json.dumps(value))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["pending_observed_at"] == newest["checked_at"]
+    assert coverage["stale"] is (clutter == "invalid")
+
+
+def test_invalid_native_clutter_cannot_evict_valid_legacy_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    monkeypatch.setattr(k2b_context, "MAX_BACKLOG_RECEIPTS", 2)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "backlog-aggregate-valid.json").write_text(json.dumps(_native_backlog_report(3)))
+    for i in range(3):
+        run = state / f"native-run-artifacts/run-{i}"
+        run.mkdir(parents=True)
+        value = _native_backlog_report(0)
+        value["source_errors"] = 1
+        (run / "backlog.json").write_text(json.dumps(value))
+    assert k2b_context._coverage_receipt(None, state_root=state)["pending_turns"] == 3
+
+
+@pytest.mark.parametrize("equal", [False, True])
+def test_newer_legacy_failure_remains_visible_with_native_backlog(tmp_path, monkeypatch, equal):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    native = _native_backlog_report()
+    native["checked_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    report.write_text(json.dumps(native))
+    legacy = tmp_path / "capture-status.json"
+    legacy.write_text(json.dumps({"checked_at": native["checked_at"] if equal else datetime.now(timezone.utc).isoformat(),
+                                 "counts": {"waiting": 2, "failed": 1}}))
+    coverage = k2b_context._coverage_receipt(legacy, state_root=state)
+    assert coverage["failed"] == 1 and coverage["session_waiting"] == 2
+    assert coverage["pending_turns"] == 7
+    assert coverage["capture_observed_at"] is not None
+
+
+def test_future_legacy_aggregate_cannot_override_current_native_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(_native_backlog_report(3)))
+    future = _native_backlog_report(0)
+    future["checked_at"] = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    (state / "backlog-aggregate-future.json").write_text(json.dumps(future))
+    assert k2b_context._coverage_receipt(None, state_root=state)["pending_turns"] == 3
+
+
+@pytest.mark.parametrize("failure", ["oversize", "read"])
+def test_unreadable_report_keeps_scan_incomplete(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(_native_backlog_report(3)))
+    bad = state / "native-run-artifacts/new/backlog.json"
+    bad.parent.mkdir()
+    bad.write_text(" " * (k2b_context.MAX_COVERAGE_RECEIPT_BYTES + 1) if failure == "oversize"
+                   else json.dumps(_native_backlog_report(0)))
+    if failure == "read":
+        original = k2b_context._read_bytes_bounded
+        monkeypatch.setattr(k2b_context, "_read_bytes_bounded", lambda path, limit: None if path == bad else original(path, limit))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["pending_stale"] is True
+    assert "report check incomplete" in coverage["label"]
+
+
+@pytest.mark.parametrize("failure", ["oversize", "read"])
+def test_historical_unreadable_report_does_not_make_current_audit_stale(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    old = state / "native-run-artifacts/old/backlog.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(" " * (k2b_context.MAX_COVERAGE_RECEIPT_BYTES + 1) if failure == "oversize" else "{}")
+    os.utime(old, (1, 1))
+    new = state / "native-run-artifacts/new/backlog.json"
+    new.parent.mkdir()
+    new.write_text(json.dumps(_native_backlog_report(3)))
+    if failure == "read":
+        original = k2b_context._read_bytes_bounded
+        monkeypatch.setattr(k2b_context, "_read_bytes_bounded", lambda path, limit: None if path == old else original(path, limit))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["stale"] is False
+
+
+def test_unreadable_native_container_keeps_coverage_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    container = state / "native-run-artifacts"
+    container.mkdir(parents=True)
+    (state / "backlog-aggregate-valid.json").write_text(json.dumps(_native_backlog_report(3)))
+    original = Path.iterdir
+    def blocked(path):
+        if path == container: raise PermissionError("synthetic denied container")
+        return original(path)
+    monkeypatch.setattr(Path, "iterdir", blocked)
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["stale"] is True
+
+
+def test_rejected_native_reports_leave_a_diagnostic(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "unknown")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(_native_backlog_report()))
+    assert k2b_context._coverage_receipt(None, state_root=state)["stale"]
+    assert "No valid native capture report" in caplog.text
+
+
+def test_empty_native_audit_reports_its_window_not_complete_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    native = _native_backlog_report(0)
+    native.update(eligible_turns=0, extracted_turns=0)
+    report.write_text(json.dumps(native))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 0
+    assert coverage["window"] == {"since": native["since"], "through": native["through"]}
+
+
+@pytest.mark.parametrize("legacy_bad", ["errors", "role", "degraded"])
+def test_current_native_audit_has_priority_over_legacy_aggregate(tmp_path, monkeypatch, legacy_bad):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    native = _native_backlog_report(3)
+    native["checked_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    report.write_text(json.dumps(native))
+    legacy = _native_backlog_report(0)
+    if legacy_bad == "errors": legacy["source_errors"] = 1
+    if legacy_bad == "role": legacy["writer_role"] = "sjm-source-only"
+    if legacy_bad == "degraded": legacy["status"] = "needs_attention"
+    (state / "backlog-aggregate-new.json").write_text(json.dumps(legacy))
+    assert k2b_context._coverage_receipt(None, state_root=state)["pending_turns"] == 3
+
+
+def test_future_legacy_capture_status_never_claims_freshness(tmp_path):
+    status = tmp_path / "capture-status.json"
+    status.write_text(json.dumps({"checked_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                                  "counts": {"waiting": 0, "failed": 0}}))
+    assert k2b_context._coverage_receipt(status)["stale"] is True
+
+
+def test_unknown_backlog_remains_warning_even_with_fresh_session_inventory(tmp_path):
+    status = tmp_path / "capture-status.json"
+    status.write_text(json.dumps({"checked_at": datetime.now(timezone.utc).isoformat(), "counts": {"waiting": 0}}))
+    state = tmp_path / "state"
+    state.mkdir()
+    coverage = k2b_context._coverage_receipt(status, state_root=state)
+    assert coverage["pending_turns"] is None and coverage["stale"] is True
+
+
+@pytest.mark.parametrize("bad", ["corrupt-newer", "same-time-conflict"])
+def test_untrustworthy_new_observation_keeps_pending_warning(tmp_path, monkeypatch, bad):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    native = _native_backlog_report(3)
+    report.write_text(json.dumps(native))
+    recheck = report.with_name("backlog-recheck.json")
+    conflict = {**native, "pending_turns": 4, "extracted_turns": 6}
+    recheck.write_text("{truncated" if bad == "corrupt-newer" else json.dumps(conflict))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_stale"] is True
+
+
+def test_newer_verified_audit_supersedes_historical_conflict(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    new = state / "native-run-artifacts/new/backlog.json"
+    new.parent.mkdir(parents=True)
+    new.write_text(json.dumps(_native_backlog_report(3)))
+    os.utime(new, (1, 1))
+    old = state / "native-run-artifacts/old/backlog.json"
+    old.parent.mkdir()
+    first = _native_backlog_report(7)
+    first["checked_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    old.write_text(json.dumps(first))
+    old.with_name("backlog-recheck.json").write_text(json.dumps({**first, "pending_turns": 8, "extracted_turns": 2}))
+    coverage = k2b_context._coverage_receipt(None, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["stale"] is False
+
+
+def test_unparseable_legacy_time_does_not_erase_failure_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(k2b_context, "local_host", lambda: "home")
+    state = tmp_path / "state"
+    report = state / "native-run-artifacts/run/backlog.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(_native_backlog_report(3)))
+    legacy = tmp_path / "capture-status.json"
+    legacy.write_text(json.dumps({"checked_at": "unknown", "counts": {"failed": 1, "waiting": 2}}))
+    coverage = k2b_context._coverage_receipt(legacy, state_root=state)
+    assert coverage["pending_turns"] == 3 and coverage["failed"] == 1 and coverage["session_waiting"] == 2
+
+
 def test_packet_rejects_draft_from_another_packet(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _note(vault, "wiki/projects/project_atlas.md", "# Atlas\n\nThe deadline is 5 October.\n")
