@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -269,7 +271,7 @@ class _RunnerCase(_Base):
         }
         rr.write_state(self.state_path, self.state)
 
-    def _run(self, cmd: list[str], reviewer: str = "kimi") -> int:
+    def _run(self, cmd: list[str], reviewer: str = "kimi", route_mode=None) -> int:
         return rr.run_one_reviewer(
             reviewer,
             cmd,
@@ -280,6 +282,7 @@ class _RunnerCase(_Base):
             deadline_s=20,
             heartbeat_s=1,
             reconnect_stall_s=0,
+            route_mode=route_mode,
         )
 
     def _dir_created(self) -> Path:
@@ -303,6 +306,101 @@ class _RunnerCase(_Base):
 
 
 class RunnerVerdictTests(_RunnerCase):
+    def test_auto_cli_requires_explicit_builder_family(self):
+        self.assertIn('builder-family',rr.review_matrix_error(None,'auto',True))
+
+    def test_parent_cleanup_delay_does_not_expire_ontime_child_result(self):
+        monotonic = time.monotonic
+        offset = [0]
+        reader = mock.Mock()
+        reader.join.side_effect = lambda **kwargs: offset.__setitem__(0, 30)
+        with mock.patch.object(rr,'reader_thread',return_value=reader), \
+             mock.patch.object(rr.time,'monotonic',side_effect=lambda:monotonic()+offset[0]):
+            rc=self._run(self._routed_result_command('kimi',0),reviewer='kimi',route_mode='kimi')
+        self.assertEqual(rc,0)
+        self.assertEqual(self.state['review_verdict'],'approve')
+
+    def test_codex_zero_exit_after_deadline_marker_cannot_succeed(self):
+        code = '''
+import signal,time,sys
+def finish(*_):
+    print('# Codex Review\\nAPPROVE',flush=True)
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM,finish)
+while True: time.sleep(.05)
+'''
+        with mock.patch.object(rr,'KILL_GRACE_S',1):
+            rc=rr.run_one_reviewer('codex',[sys.executable,'-c',code],'test',
+                self.log_path,self.state_path,self.state,deadline_s=1,heartbeat_s=.05)
+        self.assertEqual(rc,124)
+        self.assertEqual(self.state['killed_by_deadline_attempt'],self.state['reviewer_attempt_id'])
+
+    def test_fixed_routed_profile_does_not_pass_environment_output_override(self):
+        with mock.patch.dict(os.environ, {'K2B_LLM_MAX_TOKENS':'999999'}):
+            command=rr.build_kimi_cmd('files',['fixture.py'],None,'',fixed_profile=True)
+        self.assertIsNotNone(command)
+        self.assertNotIn('--max-tokens',command)
+
+    def _routed_result_command(self, provider, exit_code, *, on_sigterm=False):
+        code = f'''
+import sys
+sys.path.insert(0, {str(REPO_ROOT / 'scripts/lib')!r})
+from review_result import write_review_input, write_attempt_result
+from review_routing import POLICY, QWEN_MODEL, KIMI_MODEL
+digest = write_review_input('synthetic complete packet')
+provider = {provider!r}
+model = QWEN_MODEL if provider == 'qwen' else KIMI_MODEL
+evidence = {{'policy':POLICY,'input_sha256':digest,'selected':provider,
+    'attempts':[{{'provider':provider,'status':'valid','elapsed_seconds':.1,
+                 'counted_tokens':1 if provider == 'qwen' else None,
+                 'prompt_tokens':1,'completion_tokens':1}}]}}
+write_attempt_result({{'verdict':'approve','summary':'Checked','findings':[],'next_steps':[]}},
+    finish_reason='stop',model=model,content_sha256=digest,routing=evidence)
+raise SystemExit({exit_code})
+'''
+        if on_sigterm:
+            code = ('import signal,time\ndef write_after_signal(*_):\n' + textwrap.indent(code, '    ')
+                    + '\nsignal.signal(signal.SIGTERM,write_after_signal)\nwhile True: time.sleep(.05)\n')
+        return [sys.executable, '-c', code]
+
+    def test_auto_failure_reports_one_strategy_without_codex_fallback(self):
+        args = SimpleNamespace(primary='auto',no_fallback=False,files=None,scope='files',plan=None,
+            focus='',deadline=20,heartbeat_interval=1,reconnect_stall_threshold_s=0,codex_executable='missing')
+        with mock.patch.object(rr,'run_one_reviewer',return_value=1):
+            rc=rr.run_fallback_chain(args,'test',self.log_path,self.state_path,self.state)
+        self.assertEqual(rc,2)
+        self.assertEqual(self.state['status'],'primary_failed')
+        self.assertEqual(self.state['fallback_scope'],'internal-auto-only')
+        self.assertNotIn('FALLBACK triggering codex',self.log_path.read_text())
+
+    def test_forced_kimi_mode_rejects_valid_qwen_result(self):
+        command = self._routed_result_command('qwen', 0)
+        self.assertEqual(self._run(command,reviewer='auto',route_mode='auto'),0)
+        rc=self._run(command,reviewer='kimi',route_mode='kimi')
+        self.assertEqual(rc,125)
+        self.assertNotIn('review_verdict',self.state)
+
+    def test_sigterm_trap_exit_zero_after_deadline_cannot_approve(self):
+        command = self._routed_result_command('kimi', 0, on_sigterm=True)
+        with mock.patch.object(rr, 'KILL_GRACE_S', 4):
+            rc = rr.run_one_reviewer('auto', command,
+                'test', self.log_path, self.state_path, self.state, deadline_s=1, heartbeat_s=.05, route_mode='auto')
+        self.assertEqual(rc, 124)
+        self.assertNotIn('review_verdict', self.state)
+        self.assertTrue((Path(self.state['review_attempt_dir'])/'review_result.json').exists())
+
+    def test_auto_deadline_is_classified_as_timeout(self):
+        with mock.patch.object(rr, 'KILL_GRACE_S', 0):
+            rc = rr.run_one_reviewer('auto', [sys.executable, '-c', 'import time; time.sleep(10)'],
+                'test', self.log_path, self.state_path, self.state, deadline_s=1, heartbeat_s=.05)
+        self.assertEqual(rc, 124)
+
+    def test_exit_four_with_approve_cannot_publish_approval(self):
+        self.assertEqual(self._run(self._routed_result_command('kimi',0),reviewer='kimi',route_mode='kimi'),0)
+        rc = self._run(self._routed_result_command('kimi',4),reviewer='kimi',route_mode='kimi')
+        self.assertEqual(rc, 125)
+        self.assertNotIn('review_verdict', self.state)
+
     def test_kimi_fast_nonzero_exit_is_not_a_timeout_with_short_deadline(self):
         rc = rr.run_one_reviewer(
             "kimi", [sys.executable, "-c", "raise SystemExit(1)"],
@@ -447,6 +545,14 @@ class RealWrapperIntegrationTests(_RunnerCase):
             "}\n"
             "resp = {'model': resp['model'], 'choices': [{'finish_reason': os.environ.get('K2B_SYNTH_FINISH', 'end_turn'), 'message': {'content': resp['content'][0]['text']}}], 'usage': {}}\n"
             "mr.chat_completion = lambda **_: resp\n"
+            "import review_routing as routing, hashlib\n"
+            "def fake_route(prompt, **kwargs):\n"
+            "    print('K2B_SYNTH_ROUTED_BOUNDARY', file=sys.stderr)\n"
+            "    review = __import__('json').loads(resp['choices'][0]['message']['content'])\n"
+            "    if review['verdict'] == 'needs-attention': review['findings'] = [{'severity':'high','title':'Bug','body':'Concrete defect','file':'fixture.py','line_start':1,'line_end':1,'confidence':1,'recommendation':'Fix'}]\n"
+            "    evidence = {'policy':routing.POLICY,'input_sha256':hashlib.sha256(prompt.encode()).hexdigest(),'selected':'kimi','attempts':[{'provider':'kimi','status':'valid','elapsed_seconds':0.1,'prompt_tokens':1,'completion_tokens':1}]}\n"
+            "    return {'review':review,'model':routing.KIMI_MODEL,'finish_reason':'stop','routing':evidence}\n"
+            "routing.route_review = fake_route\n"
             "if os.environ.get('K2B_SYNTH_ARCHIVE_FAIL'): mr.archive = lambda *a, **k: (_ for _ in ()).throw(PermissionError('synthetic storage failure'))\n"
             "sys.argv = sys.argv[1:]\n"
             "rc = mr.main()\n"
@@ -497,6 +603,14 @@ class RealWrapperIntegrationTests(_RunnerCase):
         self.assertEqual(data["status"], "completed")
         self.assertEqual(data["review_verdict"], "needs-attention")
         state = json.loads((repo / data["log_path"]).with_suffix(".json").read_text())
+        self.assertIn('K2B_SYNTH_ROUTED_BOUNDARY', (repo / data['log_path']).read_text())
+        self.assertEqual(data['review_routing']['selected'],'kimi')
+        published=json.loads(Path(data['review_result_path']).read_text())
+        self.assertEqual(published['review']['findings'][0]['title'],'Bug')
+        digest=hashlib.sha256(Path(data['review_result_path']).with_name('review_input.txt').read_bytes()).hexdigest()
+        self.assertEqual(data['review_content_sha256'],digest)
+        self.assertEqual(published['content_sha256'],digest)
+        self.assertEqual(data['review_routing']['input_sha256'],digest)
         self.assertFalse(state["fallback_used"])
         self.assertEqual(len(state["reviewer_attempts"]), 1)
 

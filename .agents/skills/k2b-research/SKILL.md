@@ -26,7 +26,7 @@ ordinary-save contract, not authority to edit other shared indexes.
 
 - `AGENTS.md` is the instruction authority and `.agents/skills` is the only live skill root.
 - Codex is the default interactive assistant; supervised Kimi Work may research under the same local instructions. Kimi Code retains its worker and independent review role.
-- OpenAI-built diffs use Kimi review with no fallback; Kimi-built diffs use Codex review.
+- OpenAI-built diffs use the bounded Qwen/Kimi review strategy (`--primary auto --no-fallback`) in `AGENTS.md`; deliberate cloud review uses standard Kimi K2.8 Preview. Kimi-built diffs use Codex review.
 - Background research jobs are disabled in Stage 1; run research interactively unless Keith separately authorizes a bounded job.
 - Capture enters through the dashboard or a vault drop, never Telegram.
 - Canonical memory is `K2B-Vault/System/memory`; read Codex sessions only when explicitly required and never read Claude state.

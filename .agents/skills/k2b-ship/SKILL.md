@@ -19,18 +19,20 @@ The current K2B topology has local reviewed code/skill installations on Home and
 2. Inspect `git status`, staged state, diff, branch, and remotes. Preserve unrelated or pre-existing changes. Build an exact intended-file list; never use `git add -A`.
 3. Run focused verification proportional to the diff, including `scripts/verify-codex-authority.sh` for instruction, hook, or skill changes. Run `git diff --check` immediately before review.
 4. Stage exactly the intended files. Confirm the staged path set equals the intended path set.
-5. Run independent review. OpenAI-built changes require Kimi with no fallback:
+5. Run independent review. OpenAI-built changes use the bounded Qwen/Kimi strategy with no outside fallback:
 
    ```bash
    scripts/review.sh diff \
      --files "<comma-separated-staged-files>" \
      --builder-family openai \
-     --primary kimi \
+     --primary auto \
      --no-fallback \
      --wait
    ```
 
-   Kimi-built changes require Codex with no Kimi fallback. Historical Anthropic or mixed/other work must use the matrix in `AGENTS.md` and record reviewer independence. A transport success is not an approval; read and surface the actual verdict and findings. Fix material findings, rerun invalidated tests, and obtain another review. Do not weaken tests to manufacture a pass.
+   The complete packet is counted before local generation. Qwen is limited to 12,000 input tokens and 120 seconds for the whole attempt. Over-limit, unavailable, incomplete or invalid local output selects standard Kimi K2.8 Preview on the identical packet. Valid findings return for correction without switching models. `--primary kimi` deliberately bypasses Qwen, including for review of the routing implementation. Both routes require strict schema, model, completion and attempt/input binding validation. See `plans/2026-11-08_qwen-review-routing.md` for acceptance examples.
+
+   DeepSeek-built changes can use auto. Qwen-built changes use auto with `--builder-family qwen`, which bypasses Qwen. Kimi-built changes require Codex with no Kimi fallback. Historical Anthropic or mixed/other work must use the matrix in `AGENTS.md` and record reviewer independence. A transport success is not an approval; read and surface the actual verdict and findings. Fix material findings, rerun invalidated tests, and obtain another review. Do not weaken tests to manufacture a pass.
 6. Verify the staged set still matches the reviewed set. Commit without `--no-verify` or `--amend`, then confirm the committed path set matches the reviewed set.
 7. Push the reviewed commit to its intended branch. Never assume `main`; show the branch and remote ref. A rejection or divergence stops for deliberate reconciliation.
 8. Update required tracked delivery records in a separate reviewed commit when needed. Home shared records use their designated hub/log/publication tools, never the ordinary-note writer. Require recorded storage checks from `k2b-vault-writer`, existing policy/authority/path/hash/lock gates and installed common NAS compile-lock binding. Failed or unverified checks stop with no fallback. Ordinary saves under installed bindings need no new per-note Home approval; activation/exceptional overlaps retain current-owner coordination. Home logging separately binds `K2B_WIKI_LOG="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/wiki/log.md"` and keeps its own log lock. Publication retains machine-local authority. Legacy mode requires Keith's direct selection of a verified target and healthy Syncthing convergence. No SJM scope expansion.

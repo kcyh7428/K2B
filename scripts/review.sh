@@ -4,7 +4,7 @@
 # Guarantees the reviewer can never hang the ship:
 #   * deadline: hard SIGTERM at --deadline seconds (default 360 = 6 min)
 #   * fallback: if Codex fails/times out, auto-runs Kimi on same scope
-#   * visibility: watchdog injects HEARTBEAT / HEARTBEAT_STALE / WEDGE_SUSPECTED
+#   * visibility: watchdog injects HEARTBEAT / HEARTBEAT_STALE / INFERENCE_WAIT
 #     lines into the unified log every few seconds, so `scripts/review-poll.sh`
 #     always shows fresh activity even during pure-inference phases.
 #
@@ -21,8 +21,10 @@
 #   scripts/review.sh files --files a.py,b.py --focus "regex safety"
 #
 # Common flags:
-#   --primary codex|kimi      default: codex for ad-hoc reviews; required with --builder-family
-#   --builder-family openai|anthropic|kimi|other
+#   --primary auto|codex|kimi default: codex for ad-hoc reviews; required with --builder-family
+#   auto counts the complete packet: Qwen <=12000 tokens / 120 seconds,
+#   otherwise standard Kimi K2.8 Preview. Invalid local output also selects Kimi.
+#   --builder-family openai|anthropic|kimi|other|qwen|deepseek
 #                              enforce the builder/reviewer family matrix
 #   --skip-codex REASON       audit + enforce that Codex is not used
 #   --other-reviewer-reason R required with --builder-family other
