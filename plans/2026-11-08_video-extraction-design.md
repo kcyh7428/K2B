@@ -75,6 +75,35 @@ ambiguous targets stop. This changes the observation method within the approved
 scope, without wider window access, permission grants or sound/coverage claims.
 Actual system-audio and start/end acceptance remain required.
 
+Audio-observation ruling, 8 November 2026: actual native CUA supplies pictures,
+controls and indicators, without hearing source audio. The architect replaced
+the invalid native-hearing premise with `unmuted_control_observed` as preflight
+evidence. It binds only the actual source control, alongside fresh identity,
+paused-at-zero, no-ad and exact window readiness. Unsupported older hearing
+claims are rejected rather than converted. Actual sound acceptance follows
+capture: retained audio must yield source speech, with first/last speech and
+visible source or subtitles corroborated where available, explicit unclear
+ranges/gaps, and attribution to ASR or the actual analysis tool. A volume value
+or audio stream alone is insufficient. Microphone-off, one recording attempt,
+all limits and actual source-boundary acceptance remain unchanged.
+
+Recorder/controller checkpoint, 8 November 2026: the first repaired 55-second
+component test retained real source speech but about 14.3 seconds of leading
+paused picture exhausted the assumed ten-second padding. The verified source
+ending was not established, so no recorder acceptance receipt was written.
+The architect ruled that recording output must publish a request-bound ready
+marker only from its actual successful-start callback, including recorder
+identity, actual window/process/geometry and timing. Native CUA waits for that
+marker, freshly confirms the same paused source and starts playback, retaining
+an actual advancing-playback observation within 30 seconds of ready. Reserve
+60 seconds of padding while keeping the source-plus-120-second ceiling,
+original request deadline, byte cap and one recording attempt. Missing or late
+ready/start evidence preserves partials and blocks acceptance. Native control
+observes the ending and pauses the source to avoid unrelated autoplay. Retain
+padding/loops and uncertainty instead of deriving an exact source offset from
+a delayed tool call. Verify the first complete source episode's opening,
+first/last speech and actual ending frames before accepting the recorder.
+
 ## Initial limits
 
 Transport amendment confirmed on 8 November 2026: Keith answered the precise
@@ -89,15 +118,19 @@ commit or activation. The existing reviewed snapshot and findings are preserved.
 
 - Facebook maximum source duration: 1,200 seconds (20 minutes), explicitly
   requested by Keith after the proposed ten-minute limit.
-- Facebook cumulative run-file budget: retain the current 256 MiB cap initially.
+- Facebook active-operation file budget: retain the current 256 MiB cap initially,
+  counting that operation's local files plus its NAS run files.
   The twenty-minute duration does not imply every bitrate fits. A source that
   cannot fit returns a clear size-limit failure, never a partial-success digest.
-- YouTube maximum source duration: 3,600 seconds (60 minutes); cumulative
-  source/derived run-file budget: 2 GiB, as proposed to Keith in the limits question.
+- YouTube maximum source duration: 3,600 seconds (60 minutes); active-operation
+  local-plus-NAS source/derived run-file budget: 2 GiB, as proposed to Keith in the limits question.
   Treat the final user reply as the Facebook-duration correction to that proposal.
 - Require at least twice the active byte budget free on Mini-local storage and
   its verified NAS destination before acquisition. Account for all run files,
   including failed partials, copies, audio and frame outputs. Recheck before writes.
+  Keith explicitly confirmed this per-operation scope on 8 November 2026 after
+  the cross-host boundary question. Retained archive size is reported separately;
+  the cap is not a combined ceiling across every host's private retained copies.
 - One direct acquisition and one recording attempt maximum in a request. An
   uncertain dispatch is collected, not resent. Provider failures do not trigger
   repeat downloads. No automatic limit expansion or automatic cleanup.

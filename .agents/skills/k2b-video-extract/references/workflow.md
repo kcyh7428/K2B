@@ -12,7 +12,9 @@ bounded connection read rechecks, separated by 10 to 20 seconds. No challenges,
 login or permission prompts may be answered on Keith's behalf.
 
 Native desktop Chrome must establish submitted and canonical URL, publisher,
-title, duration, actual advancing playback and source sound. Verify the owning
+title, duration, actual advancing playback and the visible source audio control.
+Native CUA cannot hear source audio. Actual source speech must be established
+from retained capture evidence afterward, not an audio-playing indicator. Verify the owning
 Mini user and real capture mount. Facebook share/r or share/v links require
 native canonical Reel identity before acquisition. Do not infer access from a
 downloader, network reachability or dated evidence. No Home/SJM signed-in browser
@@ -31,9 +33,14 @@ that ID to the canonical source and original deadline; changes are refused.
 A new ID requires a new user-requested source request or a separately named
 development acceptance case, never an automatic retry of a failed attempt.
 Recording additionally requires observed `audio_state` equal to
-`unmuted_source_sound_observed`, `source_reset` equal to `paused_at_zero` and
+`unmuted_control_observed`, `source_reset` equal to `paused_at_zero` and
 `ad_state` equal to `source_without_ad`. These do not prove the later captured
 sound or ending; the complete retained recording still needs content review.
+Reject the unsupported older hearing claim instead of silently converting it.
+After capture, retained audio must yield actual source speech. Corroborate the
+first and last speech with the visible source/subtitles where available, retain
+unclear ranges and gaps, and name ASR or the actual analysis tool as the basis.
+Stream existence or volume alone is insufficient for sound acceptance.
 Recording also requires `window`, a safe ScreenCaptureKit candidate record with
 exactly `id`, `process_id`, `app`, `title`, `x`, `y`, `width`, `height`. The
 read-only query is restricted to the approved Chrome app and requested visible
@@ -76,6 +83,9 @@ for this route's acceptance. Verify a random Mini marker/hash through the
 requesting Mac's own mount. Require twice the active run budget free locally
 and on the verified NAS before capture; recheck cumulative source, derived and
 failed partial bytes while working and before publication. Preserve partials.
+These are per-operation active local-plus-NAS caps, explicitly confirmed by Keith
+on 8 November. Report retained archives separately through inventory; another
+host's private retained copies are not measured by this operation's ceiling.
 Mount failure stops the operation without a shadow directory or fallback.
 
 Keith approved the narrow Mini transport exception on 8 November 2026 after the
@@ -118,8 +128,39 @@ For known short direct failures, start with that recorder after acceptance.
 An absent download button is not a direct-failure test. The recorder captures
 one uniquely identified visible Chrome window and its system sound, never a
 microphone. Native CUA resets the source, excludes ads and unrelated sound,
-starts playback after recording starts, and observes the ending. Recording
-takes playback time. A stream or volume reading never proves source speech.
+uses this request-bound handshake and observes the ending. Recording takes
+playback time. A stream or volume reading never proves source speech.
+
+The component publishes `recording-started.json` in the request receipt's fixed
+record-run directory only from ScreenCaptureKit's successful recording-output
+start callback. Read the receipt's `by_method.record` value rather than choosing
+another directory. Verify request ID, canonical URL, original deadline, source
+duration, installed package and actual recorder hash, and the unique window's
+actual SCK ID/process/title/geometry. A UI indicator or a returned start command
+is insufficient. No callback within ten seconds blocks and preserves partials.
+
+Once the marker exists, freshly corroborate that same paused-at-zero source,
+URL/title, opening picture, no-ad state and visibly unmuted source control with
+native CUA. Start playback and observe an actually advancing positive source
+clock within 30 seconds of `ready_epoch`. Write fixed run-local
+`native-playback-started.json` with `request_id`, `canonical_url`, full source
+`title`, `ready_marker_sha256`, `control: native_chrome`, exact `window`,
+`source_reset: paused_at_zero`, `ad_state: source_without_ad`,
+`audio_state: unmuted_control_observed`, `opening_picture_verified: true`,
+`window_corroborated: true`, actual `observed_epoch` and `playback_clock`.
+Those readiness fields describe the fresh check immediately before Play; the
+clock describes the advancing observation after Play. Never claim hearing or
+invent a precise source-clock offset from delayed tool timing. Missing, changed
+or late evidence blocks publication, retaining output for diagnosis.
+
+The component reserves 60 seconds beyond verified source duration, with an
+absolute source-plus-120-second command ceiling, original deadline and byte cap.
+This allowance is not proof of complete capture. Native control watches the first
+source ending and pauses playback to prevent unrelated autoplay. Retain the
+observed ending/pause, raw leading/trailing padding and any labelled loops in the
+native task record. Acceptance requires actual opening/ending frames and first
+and last source speech from the first complete episode, with source/subtitle
+corroboration and explicit uncertainty or gaps.
 
 Candidate recorder permission and real picture/speech/boundary checks precede
 activation. A missing recorder acceptance receipt is a hard gate. A blocked recorder stops

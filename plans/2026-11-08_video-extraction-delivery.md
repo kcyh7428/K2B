@@ -3,16 +3,18 @@
 Design: `plans/2026-11-08_video-extraction-design.md`.
 Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.
-Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; cumulative run files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB cumulative run files.
+Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; each active operation's local plus NAS files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB for the same per-operation scope. Keith explicitly confirmed this storage scope on 8 November; retained archives are reported separately, without an all-host private-copy ceiling.
 
-## Current checkpoint at 06:51 UTC
+## Current checkpoint, recorder handshake correction
 
 - Reviewed, committed and pushed feature: `e00a1ad`; independently approved
-  installer correction: `8f07e303ccf46b472c8b9580906e37065c4cb48e`.
+  installer correction: `8f07e303ccf46b472c8b9580906e37065c4cb48e`. Recorder
+  startup correction R6 approved in 34 seconds, no findings, then committed/pushed
+  as `e94043ef95bf5ba70b6f1b84373d16d14b465a81`.
 - All three candidates installed and version-verified. Home package
-  `25174471d6a643151eadb0f1dfe6a4401de6249b77244791d064c0ec919cb266`;
-  SJM `9ddd00f63acb5a8da254f4fff7eec1017e824d7a94cf9183ebe944f73ab62104`;
-  Mini `5dd9d8499b7d89b00ff57044cae88d94083e902bae119eb9fb23d0cc8efc351b`.
+  `1fdbdc168cb7c433cce7e78cf4027e1b2b85e105dbe01b47e5e084b6cb270bf1`;
+  SJM `4346f742643bb1b6b9b196d783646e9a42bbe8060a5d8df3770baf67414311bd`;
+  Mini `fdc4aab72d9a998fea229f34c87b570111b0daffe712d5f2e37fbdbfc1b95c0b`.
   No active launcher, live checkout update or routine activation.
 - Fresh short-Reel run `facebook-2372450313602638-20261108T063408Z-1ef39758`:
   source digest `dfe4179364567698684dcf7acee5c1b3618f79288013e5a8ea86efc54e6f0a62`,
@@ -64,8 +66,19 @@ Authority: Keith's develop and deploy request in the source chat, supplied in th
   change occurred. This supports the isolated initialization cause. A source
   correction now initializes AppKit early and makes the read-only probe construct
   the same filter before returning. Updated recorder typechecked on Mini; authority
-  and whitespace checks passed. Exact-content review is pending before commit or
-  installation. Actual recorded sound/boundaries remain untested. The
+  and whitespace checks passed. R6 independently approved this exact change,
+  which is now committed, pushed and candidate-installed on all three hosts. A
+  separately named post-repair 55-second bootstrap retained real source speech.
+  Full transcript and all 59 valid one-second visual cells were inspected, but
+  about 14.3 seconds of leading paused picture exhausted the ten-second allowance.
+  The actual source ending was not established. No acceptance receipt was written.
+  The architect authorized an actual recording-start callback marker, request and
+  window binding, a native advancing-start observation within 30 seconds, and
+  60 seconds of reserved padding under the original source-plus-120 ceiling.
+  Native control must observe the source ending and pause playback. The invalid
+  native-hearing premise is replaced by observed unmuted controls; actual retained
+  speech and boundaries still require analysis and source corroboration. This
+  exact correction is in preparation, not yet reviewed or installed. The
   original YouTube attempt ended bounded `run_deadline` during metadata/session
   handling, no source manifest or retry. Its failed run
   `youtube-bc7QaDmLmoA-20261108T064036Z-3c8a6956` is retained. Native Chrome
@@ -79,11 +92,15 @@ Authority: Keith's develop and deploy request in the source chat, supplied in th
   a read-only merge-tree check because it would mix older unrelated history;
   no checkout was changed. Final integration review/activation remain pending.
 
-Final focused suite after the installer correction: 62 passed in 11.77 seconds.
+Latest focused suite after the handshake implementation: 75 passed in 13.13 seconds.
+The actual Mini Swift typecheck passed. Authority and whitespace checks passed.
+Twelve new handshake tests failed before implementation and now pass.
 
 Prepared: yes. Tested: focused fixtures plus the bounded live evidence above.
-Reviewed: code/installer approved through `8f07e30`; recorder initialization
-correction pending. Committed: `e00a1ad` and `8f07e30`. Pushed: both.
+Reviewed: approved through `e94043e`. Committed: `e00a1ad`, `8f07e30`,
+`e94043e`. Pushed: all three. Keith confirmed the active-operation local-plus-NAS
+byte-accounting boundary; archive totals are separate. Uncommitted handshake and
+audio-observation corrections require independent review before delivery.
 Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
 
 ## Acceptance matrix
@@ -91,10 +108,10 @@ Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
 | Example | Current evidence | State |
 | --- | --- | --- |
 | 1. Original YouTube | Native identity/playback verified; direct attempt timed out; no manifest | Fallback pending |
-| 2. Facebook share/r and Chinese Reel | Fresh Chinese Reel captured and Home reviewed; share/r input not yet exercised live | Partial |
+| 2. Facebook share/r and Chinese Reel | Fresh Chinese Reel captured and Home reviewed; exact share/r/1MFtSe4XWL/ freshly resolved natively to the same canonical Reel, identity, 45 seconds and advancing playback | Home passed |
 | 3. Facebook over ten minutes | Fresh 688.865-second source, complete acquisition and Home preparation within unchanged cap | Home passed; SJM blocked |
 | 4. Missing accessible captions | Both new Facebook sources reported no caption tracks; complete actual audio reached Home Groq | Home passed |
-| 5. Recording after direct failure | Actual component aborted before media; isolated filter-initialization correction passed read-only test | Repair review and actual recording pending |
+| 5. Recording after direct failure | AppKit repair captured actual source speech; delayed playback left the ending unverified | Handshake correction and fresh short test pending |
 | 6. SJM independence | Own NAS source verification passed; actual own-host STT returned HTTP 403 | Blocked |
 | 7. Reuse | Short Home preparation reused with identical response hash and mtime | Home passed |
 | 8. Precise failures | Live wrong digest refused; direct deadline and SJM HTTP 403 did not produce success; other classes have fixture coverage | Partial |
@@ -294,3 +311,39 @@ exact binding recheck, system audio, microphone off, source budgets and all live
 acceptance gates. This is the first recorder repair after the real bootstrap
 failure. A repeat of the same behavior after it requires the architect checkpoint;
 no display capture or alternate recorder is introduced.
+
+## Outstanding reconciliation at 06:59 UTC
+
+The architect independently read the owning provider-context note after fresh
+Home NAS/alias preflight. Its 15 September health snapshot has no SJM-specific
+Groq route resolving the current HTTP 403, and it still describes the older
+single-URL text helper and a broad retired-Mini line. Current AGENTS and Keith's
+confirmed video design take precedence. No context/control note was changed
+through a raw write or ordinary-note writer. The reviewed project workflow is
+the new operating reference; the dated context limitation remains explicit.
+
+A physical long-run check found Mini-local 86,573,420 bytes, Home-local prepared
+43,513,287 bytes and NAS source/prepared 130,085,790 bytes: total 260,172,497,
+below 268,435,456 but with only 8,262,959 bytes headroom. The worker monitors
+active-host local stages plus NAS run files, including failed partials and NAS
+preparations by other hosts; it cannot currently observe their private retained
+local stages. A second full long-run SJM preparation could exceed an all-host
+physical total despite passing that current operation check. No SJM long
+preparation was attempted. This was the evidence behind the storage question;
+Keith subsequently confirmed the per-operation boundary below. No cap increase, deletion,
+new shared reservation protocol or cross-host state access was introduced.
+
+The native Share dialog exposed only loading placeholders, so no share token
+was invented and no duplicate capture dispatched. The architect then supplied
+the actual dated source `https://www.facebook.com/share/r/1MFtSe4XWL/`, which
+resolved to the known short Reel on 6 November. Fresh native resolution subsequently passed: exact canonical Reel, publisher,
+caption, 45-second duration and advancing playback matched the retained source.
+This tests URL resolution without repeating acquisition or ASR.
+
+## Recorder checkpoint and storage confirmation
+
+The prior 55-second bootstrap is retained as run `facebook-2372450313602638-20261108T065822Z-d444928f`, source `ca20c737579283a90c6dd8b2f0686728b4ea15745e2f47b935d2acd6e2562943`, Home prepared `5299d7fe8563423195621aa3a6847cc90009f062cd3c1d5868c68aa84797a32e`. Source speech was established by actual Groq ASR and visible Chinese subtitles. It did not prove the source ending. Native CUA never supplies a hearing observation. Keep raw padding, loops and uncertainty. A new named acceptance case is permitted only after the corrected artifact is independently reviewed.
+
+The architect relayed Keith's explicit approval of per-operation limits: Facebook 256 MiB and YouTube 2 GiB for active local plus NAS operation files. Separately retained archive sizes are reported without claiming a combined ceiling over every host's private copies. The earlier cross-host question is resolved, not a reason to change numeric limits.
+
+Implementation checkpoint: the compiled recorder now hashes its own executable, validates the worker context and writes a fixed private ready marker only in `recordingOutputDidStartRecording`. It binds request, URL, deadline, duration, package, actual binary hash, window/process/geometry and callback wall/uptime. The worker requires the corresponding fresh native start observation within 30 seconds and rejects old hearing claims. The component reserves 60 seconds and remains under the original source-plus-120 ceiling. Inventory labels the operation scope and reports existing local/NAS v2 archive bytes separately, with other-host private copies explicitly unmeasured. No protocol result is source-speech or ending acceptance.

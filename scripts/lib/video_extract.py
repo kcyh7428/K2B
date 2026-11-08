@@ -45,6 +45,7 @@ RUN_RE = r'(facebook-([0-9]{1,24})|youtube-([A-Za-z0-9_-]{11}))-[0-9]{8}T[0-9]{6
 MINI_FAKE_IP_ROUTE = False
 NAS = Path('/Volumes/k2b-captures')
 VERSION = '2'
+BYTE_BUDGET_SCOPE = 'active_operation_local_plus_nas'
 PACKAGE = Path(__file__).resolve().parent.parent
 CURRENT = {}
 OPERATION_ROOTS = []
@@ -273,7 +274,7 @@ def reserve_attempt(state, native, method, run=None):
 
 
 def recording_ready(native):
-    need(native.get('audio_state') == 'unmuted_source_sound_observed' and native.get('source_reset') == 'paused_at_zero' and
+    need(native.get('audio_state') == 'unmuted_control_observed' and native.get('source_reset') == 'paused_at_zero' and
          native.get('ad_state') == 'source_without_ad', 'recording_source_audio_reset_or_ad_unverified')
     validate_window(native.get('window'))
     need(native.get('opening_picture_verified') is True and native.get('window_corroborated') is True,'native_recording_opening_picture_unverified')
@@ -424,6 +425,40 @@ def validate_recording(probe, evidence, source_duration):
             'recording_duration':actual, 'padding_seconds':actual-source_duration, 'audio_verified':False}
 
 
+def recording_seconds(native):
+    return validate_duration(parse_source(native['canonical_url'])['platform'],native['duration'])+60
+
+
+def recording_handshake(root,native,recording,launched_epoch,completed_epoch):
+    # Read only fixed run-local files. A callback marker is evidence of actual
+    # output startup, while native CUA reports its own visible observations.
+    ready_path = child(root,'recording-started.json'); start_path = child(root,'native-playback-started.json')
+    need(ready_path.is_file(),'recording_ready_marker_missing_or_invalid')
+    need(start_path.is_file(),'native_playback_start_binding_missing')
+    ready = read_json(ready_path); start = read_json(start_path)
+    need(isinstance(ready,dict) and ready.get('version') == 1,'recording_ready_marker_missing_or_invalid')
+    for key in ('request_id','canonical_url','deadline_epoch'):
+        need(ready.get(key) == native.get(key),'recording_ready_request_mismatch')
+    need(ready.get('source_duration') == native['duration'] and ready.get('package') == CURRENT.get('package') and
+         ready.get('recorder_sha256') == CURRENT.get('recorder_sha256'),'recording_ready_artifact_mismatch')
+    window_binding(native['window'],ready.get('window')); window_binding(native['window'],recording.get('window'))
+    epoch = ready.get('ready_epoch'); uptime = ready.get('ready_uptime')
+    need(type(epoch) in (int,float) and math.isfinite(epoch) and launched_epoch <= epoch <= completed_epoch < native['deadline_epoch'] and
+         type(uptime) in (int,float) and math.isfinite(uptime) and uptime > 0,'recording_ready_timing_invalid')
+    digest = sha(ready_path)
+    need(recording.get('ready_marker_sha256') == digest and recording.get('ready_epoch') == epoch,'recording_ready_output_mismatch')
+    need(isinstance(start,dict) and all(start.get(k) == native.get(k) for k in ('request_id','canonical_url','title')) and
+         start.get('ready_marker_sha256') == digest and start.get('control') == 'native_chrome','native_playback_start_binding_missing')
+    recording_ready(start); window_binding(ready['window'],start.get('window'))
+    observed = start.get('observed_epoch'); clock = start.get('playback_clock')
+    need(type(observed) in (int,float) and math.isfinite(observed) and epoch <= observed <= min(epoch+30,completed_epoch) and
+         type(clock) in (int,float) and math.isfinite(clock) and 0 < clock <= min(native['duration'],observed-epoch+1),
+         'native_playback_start_missing_or_late')
+    return {'ready_marker_sha256':digest,'ready_epoch':epoch,'native_start_observed_epoch':observed,
+        'native_start_delay_seconds':observed-epoch,'observed_playback_clock':clock,
+        'source_clock_offset_status':'uncertain_observations_only','ending_and_source_speech_review_required':True}
+
+
 def run_recorder(args,root,deadline):
     try: return legacy.command(args,root,deadline)
     except Blocked as error:
@@ -494,9 +529,14 @@ def capture(url, state, record_only=False):
         need(recorder_accepted(state), 'recorder_live_acceptance_required')
         # Recorder always chooses Chrome's selected visible window. Its only
         # arguments come from this verified source and the fixed private root.
-        output = run_recorder([str(recorder),str(root/'source.mp4'),str(duration+10),native['window']['title'],json.dumps(native['window'],separators=(',',':'))],root,min(deadline,time.monotonic()+duration+120))
+        context = {k:native[k] for k in ('request_id','canonical_url','deadline_epoch')}
+        context.update(source_duration=duration,package=CURRENT['package'],recorder_sha256=CURRENT['recorder_sha256'])
+        launched_epoch = time.time()
+        output = run_recorder([str(recorder),str(root/'source.mp4'),str(recording_seconds(native)),native['window']['title'],
+            json.dumps(native['window'],separators=(',',':')),json.dumps(context,separators=(',',':'))],root,min(deadline,time.monotonic()+duration+120))
         recording = json.loads(output); recording['platform'] = platform
         window_binding(native['window'],recording.get('window'))
+        recording['handshake'] = recording_handshake(root,native,recording,launched_epoch,time.time())
         write_json(root/'recording.json', recording)
     media = legacy.probe(root/'source.mp4',root,deadline)
     actual = float(media['format']['duration'])
@@ -727,6 +767,7 @@ def inventory(state,role):
         local.append({'run_id':p.name,'path':str(p),'bytes':size(p),'modified_utc':dt.datetime.fromtimestamp(p.stat().st_mtime,dt.timezone.utc).isoformat()})
         need(len(local) <= 2000,'inventory_run_limit')
     report = {'status':'inventory','scope':'video-v2 source runs and recorder preflights','local_runs':local,'local_preflights':preflights,'nas_partials':[],'failure_receipts':[],
+              'byte_budget_scope':BYTE_BUDGET_SCOPE,'retained_archive_bytes':{'local_runs_and_preflights':sum(i['bytes'] for i in [*local,*preflights]),'nas_v2_runs':None,'other_hosts_private_copies':'not_measured'},
               'retention':'No automatic deletion or stale-lock clearing; cleanup requires exact-path authorization'}
     def failures(root):
         for p in root.rglob('failure-*.json'):
@@ -736,7 +777,7 @@ def inventory(state,role):
     for item in [*local,*preflights]: failures(Path(item['path']))
     try:
         mount_check(NAS,role)
-        examined = 0
+        examined = 0; nas_archive_bytes = 0
         for platform in LIMITS:
             base = child(NAS,platform)
             if not base.exists(): continue
@@ -750,12 +791,13 @@ def inventory(state,role):
                     if not re.fullmatch(RUN_RE,destination.name): continue
                     need(run_identity(destination.name) == (platform,identity.name),'nas_run_identity_mismatch')
                     need(not destination.is_symlink() and destination.is_dir(),'symlink_nas_run')
-                    failures(destination)
+                    failures(destination); nas_archive_bytes += size(destination)
                     for p in destination.rglob('*.partial-*'):
                         child(destination,str(p.relative_to(destination)))
                         if p.is_file(): report['nas_partials'].append({'path':str(p),'bytes':p.stat().st_size})
                         need(len(report['nas_partials']) <= 2000,'nas_partial_inventory_limit')
         report['nas_status'] = 'mounted_checked'
+        report['retained_archive_bytes']['nas_v2_runs'] = nas_archive_bytes
     except (Blocked,OSError) as error:
         report['nas_status'] = str(error) if isinstance(error,Blocked) else type(error).__name__
     return report
@@ -780,7 +822,7 @@ def main():
         # The v1 owning worker lock is shared, so v1/v2 acquisitions serialize.
         lock_root = safe_dir(legacy.own_home()/'.local/state/k2b/reels-v1') if role == 'mini' else state
         with legacy.operation_timeout(seconds), (contextlib.nullcontext() if a.action in ('version','inventory','status') else legacy.lock(lock_root)):
-            if a.action == 'version': result = {'version':VERSION,'role':role,'processor_id':processor_id(),'limits':LIMITS,'recorder_accepted':recorder_accepted(state) if role == 'mini' else False}
+            if a.action == 'version': result = {'version':VERSION,'role':role,'processor_id':processor_id(),'limits':LIMITS,'byte_budget_scope':BYTE_BUDGET_SCOPE,'recorder_accepted':recorder_accepted(state) if role == 'mini' else False}
             elif a.action == 'inventory': result = inventory(state,role)
             elif a.action in ('capture','record'):
                 need(role == 'mini','capture_requires_mini'); result = capture(a.url,state,a.action == 'record')

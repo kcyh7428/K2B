@@ -93,6 +93,9 @@ def test_inventory_includes_nested_preparation_and_failed_partials(tmp_path):
     report = v.inventory(tmp_path,'home')
     assert report['local_runs'][0]['run_id'] == run
     assert report['local_runs'][0]['bytes'] == 6
+    assert report['byte_budget_scope'] == 'active_operation_local_plus_nas'
+    assert report['retained_archive_bytes']['local_runs_and_preflights'] == 6
+    assert report['retained_archive_bytes']['other_hosts_private_copies'] == 'not_measured'
 
 
 def test_source_timing_cannot_certify_a_prefix():
@@ -119,6 +122,7 @@ def test_inventory_finds_nas_only_partial_and_failure(tmp_path,monkeypatch):
     (p/'media.partial-abcd').write_bytes(b'partial'); (p.parent/'failure-abcdef01.json').write_text('{}')
     report = v.inventory(state,'home')
     assert len(report['nas_partials']) == 1 and len(report['failure_receipts']) == 1
+    assert report['retained_archive_bytes']['nas_v2_runs'] == 9
 
 
 def test_publication_counts_local_and_nas_copies_before_copy(tmp_path,monkeypatch):

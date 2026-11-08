@@ -30,11 +30,19 @@ def test_capture_attempts_persist_and_limit_repeated_dispatch(tmp_path):
     with pytest.raises(v.Blocked): v.reserve_attempt(tmp_path,native,'record')
 
 
-def test_recording_requires_actual_unmuted_source_and_reset():
+def test_recording_requires_observed_unmuted_control_and_reset():
     v = load()
     with pytest.raises(v.Blocked): v.recording_ready({'audio_state':'muted'})
-    assert v.recording_ready({'audio_state':'unmuted_source_sound_observed','source_reset':'paused_at_zero','ad_state':'source_without_ad',
+    assert v.recording_ready({'audio_state':'unmuted_control_observed','source_reset':'paused_at_zero','ad_state':'source_without_ad',
         'window':window(),'title':'verified source','opening_picture_verified':True,'window_corroborated':True})
+
+
+def test_native_control_observation_never_claims_hearing():
+    v = load(); n = {'audio_state':'unmuted_control_observed','source_reset':'paused_at_zero','ad_state':'source_without_ad',
+        'window':window(),'title':'verified source','opening_picture_verified':True,'window_corroborated':True}
+    assert v.recording_ready(n)
+    for unsupported in ('unmuted_source_sound_observed','audio_playing_indicator','muted'):
+        with pytest.raises(v.Blocked):v.recording_ready(dict(n,audio_state=unsupported))
 
 
 def test_only_committed_acquisition_can_resume_transfer(tmp_path):
@@ -106,7 +114,7 @@ def test_recorder_recheck_binds_actual_id_process_title_and_geometry():
 
 def test_native_corroboration_handles_real_window_title_ellipsis():
     v = load(); target = dict(window(),title='(12) I Tested Uncensored AI... I…d Probably Be Illegal… - YouTube')
-    n = {'audio_state':'unmuted_source_sound_observed','source_reset':'paused_at_zero','ad_state':'source_without_ad',
+    n = {'audio_state':'unmuted_control_observed','source_reset':'paused_at_zero','ad_state':'source_without_ad',
         'window':target,'title':'I Tested Uncensored AI... It Should Probably Be Illegal…','opening_picture_verified':True,'window_corroborated':True}
     assert v.recording_ready(n)
     with pytest.raises(v.Blocked):v.recording_ready(dict(n,window_corroborated=False))
@@ -119,3 +127,48 @@ def test_successful_recorder_json_is_separate_from_benign_stderr(tmp_path):
     tool.chmod(0o700)
     result = v.run_recorder([str(tool)],tmp_path,time.monotonic()+5)
     assert json.loads(result)['status'] == 'window_candidate'
+
+
+def handshake(tmp_path):
+    v = load(); now = 1000.0
+    n = {'request_id':'12345678-1234-1234-1234-123456789abc','canonical_url':'https://www.youtube.com/watch?v=bc7QaDmLmoA',
+        'deadline_epoch':2000,'duration':60,'title':'verified source','window':window()}
+    v.CURRENT.update(package='a'*64,recorder_sha256='b'*64)
+    ready = {'version':1,'request_id':n['request_id'],'canonical_url':n['canonical_url'],'deadline_epoch':2000,'source_duration':60,
+        'package':'a'*64,'recorder_sha256':'b'*64,'window':window(),'ready_epoch':now,'ready_uptime':200.0}
+    v.write_json(tmp_path/'recording-started.json',ready)
+    start = {'request_id':n['request_id'],'canonical_url':n['canonical_url'],'ready_marker_sha256':v.sha(tmp_path/'recording-started.json'),
+        'control':'native_chrome','window':window(),'title':n['title'],'source_reset':'paused_at_zero','ad_state':'source_without_ad',
+        'audio_state':'unmuted_control_observed','opening_picture_verified':True,'window_corroborated':True,
+        'observed_epoch':1005.0,'playback_clock':2.0}
+    v.write_json(tmp_path/'native-playback-started.json',start)
+    recording = {'window':window(),'ready_marker_sha256':v.sha(tmp_path/'recording-started.json'),'ready_epoch':now}
+    return v,n,recording,ready,start
+
+
+def test_actual_started_marker_and_fresh_native_start_are_request_bound(tmp_path):
+    v,n,recording,ready,start = handshake(tmp_path)
+    result = v.recording_handshake(tmp_path,n,recording,995,1100)
+    assert result['native_start_delay_seconds'] == 5
+    assert result['source_clock_offset_status'] == 'uncertain_observations_only'
+    assert v.recording_seconds(n) == 120
+
+
+@pytest.mark.parametrize('change',['missing','request','window','recorder','package','future_ready','late_start','old_hearing','no_advancing','marker_hash','not_reset'])
+def test_missing_or_mismatched_recording_handshake_never_accepts(tmp_path,change):
+    v,n,recording,ready,start = handshake(tmp_path)
+    if change == 'missing':(tmp_path/'recording-started.json').unlink()
+    elif change == 'request':ready['request_id'] = '87654321-1234-1234-1234-123456789abc'
+    elif change == 'window':ready['window'] = dict(window(),id=43)
+    elif change == 'recorder':ready['recorder_sha256'] = 'c'*64
+    elif change == 'package':ready['package'] = 'c'*64
+    elif change == 'future_ready':ready['ready_epoch'] = 1200
+    elif change == 'late_start':start['observed_epoch'] = 1030.01
+    elif change == 'old_hearing':start['audio_state'] = 'unmuted_source_sound_observed'
+    elif change == 'no_advancing':start['playback_clock'] = 0
+    elif change == 'marker_hash':start['ready_marker_sha256'] = 'c'*64
+    else:start['source_reset'] = 'playing'
+    if change != 'missing':v.write_json(tmp_path/'recording-started.json',ready)
+    v.write_json(tmp_path/'native-playback-started.json',start)
+    with pytest.raises((v.Blocked,OSError)):
+        v.recording_handshake(tmp_path,n,recording,995,1100)
