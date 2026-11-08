@@ -5,120 +5,78 @@ Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.
 Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; each active operation's local plus NAS files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB for the same per-operation scope. Keith explicitly confirmed this storage scope on 8 November; retained archives are reported separately, without an all-host private-copy ceiling.
 
-## Current checkpoint, reviewed handshake candidates
+## Current checkpoint, R8 approved and final short test
 
-- Reviewed, committed and pushed feature: `e00a1ad`; independently approved
-  installer correction: `8f07e303ccf46b472c8b9580906e37065c4cb48e`. Recorder
-  startup correction R6 approved in 34 seconds, no findings, then committed/pushed
-  as `e94043ef95bf5ba70b6f1b84373d16d14b465a81`.
-- All three candidates installed and version-verified. Home package
-  `8ccbba85ddcb57bfe297a6892ab3b2bae571272f9c99de915fbff78b42b64473`;
-  SJM `e9ba8a7dab58b861140f7004c1e70d1bf863b5abb92fd014d1c471bbdd130b28`;
-  Mini `75bc1fd7cd7785940c8c284cae7e8df1088347798279c6bfa368762ef34ea4ba`.
-  No active launcher, live checkout update or routine activation.
-- Fresh short-Reel run `facebook-2372450313602638-20261108T063408Z-1ef39758`:
-  source digest `dfe4179364567698684dcf7acee5c1b3618f79288013e5a8ea86efc54e6f0a62`,
-  4,337,894 bytes, actual source 44.837 seconds. Home completed real Groq
-  preparation, digest `c228d342d796ac0610dc22c83162989233a73ad569f389360fce316aa5595a3d`,
-  full measured speech 44.839125 seconds, 30 segments, no empty-word chunks.
-  All three sheets (45 valid one-second cells), final observed frame 44.8 seconds
-  and uncropped frames 0/22/44 were inspected. Opening, subtitle sequence and
-  ending align. One idiom at 5.48 seconds is misrecognized by ASR; source subtitle
-  correction is retained privately without rewriting raw evidence. Reuse returned
-  true with unchanged successful response hash and nanosecond modification time.
-- SJM independently verified the same new source through its own capture mount,
-  then actual STT failed `transcription_http_403`. Its own failed chunk is retained.
-  A bounded no-proxy/no-redirect models comparison returned HTTP 403,
-  `application/json`, null structured type/code for both unauthenticated and
-  owning-key requests. No key, response headers or arbitrary error body was
-  printed in this comparison. This does not prove invalid credentials or a
-  Whisper-only setting. Inference: broader service/egress denial is more likely.
-  Operator must restore authorized SJM access to `api.groq.com` or obtain a Groq
-  explanation before retry. No route, proxy, account, permission, key or STT
-  provider changed. Home processing does not satisfy SJM acceptance.
-- Fresh long-Reel run `facebook-2177961246267847-20261108T063703Z-609c655c`:
-  source digest `c15829a9a642b9414da34c2db8a80102b91875a7c971f5dd000574f4d453bb85`,
-  86,572,984 source-bundle bytes, actual source 688.865 seconds. It qualifies
-  as longer than ten minutes and was acquired under unchanged 256 MiB cap,
-  without truncation. Home completed full measured 688.867813-second audio,
-  three actual Groq chunks and 374 segments, 44 visual sheets, no empty-word
-  chunks. Prepared digest `783740ffc29d5d85aa9bc13403f0706e68bcf4a27cc566e706c44dc0da159c2a`.
-  Full transcript, all 44 sheets (689 valid one-second cells), ending frame at
-  688.8 seconds and uncropped 0/344/688-second frames were inspected. Cropping
-  removes dark margins without observed loss of pictures/subtitles. Five-second
-  overlaps at 235 and 470 seconds were reconciled in interpretation. Classical
-  Chinese ASR homophones are corrected against visible subtitles in separate
-  private review notes; raw evidence remains unchanged. Home source preparation
-  and this bounded content review passed; SJM remains blocked. This is not
-  every-frame viewing or independent historical fact checking.
-- Actual installed Mini recorder probe returned the unique native-corroborated
-  Chrome window, SCK ID 1544, PID 59196, title `(1) Facebook`, geometry
-  x487/y36/1301x959, without a permission prompt. No system-sound acceptance yet. The one 55-second bootstrap launch failed
-  before capture: `record` exited -6 with `CGS_REQUIRE_INIT` / `did_initialize`.
-  Failed run `facebook-2372450313602638-20261108T064658Z-2e163ff3` retains
-  diagnostics and native evidence, but no source.mp4, manifest, NAS transfer or
-  acceptance receipt. Crash symbols isolate `SCContentFilter` construction before
-  stream startup. The earlier probe returned before that constructor and therefore
-  did not establish recording feasibility. A restricted read-only initialization
-  test passed on Mini: initializing `NSApplication.shared` on MainActor before
-  SCK enabled construction of the same unique-window filter, exit 0 and empty
-  stderr. No stream, capture, permission request, app activation or installed-code
-  change occurred. This supports the isolated initialization cause. A source
-  correction now initializes AppKit early and makes the read-only probe construct
-  the same filter before returning. Updated recorder typechecked on Mini; authority
-  and whitespace checks passed. R6 independently approved this exact change,
-  which is now committed, pushed and candidate-installed on all three hosts. A
-  separately named post-repair 55-second bootstrap retained real source speech.
-  Full transcript and all 59 valid one-second visual cells were inspected, but
-  about 14.3 seconds of leading paused picture exhausted the ten-second allowance.
-  The actual source ending was not established. No acceptance receipt was written.
-  The architect authorized an actual recording-start callback marker, request and
-  window binding, a native advancing-start observation within 30 seconds, and
-  60 seconds of reserved padding under the original source-plus-120 ceiling.
-  Native control must observe the source ending and pause playback. The invalid
-  native-hearing premise is replaced by observed unmuted controls; actual retained
-  speech and boundaries still require analysis and source corroboration. This
-  exact correction received R7 approval in 1 minute 50 seconds with no findings,
-  then was committed/pushed as `082f8dd` and candidate-installed on all hosts.
-  The new named short-source handshake case failed the opening-picture and
-  timing gates. Its recording is retained, without manifest/NAS publication or
-  acceptance receipt. The actual callback marker validated, but the native
-  source-opening claim was false and its later write-time receipt was 40.18
-  seconds after ready. Recording/fallback is paused at the architect checkpoint. The
-  original YouTube attempt ended bounded `run_deadline` during metadata/session
-  handling, no source manifest or retry. Its failed run
-  `youtube-bc7QaDmLmoA-20261108T064036Z-3c8a6956` is retained. Native Chrome
-  independently verified exact URL, publisher/title and 0:00 to 0:03 / 22:42.
-  Recording fallback remains pending, not accepted from native playback alone.
-- Live wrong-digest status returned `manifest_digest_mismatch` without success.
-  Other failure classes retain focused fixture coverage, not live outage claims.
-- Feature-only Git integration was prepared read-only with private indexes on
-  both hosts, preserving unrelated branch history and dirty adaptations. Only
-  the 19 feature paths are affected. Full branch merge into SJM was rejected by
-  a read-only merge-tree check because it would mix older unrelated history;
-  no checkout was changed. Final integration review/activation remain pending.
+- R8 observation correction independently approved by DeepSeek in an uninterrupted
+  1 minute 25 seconds, no findings. Commit `db9966c` is pushed to
+  `origin/codex/video-extract`. Earlier approved commits remain `e00a1ad`,
+  `8f07e30`, `e94043e` and `082f8dd`.
+- Current supervised candidates: Home
+  `b505ebf9911b342c382081a21e5897fc3967e727b2d86f058a88e90b27a3696b`,
+  Mini `a4027401f8b37a511c0f07f55fb29fcbcb3b3ff4c3691be61c9c2a6672155e5e`.
+  SJM deliberately retains R7 candidate
+  `e9ba8a7dab58b861140f7004c1e70d1bf863b5abb92fd014d1c471bbdd130b28`.
+  No active launcher or live checkout update on any host.
+- Keith explicitly deferred SJM transcription repair, processing and activation
+  for this release and selected Home until a later fix. Its own failed chunk
+  and dated HTTP 403 access/egress diagnosis remain retained. This is a user
+  deferral, never completed SJM processing. No key/provider/network change.
+- Short Chinese Facebook source: fresh direct run
+  `facebook-2372450313602638-20261108T063408Z-1ef39758`, source digest
+  `dfe4179364567698684dcf7acee5c1b3618f79288013e5a8ea86efc54e6f0a62`,
+  actual source 44.837 seconds, 4,337,894 payload bytes. Home real Groq and all
+  three sheets, final/uncropped frames and speech passed bounded review; reuse
+  preserved actual response hash and nanosecond modification time. The exact
+  real share/r/1MFtSe4XWL/ freshly resolved to the same source, publisher, title,
+  45-second duration and advancing playback, without duplicate acquisition.
+- Long Facebook source: fresh run
+  `facebook-2177961246267847-20261108T063703Z-609c655c`, source digest
+  `c15829a9a642b9414da34c2db8a80102b91875a7c971f5dd000574f4d453bb85`,
+  688.865 source seconds, 86,572,984 payload bytes under unchanged 256 MiB cap.
+  Home real Groq, full timed transcript, all 44 sheets, ending and uncropped
+  frames were read; seam/crop/ASR-subtitle corrections are explicit. R7 processor
+  preparation digest `0e27673b39e231fc84e28f5606bfb4e6209e8e252232dee3c5c0c1a02eed951a`
+  reproduced all content/ASR segments and visual bytes. R8 changes recording
+  observation validation, not ASR/visual processing algorithms. No SJM success
+  is inferred from this Home evidence.
+- Prior recorder attempts remain failed: initial CLI filter initialization abort,
+  then speech retained without ending proof, then an actual ready marker with a
+  black native screenshot and delayed write-time receipt. No failed case was
+  retrospectively accepted. The AppKit and actual callback repairs are reviewed.
+- The one final newly named version2 short case is in progress. Its actual
+  native advancing-clock call completed 27.106353 seconds after ready, inside
+  30 seconds, with returned 0:08 over a roughly 0.145-second call interval and
+  a separate later persistence time. This is a protocol milestone, not source
+  speech/ending acceptance. Actual output validation and Home first-episode
+  opening, first/last speech and ending review remain pending.
+- Original YouTube source identity and 22:42 native playback were freshly seen;
+  its one direct attempt timed out without a manifest. Its unchanged deadline
+  is 08:09:38 UTC, and after 07:44:56 it lacks the required source-plus-120-second
+  admission reserve. No fallback or refreshed request was silently dispatched.
+- Live wrong digest and failed recording/deadline/provider cases produced no
+  success; other failure classes have focused fixture coverage. Retained archive
+  totals are separate inventory snapshots, not an all-host private-copy ceiling.
+- Home/Mini activation-receipt reconciliation for Keith's explicit SJM deferral
+  is prepared, not reviewed or committed. It lists genuine passed relevant
+  examples and separately defers example 6; YouTube/recording gates remain.
+  Latest focused suite: 92 passed in 15.03 seconds; authority/whitespace passed.
 
-Latest focused suite after the handshake implementation: 75 passed in 13.13 seconds.
-The actual Mini Swift typecheck passed. Authority and whitespace checks passed.
-Twelve new handshake tests failed before implementation and now pass.
-
-Prepared: yes. Tested: focused fixtures plus the bounded live evidence above.
-Reviewed: approved through `082f8dd`. Committed: `e00a1ad`, `8f07e30`,
-`e94043e`, `082f8dd`. Pushed: all four. Keith confirmed the active-operation local-plus-NAS
-byte-accounting boundary; archive totals are separate. The exact handshake and
-audio-observation correction is reviewed and candidate-installed, not accepted.
-Activated-home: no. Activated-sjm: no. Activated-mini: no. Accepted: no.
+Prepared: yes. Tested: fixtures plus bounded live evidence above. Reviewed,
+committed and pushed: through `db9966c`. Current SJM-deferral correction awaits
+independent review. Activated-home: no. Activated-sjm: deferred, no activation.
+Activated-mini: no. Accepted: direct Facebook Home evidence only, not the full
+unified release or recording/YouTube route.
 
 ## Acceptance matrix
 
 | Example | Current evidence | State |
 | --- | --- | --- |
-| 1. Original YouTube | Native identity/playback verified; direct attempt timed out; no manifest | Fallback pending |
+| 1. Original YouTube | Native identity/playback verified; direct timed out; unchanged request no longer has admission reserve | Not accepted; no silent deadline refresh |
 | 2. Facebook share/r and Chinese Reel | Fresh Chinese Reel captured and Home reviewed; exact share/r/1MFtSe4XWL/ freshly resolved natively to the same canonical Reel, identity, 45 seconds and advancing playback | Home passed |
-| 3. Facebook over ten minutes | Fresh 688.865-second source, complete acquisition and Home preparation within unchanged cap | Home passed; SJM blocked |
+| 3. Facebook over ten minutes | Fresh 688.865-second source, complete acquisition and Home preparation within unchanged cap | Home passed; SJM deliberately deferred |
 | 4. Missing accessible captions | Both new Facebook sources reported no caption tracks; complete actual audio reached Home Groq | Home passed |
-| 5. Recording after direct failure | New callback validates; native opening-picture and start-timing checks failed honestly | Controller checkpoint blocked; no accepted recorder |
-| 6. SJM independence | Own NAS source verification passed; actual own-host STT returned HTTP 403 | Blocked |
+| 5. Recording after direct failure | New version2 short case has actual native call inside30s; output and speech/ending review pending | In progress; no accepted recorder |
+| 6. SJM independence | Own NAS verification passed, own STT403 retained; Keith explicitly selected Home until later SJM fix | Deferred by Keith, not passed |
 | 7. Reuse | Short Home preparation reused with identical response hash and mtime | Home passed |
 | 8. Precise failures | Live wrong digest refused; direct deadline and SJM HTTP 403 did not produce success; other classes have fixture coverage | Partial |
 
@@ -405,3 +363,36 @@ fails again, stop recording work and deliver the accepted direct Facebook portio
 with the precise remaining blocker for a new design decision. Routine YouTube
 fallback cannot start before that short case passes; its original deadline is
 immutable even if it expires during this work.
+
+
+## R8 approval and explicit SJM release deferral
+
+The earlier short review windows did not establish a service failure. The
+architect required one uninterrupted final attempt, bounded to fifteen minutes,
+with no conclusion prompts or restart. It completed substantive approval in
+1 minute 25 seconds, no findings. DeepSeek-V4.1-Flash High, Read Only, verified
+all five current snapshots and exact packet/diff/manifest hashes. R8 packet
+`7785ee989a61a9843cc28823bf534a67401c4cbbfa739b49e2667b3449eb6bf6`, diff
+`e8e48b94b2149d9c0ef5b23ce85766b970b1081def9dad8380b46599077e6004`, manifest
+`4b4130642e553c59a8a4e63a35448ef45c525f73fe32e1e2c10eb402442f2310`.
+Commit `db9966c` is pushed. Home candidate is now
+`b505ebf9911b342c382081a21e5897fc3967e727b2d86f058a88e90b27a3696b`;
+Mini `a4027401f8b37a511c0f07f55fb29fcbcb3b3ff4c3691be61c9c2a6672155e5e`.
+No activation. The one final newly named version2 short test is in progress;
+its failure would stop recording work for a new design decision.
+
+Keith explicitly deferred SJM processing and activation for this release and
+selected Home until a later fix. This is a deliberate user deferral, not SJM
+acceptance. Its prior R7 candidate and failed chunk remain preserved. Verified-TLS
+unauthenticated models requests independently returned Home HTTP 401 with
+invalid_request_error/invalid_api_key via 198.18.15.214, versus SJM generic HTTP
+403 with null structured type/code via 104.18.38.236. Both showed the same service
+edge and Google Trust Services WE1 issuer. This supports an access/egress-policy
+distinction before STT, without proving a country rule or account defect. No key
+replacement, provider switch or network/account/credential change is justified.
+
+A narrow activation-receipt correction is being prepared so Home/Mini list only
+passed relevant examples, with example 6 explicitly deferred by Keith's dated
+instruction. Recording and YouTube gates remain required. The original YouTube
+request now lacks its source-plus-120-second admission reserve before its
+immutable deadline; it has not been silently refreshed or retried.

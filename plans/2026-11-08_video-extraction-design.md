@@ -241,3 +241,19 @@ permission/window expansion or automatic retry. Independently review this exact
 protocol, then one fresh named short test; if it fails again, stop recording work
 and deliver the accepted direct Facebook portion with the precise remaining
 blocker for a new design decision. Original YouTube deadline stays immutable.
+
+
+SJM release deferral confirmed by Keith on 8 November 2026 in the active user
+conversation, relayed by the architect: leave SJM transcription repair for now
+and use Home until a later fix. SJM processing and activation are deliberately
+deferred, no longer required for this release's Home acceptance. Preserve its
+candidate, retained failed chunk and dated verified-TLS HTTP 403 diagnosis.
+No SJM provider, credential or network change is authorized. Home processing is
+accepted as Home work under this explicit selection, never as completed SJM work.
+
+Home/Mini delivery still requires the relevant actual examples 1, 2, 3, 4, 5, 7
+and 8. Their activation receipts must list only genuinely passed examples and
+separately record example 6 as Keith's dated SJM-processing/activation deferral.
+The installer will recognize only this narrow named release exception for Home
+or Mini; it cannot use it to activate SJM or waive recording/YouTube, source
+boundaries, independent review, package binding or any other live check.

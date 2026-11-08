@@ -71,3 +71,31 @@ def test_candidate_install_publishes_before_freezing_root(tmp_path,monkeypatch,c
     finally:
         for path in sorted(tmp_path.rglob('*'),key=lambda p:len(p.parts)):
             if path.is_dir():path.chmod(0o700)
+
+
+@pytest.mark.parametrize('role',['home','mini'])
+def test_explicit_sjm_release_deferral_is_separate_from_passed_examples(role):
+    m=installer()
+    receipt={'package':'a'*64,'role':role,'live_examples':[1,2,3,4,5,7,8],'independent_review':'approve',
+        'deferred_examples':[{'example':6,'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}]}
+    m.validate_acceptance(receipt,'a'*64,role)
+
+
+@pytest.mark.parametrize('change',['sjm_role','missing_authority','missing_youtube','missing_recording','extra_waiver','missing_review'])
+def test_sjm_deferral_never_waives_other_hosts_or_checks(change):
+    m=installer();role='home'
+    receipt={'package':'a'*64,'role':role,'live_examples':[1,2,3,4,5,7,8],'independent_review':'approve',
+        'deferred_examples':[{'example':6,'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}]}
+    if change=='sjm_role':role='sjm';receipt['role']=role
+    elif change=='missing_authority':receipt['deferred_examples'][0].pop('authority')
+    elif change=='missing_youtube':receipt['live_examples'].remove(1)
+    elif change=='missing_recording':receipt['live_examples'].remove(5)
+    elif change=='extra_waiver':receipt['deferred_examples'].append({'example':8})
+    else:receipt['independent_review']='needs_attention'
+    with pytest.raises(ValueError):m.validate_acceptance(receipt,'a'*64,role)
+
+
+@pytest.mark.parametrize('role',['home','mini','sjm'])
+def test_complete_real_acceptance_contract_remains_supported(role):
+    m=installer()
+    m.validate_acceptance({'package':'a'*64,'role':role,'live_examples':list(range(1,9)),'independent_review':'approve'},'a'*64,role)

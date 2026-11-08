@@ -235,3 +235,21 @@ The installer does not create broad allow rules or approve a policy prompt.
 Preserve Facebook v1 until relevant replacement acceptance. Releases and failed
 partials remain until Keith authorizes exact-path cleanup. No stale-lock clearing,
 force overwrite, background retries, daemon or new capture schedule is installed.
+
+
+## Explicit SJM release deferral
+
+Keith deferred SJM transcription repair and activation on 8 November 2026 and
+selected Home processing until a later fix. Preserve SJM's installed candidate,
+failed chunk and dated HTTP 403 access diagnosis; do not change its provider,
+credentials, network or account. Home work remains Home evidence, never proof
+that SJM processing passed. SJM rollout is deferred, not completed.
+
+For this release Home/Mini acceptance still requires actual examples 1, 2, 3,
+4, 5, 7 and 8 from the design. The activation receipt's `live_examples` lists
+only those passed checks and `deferred_examples` separately contains exactly
+`[{"example":6,"authority":"keith_2026-11-08","scope":"sjm_processing_and_activation"}]`.
+This narrow installer exception is allowed only for Home/Mini, never SJM, and
+cannot waive YouTube/recording, source boundaries, review or package binding.
+Do not manufacture an example 6 pass or silently renew the original YouTube
+request when it lacks the source-plus-120-second reserve before its deadline.

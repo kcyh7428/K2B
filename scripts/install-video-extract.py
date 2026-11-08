@@ -54,8 +54,15 @@ def host_pins(role,home,downloader):
 
 
 def validate_acceptance(receipt, package, role):
-    if receipt.get('package') != package or receipt.get('role') != role or receipt.get('live_examples') != list(range(1,9)) or receipt.get('independent_review') != 'approve':
-        raise ValueError('activation requires matching independent approval and all live examples; fixtures are insufficient')
+    passed = receipt.get('live_examples'); deferred = receipt.get('deferred_examples',[])
+    complete = passed == list(range(1,9)) and deferred == []
+    # Keith's explicit 8 November release decision defers only SJM processing
+    # and activation. Never represent that example as a passed live check.
+    home_mini_with_sjm_deferred = (role in ('home','mini') and passed == [1,2,3,4,5,7,8] and
+        deferred == [{'example':6,'authority':'keith_2026-11-08','scope':'sjm_processing_and_activation'}])
+    if (receipt.get('package') != package or receipt.get('role') != role or receipt.get('independent_review') != 'approve' or
+            not (complete or home_mini_with_sjm_deferred)):
+        raise ValueError('activation requires matching approval and relevant live examples; only the explicit SJM release deferral is permitted')
 
 
 def no_symlinks(path):
