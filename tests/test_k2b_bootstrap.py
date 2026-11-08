@@ -374,7 +374,7 @@ def test_both_internal_deadlines_report_before_registered_hook_timeout(local_tre
     (project / "scripts/vault-note-write.py").write_text("import time\ntime.sleep(30)\n")
     started = time.monotonic()
     result = subprocess.run(["/bin/bash", str(ROOT / "scripts/hooks/session-start.sh")],
-        env={**os.environ, "K2B_PROJECT_ROOT": str(project), "K2B_VAULT_PATH": str(vault), "K2B_STATE_ROOT": str(state)},
+        env={**os.environ, "HOME": str(state.parent), "K2B_PROJECT_ROOT": str(project), "K2B_VAULT_PATH": str(vault), "K2B_STATE_ROOT": str(state)},
         capture_output=True, text=True, timeout=18)
     assert result.returncode == 0
     assert time.monotonic() - started < 12
