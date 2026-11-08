@@ -253,3 +253,35 @@ This narrow installer exception is allowed only for Home/Mini, never SJM, and
 cannot waive YouTube/recording, source boundaries, review or package binding.
 Do not manufacture an example 6 pass or silently renew the original YouTube
 request when it lacks the source-plus-120-second reserve before its deadline.
+
+
+## Sparse frames and unsupported provider timestamps
+
+Visual sampling reads the complete encoded video stream once before tiling.
+A held decoded picture between actual VFR frames can repeat in the display-time
+samples; it is not a newly observed distinct source frame. Preserve the actual
+video extent and final decoded-frame PTS separately. A longer audio/container
+tail remains explicitly unpictured; never clone the last image across that tail.
+Failed or interrupted sheet passes remain retained partials under the same cap.
+For an unfinished pass, a missing completed root sheet may trigger regeneration
+only when its exact declared hash is found in this same run's bounded partial
+directories. Missing or changed retained bytes, or a mismatched existing root
+file, remain an integrity hold. A completed prepared cache is never silently
+regenerated to hide corruption.
+
+For a finite, ordered ASR interval outside the actual submitted audio chunk,
+preserve its raw response file and exact segment index/text/times, exclude the
+whole unsupported segment from normalized words and retain its intersection
+with real audio as unverified. `provider-timestamp-anomalies.json`, raw response,
+timeline and visual coverage are bound by the prepared manifest. Preparation
+and status expose anomalies and unverified ranges, never complete transcription.
+Malformed/missing/nonfinite/reversed data still hard-fails. No word clipping,
+redistribution, silence inference or automatic provider retry.
+
+Before accepting a source episode, use its actual picture/subtitle/boundary
+review and supported first/last speech, and check its actual recording-time
+bounds with `validate_episode_anomalies`. Any unresolved anomaly intersecting
+required source content blocks acceptance. A padding/later-loop anomaly remains
+labelled without invalidating independently proved first-episode content. The
+last picture of a paused loop is not the first source ending. ASR timestamps
+across a paused lead can establish returned words, but not precise speech onset.

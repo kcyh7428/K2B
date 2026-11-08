@@ -145,3 +145,162 @@ def test_inventory_includes_recorder_preflight_failures(tmp_path):
     report = v.inventory(tmp_path,'home')
     assert len(report['local_preflights']) == 1
     assert len(report['failure_receipts']) == 1
+
+
+@pytest.mark.parametrize('interrupted',[False,True])
+@pytest.mark.parametrize('audio_tail',[False,True])
+def test_sparse_video_samples_hold_the_prior_picture_across_sheet_boundaries(tmp_path,monkeypatch,interrupted,audio_tail):
+    import subprocess,time
+    v=load();root=tmp_path/'prepared';root.mkdir();source=tmp_path/'sparse.mp4'
+    v.configure({'role':'home'},'youtube',root)
+    audio_duration=30 if audio_tail else 18
+    subprocess.run(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-f','lavfi','-i','color=c=blue:s=320x240:r=1:d=18',
+        '-f','lavfi','-i',f'sine=frequency=440:duration={audio_duration}',
+        '-vf',"drawbox=color=red:t=fill:enable='gte(t,17)',select='eq(n,0)+eq(n,17)'",'-fps_mode','vfr','-c:v','libx264','-c:a','aac',str(source)],check=True)
+    previous = []
+    if interrupted:
+        command = v.legacy.command
+        def fail_after_outputs(args,*a,**kw):
+            result = command(args,*a,**kw)
+            if str(args[-1]).endswith('sheet-%03d.jpg'):raise v.Blocked('fixture_interrupted_before_visual_commit')
+            return result
+        monkeypatch.setattr(v.legacy,'command',fail_after_outputs)
+        with pytest.raises(v.Blocked,match='fixture_interrupted_before_visual_commit'):
+            v.prepare_visuals(source,root,audio_duration,'a'*64,time.monotonic()+60)
+        previous = [v.sha(p) for p in root.glob('sheet-*.jpg')]
+        assert len(previous)==2 and not (root/'visual-coverage.json').exists()
+        monkeypatch.setattr(v.legacy,'command',command)
+    coverage=v.prepare_visuals(source,root,audio_duration,'a'*64,time.monotonic()+60)
+    if interrupted:
+        assert sorted(v.sha(p) for p in (root/'partials').rglob('sheet-*.jpg'))==sorted(previous)
+    assert [s['frame_count'] for s in coverage['sheets']]==[16,2]
+    assert coverage['sheets'][1]['sample_seconds']==[16,17]
+    assert coverage['ending_observed_second']==17
+    assert coverage['visual_duration']==18
+    assert coverage['unpictured_audio_tail_seconds']==audio_duration-18
+    assert max(t for sheet in coverage['sheets'] for t in sheet['sample_seconds'])==17
+    assert coverage['sampling_policy']=='full_stream_display_timeline_resampling_with_possible_held_images'
+    def pixel(sheet,x,y):
+        return subprocess.check_output(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-i',str(root/sheet),
+            '-vf',f'crop=2:2:{x}:{y},scale=1:1','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'])
+    # The held blue frame must remain blue through16s, not be replaced by the
+    # first future red frame from an independently trimmed input segment.
+    for rgb in (pixel('sheet-001.jpg',1128,848),pixel('sheet-002.jpg',162,122)):
+        assert rgb[2]>rgb[0]+100
+    red=pixel('sheet-002.jpg',484,122);assert red[0]>red[2]+100
+
+
+def test_out_of_chunk_words_are_retained_but_never_clipped_into_source_claims():
+    import copy
+    v=load();raw={'text':'supported unsupported','segments':[{'start':0,'end':2,'text':'supported'},
+        {'start':9,'end':12,'text':'  unsupported  '}]};before=copy.deepcopy(raw)
+    words,anomalies=v.classify_transcript(raw,100,10)
+    assert raw==before and [s['text'] for s in words]==['supported']
+    assert anomalies[0]['raw_segment_index']==1
+    assert anomalies[0]['raw_segment']==raw['segments'][1]
+    assert anomalies[0]['unverified_audio_range']=={'start':109,'end':110}
+    assert v.validate_episode_anomalies(anomalies,100,108,110)['anomaly_intersection_check']=='none_intersect'
+    with pytest.raises(v.Blocked,match='source_episode_has_unresolved_provider_anomaly'):
+        v.validate_episode_anomalies(anomalies,100,109.5,110)
+
+
+@pytest.mark.parametrize('segment',[{}, {'start':1,'end':2}, {'start':float('nan'),'end':2,'text':'bad'},
+    {'start':1,'end':float('inf'),'text':'bad'}, {'start':2,'end':1,'text':'bad'}, {'start':1,'end':2,'text':None}])
+def test_provider_anomaly_classification_never_relaxes_parse_failures(segment):
+    v=load()
+    with pytest.raises(v.Blocked):v.classify_transcript({'text':'bad','segments':[segment]},0,10)
+
+
+def test_padding_anomaly_does_not_validate_an_intersecting_source_episode():
+    v=load()
+    _,padding=v.classify_transcript({'text':'padding','segments':[{'start':20,'end':35,'text':'padding'}]},0,30)
+    assert v.validate_episode_anomalies(padding,2,18,30)['anomaly_intersection_check']=='none_intersect'
+    _,source=v.classify_transcript({'text':'source','segments':[{'start':7,'end':35,'text':'source'}]},0,30)
+    with pytest.raises(v.Blocked,match='source_episode_has_unresolved_provider_anomaly'):
+        v.validate_episode_anomalies(source,2,18,30)
+
+
+def test_preparation_and_status_hash_bind_anomalies_without_provider_retry(tmp_path,monkeypatch):
+    import subprocess
+    v=load();nas=tmp_path/'nas';nas.mkdir();state=tmp_path/'state';state.mkdir()
+    monkeypatch.setattr(v,'NAS',nas);monkeypatch.setattr(v,'mount_check',lambda *a:None);v.configure({'role':'home'},'youtube',state)
+    run='youtube-bc7QaDmLmoA-20261108T000000Z-abcdef01';src=v.nas_run(run);src.mkdir(parents=True)
+    subprocess.run(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-f','lavfi','-i','color=c=blue:s=320x240:r=2:d=2',
+        '-f','lavfi','-i','sine=frequency=440:duration=2','-c:v','libx264','-c:a','aac',str(src/'source.mp4')],check=True)
+    subprocess.run(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-i',str(src/'source.mp4'),'-ac','1','-ar','16000',str(src/'speech.flac')],check=True)
+    for name in ('acquisition.json','native-source.json'):(src/name).write_text('{}')
+    (src/'run-marker.txt').write_text('random-marker')
+    digest=v.payload_manifest(src,{'platform':'youtube','run_id':run,'video_id':'bc7QaDmLmoA','source_duration':2,'duration':2,
+        'method':'direct_media','marker_sha256':v.sha(src/'run-marker.txt')})
+    calls=[]
+    def provider(path):
+        calls.append(v.sha(path));return {'text':'supported unsupportedword','segments':[{'start':0,'end':1,'text':'supported'},
+            {'start':1.5,'end':3,'text':'unsupportedword'}]}
+    monkeypatch.setattr(v.legacy,'transcribe',provider)
+    first=v.process(run,digest,state);root=v.preparation_state(state,digest)/run
+    assert len(calls)==1 and first['transcription_coverage_status']=='unverified_provider_timestamp_anomalies'
+    assert 'unsupportedword' not in (root/'transcript.txt').read_text()
+    raw=root/'transcript-000.json';before=(v.sha(raw),raw.stat().st_mtime_ns)
+    anomaly=first['provider_timestamp_anomalies'][0]
+    assert anomaly['response_sha256']==v.sha(raw) and anomaly['raw_segment']['text']=='unsupportedword'
+    assert any(g['reason']=='provider_timestamp_outside_submitted_audio_chunk' for g in first['audio_gaps'])
+    names={item['name'] for item in v.verify(root,first['prepared_manifest_sha256'])['files']}
+    assert {'provider-timestamp-anomalies.json','timeline.json','visual-coverage.json','transcript-000.json'} <= names
+    assert v.read_status(run,digest,state)['transcription_coverage_status']=='unverified_provider_timestamp_anomalies'
+    assert v.process(run,digest,state)['reused'] is True and len(calls)==1
+    assert (v.sha(raw),raw.stat().st_mtime_ns)==before
+    with pytest.raises(v.Blocked,match='source_episode_has_unresolved_provider_anomaly'):
+        v.validate_episode_anomalies(first['provider_timestamp_anomalies'],0,2,2)
+    (root/'provider-timestamp-anomalies.json').write_text('{}')
+    with pytest.raises(v.Blocked):v.read_status(run,digest,state)
+
+
+def test_interruption_between_preserved_sheet_moves_remains_retryable(tmp_path,monkeypatch):
+    from pathlib import Path
+    import subprocess,time
+    v=load();root=tmp_path/'prepared';root.mkdir();source=tmp_path/'sparse.mp4';v.configure({'role':'home'},'youtube',root)
+    subprocess.run(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-f','lavfi','-i','color=c=blue:s=320x240:r=1:d=18',
+        '-vf',"select='eq(n,0)+eq(n,17)'",'-fps_mode','vfr','-c:v','libx264',str(source)],check=True)
+    v.prepare_visuals(source,root,18,'a'*64,time.monotonic()+60)
+    old=sorted(v.sha(p) for p in root.glob('sheet-*.jpg'))
+    # Model interruption after only one member's valid progress was committed.
+    (root/'visual-coverage.json').unlink();progress=v.read_json(root/'visual-progress.json')
+    progress['completed'].pop('sheet-002.jpg');progress['sample_seconds'].pop('sheet-002.jpg');v.write_json(root/'visual-progress.json',progress)
+    rename=Path.rename;moves=[]
+    def interrupt(path,destination):
+        if path.parent==root and path.name.startswith('sheet-'):
+            moves.append(path.name)
+            if len(moves)==2:raise OSError('fixture interruption between preserved moves')
+        return rename(path,destination)
+    monkeypatch.setattr(Path,'rename',interrupt)
+    with pytest.raises(OSError):v.prepare_visuals(source,root,18,'a'*64,time.monotonic()+60)
+    monkeypatch.setattr(Path,'rename',rename)
+    result=v.prepare_visuals(source,root,18,'a'*64,time.monotonic()+60)
+    assert len(result['sheets'])==2
+    assert sorted(v.sha(p) for p in (root/'partials').rglob('sheet-*.jpg'))==old
+
+
+@pytest.mark.parametrize('state',['matching_partial','missing','changed_partial','corrupt_current'])
+def test_preexisting_stale_sheet_progress_requires_exact_retained_bytes(tmp_path,state):
+    import subprocess,time,shutil
+    v=load();root=tmp_path/'prepared';root.mkdir();source=tmp_path/'sparse.mp4';v.configure({'role':'home'},'youtube',root)
+    subprocess.run(['/opt/homebrew/bin/ffmpeg','-nostdin','-v','error','-f','lavfi','-i','color=c=blue:s=320x240:r=1:d=18',
+        '-vf',"select='eq(n,0)+eq(n,17)'",'-fps_mode','vfr','-c:v','libx264',str(source)],check=True)
+    v.prepare_visuals(source,root,18,'a'*64,time.monotonic()+60);old=sorted(v.sha(p) for p in root.glob('sheet-*.jpg'))
+    (root/'visual-coverage.json').unlink();progress=v.read_json(root/'visual-progress.json')
+    progress['completed'].pop('sheet-002.jpg');progress['sample_seconds'].pop('sheet-002.jpg');v.write_json(root/'visual-progress.json',progress)
+    sheet=root/'sheet-001.jpg';partial=v.safe_dir(root/'partials'/'1234abcd')/'sheet-001.jpg'
+    if state=='missing':sheet.unlink()
+    elif state=='corrupt_current':shutil.copyfile(sheet,partial);sheet.write_bytes(b'corrupt current')
+    else:
+        sheet.rename(partial)
+        if state=='changed_partial':partial.write_bytes(b'changed retained bytes')
+    before=v.sha(root/'sheet-002.jpg')
+    if state=='matching_partial':
+        result=v.prepare_visuals(source,root,18,'a'*64,time.monotonic()+60)
+        assert len(result['sheets'])==2
+        assert sorted(v.sha(p) for p in (root/'partials').rglob('sheet-*.jpg'))==old
+    else:
+        with pytest.raises(v.Blocked,match='visual_progress_hash_mismatch'):
+            v.prepare_visuals(source,root,18,'a'*64,time.monotonic()+60)
+        assert v.sha(root/'sheet-002.jpg')==before and not (root/'visual-coverage.json').exists()

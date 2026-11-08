@@ -604,6 +604,66 @@ def processing_command(args,root,deadline,limit=8*1024**2,combined=False):
     return _command(args,root,min(deadline,time.monotonic()+600),limit,combined)
 
 
+def prepare_sheet_pass(source,root,duration,digest,deadline,visual_duration):
+    """Sample the full display timeline before tiling, including held pictures.
+
+    A per-sheet input EOF can omit static VFR intervals or substitute a future
+    frame after seeking. One bounded pass avoids both without new source media.
+    """
+    count = max(1,math.ceil(visual_duration))
+    names = [f'sheet-{i+1:03d}.jpg' for i in range(math.ceil(count/16))]
+    checkpoint = root/'visual-progress.json'; progress = read_json(checkpoint)
+    need(progress.get('source_manifest_sha256') == digest and progress.get('duration') == duration,'visual_progress_source_mismatch')
+    need(set(progress['completed']) <= {*names,'ending.jpg'},'unexpected_visual_progress_file')
+    def retained_sheet_matches(name,expected):
+        partial_root = child(root,'partials')
+        if not partial_root.exists():return False
+        need(partial_root.is_dir(),'invalid_visual_partials')
+        # The generator preserves sheets one level below this same run only.
+        # Never search other runs, accept absent bytes or weaken a root mismatch.
+        for number,folder in enumerate(partial_root.iterdir(),1):
+            need(number <= 2000,'visual_partial_inventory_limit')
+            child(root,str(folder.relative_to(root)))
+            if folder.is_dir():
+                candidate = child(folder,name)
+                if candidate.is_file() and sha(candidate) == expected:return True
+        return False
+    all_at_root = True
+    for i,name in enumerate(names):
+        if name in progress['completed']:
+            path = child(root,name)
+            if path.exists():need(path.is_file() and sha(path) == progress['completed'][name],'visual_progress_hash_mismatch')
+            else:
+                need(retained_sheet_matches(name,progress['completed'][name]),'visual_progress_hash_mismatch')
+                all_at_root = False
+            need(progress['sample_seconds'].get(name) == list(range(i*16,min(i*16+16,count))),'visual_sample_time_mismatch')
+    if all_at_root and all(name in progress['completed'] for name in names): return
+    # Preserve every old/incomplete pass, including valid members of a pass that
+    # was interrupted before its complete timestamp proof. Never overwrite it.
+    existing = list(root.glob('sheet-*.jpg'))
+    for path in existing:
+        need(path.name in names and path.is_file() and not path.is_symlink(),'unexpected_visual_output')
+    # Commit the uncommitted-pass state before moving any sheet. Interruption
+    # between moves must not leave a completed entry pointing at a moved file.
+    for name in names:
+        progress['completed'].pop(name,None); progress['sample_seconds'].pop(name,None)
+    write_json(checkpoint,progress)
+    if existing:
+        partial = safe_dir(root/'partials'/secrets.token_hex(4))
+        for path in existing:path.rename(partial/path.name)
+    crop = progress['crop']
+    filters = 'fps=1:start_time=0:round=up,showinfo,'+('crop='+crop+',' if crop else '')+'scale=320:-2,tile=4x4:nb_frames=16:padding=2:margin=2'
+    observed = legacy.command([legacy.TOOLS['ffmpeg'],'-nostdin','-hide_banner','-v','info','-n','-i',str(source),'-map','0:v:0','-an',
+        '-vf',filters,'-fps_mode','passthrough','-frames:v',str(len(names)),'-q:v','3','-start_number','1',str(root/'sheet-%03d.jpg')],root,deadline,combined=True)
+    times = [float(t) for t in re.findall(rb'n:\s*\d+\s+pts:\s*-?\d+\s+pts_time:([0-9.+-]+)',observed)]
+    need(times == list(range(count)) and {p.name for p in root.glob('sheet-*.jpg')} == set(names),'visual_sample_count_or_time_mismatch')
+    for i,name in enumerate(names):
+        path = child(root,name); need(path.is_file() and path.stat().st_size > 0,'missing_visual_output')
+        progress['completed'][name] = sha(path)
+        progress['sample_seconds'][name] = times[i*16:min(i*16+16,count)]
+        write_json(checkpoint,progress)
+
+
 def prepare_visuals(source,root,duration,digest,deadline):
     """Preserve v1 sheets, but select the actual final decoded video frame.
 
@@ -635,11 +695,61 @@ def prepare_visuals(source,root,duration,digest,deadline):
             progress['completed']['ending.jpg'] = sha(ending)
             write_json(root/'ending-time.json',{'source_manifest_sha256':digest,'observed_video_frame_second':final_time,'visual_duration':visual_duration})
             write_json(checkpoint,progress)
-    coverage = legacy.prepare_visuals(source,root,duration,digest,deadline)
     final = read_json(root/'ending-time.json')
+    if not stage.exists():
+        prepare_sheet_pass(source,root,duration,digest,deadline,final['visual_duration'])
+    coverage = legacy.prepare_visuals(source,root,duration,digest,deadline)
+    coverage['sampling_policy'] = 'full_stream_display_timeline_resampling_with_possible_held_images'
     need(final.get('source_manifest_sha256') == digest,'ending_source_mismatch')
     coverage['ending_observed_second'] = final['observed_video_frame_second']
     write_json(stage,coverage); return coverage
+
+
+def classify_transcript(response,offset,length):
+    """Retain structurally valid out-of-chunk intervals as unsupported claims.
+
+    Raw response files are never rewritten. Words from such a segment are not
+    clipped, redistributed or used as normalized source speech.
+    """
+    need(type(offset) in (int,float) and math.isfinite(offset) and offset >= 0 and
+         type(length) in (int,float) and math.isfinite(length) and 0 < length <= 240.15,'invalid_audio_chunk_time_map')
+    need(isinstance(response,dict),'invalid_transcription_response')
+    text = response.get('text'); raw = response.get('segments')
+    if 'text' in response and (text is None or isinstance(text,str) and not text.strip()) and (raw is None or raw == []):return [],[]
+    need(isinstance(text,str) and bool(text.strip()),'empty_transcription')
+    need(isinstance(raw,list) and bool(raw),'missing_transcript_segments')
+    words = []; anomalies = []
+    for index,segment in enumerate(raw):
+        need(isinstance(segment,dict) and {'start','end','text'} <= set(segment),'malformed_transcript_segment')
+        a,b = segment['start'],segment['end']
+        need(type(a) in (int,float) and type(b) in (int,float) and math.isfinite(a) and math.isfinite(b) and a <= b,'invalid_segment_time')
+        need(isinstance(segment['text'],str),'invalid_segment_text')
+        if a < 0 or b > length:
+            first,last = max(0,a),min(length,b)
+            anomalies.append({'raw_segment_index':index,'raw_segment':{k:segment[k] for k in ('start','end','text')},
+                'submitted_audio_chunk_duration':length,'submitted_audio_offset_in_media':offset,
+                'unverified_audio_range':{'start':offset+first,'end':offset+last} if first < last else None,
+                'reason':'provider_timestamp_outside_submitted_audio_chunk'})
+        else:words.append({'start':a+offset,'end':b+offset,'text':segment['text'].strip(),'raw_segment_index':index})
+    return words,anomalies
+
+
+def validate_episode_anomalies(anomalies,start,end,video_duration):
+    """Check only anomaly intersection, never substitute for source review."""
+    need(all(type(t) in (int,float) and math.isfinite(t) for t in (start,end,video_duration)) and
+         0 <= start < end <= video_duration and isinstance(anomalies,list),'invalid_source_episode_review_range')
+    outside = []
+    for anomaly in anomalies:
+        need(isinstance(anomaly,dict) and 'unverified_audio_range' in anomaly,'invalid_provider_anomaly_record')
+        span = anomaly['unverified_audio_range']
+        if span is None:continue
+        need(isinstance(span,dict) and set(span) == {'start','end'} and
+             all(type(span[k]) in (int,float) and math.isfinite(span[k]) for k in span) and
+             0 <= span['start'] < span['end'],'invalid_provider_anomaly_record')
+        need(max(start,span['start']) >= min(end,span['end']),'source_episode_has_unresolved_provider_anomaly')
+        outside.append(span)
+    return {'episode_start':start,'episode_end':end,'anomaly_intersection_check':'none_intersect',
+        'unverified_ranges_outside_episode':outside,'source_speech_and_boundary_review_still_required':True}
 
 
 def prepare_source(run,digest,local,manifest):
@@ -658,26 +768,36 @@ def prepare_source(run,digest,local,manifest):
     timing = manifest['_observed_timing']
     write_json(root/'source-timing.json',dict(timing,source_manifest_sha256=digest))
     audio_duration = timing['speech_duration']; audio_start = timing['audio_start_second']
-    all_segments = []; chunks = []
+    all_segments = []; chunks = []; anomalies = []
     for i,(offset,length) in enumerate(legacy.chunk_schedule(audio_duration)):
         audio = root/f'chunk-{i:03d}.flac'; response = root/f'transcript-{i:03d}.json'
         legacy.ensure_audio_chunk(src/'speech.flac',audio,offset,length,root,deadline,response.exists())
+        submitted_duration = float(legacy.probe(audio,root,deadline)['format']['duration'])
         if not response.exists():
             need(time.monotonic()+90 <= deadline,'processing_deadline_before_speech')
-            r = legacy.transcribe(audio); legacy.segments(r,offset,allow_empty=True)
+            r = legacy.transcribe(audio); classify_transcript(r,offset+audio_start,submitted_duration)
             write_json(response,{'source_manifest_sha256':digest,'audio_sha256':sha(audio),'response':r})
         r = read_json(response)
         need(r.get('source_manifest_sha256') == digest and r.get('audio_sha256') == sha(audio),'transcript_source_mismatch')
-        current = legacy.segments(r['response'],offset+audio_start,allow_empty=True)
+        current,unsupported = classify_transcript(r['response'],offset+audio_start,submitted_duration)
         all_segments.extend(dict(s,chunk=i) for s in current)
-        chunks.append({'audio_offset':offset,'offset':offset+audio_start,'duration':length,'response':response.name,'transcript_status':'words_returned' if current else 'empty_audio_result_unverified'})
+        anomalies.extend(dict(a,chunk=i,response=response.name,response_sha256=sha(response)) for a in unsupported)
+        status = 'provider_timestamp_anomalies_unverified' if unsupported else 'words_returned' if current else 'empty_audio_result_unverified'
+        chunks.append({'audio_offset':offset,'offset':offset+audio_start,'duration':submitted_duration,'scheduled_duration':length,'response':response.name,
+            'transcript_status':status,'provider_timestamp_anomaly_count':len(unsupported)})
     gaps = [{'start':c['offset'],'end':c['offset']+c['duration'],'reason':'No words returned; source sound remains unverified',
-             'neighbor_word_segments':[s for s in all_segments if s['start'] < c['offset']+c['duration'] and s['end'] > c['offset']]} for c in chunks if c['transcript_status'] != 'words_returned']
+             'neighbor_word_segments':[s for s in all_segments if s['start'] < c['offset']+c['duration'] and s['end'] > c['offset']]} for c in chunks if c['transcript_status'] == 'empty_audio_result_unverified']
+    gaps.extend(dict(a['unverified_audio_range'],reason=a['reason'],chunk=a['chunk'],raw_segment_index=a['raw_segment_index'])
+        for a in anomalies if a['unverified_audio_range'] is not None)
     gaps.extend(timing['audio_absent_ranges'])
     basis = 'recording_seconds_including_padding' if manifest['method'] == 'playback_recording' else 'source_media_seconds'
-    write_json(root/'timeline.json',{'source_manifest_sha256':digest,'processor_id':processor_id(),'timeline_basis':basis,'observed_timing':timing,'chunks':chunks,'segments':all_segments,'audio_gaps':gaps,
+    write_json(root/'timeline.json',{'source_manifest_sha256':digest,'processor_id':processor_id(),'timeline_basis':basis,'observed_timing':timing,'chunks':chunks,'segments':all_segments,'audio_gaps':gaps,'provider_timestamp_anomalies':anomalies,
         'overlap_policy':'Five-second overlaps retained with chunk labels; reconcile repeated boundary speech during review'})
-    (root/'transcript.txt').write_text('\n'.join(f"[{s['start']:.2f} - {s['end']:.2f}] {s['text']}" for s in all_segments)+'\n')
+    write_json(root/'provider-timestamp-anomalies.json',{'source_manifest_sha256':digest,'processor_id':processor_id(),
+        'anomalies':anomalies,'policy':'Whole unsupported segments excluded from normalized words; raw responses retained; no silence inference or automatic retry'})
+    normalized = '\n'.join(f"[{s['start']:.2f} - {s['end']:.2f}] {s['text']}" for s in all_segments)+'\n'
+    if anomalies:normalized += '\nUnverified provider timestamps: unsupported segments excluded. See provider-timestamp-anomalies.json. This is not a complete-transcription claim.\n'
+    (root/'transcript.txt').write_text(normalized)
     coverage = prepare_visuals(src/'source.mp4',root,duration,digest,deadline)
     coverage['unpictured_audio_tail_seconds'] = max(0,audio_start+audio_duration-coverage['visual_duration'])
     write_json(root/'visual-coverage.json',coverage)
@@ -685,7 +805,9 @@ def prepare_source(run,digest,local,manifest):
         'source_method':manifest['method'],'timeline_basis':basis,'source_time_map_status':'requires_actual_boundary_review' if manifest['method'] == 'playback_recording' else 'direct_media',
         'transcript':str(root/'transcript.txt'),'visual_coverage':str(root/'visual-coverage.json'),'sheets':coverage['sheets'],'ending':coverage['ending'],
         'duration':duration,'source_duration':manifest['source_duration'],'media_duration':timing['media_duration'],'video_duration':timing['video_duration'],
-        'speech_duration':audio_duration,'audio_start_second':audio_start,'chunks':len(chunks),'segments':len(all_segments),'audio_gaps':gaps,'content_review_status':'pending_assistant_speech_visual_and_boundary_review'}
+        'speech_duration':audio_duration,'audio_start_second':audio_start,'chunks':len(chunks),'segments':len(all_segments),'audio_gaps':gaps,'provider_timestamp_anomalies':anomalies,
+        'transcription_coverage_status':'unverified_provider_timestamp_anomalies' if anomalies else 'requires_source_speech_review',
+        'content_review_status':'pending_assistant_speech_visual_and_boundary_review'}
     write_json(root/'prepared-claims.json',result)
     pd = payload_manifest(root,{'source_manifest_sha256':digest,'run_id':run})
     result = dict(result,prepared_manifest_sha256=pd); write_json(receipt,result)

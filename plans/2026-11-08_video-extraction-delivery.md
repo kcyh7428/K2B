@@ -5,8 +5,12 @@ Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.
 Authority: Keith's develop and deploy request in the source chat, supplied in the builder handoff on 8 November 2026. Facebook correction: 1,200 source seconds; each active operation's local plus NAS files remain 256 MiB. YouTube: 3,600 source seconds, 2 GiB for the same per-operation scope. Keith explicitly confirmed this storage scope on 8 November; retained archives are reported separately, without an all-host private-copy ceiling.
 
-## Current checkpoint, R8 approved and final short test
+## Current checkpoint, R9 committed and processing correction prepared
 
+- R9 SJM-deferral reconciliation independently approved in 42 seconds and
+  committed/pushed as `b875d66`. The VFR/provider-uncertainty correction is
+  prepared with 105 focused tests passing in 20.15 seconds, authority/skill/
+  whitespace checks passed; exact independent review is next. No new recording.
 - R8 observation correction independently approved by DeepSeek in an uninterrupted
   1 minute 25 seconds, no findings. Commit `db9966c` is pushed to
   `origin/codex/video-extract`. Earlier approved commits remain `e00a1ad`,
@@ -62,8 +66,8 @@ Authority: Keith's develop and deploy request in the source chat, supplied in th
   Latest focused suite: 92 passed in 15.03 seconds; authority/whitespace passed.
 
 Prepared: yes. Tested: fixtures plus bounded live evidence above. Reviewed,
-committed and pushed: through `db9966c`. Current SJM-deferral correction awaits
-independent review. Activated-home: no. Activated-sjm: deferred, no activation.
+committed and pushed: through `b875d66`. Current VFR/provider-uncertainty
+correction awaits independent review. Activated-home: no. Activated-sjm: deferred, no activation.
 Activated-mini: no. Accepted: direct Facebook Home evidence only, not the full
 unified release or recording/YouTube route.
 
@@ -75,7 +79,7 @@ unified release or recording/YouTube route.
 | 2. Facebook share/r and Chinese Reel | Fresh Chinese Reel captured and Home reviewed; exact share/r/1MFtSe4XWL/ freshly resolved natively to the same canonical Reel, identity, 45 seconds and advancing playback | Home passed |
 | 3. Facebook over ten minutes | Fresh 688.865-second source, complete acquisition and Home preparation within unchanged cap | Home passed; SJM deliberately deferred |
 | 4. Missing accessible captions | Both new Facebook sources reported no caption tracks; complete actual audio reached Home Groq | Home passed |
-| 5. Recording after direct failure | New version2 short case has actual native call inside30s; output and speech/ending review pending | In progress; no accepted recorder |
+| 5. Recording after direct failure | Version2 protocol, decode/export/source publication passed; Home VFR/anomaly correction prepared | Same-source reprocessing and actual speech/ending review pending |
 | 6. SJM independence | Own NAS verification passed, own STT403 retained; Keith explicitly selected Home until later SJM fix | Deferred by Keith, not passed |
 | 7. Reuse | Short Home preparation reused with identical response hash and mtime | Home passed |
 | 8. Precise failures | Live wrong digest refused; direct deadline and SJM HTTP 403 did not produce success; other classes have fixture coverage | Partial |
@@ -396,3 +400,102 @@ passed relevant examples, with example 6 explicitly deferred by Keith's dated
 instruction. Recording and YouTube gates remain required. The original YouTube
 request now lacks its source-plus-120-second admission reserve before its
 immutable deadline; it has not been silently refreshed or retried.
+
+
+## R9 approval and final recording preparation correction
+
+R9 independently approved the exact six-file SJM-deferral reconciliation in
+42 seconds, no findings. Packet `179008d2a38e5ffdf6aba8c68af6ca49ba289b69cbcac2426f57afb83be02098`,
+diff `567ff14b59829d65c51b1eddfb279a4c1846caa7e52a78fcbffee1f603907751`,
+manifest `f532b814b181089b0332845834b75422989ac0968cbb0c1dfdd8f436de913d00`.
+Commit `b875d66` is pushed; no activation.
+
+The final short source bundle is
+`facebook-2372450313602638-20261108T075420Z-768c0f84`, source digest
+`9a10b2e7b7678fbc9e1851e87d46b0864f4e58c57755c20979a1464cb8dbe653`.
+Root independently verified all 11 payloads, 17,547,814 bytes, after fresh Home
+vault-alias/capture-mount checks. Native source 45 seconds, actual container 111.464958 seconds,
+video 73.21 seconds; actual callback/native call passed. No source acceptance yet.
+Home real Groq output was retained before preparation stopped with
+`visual_sample_count_or_time_mismatch`. Its sparse opening cannot be sampled
+correctly using artificial per-16-second input EOF boundaries.
+
+A real 18-second fixture with blue and red frames reproduced that failure. The
+v2 full-stream sheet pass now retains blue at 15 and 16 seconds and red only at 17 seconds,
+uses the unchanged v1 progress/hash/coverage validator, and preserves interrupted
+output bytes as partials. Four real fixtures cover both interruption states and
+18-second video with 18- or 30-second audio. The longer audio never generates images
+after 17 seconds. A read-only actual-source regression produced five sheets and 74 samples,
+actual final PTS 73.168333 and unpictured container tail 38.254958 seconds. These
+are private diagnostic outputs, not a final prepared receipt or NAS publication.
+
+Root and builder inspected all five diagnostic sheets, final picture and full retained
+transcript. The opening is held; samples at 16 to 18 seconds are black, playback then follows
+the source progression before a loop around 64 seconds. The final picture at 73.168333 seconds
+belongs to the paused loop. First-episode ending still needs subsecond proof.
+The first ASR interval 0.02 to 20.24 seconds spans the paused lead, so its returned words can
+be corroborated but its start is not precise speech onset. One raw Groq segment
+89.58 to 119.56 seconds exceeds the actual 111.422688-second submitted audio and contains an
+unsupported generic call-to-action. It remains raw and excluded from normalized
+claims by the approved anomaly rule; no clipping, silence inference or retry.
+
+Read-only classification of that unchanged response yields 39 supported segments
+and one anomaly. All 374 segments in the three previously reviewed long-source raw
+responses remain within their actual submitted chunk bounds, with zero anomalies.
+Raw response, anomaly record, timeline and visual coverage are all bound by the
+new prepared manifest. Malformed parse cases still block; episode intersection
+checks block an anomaly inside required content but permit a separately labelled
+padding anomaly. Focused/full checks and exact independent review precede new
+candidate installation and reprocessing this same retained source. No new
+recording attempt, provider/network change or SJM activation occurred.
+
+Final processing-correction verification: 105 focused tests passed in 20.15 seconds. Authority, skill validation and whitespace checks passed. The sparse fixture and new classifier cases failed before implementation. A real preparation/status fixture proves raw-response hash/mtime stability, one provider call across reuse, anomaly visibility and prepared-manifest integrity refusal after anomaly-record corruption. No source-episode acceptance or actual first speech-onset precision is inferred from these tests.
+
+
+## R10 approval and interruption-order correction
+
+DeepSeek independently approved the exact five-file R10 correction, no findings,
+with packet `73e70f06a1d1c3b9f002575cb8461f17a756757a427a456884d7033ce6119309`,
+diff `4562fb74e3f0673c9755f29eb1fba58f14bad15a4e43a639e63237beb48a5a83`,
+manifest `de706d5b4e5790dbfeac519521473d2d4020945c1a2efd02de07cd9c5f71e0d0`.
+It completed around 08:30 UTC after the uninterrupted 08:23 UTC start. Approval
+was not used to install or commit a subsequently discovered recovery edge.
+
+The builder's additional real interruption probe found a narrow ordering issue:
+when a prior complete output pass had committed only its first sheet's progress,
+an interruption between moving old sheets preserved the bytes but left progress
+pointing at a moved file. Retry then held `visual_progress_hash_mismatch`.
+The new regression failed with that precise reason. The correction validates
+all old files, atomically clears their committed progress before any move, then
+preserves them as partials. Interruption between moves is now retryable without
+losing old bytes or claiming completion. Targeted regression passes; full checks
+and exact renewed review precede commit or installation. No new recording.
+
+Mini's retained `a4027401f8b37a511c0f07f55fb29fcbcb3b3ff4c3691be61c9c2a6672155e5e`
+runtime was read back and all four files match reviewed commit `b875d66` exactly.
+The R9 media-only bundle and installer can therefore deliver that unchanged,
+live-tested capture package while Home receives the processing-only correction.
+The source protocol is unchanged. This preserves actual capture-binary evidence
+without claiming an untested binary/package was recorded. SJM remains untouched.
+
+Final interruption-order verification: 106 focused tests passed in 21.66 seconds; authority and whitespace checks passed. No source reacquisition or recording retry.
+
+
+## R11 finding and verified stale-state recovery
+
+R11 returned needs-attention in 1 minute 14 seconds. It correctly distinguished
+preventing future interruptions from recovering an already stale checkpoint:
+a completed sheet entry might already point at a sheet preserved by an old pass.
+The builder retained the exact R11 packet and did not commit or install it.
+
+The new regression reproduced that old state and failed before correction.
+Recovery is now proof-bound: only a missing completed root sheet with its exact
+declared SHA-256 under the same run's bounded partial directories can cause a
+new verified generation pass. That preserved file is not promoted as completed
+output; the whole pass is regenerated from the verified source. Missing bytes,
+modified partials and a mismatched existing root sheet remain integrity holds.
+No old cache or ASR response is copied across processor versions. Positive and
+negative regressions prove all original valid bytes remain preserved and no
+corrupt state is silently cleared. No new recording, provider retry or activation.
+
+Verified stale-state recovery checks: 110 focused tests passed in 23.19 seconds. Authority, skill validation and whitespace passed. The matching-old-partial case failed before correction; missing/modified partials and mismatched current files remain blocked.

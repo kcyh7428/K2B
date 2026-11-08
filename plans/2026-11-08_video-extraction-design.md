@@ -257,3 +257,35 @@ separately record example 6 as Keith's dated SJM-processing/activation deferral.
 The installer will recognize only this narrow named release exception for Home
 or Mini; it cannot use it to activate SJM or waive recording/YouTube, source
 boundaries, independent review, package binding or any other live check.
+
+
+VFR and provider-uncertainty checkpoint, 8 November 2026: the final version2
+short recording passed its actual callback/native-start protocol, full decode,
+complete speech export and source publication. Its 111.464958-second container
+has a 73.21-second variable-frame-rate video track, with a held opening and a
+separate trailing audio span. The inherited per-sheet input truncation falsely
+ended a sampling interval before the next actual VFR frame. The v2 correction
+samples the full stream once into the same one-per-second 4x4 sheets, then reuses
+v1 progress/hash/coverage verification. Preserve incomplete passes as partials.
+Held decoded pictures between real frames may repeat in samples; do not call
+those distinct source frames. Stop at the actual video extent, preserve the
+actual last decoded PTS, and label the trailing audio as unpictured. Never clone
+that tail into newly observed pictures. The source ending can be proved inside
+the real track; the final paused-loop picture is not the first-episode ending.
+No new recording, timer, access scope or broader architecture is introduced.
+
+The architect also approved explicit provider uncertainty within the existing
+gaps contract: only a structurally valid, finite, ordered interval outside its
+actual submitted chunk becomes a timestamp anomaly. Preserve the retained raw
+response bytes and exact raw segment index/text/times; exclude the entire
+unsupported segment from normalized source-speech claims, retaining its actual
+audio intersection as unverified. Never clip/redistribute words, infer silence
+or automatically retry. Missing fields, malformed structures, nonfinite and
+reversed intervals still hard-fail. Hash-bind anomaly and coverage records and
+make preparation/status visibly unverified. A first episode can be accepted
+only with actual opening, supported first/last speech, source pictures/subtitles
+and ending, and no unresolved anomaly intersecting required source content.
+An anomaly confined to retained padding or a later loop does not invalidate
+separately proved source content. ASR timestamps spanning the paused lead are
+not precise speech-onset evidence. This ruling was relayed in the active chat
+by the architect before dependent implementation.
