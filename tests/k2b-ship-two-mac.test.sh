@@ -4,8 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL="$ROOT/.agents/skills/k2b-ship/SKILL.md"
 
-grep -q 'OpenAI-built changes require Kimi' "$SKILL" \
+grep -q 'OpenAI-built changes use the bounded Qwen/Kimi strategy' "$SKILL" \
   || { echo "FAIL: ship must preserve the independent-review matrix" >&2; exit 1; }
+grep -q '12,000 input tokens and 120 seconds' "$SKILL" \
+  || { echo "FAIL: ship must state the enforced local bounds" >&2; exit 1; }
+grep -q 'Kimi-built changes require Codex' "$SKILL" \
+  || { echo "FAIL: ship must forbid Kimi self-review" >&2; exit 1; }
 grep -qi 'activation on each Mac is a separate state' "$SKILL" \
   || { echo "FAIL: ship must distinguish Git delivery from activation" >&2; exit 1; }
 grep -q 'preserve an uncommitted checkpoint' "$SKILL" \

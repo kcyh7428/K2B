@@ -57,8 +57,13 @@ self-review as an automatic or verified output filter.
   local context and ordinary note saves under these same instructions.
 - `.agents/skills` is the only live K2B skill root. `.codex/hooks.json` is the live
   project hook registration.
-- Kimi K2.7 Code remains the cloud text worker and independent reviewer for
-  OpenAI-built diffs on both Macs. Historical `minimax-*` filenames are compatibility
+- Kimi K2.7 Code remains the cloud text worker. Code review on both Macs uses
+  the approved 8 November 2026 workflow: Qwen3.8-27B-4bit at at most 12,000
+  input tokens for the entire assembled prompt and a 120-second whole-attempt deadline, then standard
+  Kimi K2.8 Preview for larger, unavailable or invalid local reviews. Valid findings
+  require correction without escalation. Size, model, completion, schema and exact
+  input binding are enforced in code. See `plans/2026-11-08_qwen-review-routing.md`.
+  Historical `minimax-*` filenames are compatibility
   wrappers that route to Kimi; MiniMax itself stays disabled.
 - GPTsAPI/Groq retain image, VLM/OCR, TTS, STT, and voice-transcription duties.
   Higgsfield retains premium image, video, and music duties. NotebookLM/Gemini remains
@@ -364,13 +369,22 @@ host, spending or data-access authority. Existing delivery and safety rules appl
 
 Every commit needs an independent adversarial review:
 
-- OpenAI-built diff: `scripts/review.sh ... --builder-family openai --primary kimi --no-fallback --wait`
+- OpenAI-built diff: `scripts/review.sh ... --builder-family openai --primary auto --no-fallback --wait`
+- DeepSeek-built diff: `--builder-family deepseek --primary auto --no-fallback --wait`
+- Qwen-built diff: `--builder-family qwen --primary auto --no-fallback --wait`, which bypasses Qwen and uses Kimi
 - Kimi-built diff: `scripts/review.sh ... --builder-family kimi --primary codex --no-fallback --wait`
 - Historical Anthropic diff: `--builder-family anthropic` with an independent current reviewer
 - Other or mixed: `--builder-family other --primary <codex|kimi> --no-fallback`, with the independence reason recorded
 
 Same-family fallback does not count. A review transport success is not an approving
 verdict.
+
+`auto` is the bounded Qwen-to-standard-Kimi strategy. `--no-fallback` forbids
+leaving that strategy, including switching to Codex. Use `--primary kimi` for
+deliberate broader review or review of this routing implementation; it pins the
+standard K2.8 Preview model and applies the same strict result checks. Never raise
+the local cap, truncate a packet to fit, or accept a heartbeat/text marker as a
+verdict. Both selected model and routing evidence must pass the parent result gate.
 
 Plain implementation requests do not authorize commit, push, merge, checkout
 activation, or deployment. Explicit delivery wording does. When delivery is absent,

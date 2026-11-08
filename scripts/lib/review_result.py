@@ -138,6 +138,7 @@ def write_attempt_result(
     finish_reason: object,
     model: object,
     content_sha256: object = None,
+    routing: object = None,
 ) -> Path | None:
     """Write the normalized result when the child is attempt-bound.
 
@@ -177,6 +178,10 @@ def write_attempt_result(
         "model": model,
         "review": review,
     }
+    if routing is not None:
+        from review_routing import validate_evidence
+        validate_evidence(routing, content_sha256, model)
+        payload['routing'] = routing
     data = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -191,6 +196,7 @@ def read_attempt_result(
     scope_sha256: str,
     expected_content_sha256: str | None = None,
     metadata: dict | None = None,
+    require_routing: bool = False,
 ) -> str:
     """Return lowercase approve or needs-attention after full validation.
 
@@ -273,6 +279,12 @@ def read_attempt_result(
     verdict = review.get("verdict")
     if verdict not in _VERDICTS:
         raise ValueError("review result invalid verdict")
+    if require_routing or 'routing' in payload:
+        from review_routing import validate_evidence, parse_review
+        validate_evidence(payload.get('routing'), content_sha256, payload['model'])
+        parse_review(json.dumps(review))
     if metadata is not None:
         metadata.update(content_sha256=content_sha256, model=payload["model"])
+        if 'routing' in payload:
+            metadata['routing'] = payload['routing']
     return verdict

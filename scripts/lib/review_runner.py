@@ -12,7 +12,7 @@ Three guarantees:
   3. Visibility: a watchdog thread injects synthetic HEARTBEAT lines into
      the unified log every --heartbeat-interval seconds (default 5s)
      regardless of vendor-side activity, and escalates to HEARTBEAT_STALE
-     after 30s of no log growth and WEDGE_SUSPECTED after 120s. This is
+     after 30s of no log growth and INFERENCE_WAIT after 120s. This is
      what makes `scripts/review-poll.sh` always show *something* new during
      long reviewer inference.
 
@@ -80,7 +80,7 @@ HEARTBEAT_STALE_AFTER_S = 30
 WEDGE_SUSPECTED_AFTER_S = 120
 KILL_GRACE_S = 10
 DEFAULT_RECONNECT_STALL_S = 45
-PRIMARY_REVIEWERS = {"codex", "kimi"}
+PRIMARY_REVIEWERS = {"codex", "kimi", "auto"}
 DEPRECATED_PRIMARY_ALIASES = {"minimax": "kimi"}
 
 _RECONNECT_RE = re.compile(
@@ -344,8 +344,8 @@ def build_codex_cmd(scope: str, files: list[str] | None, plan: str | None,
 
 
 def build_kimi_cmd(scope: str, files: list[str] | None, plan: str | None,
-                   focus: str) -> list[str] | None:
-    script_path = REPO_ROOT / "scripts" / "kimi-review.sh"
+                   focus: str, *, fixed_profile: bool = False) -> list[str] | None:
+    script_path = REPO_ROOT / "scripts" / ("routed-review.sh" if fixed_profile else "kimi-review.sh")
     if not script_path.is_file():
         return None
     script = str(script_path)
@@ -357,7 +357,7 @@ def build_kimi_cmd(scope: str, files: list[str] | None, plan: str | None,
     if focus:
         cmd += ["--focus", focus]
     max_tokens = os.environ.get("K2B_LLM_MAX_TOKENS", "").strip()
-    if max_tokens:
+    if max_tokens and not fixed_profile:
         try:
             parsed_max_tokens = int(max_tokens)
         except ValueError:
@@ -567,11 +567,11 @@ def watchdog_thread(proc: subprocess.Popen, logf, state_path: Path,
 
             phase = "running_commands"
             if stale >= WEDGE_SUSPECTED_AFTER_S:
-                phase = "wedge_suspected"
+                phase = "waiting_for_output"
                 if not warned_wedge:
-                    log_line(logf, f"[{utc_now_iso()}] WEDGE_SUSPECTED "
+                    log_line(logf, f"[{utc_now_iso()}] INFERENCE_WAIT "
                              f"elapsed={elapsed:.0f}s stale={stale:.0f}s "
-                             f"(no progress in >{WEDGE_SUSPECTED_AFTER_S}s)")
+                             "(no final output yet; wall deadline remains enforced)")
                     warned_wedge = True
             elif stale >= HEARTBEAT_STALE_AFTER_S:
                 phase = "final_inference"
@@ -647,6 +647,7 @@ def run_one_reviewer(
     reconnect_stall_s: int = 0,
     extra_env: dict | None = None,
     stdin_path: Path | None = None,
+    route_mode: str | None = None,
 ) -> int:
     """Run a single reviewer end-to-end with the three guarantees.
 
@@ -666,6 +667,7 @@ def run_one_reviewer(
         )
         reconnect_stall_s = 0
     attempt_start = time.time()
+    attempt_start_monotonic = time.monotonic()
     attempt_id = f"{job}:{reviewer}:{time.monotonic_ns()}:{secrets.token_hex(4)}"
     state.pop("killed_by_reconnect_stall", None)
     state.pop("killed_by_reconnect_stall_attempt", None)
@@ -679,17 +681,23 @@ def run_one_reviewer(
     state.pop("review_verdict", None)
     state.pop("review_result_path", None)
     state.pop("review_content_sha256", None)
+    state.pop('review_model', None)
+    state.pop('review_routing', None)
+    state.pop('deadline_outcome', None)
     state.pop("review_attempt_dir", None)
     with log_path.open("a", buffering=1) as logf:
         attempt_log_start = logf.tell()
         log_line(logf, f"[{utc_now_iso()}] REVIEWER_START reviewer={reviewer} "
                  f"job={job} deadline={deadline_s}s heartbeat={heartbeat_s}s "
                  f"reconnect_stall={reconnect_stall_s}s")
+        if route_mode is not None:
+            log_line(logf, f'[{utc_now_iso()}] FIXED_PROFILE_ACTIVE mode={route_mode}; '
+                     'reviewed output ceiling 8192; legacy K2B_LLM_MAX_TOKENS does not apply')
         if disabled_reason is not None:
             log_line(logf, f"[{utc_now_iso()}] RECONNECT_STALL_DISABLED "
                      f"reason={disabled_reason}")
         result_env: dict | None = None
-        if reviewer == "kimi":
+        if reviewer in {"kimi", "auto"}:
             try:
                 attempt_dir = Path(tempfile.mkdtemp(
                     prefix="k2b-review-attempt-", dir=str(log_path.parent)
@@ -761,6 +769,9 @@ def run_one_reviewer(
         try:
             child_env = dict(extra_env or {})
             child_env.update(result_env or {})
+            if route_mode is not None:
+                publication_margin = min(3.0, deadline_s * .1)
+                child_env['K2B_REVIEW_BUDGET_END'] = str(time.monotonic() + max(0, deadline_s - publication_margin))
             proc = spawn_child(cmd, logf, child_env, stdin_path)
         except Exception as e:
             log_line(logf, f"[{utc_now_iso()}] SPAWN_FAILED {e}")
@@ -796,12 +807,12 @@ def run_one_reviewer(
         )
 
         rc = proc.wait()
+        child_finished_monotonic = time.monotonic()
         stop_event.set()
         reader.join(timeout=5)
         watchdog.join(timeout=5)
 
         elapsed = time.time() - attempt_start
-        hit_deadline = elapsed >= deadline_s - 1
         stalled = (
             bool(state.get("killed_by_reconnect_stall"))
             and state.get("killed_by_reconnect_stall_attempt") == attempt_id
@@ -810,21 +821,29 @@ def run_one_reviewer(
             bool(state.get("killed_by_deadline"))
             and state.get("killed_by_deadline_attempt") == attempt_id
         )
+        review_budget_expired = (
+            route_mode is not None
+            and child_finished_monotonic > float(child_env['K2B_REVIEW_BUDGET_END'])
+        )
         if stalled:
             effective_rc = 126
-        elif reviewer == "kimi" and deadline_killed and rc != 0:
+        elif deadline_killed or child_finished_monotonic >= attempt_start_monotonic + deadline_s or review_budget_expired:
             effective_rc = 124
-        elif reviewer != "kimi" and hit_deadline and rc != 0:
-            effective_rc = 124
+            state['deadline_outcome'] = ('terminated' if deadline_killed else
+                                         'over-review-budget' if review_budget_expired else 'completed-late')
+            result_present = reviewer in {'kimi','auto'} and result_path.is_file()
+            log_line(logf, f'[{utc_now_iso()}] LATE_RESULT_DISCARDED raw_rc={rc} '
+                     f'result_present={result_present} outcome={state["deadline_outcome"]}; '
+                     'hard deadline excludes approval even for a valid result')
         else:
             effective_rc = rc
 
-        if effective_rc == 0:
+        if effective_rc == 0 or (effective_rc == 4 and route_mode is not None):
             state.pop("killed_by_reconnect_stall", None)
             state.pop("killed_by_reconnect_stall_attempt", None)
             state.pop("since_final_reconnect_s", None)
             gate_failed = False
-            if reviewer == "kimi":
+            if reviewer in {"kimi", "auto"}:
                 kimi_verdict: str | None = None
                 reason = "rc=0 but Kimi attempt result missing or invalid"
                 try:
@@ -835,7 +854,18 @@ def run_one_reviewer(
                         attempt_id=attempt_id,
                         scope_sha256=scope_sha256,
                         metadata=verified_metadata,
+                        require_routing=route_mode is not None,
                     )
+                    if route_mode is not None:
+                        selected = verified_metadata['routing']['selected']
+                        if selected not in {'qwen','kimi'}:
+                            raise ValueError('unapproved review provider')
+                        if route_mode == 'kimi' and selected != 'kimi':
+                            raise ValueError('forced Kimi route returned another provider')
+                        if selected == state.get('builder_family'):
+                            raise ValueError('same-family review')
+                        if effective_rc == 4 and kimi_verdict != 'needs-attention':
+                            raise ValueError('exit code and verdict disagree')
                 except Exception as exc:
                     kimi_verdict = None
                     reason = (
@@ -848,6 +878,8 @@ def run_one_reviewer(
                     state["review_verdict"] = kimi_verdict
                     state["review_content_sha256"] = verified_metadata["content_sha256"]
                     state["review_result_path"] = str(result_path)
+                    state['review_model'] = verified_metadata['model']
+                    state['review_routing'] = verified_metadata.get('routing')
                     if kimi_verdict == "needs-attention":
                         # Valid verdict, but findings require correction.
                         # Retain verdict/path; return distinct rc so
@@ -883,7 +915,8 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                        state_path: Path, state: dict) -> int:
     primary = args.primary
     secondary = "kimi" if primary == "codex" else "codex"
-    reviewers = [primary] if args.no_fallback else [primary, secondary]
+    reviewers = [primary] if args.no_fallback or primary == 'auto' else [primary, secondary]
+    state['fallback_scope'] = 'internal-auto-only' if primary == 'auto' else 'reviewer-chain'
     files = ([p.strip() for p in args.files.split(",") if p.strip()]
              if args.files else None)
 
@@ -891,7 +924,19 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
         if reviewer == "codex":
             return build_codex_cmd(args.scope, files, args.plan, args.focus,
                                    args.codex_executable, job)
-        return build_kimi_cmd(args.scope, files, args.plan, args.focus)
+        cmd = build_kimi_cmd(args.scope, files, args.plan, args.focus, fixed_profile=True)
+        if cmd is not None:
+            routed_script = REPO_ROOT / 'scripts/routed-review.sh'
+            if not routed_script.is_file():
+                return None
+            cmd[0] = str(routed_script)
+            cmd += ['--review-route', 'auto' if reviewer == 'auto' else 'kimi',
+                    '--no-fallback']
+            if getattr(args, 'builder_family', None):
+                cmd += ['--builder-family', args.builder_family]
+            if getattr(args, 'other_reviewer_reason', None):
+                cmd += ['--other-reviewer-reason', args.other_reviewer_reason]
+        return cmd
 
     for idx, reviewer in enumerate(reviewers):
         cmd = cmd_for(reviewer)
@@ -903,8 +948,8 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                 ) or "Codex executable unavailable"
             else:
                 reason = (
-                    "kimi-review.sh not found; the review runner no longer "
-                    "falls back to minimax-review.sh"
+                    "review entry missing: routed-review.sh required for --primary kimi/auto; "
+                    "install the complete reviewed Git checkout; no legacy wrapper substitute"
                 )
             state["reviewer_attempts"].append(
                 {"reviewer": reviewer, "result": "unavailable",
@@ -921,9 +966,10 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
         rc = run_one_reviewer(reviewer, cmd, job, log_path, state_path, state,
                               args.deadline, args.heartbeat_interval,
                               reconnect_stall_s=stall_s, extra_env=extra_env,
-                              stdin_path=stdin_path)
+                              stdin_path=stdin_path,
+                              route_mode=reviewer if reviewer in {'auto','kimi'} else None)
         corrections_required = (
-            rc == 4 and reviewer == "kimi"
+            rc == 4 and reviewer in {"kimi", "auto"}
             and state.get("review_verdict") == "needs-attention"
         )
         if rc == 0:
@@ -938,7 +984,8 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
             attempt_result = "error"
         state["reviewer_attempts"].append(
             {"reviewer": reviewer, "exit_code": rc,
-             "result": attempt_result})
+             "result": attempt_result,
+             "deadline_outcome": state.get('deadline_outcome')})
         if rc == 0:
             state.update({"status": "completed", "primary_used": primary,
                           "fallback_used": idx > 0, "exit_code": 0,
@@ -967,18 +1014,18 @@ def run_fallback_chain(args: argparse.Namespace, job: str, log_path: Path,
                 why = "reconnect_stall"
             else:
                 why = f"exit_{rc}"
-            if idx == 0 and not args.no_fallback:
+            if idx == 0 and len(reviewers) > 1:
                 log_line(logf, f"[{utc_now_iso()}] FALLBACK triggering "
                          f"{secondary} ({reviewer} failed: {why})")
-            elif idx == 0 and args.no_fallback:
+            elif idx == 0:
                 builder_family = state.get("builder_family") or "unspecified"
                 log_line(logf, f"[{utc_now_iso()}] NO_FALLBACK "
                          f"primary_failed reviewer={reviewer} reason={why}; "
                          f"stopping (builder-family={builder_family}: "
-                         f"--no-fallback set)")
+                         f"{state['fallback_scope']}; no outside fallback)")
 
     state.update({
-        "status": "primary_failed" if args.no_fallback else "both_failed",
+        "status": "primary_failed" if len(reviewers) == 1 else "both_failed",
         "exit_code": 2,
         "ended_at": utc_now_iso(),
     })
@@ -996,6 +1043,8 @@ def review_matrix_error(builder_family: str | None, primary: str | None,
     break, but official /ship flows must pass the flag.
     """
     if not builder_family:
+        if primary == 'auto':
+            return '--primary auto requires --builder-family to enforce independent review'
         return None
     # Guard priority is intentional for official flows: identify the reviewer
     # first, then enforce family-specific fallback/reason requirements.
@@ -1005,7 +1054,7 @@ def review_matrix_error(builder_family: str | None, primary: str | None,
             "(ad-hoc default reviewer selection is not allowed for official flows)"
         )
     if primary not in PRIMARY_REVIEWERS:
-        return f"invalid primary={primary} (expected codex|kimi)"
+        return f"invalid primary={primary} (expected auto|codex|kimi)"
     if skip_codex:
         if primary == "codex":
             return "--skip-codex conflicts with --primary codex"
@@ -1019,12 +1068,12 @@ def review_matrix_error(builder_family: str | None, primary: str | None,
                 "--skip-codex requires --no-fallback so Codex cannot run as "
                 "the fallback reviewer"
             )
-    if builder_family == "openai":
-        if primary != "kimi" or not no_fallback:
+    if builder_family in {"openai", "deepseek", "qwen"}:
+        if primary not in {"kimi", "auto"} or not no_fallback:
             return (
-                "builder-family openai requires "
-                "--primary kimi --no-fallback "
-                "(Codex/OpenAI-built diffs need Kimi review only)"
+                f"builder-family {builder_family} requires "
+                "--primary auto or --primary kimi, with --no-fallback "
+                "(independent bounded Qwen/Kimi review)"
             )
     elif builder_family == "kimi":
         if primary != "codex" or not no_fallback:
@@ -1073,15 +1122,19 @@ def cmd_poll(args: argparse.Namespace) -> int:
         "review_verdict": state.get("review_verdict"),
         "review_result_path": state.get("review_result_path"),
         "review_content_sha256": state.get("review_content_sha256"),
+        "review_model": state.get("review_model"),
+        "review_routing": state.get("review_routing"),
         "review_attempt_dir": state.get("review_attempt_dir"),
         "phase": state.get("phase"),
         "elapsed_s": state.get("elapsed_s"),
         "last_activity_s_ago": state.get("last_activity_s_ago"),
         "deadline_remaining_s": state.get("deadline_remaining_s"),
+        "deadline_outcome": state.get("deadline_outcome"),
         "reconnect_stall_threshold_s": state.get("reconnect_stall_threshold_s"),
         "reviewer_current": state.get("reviewer_current"),
         "reviewer_attempts": state.get("reviewer_attempts", []),
         "primary_used": state.get("primary_used"),
+        "fallback_scope": state.get("fallback_scope"),
         "primary_alias_requested": state.get("primary_alias_requested"),
         "builder_family": state.get("builder_family"),
         "skip_codex": state.get("skip_codex"),
@@ -1110,7 +1163,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         # absent otherwise). Prior versions:
         # v2 added no_fallback. status enum may be "running" | "completed" |
         # "primary_failed" | "both_failed".
-        "schema_version": 3,
+        # v4 adds actual model, routing evidence and strategy fallback scope.
+        "schema_version": 4,
         "job_id": job, "scope": args.scope, "primary_requested": args.primary,
         "primary_alias_requested": args.primary_alias_requested,
         "builder_family": args.builder_family,
@@ -1167,6 +1221,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             "review_verdict": state.get("review_verdict"),
             "review_result_path": state.get("review_result_path"),
             "review_content_sha256": state.get("review_content_sha256"),
+            "review_model": state.get("review_model"),
+            "review_routing": state.get("review_routing"),
             "review_attempt_dir": state.get("review_attempt_dir"),
             "builder_family": args.builder_family,
             "skip_codex": args.skip_codex,
@@ -1183,16 +1239,16 @@ def main() -> int:
     p.add_argument("scope", nargs="?",
                    choices=["diff", "working-tree", "files", "plan"],
                    default="diff")
-    p.add_argument("--primary", metavar="codex|kimi", default=None,
-                   help=("Reviewer to run first. Defaults to codex only when "
+    p.add_argument("--primary", metavar="auto|codex|kimi", default=None,
+                   help=("Reviewer strategy. Auto enforces Qwen 12000 tokens / 120 seconds then standard Kimi 2.8, never an outside Codex fallback. Defaults to codex only when "
                          "--builder-family is omitted for ad-hoc reviews. "
-                         "Use kimi for Kimi K2.7; minimax is accepted only "
+                         "Use kimi for forced standard Kimi 2.8; minimax is accepted only "
                          "as a deprecated alias for kimi."))
     p.add_argument("--builder-family",
-                   choices=["openai", "anthropic", "kimi", "other"],
+                   choices=["openai", "anthropic", "kimi", "other", "qwen", "deepseek"],
                    default=None,
                    help=("Family that produced the diff under review. Official "
-                         "/ship flows should pass this so same-family fallback "
+                         "/ship flows and auto require this so same-family fallback "
                          "cannot count as independent review."))
     p.add_argument("--skip-codex", default=None, metavar="REASON",
                    help=("Audit reason for skipping the Codex reviewer. "
@@ -1244,7 +1300,7 @@ def main() -> int:
             args.primary = requested_primary
         else:
             p.error(
-                f"invalid primary={args.primary} (expected codex|kimi; "
+                f"invalid primary={args.primary} (expected auto|codex|kimi; "
                 "deprecated alias minimax maps to kimi)"
             )
     if args.scope in {"diff", "files"} and not args.files:

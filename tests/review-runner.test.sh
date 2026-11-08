@@ -86,12 +86,14 @@ from pathlib import Path
 review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
 result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
           "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
-          "model": "synthetic", "review": review}
+          "model": "kimi-for-coding", "review": review}
 target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
 snapshot = target.with_name("review_input.txt")
 snapshot.write_text("synthetic reviewed input")
 snapshot.chmod(0o600)
 result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+result['routing'] = {'policy':'qwen-12000-120s-kimi28-v1','input_sha256':result['content_sha256'],
+                     'selected':'kimi','attempts':[{'provider':'kimi','status':'valid','elapsed_seconds':0.1,'prompt_tokens':1,'completion_tokens':1}]}
 target.write_text(json.dumps(result))
 target.chmod(0o600)
 PY
@@ -114,6 +116,7 @@ EOF
       ;;
   esac
   if [ "$kimi_behavior" != "notfound" ]; then
+    ln -s kimi-review.sh scripts/routed-review.sh
     cat > scripts/minimax-review.sh <<'EOF'
 #!/usr/bin/env bash
 echo "deprecated minimax alias should not be selected when scripts/kimi-review.sh exists" >&2
@@ -582,12 +585,14 @@ from pathlib import Path
 review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
 result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
           "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
-          "model": "synthetic", "review": review}
+          "model": "kimi-for-coding", "review": review}
 target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
 snapshot = target.with_name("review_input.txt")
 snapshot.write_text("synthetic reviewed input")
 snapshot.chmod(0o600)
 result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+result['routing'] = {'policy':'qwen-12000-120s-kimi28-v1','input_sha256':result['content_sha256'],
+                     'selected':'kimi','attempts':[{'provider':'kimi','status':'valid','elapsed_seconds':0.1,'prompt_tokens':1,'completion_tokens':1}]}
 target.write_text(json.dumps(result))
 target.chmod(0o600)
 PY
@@ -719,12 +724,14 @@ from pathlib import Path
 review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
 result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
           "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
-          "model": "synthetic", "review": review}
+          "model": "kimi-for-coding", "review": review}
 target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
 snapshot = target.with_name("review_input.txt")
 snapshot.write_text("synthetic reviewed input")
 snapshot.chmod(0o600)
 result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+result['routing'] = {'policy':'qwen-12000-120s-kimi28-v1','input_sha256':result['content_sha256'],
+                     'selected':'kimi','attempts':[{'provider':'kimi','status':'valid','elapsed_seconds':0.1,'prompt_tokens':1,'completion_tokens':1}]}
 target.write_text(json.dumps(result))
 target.chmod(0o600)
 PY
@@ -878,7 +885,7 @@ test_openai_builder_rejects_codex_primary() {
     fail "$t" "expected argv error rc=2, got rc=$rc. out=$out"
     return
   fi
-  if ! echo "$out" | grep -q "builder-family openai requires --primary kimi --no-fallback"; then
+  if ! echo "$out" | grep -q "builder-family openai requires --primary auto or --primary kimi, with --no-fallback"; then
     fail "$t" "expected openai matrix error, got: $out"
     return
   fi
@@ -1513,12 +1520,14 @@ from pathlib import Path
 review = {"verdict": "approve", "summary": "Synthetic review", "findings": [], "next_steps": []}
 result = {"protocol_version": 1, "attempt_id": os.environ["K2B_REVIEW_ATTEMPT_ID"],
           "scope_sha256": os.environ["K2B_REVIEW_SCOPE_SHA256"], "finish_reason": "end_turn",
-          "model": "synthetic", "review": review}
+          "model": "kimi-for-coding", "review": review}
 target = Path(os.environ["K2B_REVIEW_RESULT_PATH"])
 snapshot = target.with_name("review_input.txt")
 snapshot.write_text("synthetic reviewed input")
 snapshot.chmod(0o600)
 result["content_sha256"] = __import__("hashlib").sha256(snapshot.read_bytes()).hexdigest()
+result['routing'] = {'policy':'qwen-12000-120s-kimi28-v1','input_sha256':result['content_sha256'],
+                     'selected':'kimi','attempts':[{'provider':'kimi','status':'valid','elapsed_seconds':0.1,'prompt_tokens':1,'completion_tokens':1}]}
 target.write_text(json.dumps(result))
 target.chmod(0o600)
 PY
@@ -1552,6 +1561,26 @@ print(data.get("log_path", ""))
   heartbeat_count=$(grep -c "HEARTBEAT" "$log_path" || true)
   if [ "$heartbeat_count" -lt 1 ]; then
     fail "$t" "expected >=1 HEARTBEAT line, got $heartbeat_count. log=$(cat "$log_path")"
+    return
+  fi
+  pass "$t"
+}
+
+test_missing_routed_entry_fails_closed() {
+  local t="test_missing_routed_entry_fails_closed" d out rc
+  d=$(mktmp)
+  seed_repo "$d" approve approve
+  rm "$d/scripts/routed-review.sh"
+  cd "$d"
+  out=$(python3 "$RUNNER" files --files target.py --primary auto \
+      --builder-family openai --no-fallback --wait 2>&1)
+  rc=$?
+  if [ "$rc" -ne 2 ] || ! echo "$out" | grep -q '"status": "primary_failed"'; then
+    fail "$t" "missing entry must stop without approval: $out"
+    return
+  fi
+  if ! grep -Eq 'review entry missing.*routed-review.sh' "$d/.code-reviews/"*.log; then
+    fail "$t" "missing entry reason not retained"
     return
   fi
   pass "$t"
@@ -1593,6 +1622,7 @@ test_anthropic_builder_accepts_codex
 test_anthropic_builder_accepts_kimi
 test_anthropic_builder_allows_fallback
 test_poll_unknown_job_returns_1
+test_missing_routed_entry_fails_closed
 
 echo
 echo "======================================"

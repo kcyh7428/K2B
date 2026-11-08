@@ -1249,6 +1249,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Standalone Kimi K2.7 Code adversarial code reviewer."
     )
+    parser.add_argument('--review-route', choices=['auto', 'kimi'])
     parser.add_argument(
         "--scope",
         default="working-tree",
@@ -1310,7 +1311,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--builder-family",
-        choices=["openai", "anthropic", "kimi", "other"],
+        choices=["openai", "anthropic", "kimi", "other", "qwen", "deepseek"],
         default=None,
         help=(
             "Optional /ship audit metadata. Rejects Kimi-built diffs because "
@@ -1464,10 +1465,34 @@ def main() -> int:
         return 3
 
     print(
-        f"[minimax-review] calling {args.model} ({len(prompt)} prompt chars)...",
+        f"[minimax-review] calling {args.review_route or args.model} ({len(prompt)} prompt chars)...",
         file=sys.stderr,
     )
     started = time.monotonic()
+    if args.review_route:
+        try:
+            # Internal, structured-result-only path. The central runner retains
+            # input/result/usage/routing evidence in its private attempt folder.
+            # Legacy archives, textual verdict markers and model trials are not
+            # approval sources here. Fixed policy supersedes legacy output flags.
+            if review_content_sha256 is None:
+                raise ValueError('routed review requires central attempt binding')
+            from review_routing import route_review
+            from review_result import write_attempt_result
+            result = route_review(
+                prompt, mode=args.review_route, builder_family=args.builder_family,
+                budget_end=float(os.environ.get('K2B_REVIEW_BUDGET_END', started + 350)),
+            )
+            write_attempt_result(result['review'], finish_reason=result['finish_reason'],
+                                 model=result['model'], content_sha256=review_content_sha256,
+                                 routing=result['routing'])
+            print(json.dumps(result, ensure_ascii=False))
+            # The parent maps validated findings to exit 4. Direct calls also
+            # refuse to represent findings as successful approval.
+            return 0 if result['review']['verdict'] == 'approve' else 4
+        except (ValueError, OSError, ImportError) as exc:
+            print(f'[review-route] FAIL: {exc}', file=sys.stderr)
+            return 3
     try:
         response = chat_completion(
             model=args.model,

@@ -5,12 +5,12 @@
 #   scripts/review-poll.sh <job_id>
 #
 # Output JSON keys:
-#   status                 starting|running|completed|both_failed|spawn_failed
-#   phase                  running_commands|final_inference|wedge_suspected
+#   status                 starting|running|completed|primary_failed|both_failed|spawn_failed
+#   phase                  running_commands|final_inference|waiting_for_output
 #   elapsed_s              wall-clock seconds since review started
 #   last_activity_s_ago    seconds since the vendor log last grew
 #   deadline_remaining_s   seconds until hard deadline
-#   reviewer_current       codex|kimi (current attempt)
+#   reviewer_current       auto|codex|kimi (current attempt)
 #   reviewer_attempts      per-attempt exit code + result
 #   fallback_used          true if secondary reviewer ran
 #   exit_code              final exit code (null while running)
