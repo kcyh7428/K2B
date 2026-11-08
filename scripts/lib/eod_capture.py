@@ -1538,6 +1538,28 @@ def verify_evidence_quotes(data: dict, payload: str, *, session_path: Path) -> N
         )
 
 
+def _is_ambient_page_state(event: dict) -> bool:
+    """Recognize only a standalone Page-state envelope, without changing evidence."""
+    text = event.get("text")
+    if event.get("role") != "user" or not isinstance(text, str):
+        return False
+    match = re.fullmatch(
+        r"<external_codex_apps_open_page>(\{.*\})</external_codex_apps_open_page>",
+        text.strip(), re.DOTALL,
+    )
+    if match is None:
+        return False
+    try:
+        # Retain pairs to reject duplicate keys as well as additional fields.
+        pairs = json.loads(match[1], object_pairs_hook=list)
+    except (ValueError, RecursionError):
+        return False
+    if len(pairs) != 1 or pairs[0][0] != "page_id":
+        return False
+    page_id = pairs[0][1]
+    return page_id is None or (isinstance(page_id, str) and bool(page_id.strip()))
+
+
 def _validate_short_acceptance(item: dict, events: list[dict] | None) -> None:
     """Bind a short affirmative to the immediately preceding assistant proposal.
 
@@ -1557,7 +1579,14 @@ def _validate_short_acceptance(item: dict, events: list[dict] | None) -> None:
     if len(matches) != 1 or matches[0] == 0:
         raise ValueError("short acceptance lacks a unique preceding proposal")
     index = matches[0]
-    acceptance, proposal = events[index], events[index - 1]
+    if _is_ambient_page_state(events[index]):
+        raise ValueError("short acceptance cites a non-conversational event")
+    proposal_index = index - 1
+    if _is_ambient_page_state(events[proposal_index]):
+        proposal_index -= 1
+    if proposal_index < 0:
+        raise ValueError("short acceptance lacks a unique preceding proposal")
+    acceptance, proposal = events[index], events[proposal_index]
     quote = _normalize_evidence_text(item["evidence_quote"])
     if (acceptance.get("role") != "user"
             or _normalize_evidence_text(acceptance.get("text", "")) != quote

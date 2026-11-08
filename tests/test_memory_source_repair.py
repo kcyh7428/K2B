@@ -369,6 +369,90 @@ def test_short_acceptance_retains_exact_user_and_proposal_evidence(tmp_path):
     assert legacy_errors and "structured turn evidence" in legacy_errors[0]["error"]
 
 
+@pytest.mark.parametrize("page_id", [None, "page-123"])
+def test_short_acceptance_looks_past_standalone_page_state(tmp_path, page_id):
+    item, events = acceptance()
+    events[-1]["ordinal"] = 12
+    ambient = dict(event_id="page-state", role="user", ordinal=11,
+                   text="<external_codex_apps_open_page>" + json.dumps({"page_id": page_id})
+                        + "</external_codex_apps_open_page>")
+    events.insert(1, ambient)
+    data, errors = e._filter_extraction_items(
+        {"items": [item]}, "yes", tmp_path / "source",
+        dialogue_events=events, require_structured_attribution=True,
+    )
+    assert not errors
+    assert data["items"][0]["evidence_quote"] == "yes"
+    assert data["items"][0]["acceptance_context"]["event_id"] == "p"
+    assert events[1] == ambient
+
+
+@pytest.mark.parametrize("text", [
+    "Actually, do not activate yet.",
+    '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page> and no deployment',
+    '<external_codex_apps_open_page>{"page_id":null,"answer":"no"}</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>{"page_id":null,"page_id":"p"}</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>{"page_id":false}</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>{"page_id":""}</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>{"page_id":123}</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>{"page_id":null} trailing</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>{broken}</external_codex_apps_open_page>',
+    '<external_codex_apps_open_page>[]</external_codex_apps_open_page>',
+    '<unknown_context>{"page_id":null}</unknown_context>',
+])
+def test_short_acceptance_cannot_skip_real_or_unrecognized_context(tmp_path, text):
+    item, events = acceptance()
+    events[-1]["ordinal"] = 12
+    events.insert(1, dict(event_id="intervening", role="user", ordinal=11, text=text))
+    with pytest.raises(ValueError):
+        e._validate_item_evidence_quote(
+            item, idx=0, normalized_payload="yes", session_path=tmp_path / "source",
+            dialogue_events=events,
+        )
+
+
+@pytest.mark.parametrize("case", ["no_proposal", "assistant_metadata", "user_before_metadata"])
+def test_page_state_does_not_create_or_replace_a_proposal(case):
+    item, events = acceptance()
+    events[-1]["ordinal"] = 14
+    ambient = dict(event_id="ambient", role="user", ordinal=13,
+                   text='<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>')
+    events.insert(1, ambient)
+    if case == "no_proposal":
+        events.pop(0)
+    elif case == "assistant_metadata":
+        ambient["role"] = "assistant"
+    else:
+        events.insert(1, dict(event_id="interjection", role="user", ordinal=12,
+                              text="Wait, change that proposal."))
+    with pytest.raises(ValueError):
+        e._validate_short_acceptance(item, events)
+
+
+def test_page_state_cannot_be_the_acceptance_evidence():
+    item, events = acceptance()
+    events[-1]["text"] = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'
+    item["evidence_quote"] = events[-1]["text"]
+    with pytest.raises(ValueError):
+        e._validate_short_acceptance(item, events)
+
+
+@pytest.mark.parametrize("cross_turn", [False, True])
+def test_short_acceptance_cannot_skip_multiple_page_states(cross_turn):
+    item, events = acceptance()
+    events[0]["turn_id"] = "proposal-turn"
+    events[-1].update(ordinal=14, turn_id="acceptance-turn")
+    text = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'
+    events[1:1] = [
+        dict(event_id="ambient-1", role="user", ordinal=12, text=text,
+             turn_id="proposal-turn" if cross_turn else "acceptance-turn"),
+        dict(event_id="ambient-2", role="user", ordinal=13, text=text,
+             turn_id="acceptance-turn"),
+    ]
+    with pytest.raises(ValueError):
+        e._validate_short_acceptance(item, events)
+
+
 def test_contextual_replies_support_whitespace_and_explicit_full_acceptance(tmp_path):
     item, events = acceptance()
     for reply in ["yes  please", "Yes, commit and activate the MVP"]:
@@ -393,7 +477,8 @@ def test_proposal_quote_preserves_exact_crlf_and_long_context_error(tmp_path):
 
 
 @pytest.mark.parametrize("native_ordinal", ["absent", None, "10", 10.0, False])
-def test_acceptance_records_replays_and_validates_receipt(tmp_path, monkeypatch, native_ordinal):
+@pytest.mark.parametrize("page_context", [False, True])
+def test_acceptance_records_replays_and_validates_receipt(tmp_path, monkeypatch, native_ordinal, page_context):
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "rollout.jsonl"
@@ -401,6 +486,8 @@ def test_acceptance_records_replays_and_validates_receipt(tmp_path, monkeypatch,
     rows = [{"type": "session_meta", "payload": {"id": "acceptance-session", "source": "cli", "cwd": "/Users/test/Projects/K2B"}}]
     for i, messages in enumerate(([dict(role="user", text="Prepare the MVP.", event_id="request"), events[0]], [events[1]])):
         rows.append({"type": "event_msg", "payload": {"type": "task_started", "turn_id": f"t{i}"}})
+        if i == 1 and page_context:
+            messages.insert(0, dict(role="user", event_id="page-state", text='<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'))
         for event in messages:
             rows.append({"type": "response_item", "payload": {"type": "message", "id": event["event_id"], "role": event["role"], "content": [{"type": "input_text" if event["role"] == "user" else "output_text", "text": event["text"]}]}})
             if native_ordinal != "absent":
@@ -420,7 +507,7 @@ def test_acceptance_records_replays_and_validates_receipt(tmp_path, monkeypatch,
     assert len(checks) == 2
     ready = e.prepare_memory_extraction_input(state_root=state, work_id=work["work_id"], writer_role="home")
     view = json.loads(Path(ready["input_path"]).read_text())
-    item["evidence_event_id"] = view["dialogue_events"][0]["event_id"]
+    item["evidence_event_id"] = view["dialogue_events"][-1]["event_id"]
     item["acceptance_context"]["event_id"] = view["context_events"][-1]["event_id"]
     reviewed = {key: view[key] for key in ("raw_source_sha256", "transcript_sha256", "completed_prefix_sha256", "completed_cursor", "completed_prefix_mode", "completed_date", "host_id", "session_id")}
     reviewed.update(schema_version="1.0", review_state="reviewed", items=[item])
