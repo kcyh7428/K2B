@@ -4,6 +4,7 @@ from email import policy
 from email.parser import BytesParser
 from aiosmtpd.controller import Controller
 from pypdf import PdfReader
+import pytest
 from server.config import Settings
 from server.documents import render_receipt, FONT, SEMIBOLD_FONT
 from server.delivery import process_delivery, retry_delivery
@@ -24,7 +25,9 @@ def test_receipt_assets_have_regular_and_semibold_static_weights():
         assert struct.unpack_from('>H',data,tables[b'OS/2'][0]+4)[0]==weight
 
 
-def test_pdf_contains_paid_amount_reference_chinese_and_embedded_font(store, event, tmp_path):
+@pytest.mark.parametrize('environment', ['production', 'staging'])
+def test_pdf_contains_paid_amount_reference_chinese_and_embedded_font(store, event, tmp_path, environment):
+    event['env'] = environment
     ingest(store, event)
     snapshot = json.loads(store.one('select snapshot from receipts')['snapshot'])
     out = tmp_path/'test.pdf'
@@ -32,9 +35,31 @@ def test_pdf_contains_paid_amount_reference_chinese_and_embedded_font(store, eve
     reader = PdfReader(out)
     content = ''.join(p.extract_text() for p in reader.pages)
     assert 'TEST-2026-00001' in content
-    assert '15,400.00' in content and 'sample-order' in content
+    assert 'SALES NO.' in content and 'ACTIVITY' in content
+    assert 'MOP 15,400.00' in content and 'ORDER NO. sample-order' in content
+    assert 'DISCOUNT' in content and 'MONTHOFF' in content
+    assert 'Payment method Bank transfer' in content
+    assert 'Service end date 22/10/2027' in content
+    assert ('TEST RECEIPT' in content) == (environment == 'staging')
+    assert 'PREVIEW ONLY' not in content
     assert '系統月費' in content
     assert '/FontFile2' in str(reader.pages[0]['/Resources']['/Font'].get_object().values()) or any('/FontFile2' in str(v.get_object().get('/FontDescriptor',{}).get_object()) for v in reader.pages[0]['/Resources']['/Font'].get_object().values() if v.get_object().get('/FontDescriptor'))
+
+
+def test_maximum_supported_amount_and_older_date_render_without_loss(store, event, tmp_path):
+    data = event['data']
+    data.update(price=100_000_000, payment_price=100_000_000, coupon_discount=0)
+    data['items'][0].update(quantity=1, unit_price=100_000_000)
+    ingest(store, event)
+    snapshot = json.loads(store.one('SELECT snapshot FROM receipts')['snapshot'])
+    snapshot['issued_date'] = '09/11/2026'
+    snapshot['billing']['address'] = None
+    out = tmp_path/'large.pdf'
+    render_receipt(snapshot, out)
+    content = PdfReader(out).pages[0].extract_text()
+    assert content.count('100,000,000.00') == 4
+    assert 'DATE 09/11/2026' in content
+    assert 'None' not in content
 
 
 def test_long_receipt_paginates_without_losing_items(store, event, tmp_path):
