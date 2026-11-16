@@ -117,7 +117,8 @@ def test_import_holds_invalid_expiry_before_saving_merchant(store,tmp_path):
 def test_stale_action_claim_is_held_and_never_replayed(store):
     from server.automation import recover_actions
     save_policy(store,{**DEFAULT,'enabled':True,'approved':True})
-    action=plan_actions(store,'2026-10-25')[0]
+    store.save_merchant({'code':'SAMPLE','phone':'+85360000000'},'Verified test number')
+    action=plan_actions(store,'2026-10-22')[0]
     claim_action(store,action['id'])
     with store.transaction() as c:
         c.execute("UPDATE actions SET claimed_at='2000-01-01T00:00:00+00:00'")
@@ -125,7 +126,7 @@ def test_stale_action_claim_is_held_and_never_replayed(store):
     assert store.one('SELECT state FROM actions')['state'] == 'uncertain'
     assert store.one("SELECT COUNT(*) n FROM exceptions WHERE kind='automation'")['n'] == 1
     assert recover_actions(store) == 0
-    assert plan_actions(store,'2026-10-25') == []
+    assert plan_actions(store,'2026-10-22') == []
     with pytest.raises(ValueError):claim_action(store,action['id'])
 
 
@@ -236,7 +237,7 @@ def test_invalid_intake_environment_refuses_startup(tmp_path,environment):
 def test_lead_to_due_transition_keeps_only_one_claimable_reminder(store):
     save_policy(store,{**DEFAULT,'enabled':True,'approved':True})
     store.save_merchant({'code':'SAMPLE','phone':'+85360000000'},'Synthetic verified number')
-    lead=plan_actions(store,'2026-10-20')[0]
+    lead=plan_actions(store,'2026-10-21')[0]
     due=plan_actions(store,'2026-10-22')
     assert len(due) == 1 and due[0]['id'] != lead['id']
     with pytest.raises(ValueError):claim_action(store,lead['id'])
@@ -244,7 +245,8 @@ def test_lead_to_due_transition_keeps_only_one_claimable_reminder(store):
 
 def test_corrected_service_date_cancels_old_queued_action_immediately(store):
     save_policy(store,{**DEFAULT,'enabled':True,'approved':True})
-    action=plan_actions(store,'2026-10-25')[0]
+    store.save_merchant({'code':'SAMPLE','phone':'+85360000000'},'Verified test number')
+    action=plan_actions(store,'2026-10-22')[0]
     store.save_merchant({'code':'SAMPLE','service_end':'2028-10-22'},'Verified actual service date')
     assert store.one('SELECT state FROM actions WHERE id=?',(action['id'],))['state'] == 'cancelled'
     assert plan_actions(store,'2026-10-25') == []
@@ -333,7 +335,8 @@ def test_void_of_unsupported_historical_marker_is_explicit_not_missing(store,eve
 def failed_action(store,status='failed'):
     from server.automation import finish_action
     save_policy(store,{**DEFAULT,'enabled':True,'approved':True})
-    action=plan_actions(store,'2026-10-25')[0]
+    store.save_merchant({'code':'SAMPLE','phone':'+85360000000'},'Verified test number')
+    action=plan_actions(store,'2026-10-22')[0]
     claim_action(store,action['id']);finish_action(store,action['id'],status,None)
     return action
 
@@ -379,9 +382,9 @@ def test_requeued_action_survives_planning_and_can_be_claimed(store):
     from server.automation import requeue_action
     action=failed_action(store)
     requeue_action(store,action['id'],'Verified no external effect')
-    planned=plan_actions(store,'2026-10-25')
+    planned=plan_actions(store,'2026-10-22')
     assert [row['id'] for row in planned] == [action['id']]
-    assert [row['id'] for row in plan_actions(store,'2026-10-25')] == [action['id']]
+    assert [row['id'] for row in plan_actions(store,'2026-10-22')] == [action['id']]
     assert claim_action(store,action['id'])['id'] == action['id']
 
 

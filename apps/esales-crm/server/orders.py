@@ -4,7 +4,7 @@ import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
-from server.db import now, uid
+from server.db import now, uid, VersionConflict, Store
 
 
 def text(value, label, limit=500):
@@ -95,13 +95,17 @@ def issue(c, order_id, order, merchant, business):
     c.execute("UPDATE orders SET state='accepted' WHERE id=?", (order_id,))
     if order['kind'] == 'renewal':
         c.execute('UPDATE merchants SET service_end=?,updated_at=? WHERE id=?', (order['service_end'], now(), merchant['id']))
-        c.execute("UPDATE actions SET state='cancelled' WHERE merchant_code=? AND state='queued'",(merchant['code'],))
-        if merchant['access_status']=='inactive':hold(c,order_id,'access','Paid renewal for suspended merchant; verify restoration in e-sales')
+        cancelled=c.execute("UPDATE actions SET state='cancelled' WHERE merchant_code=? AND state='queued' RETURNING id",(merchant['code'],)).fetchall()
+        for action in cancelled:
+            Store.audit(c,'automation.cancelled',action['id'],'Reminder was not claimed; paid renewal updated the service end for '+merchant['code'])
+        if merchant['access_status'] in ('grace', 'inactive'):
+            hold(c,order_id,'access','Paid renewal for merchant in '+merchant['access_status']+'; check e-sales and restore active access if required')
     return receipt_id
 
 
 def review_reason(order, merchant, business):
     if not merchant: return 'Merchant code has no approved CRM match'
+    if not merchant['web_billing_enabled']: return 'Merchant is excluded from web renewals and receipts'
     if order['kind'] == 'other': return 'Mixed or unrecognized products require review'
     if merchant['currency'] != order['currency']: return 'Currency differs from merchant configuration'
     if not email_ok(merchant['email']): return 'Billing recipient is missing or invalid'
@@ -113,11 +117,22 @@ def review_reason(order, merchant, business):
     return None
 
 
-def ingest(store, payload, business='converto', environment=None, manual_reason=None, intake_note=None):
+def ingest(store, payload, business='converto', environment=None, manual_reason=None, intake_note=None, external_receipt=None):
     order = normalize(payload)
     if manual_reason is not None:text(manual_reason,'approval reason',1000)
     if intake_note is not None:text(intake_note,'intake note',1000)
     if environment and order['environment'] != environment: raise ValueError('Environment not allowed on this intake')
+    if external_receipt is not None:
+        if order['kind'] != 'topup' or manual_reason is None:
+            raise ValueError('Existing receipt recording requires an operator-confirmed top-up')
+        if not isinstance(external_receipt, dict) or set(external_receipt) != {'source', 'reference', 'purchased_on'}:
+            raise ValueError('Supply the existing receipt source, reference and purchase date')
+        source = text(external_receipt['source'], 'existing receipt source', 200)
+        reference = external_receipt['reference']
+        if reference != '': reference = text(reference, 'existing receipt reference', 200)
+        try: purchased_on = date.fromisoformat(external_receipt['purchased_on']).isoformat()
+        except (ValueError, TypeError): raise ValueError('Invalid original purchase date') from None
+        order['external_receipt'] = {'source': source, 'reference': reference, 'purchased_on': purchased_on}
     with store.transaction() as c:
         old = c.execute('SELECT * FROM orders WHERE business=? AND environment=? AND reference=?', (business, order['environment'], order['reference'])).fetchone()
         if old:
@@ -128,20 +143,28 @@ def ingest(store, payload, business='converto', environment=None, manual_reason=
                 c.execute("UPDATE exceptions SET detail=? WHERE order_id=? AND kind='conflict' AND resolved_at IS NULL",(detail,old['id']))
                 store.audit(c, 'order.conflict', old['id'], json.dumps({'original_fingerprint':old['fingerprint'],'received':order},ensure_ascii=False))
                 return {'order_id':old['id'], 'state':'conflict', 'duplicate':False}
+            if external_receipt is not None and json.loads(old['payload']).get('external_receipt') != order['external_receipt']:
+                raise VersionConflict('Existing receipt evidence differs; review the stored provenance before changing it')
             return {'order_id':old['id'], 'state':old['state'], 'duplicate':True}
         company = c.execute('SELECT * FROM businesses WHERE id=?', (business,)).fetchone()
         if not company: raise ValueError('Issuing business is not configured')
         merchant = c.execute('SELECT * FROM merchants WHERE code=?', (order['merchant_code'],)).fetchone()
+        if external_receipt is not None and (not merchant or merchant['currency'] != order['currency']):
+            raise ValueError('Existing top-up requires a matched merchant and currency')
         order_id = uid()
         # Retain normalized payload only: no payment image URLs or arbitrary credentials.
         c.execute('INSERT INTO orders VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (order_id, business, order['environment'], order['reference'], order['merchant_code'], order['kind'], order['fingerprint'], json.dumps(order, ensure_ascii=False), order['total_minor'], order['currency'], 'review', now()))
-        reason = review_reason(order, merchant, company)
-        if reason: hold(c, order_id, 'review', reason)
+        reason = None if external_receipt is not None else review_reason(order, merchant, company)
+        if external_receipt is not None:
+            c.execute("UPDATE orders SET state='recorded_elsewhere' WHERE id=?", (order_id,))
+            store.audit(c, 'order.recorded_elsewhere', order_id, json.dumps(order['external_receipt'], ensure_ascii=False))
+        elif reason: hold(c, order_id, 'review', reason)
         else: issue(c, order_id, order, merchant, company)
         if manual_reason is not None:store.audit(c,'payment.manual_confirmation',order_id,manual_reason)
         if intake_note is not None:store.audit(c,'order.intake_source',order_id,intake_note)
-        store.audit(c, 'order.received', order_id, reason or 'Purchase accepted; receipt and delivery reserved once')
-        return {'order_id':order_id, 'state':'review' if reason else 'accepted', 'duplicate':False}
+        store.audit(c, 'order.received', order_id, 'Existing receipted purchase recorded without a new receipt or delivery' if external_receipt is not None else reason or 'Purchase accepted; receipt and delivery reserved once')
+        state = 'recorded_elsewhere' if external_receipt is not None else 'review' if reason else 'accepted'
+        return {'order_id':order_id, 'state':state, 'duplicate':False}
 
 
 def release(store, order_id, reason):

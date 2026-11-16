@@ -1,5 +1,20 @@
 import pytest
 from server.db import Store
+from datetime import datetime, timezone
+
+
+@pytest.fixture(autouse=True)
+def automation_clock(monkeypatch):
+    import server.automation as automation
+    current = [datetime(2026, 10, 22, 4, tzinfo=timezone.utc)]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current[0].astimezone(tz) if tz else current[0].replace(tzinfo=None)
+    monkeypatch.setattr(automation, 'datetime', Clock)
+    def set_day(value):
+        current[0] = datetime.fromisoformat(value + 'T04:00:00+00:00')
+    return set_day
 
 
 @pytest.fixture

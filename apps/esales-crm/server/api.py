@@ -37,6 +37,7 @@ class Merchant(BaseModel):
     access_status: str = Field(default='unknown',pattern=r'^(unknown|active|grace|inactive)$')
     notes: str = Field(default='',max_length=5000)
     phone: str = Field(default='',max_length=30)
+    web_billing_enabled: bool = True
     reason: str = Field(default='New merchant record',min_length=3,max_length=1000)
     expected_updated_at: str | None = None
 
@@ -147,6 +148,7 @@ def create_app(settings=None):
             except (ValueError,TypeError):delta=None
             row['days_until_end']=delta
             row['renewal_state']='needs_review' if delta is None else 'overdue' if delta<0 else 'due_soon' if delta<=30 else 'current'
+            if not row['web_billing_enabled']: row['renewal_state'] = 'excluded'
         return rows
 
     @app.get('/api/merchants')
@@ -160,6 +162,8 @@ def create_app(settings=None):
     def save_merchant(body,create_only=False):
         if body.email and not email_ok(body.email):raise ValueError('Invalid billing email')
         data=body.model_dump(mode='json',exclude={'reason','expected_updated_at'})
+        if 'web_billing_enabled' not in body.model_fields_set:
+            data.pop('web_billing_enabled')
         return {'id':store.save_merchant(data,body.reason,expected_updated_at=body.expected_updated_at,create_only=create_only)}
 
     @app.put('/api/merchants/{merchant_id}')
@@ -171,7 +175,26 @@ def create_app(settings=None):
         return save_merchant(body)
 
     @app.get('/api/orders')
-    def orders():return store.all("SELECT o.*,r.id receipt_id,r.number receipt_number,r.state receipt_state,d.state delivery_state,d.attempts delivery_attempts,d.error delivery_error,COALESCE(d.recipient,json_extract(r.snapshot,'$.billing.email')) delivery_recipient FROM orders o LEFT JOIN receipts r ON r.order_id=o.id LEFT JOIN deliveries d ON d.receipt_id=r.id ORDER BY o.created_at DESC")
+    def orders():
+        rows=store.all("SELECT o.*,r.id receipt_id,r.number receipt_number,r.state receipt_state,d.state delivery_state,d.attempts delivery_attempts,d.error delivery_error,COALESCE(d.recipient,json_extract(r.snapshot,'$.billing.email')) delivery_recipient FROM orders o LEFT JOIN receipts r ON r.order_id=o.id LEFT JOIN deliveries d ON d.receipt_id=r.id ORDER BY o.created_at DESC")
+        for row in rows:
+            try:payload=json.loads(row['payload'])
+            except (ValueError,TypeError):payload={}
+            row['external_receipt']=payload.get('external_receipt') if isinstance(payload,dict) else None
+        return rows
+
+    @app.post('/api/orders/record-existing-topup')
+    def record_existing_topup(body:dict):
+        if body.get('already_receipted') is not True:
+            raise ValueError('Confirm that the top-up has already been receipted')
+        if not isinstance(body.get('external_receipt'), dict):
+            raise ValueError('Supply the existing receipt evidence')
+        payload=body.get('payload')
+        if not isinstance(payload,dict):raise ValueError('Expected completed top-up payload')
+        payload={**payload,'env':settings.intake_environment}
+        return ingest(store,payload,environment=settings.intake_environment,
+                      manual_reason=text(body.get('reason'),'recording reason',1000),
+                      external_receipt=body['external_receipt'])
 
     @app.post('/api/orders')
     def manual_order(body:dict):
@@ -190,7 +213,7 @@ def create_app(settings=None):
     @app.get('/hooks/merchants/{code}/renewal')
     def renewal_context(code:str,request:Request):
         hook_auth(request,settings.intake_secret)
-        merchant=store.one('SELECT code,name,service_end,access_status,phone FROM merchants WHERE code=?',(code,))
+        merchant=store.one('SELECT code,name,service_end,access_status,phone,web_billing_enabled FROM merchants WHERE code=?',(code,))
         if not merchant:raise HTTPException(404,'Merchant not found')
         today=datetime.now(ZoneInfo('Asia/Macau')).date()
         try:days_until_end=(date.fromisoformat(merchant['service_end'])-today).days
@@ -198,6 +221,7 @@ def create_app(settings=None):
         with store.transaction() as c:
             store.audit(c,'hook.renewal_read',merchant['code'],'Read current renewal context for Make')
         renewal_state='needs_review' if days_until_end is None else 'overdue' if days_until_end<0 else 'due_soon' if days_until_end<=30 else 'current'
+        if not merchant['web_billing_enabled']:renewal_state='excluded'
         return {**merchant,'as_of':today.isoformat(),'days_until_end':days_until_end,'renewal_state':renewal_state}
 
     @app.post('/hooks/esales')
@@ -341,7 +365,7 @@ def create_app(settings=None):
     @app.get('/api/overview')
     def overview():
         rows=merchants()
-        return {'merchants':len(rows),'due_soon':sum(r['renewal_state']=='due_soon' for r in rows),'overdue':sum(r['renewal_state']=='overdue' for r in rows),'unresolved':store.one('SELECT count(*) n FROM exceptions WHERE resolved_at IS NULL')['n'],'queued':store.one("SELECT count(*) n FROM deliveries WHERE state='queued'")['n'],'orders':store.one('SELECT count(*) n FROM orders')['n'],'last_event':store.one("SELECT created_at FROM events WHERE action='order.received' ORDER BY created_at DESC LIMIT 1"),'reminders_enabled':get_policy(store)['enabled'],'access_changes_enabled':get_policy(store)['enabled'],'delivery_enabled':settings.delivery_enabled,'demo':settings.demo}
+        return {'merchants':len(rows),'due_soon':sum(r['renewal_state']=='due_soon' for r in rows),'overdue':sum(r['renewal_state']=='overdue' for r in rows),'unresolved':store.one('SELECT count(*) n FROM exceptions WHERE resolved_at IS NULL')['n'],'queued':store.one("SELECT count(*) n FROM deliveries WHERE state='queued'")['n'],'orders':store.one('SELECT count(*) n FROM orders')['n'],'last_event':store.one("SELECT created_at FROM events WHERE action='order.received' ORDER BY created_at DESC LIMIT 1"),'reminders_enabled':get_policy(store)['enabled'],'access_changes_enabled':False,'delivery_enabled':settings.delivery_enabled,'demo':settings.demo}
 
     @app.get('/api/settings')
     def get_settings():

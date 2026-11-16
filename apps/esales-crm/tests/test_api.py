@@ -46,7 +46,7 @@ def test_renewal_hook_reads_current_date_and_limits_exposed_fields(tmp_path,monk
     result=c.get(path,headers=headers)
     assert result.status_code==200
     today=date(2026,11,9)
-    assert result.json()=={'code':'1ticks-test','name':'1TICKS TEST','service_end':'2026-11-10','access_status':'active','phone':'+85363997300','as_of':'2026-11-09','days_until_end':1,'renewal_state':'due_soon'}
+    assert result.json()=={'code':'1ticks-test','name':'1TICKS TEST','service_end':'2026-11-10','access_status':'active','phone':'+85363997300','web_billing_enabled':1,'as_of':'2026-11-09','days_until_end':1,'renewal_state':'due_soon'}
     assert c.get('/hooks/merchants/missing/renewal',headers=headers).status_code==404
     row=c.get('/api/merchants').json()[0]
     merchant.update(service_end='2027-11-10',expected_updated_at=row['updated_at'],reason='Approved renewal')

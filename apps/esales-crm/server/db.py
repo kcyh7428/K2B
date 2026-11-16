@@ -42,6 +42,9 @@ class Store:
             if 'phone' not in [r['name'] for r in c.execute('PRAGMA table_info(merchants)')]:
                 c.execute("ALTER TABLE merchants ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
                 c.commit()
+            if 'web_billing_enabled' not in [r['name'] for r in c.execute('PRAGMA table_info(merchants)')]:
+                c.execute('ALTER TABLE merchants ADD COLUMN web_billing_enabled INTEGER NOT NULL DEFAULT 1')
+                c.commit()
             if 'recipient' not in [r['name'] for r in c.execute('PRAGMA table_info(deliveries)')]:
                 c.execute('ALTER TABLE deliveries ADD COLUMN recipient TEXT')
                 c.commit()
@@ -98,14 +101,17 @@ class Store:
             self.audit(c, 'business.settings', key, 'Issuer and receipt configuration updated')
 
     def save_merchant(self, data, reason='Created', expected_updated_at=None, create_only=False):
-        allowed = ['code','name','billing_name','email','address','currency','plan','service_end','access_status','notes','phone']
+        allowed = ['code','name','billing_name','email','address','currency','plan','service_end','access_status','notes','phone','web_billing_enabled']
         with self.transaction() as c:
             old = c.execute('SELECT * FROM merchants WHERE code=?', (data['code'],)).fetchone()
             if create_only and old:raise VersionConflict('Merchant code already exists')
             if expected_updated_at is not None and (not old or old['updated_at']!=expected_updated_at):
                 raise VersionConflict('Record changed; reload before editing')
             values = dict(old) if old else {k: '' for k in allowed}
+            if not old: values['web_billing_enabled'] = 1
             values.update({k: data[k] for k in allowed if k in data})
+            if type(values['web_billing_enabled']) not in (int, bool) or values['web_billing_enabled'] not in (0, 1):
+                raise ValueError('Web billing must be enabled or disabled explicitly')
             values['currency'] = values.get('currency') or 'MOP'
             values['access_status'] = values.get('access_status') or 'unknown'
             try:values['service_end']=date.fromisoformat(values['service_end']).isoformat() if values.get('service_end') else None
@@ -114,6 +120,8 @@ class Store:
             key = old['id'] if old else uid()
             c.execute(f"INSERT INTO merchants(id,{','.join(allowed)},updated_at) VALUES({','.join('?' for _ in range(len(allowed)+2))}) ON CONFLICT(code) DO UPDATE SET {','.join(k+'=excluded.'+k for k in allowed if k!='code')},updated_at=excluded.updated_at", [key]+[values.get(k) for k in allowed]+[now()])
             phone_changed=bool(old and old['phone']!=values['phone'])
-            c.execute("UPDATE actions SET state='cancelled' WHERE merchant_code=? COLLATE NOCASE AND state='queued' AND (service_end IS NOT ? OR ?='inactive' OR (kind='reminder' AND ?))",(values['code'],values['service_end'],values['access_status'],phone_changed))
+            cancelled=c.execute("UPDATE actions SET state='cancelled' WHERE merchant_code=? COLLATE NOCASE AND state='queued' AND (service_end IS NOT ? OR ?='inactive' OR ?=0 OR (kind='reminder' AND ?)) RETURNING id,service_end",(values['code'],values['service_end'],values['access_status'],values['web_billing_enabled'],phone_changed)).fetchall()
+            for action in cancelled:
+                self.audit(c,'automation.cancelled',action['id'],'Reminder for '+values['code']+' ending '+action['service_end']+' was not claimed; merchant state or verified phone changed')
             self.audit(c, 'merchant.updated' if old else 'merchant.created', key, reason)
         return key

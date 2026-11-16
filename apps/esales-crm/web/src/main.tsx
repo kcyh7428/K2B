@@ -15,6 +15,7 @@ type Merchant = {
   plan: string;
   service_end: string | null;
   access_status: string;
+  web_billing_enabled: number;
   notes: string;
   updated_at: string;
   renewal_state: string;
@@ -36,6 +37,7 @@ type Order = {
   delivery_error: string | null;
   delivery_recipient: string | null;
   payload: string;
+  external_receipt: { source: string; reference: string; purchased_on: string } | null;
 };
 type Problem = {
   id: string;
@@ -1069,7 +1071,7 @@ function OrderTable({
             <tr key={o.id}>
               <td>
                 <strong>{receipts ? o.receipt_number : o.reference}</strong>
-                <small>{receipts ? o.reference : stamp(o.created_at)}</small>
+                <small>{receipts ? o.reference : o.external_receipt ? day(o.external_receipt.purchased_on) : stamp(o.created_at)}</small>
               </td>
               <td>{o.merchant_code}</td>
               <td>{label(o.kind)}</td>
@@ -1085,6 +1087,9 @@ function OrderTable({
                         : o.state
                   }
                 />
+                {!receipts && o.external_receipt && (
+                  <small>{o.external_receipt.source}{o.external_receipt.reference ? " #" + o.external_receipt.reference : ""}</small>
+                )}
                 {o.delivery_error && (
                   <small className="error">{o.delivery_error}</small>
                 )}
@@ -1154,6 +1159,7 @@ function MerchantForm({
           const data = Object.fromEntries([
             ...f.entries(),
             ["expected_updated_at", merchant.updated_at || null],
+            ["web_billing_enabled", f.get("web_billing_enabled") === "on"],
           ]);
           if (!data.service_end) data.service_end = null;
           void save(data);
@@ -1206,6 +1212,10 @@ function MerchantForm({
             </select>
           </label>
         </div>
+        <label className="check">
+          <input name="web_billing_enabled" type="checkbox" defaultChecked={merchant.web_billing_enabled !== 0} />{" "}
+          Include in web renewals and receipts
+        </label>
         <label>
           Billing address
           <textarea name="address" defaultValue={merchant.address || ""} />
@@ -1602,7 +1612,7 @@ function AutomationSettings() {
               enabled: f.enabled === "on",
               approved: f.approved === "on",
               lead_days: Number(f.lead_days),
-              grace_days: Number(f.grace_days),
+              grace_days: p.grace_days,
               lead_template: f.lead_template,
               due_template: f.due_template,
             })
@@ -1624,18 +1634,9 @@ function AutomationSettings() {
                 name="lead_days"
                 type="number"
                 min="1"
-                max="30"
+                max="1"
+                readOnly
                 defaultValue={p.lead_days}
-              />
-            </label>
-            <label>
-              Days after service end before suspension
-              <input
-                name="grace_days"
-                type="number"
-                min="1"
-                max="30"
-                defaultValue={p.grace_days}
               />
             </label>
           </div>
@@ -1649,8 +1650,8 @@ function AutomationSettings() {
           </label>
           <p className="hint">
             Use {"{merchant}"} and {"{service_end}"} as placeholders. Make sends
-            SMS and changes e-sales status. The two-day reminder and three-day
-            suspension values are proposed defaults, not activated rules.
+            the advance and expiry SMS using the e-sales service end date.
+            Merchant access is managed in e-sales.
           </p>
           <label className="check">
             <input
@@ -1658,8 +1659,7 @@ function AutomationSettings() {
               type="checkbox"
               defaultChecked={p.approved}
             />{" "}
-            I verified SMS recipients, message text, grace timing and the
-            e-sales access behavior.
+            I verified SMS recipients, message text and reminder timing.
           </label>
           <label className="check">
             <input name="enabled" type="checkbox" defaultChecked={p.enabled} />{" "}
@@ -1669,13 +1669,13 @@ function AutomationSettings() {
         </form>
       )}
       {actions.length > 0 && <>
-        <h3>Reminder and access actions</h3>
+        <h3>Reminder actions</h3>
         <button type="button" onClick={() => void refreshActions()}>Refresh actions</button>
         <div className="table-scroll"><table><thead><tr><th>MERCHANT</th><th>ACTION</th><th>STATE</th><th /></tr></thead><tbody>
           {actions.map((item) => <tr key={item.id}>
             <td>{item.merchant_code}<small>{day(item.service_end)}</small></td>
             <td>{label(item.kind)}</td><td><Badge state={item.state} /></td>
-            <td>{p?.enabled && ["failed", "uncertain", "cancelled"].includes(item.state) && <button onClick={() => {setError(""); setRetry(item);}}>Review retry</button>}</td>
+            <td>{p?.enabled && item.kind === "reminder" && ["failed", "uncertain", "cancelled"].includes(item.state) && <button onClick={() => {setError(""); setRetry(item);}}>Review retry</button>}</td>
           </tr>)}
         </tbody></table></div>
       </>}
