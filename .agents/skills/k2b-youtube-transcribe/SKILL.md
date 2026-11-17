@@ -6,14 +6,16 @@ description: Route a requested single YouTube video's ideas, subtitles or spoken
 # YouTube content compatibility entry
 
 Read `../k2b-video-extract/SKILL.md` and its workflow. That is the sole maintained
-procedure: native Mini Show transcript evidence plus relevant native visual
+procedure: native Mini Show transcript evidence, or the documented built-in
+Mini browser export when that panel is inaccessible, plus relevant native visual
 checks, typed NAS publication and Home validation/reading. SJM is explicitly
 deferred for this release. Do not select Home for signed-in browsing.
 
 Retain actual caption language/automatic provenance, starts/count, observation
 time, raw-caption retention and unknown end times. A timestamped worker
 paraphrase is not a verbatim transcript. Label limited visual observations and
-unverified source claims/speech. Missing or inaccessible captions, actual full
+unverified source claims/speech. Check both supported native caption routes
+where available before reporting caption acquisition blocked. Actual full
 media or unsupported transcript requirements stop precisely.
 
 The old yt-transcript scripts remain historical compatibility code, not the

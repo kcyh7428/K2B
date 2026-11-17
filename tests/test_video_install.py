@@ -65,6 +65,10 @@ def test_candidate_install_publishes_before_freezing_root(tmp_path,monkeypatch,c
         assert release.stat().st_mode & 0o777 == 0o500
         assert not (tmp_path/'.local/libexec/k2b-video-v2').exists()
         assert all(m.digest(release/name) == m.digest(Path(m.__file__).parent/name) for name in m.FILES)
+        workflow=Path(m.__file__).parents[1]/'.agents/skills/k2b-video-extract/references/workflow.md'
+        assert (release/'workflow.md').read_bytes()==workflow.read_bytes()
+        config=json.loads((release/'config.json').read_text())
+        assert config['files']['workflow.md']==m.digest(workflow)
         m.main()
         assert json.loads(capsys.readouterr().out)['package'] == report['package']
         assert published == [release]
@@ -128,6 +132,43 @@ def test_current_contract_requires_home_vault_recall():
     m=installer();assert 'home_vault_binding_and_recall' in m.LIVE_CHECKS
     receipt=content_acceptance(m);receipt['live_checks'].remove('home_vault_binding_and_recall')
     with pytest.raises(ValueError):m.validate_acceptance(receipt,'a'*64,'home')
+
+
+def test_activation_requires_native_export_acceptance():
+    m=installer();receipt=content_acceptance(m)
+    assert 'youtube_native_browser_export' in m.LIVE_CHECKS
+    receipt['live_checks'].remove('youtube_native_browser_export')
+    with pytest.raises(ValueError):m.validate_acceptance(receipt,'a'*64,'home')
+
+
+def test_missing_workflow_stops_before_creating_release_directories(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    m=installer();source=tmp_path/'source/scripts';source.mkdir(parents=True)
+    for name in m.FILES:
+        target=source/name;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((Path(m.__file__).parent/name).read_bytes())
+    monkeypatch.setattr(m,'__file__',str(source/'install-video-extract.py'))
+    monkeypatch.setattr(m.pwd,'getpwuid',lambda uid:SimpleNamespace(pw_name='keithmbpm2',pw_dir=str(tmp_path)))
+    monkeypatch.setattr(m.sys,'argv',['install-video-extract.py','home'])
+    with pytest.raises(ValueError,match='workflow.md'):m.main()
+    assert not (tmp_path/'.local').exists()
+
+
+def test_historical_four_file_package_still_passes_integrity_checks(tmp_path,monkeypatch):
+    import json,os
+    from types import SimpleNamespace
+    from test_video_extract import load
+    m=installer();v=load();hashes={}
+    for name in m.FILES:
+        target=tmp_path/'stage'/name;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(b'historical artifact');target.chmod(0o400);hashes[name]=m.digest(target)
+    pins={'workflow_contract':m.CONTENT_CONTRACT};identity=m.release_identity(hashes,'home',pins)
+    release=tmp_path/identity;(tmp_path/'stage').rename(release)
+    (release/'config.json').write_text(json.dumps({'role':'home','package':identity,'files':hashes,'host_pins':pins,**pins}))
+    monkeypatch.setattr(v.pwd,'getpwuid',lambda uid:SimpleNamespace(pw_name='keithmbpm2'))
+    assert v.install_config(release)['package']==identity
+    (release/'video-extract.py').chmod(0o600);(release/'video-extract.py').write_bytes(b'changed')
+    with pytest.raises(v.Blocked):v.install_config(release)
 
 
 def test_sjm_candidate_installation_is_deferred_before_filesystem_changes(tmp_path,monkeypatch):

@@ -87,7 +87,10 @@ For a requested Facebook or YouTube source, read
 `../k2b-video-extract/SKILL.md` and its current workflow. It owns the single
 maintained content extraction path and actual delivery-state gate.
 
-**YouTube:** native Mini captions plus relevant native visual checks. Retain
+**YouTube:** native Mini captions plus relevant native visual checks. If Chrome's
+caption panel is inaccessible, try the named Mini's documented built-in browser
+transcript export under `k2b-video-extract` before reporting captions blocked.
+Record its actual method and coverage, never invented panel inspection. Retain
 actual source identity, caption language/provenance, timestamps and coverage,
 a timestamped paraphrase and honest visual observations. Home independently
 validates the typed NAS bundle and reads it before answering. Do not call a
@@ -1724,6 +1727,6 @@ python3 "$HOME/Projects/K2B/scripts/k2b-shared-append.py" usage --skill k2b-rese
 - No em dashes, no AI cliches, no sycophancy
 - Be specific in recommendations -- "improve the meeting processor" is useless, "add an explicit instruction for formatting action items with owner names in brackets" is actionable
 - External findings should be filtered for relevance -- don't dump every search result
-- For one YouTube source, use the native caption-and-visual workflow in URL Mode. Missing captions stop; there is no automatic transcript-service, audio-download or recording fallback.
+- For one YouTube source, use the native caption-and-visual workflow in URL Mode. Check the panel and supported built-in Mini browser export before reporting missing captions. There is no automatic transcript-service, audio-download or recording fallback.
 - When scanning GitHub repos, focus on README, key source files, and patterns
 - Always cross-link findings to existing vault notes where relevant

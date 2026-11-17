@@ -1,5 +1,11 @@
 # Unified K2B content extraction design
 
+17 November supplement: `plans/2026-11-17_youtube-native-export.md` records
+Keith's approved built-in Mini browser export when Chrome's caption panel is
+inaccessible. It adds a distinct evidence method and supersedes panel-only
+failure wording below within that narrow scope. Runtime delivery remains a
+separate state from the prepared source update.
+
 Date: 8 November 2026. Owner: Keith. This revision records Keith's explicit
 approval of content extraction as the default, relayed by the architect in the
 active source chat after the concrete media-versus-content choice. Existing

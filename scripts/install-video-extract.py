@@ -17,7 +17,8 @@ DOWNLOADER_SHA256 = 'e51e69e89489f199530f13d32a4342da3ddb2cf34842f364603a066db05
 OWNERS = {'home':'keithmbpm2','sjm':'keithcheung','mini':'fastshower'}
 CONTENT_CONTRACT = 'content_first_2026-11-08'
 LIVE_CHECKS = ['youtube_native_caption_visual','facebook_native_identity','facebook_long_direct_media',
-    'facebook_no_caption_speech','verified_reuse','typed_failures','home_mini_nas_and_roles','home_vault_binding_and_recall','truthful_coverage']
+    'facebook_no_caption_speech','verified_reuse','typed_failures','home_mini_nas_and_roles','home_vault_binding_and_recall','truthful_coverage',
+    'youtube_native_browser_export']
 
 
 def digest(path):
@@ -78,7 +79,12 @@ def main():
     if a.role == 'sjm':raise ValueError('SJM installation is explicitly deferred for this release')
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     source = Path(__file__).resolve().parent
-    hashes = {name:digest(source/name) for name in FILES}
+    sources = {name:source/name for name in FILES}
+    sources['workflow.md'] = source.parent/'.agents/skills/k2b-video-extract/references/workflow.md'
+    for name,path in sources.items():
+        no_symlinks(path)
+        if not path.is_file():raise ValueError('reviewed package source missing: '+name)
+    hashes = {name:digest(path) for name,path in sources.items()}
     pins = host_pins(a.role,home,a.downloader)
     identity = release_identity(hashes,a.role,pins)
     releases = home/'.local/libexec/k2b-video'; no_symlinks(releases)
@@ -92,9 +98,9 @@ def main():
             if digest(release/name) != expected: raise ValueError('existing release changed')
     else:
         stage = releases/(identity+'.partial-'+secrets.token_hex(8)); stage.mkdir(mode=0o700)
-        for name in FILES:
+        for name in hashes:
             target = stage/name; target.parent.mkdir(exist_ok=True,parents=True,mode=0o700)
-            shutil.copyfile(source/name,target); target.chmod(0o400)
+            shutil.copyfile(sources[name],target); target.chmod(0o400)
             if digest(target) != hashes[name]: raise ValueError('installed source hash mismatch')
         c = {'version':'2','role':a.role,'package':identity,'files':hashes,'host_pins':pins,'recorder_accepted':False}
         c.update(pins)

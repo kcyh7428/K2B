@@ -10,11 +10,17 @@ This is the single maintained procedure. Its delivery record and installed
 version identify actual acceptance/activation; never infer deployment from code.
 
 Keith explicitly approved content extraction as the default on 8 November 2026.
-YouTube uses the actual native caption panel and relevant native visual checks,
-retaining a timestamped paraphrase, caption provenance and limited observations.
+YouTube first uses the actual native caption panel and relevant native visual checks.
+If that panel is inaccessible, try the documented built-in transcript export
+in the named Mini's in-app browser, under the same request and deadline.
+Keith approved this alternate native-caption route on 17 November 2026 after
+a successful live export. Record its actual method and exported-row coverage;
+do not label it Chrome panel inspection. See the workflow's distinct contract.
+Both routes retain a timestamped paraphrase, caption provenance and limited observations.
 It does not promise a complete video/audio file, verbatim transcript, complete
 speech or every-frame review. Missing captions or complete-media requirements
-stop clearly. Facebook uses direct Mini download plus Home processing; a blocked
+stop clearly after both supported native routes have been checked where available.
+Facebook uses direct Mini download plus Home processing; a blocked
 direct acquisition stops. There is no automatic recording/provider fallback.
 The preserved custom recorder and failed media remain experimental/unactivated.
 Facebook source duration

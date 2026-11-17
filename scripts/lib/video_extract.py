@@ -170,7 +170,8 @@ def install_config(package=None):
     validate_config_identity(c,package.name)
     role = c['role']; expected = {'home':'keithmbpm2','sjm':'keithcheung','mini':'fastshower'}[role]
     need(pwd.getpwuid(os.getuid()).pw_name == expected, 'wrong_host_user')
-    need(set(c.get('files', {})) == {'video-extract.py','lib/video_extract.py','lib/video_legacy.py','media/record.swift'}, 'invalid_package_file_set')
+    legacy_files = {'video-extract.py','lib/video_extract.py','lib/video_legacy.py','media/record.swift'}
+    need(set(c.get('files', {})) in (legacy_files,legacy_files|{'workflow.md'}), 'invalid_package_file_set')
     for name, digest in c['files'].items():
         p = child(package, name); s = p.stat()
         need(s.st_uid == os.getuid() and not s.st_mode & 0o222 and sha(p) == digest, 'installed_code_changed')
@@ -582,14 +583,19 @@ def validate_content_evidence(root,evidence,now=None):
     created = evidence.get('request_created_epoch'); deadline = evidence.get('deadline_epoch')
     need(finite_number(created) and finite_number(deadline) and 0 < created < deadline <= created+LIMITS['youtube'][2],'invalid_content_request_deadline')
     if now is not None:need(finite_number(now) and created <= now < deadline,'expired_content_publication_request')
+    caption_method = evidence.get('caption_acquisition_method','native_panel')
+    need(caption_method in ('native_panel','native_browser_export'),'unsupported_caption_acquisition_method')
+    observation_limit = min(deadline,now if now is not None else time.time()) if caption_method == 'native_browser_export' else created
+    observation_start = created if caption_method == 'native_browser_export' else 0
     observed = evidence.get('caption_observation_window')
     need(isinstance(observed,dict) and isinstance(observed.get('basis'),str) and observed['basis'].strip() and
          finite_number(observed.get('start_epoch')) and finite_number(observed.get('end_epoch')) and
-         0 < observed['start_epoch'] <= observed['end_epoch'] <= created,'invalid_caption_observation_window')
+         0 < observed['start_epoch'] and observation_start <= observed['start_epoch'] <= observed['end_epoch'] <= observation_limit,'invalid_caption_observation_window')
     need(evidence.get('analysis_kind') == 'timestamped_paraphrase' and evidence.get('complete_media_available') is False and
          evidence.get('full_visual_review') is False and evidence.get('caption_end_times') == 'not_exposed' and
          evidence.get('speech_completeness') == 'unverified','unsupported_content_completeness_claim')
-    need(evidence.get('raw_caption_retention_status') in ('not_retained','excerpts_only') and
+    retention = ('not_retained','excerpts_only','private_export') if caption_method == 'native_browser_export' else ('not_retained','excerpts_only')
+    need(evidence.get('raw_caption_retention_status') in retention and
          isinstance(evidence.get('raw_caption_retention_reason'),str) and evidence['raw_caption_retention_reason'].strip(),'raw_caption_retention_unspecified')
     files = evidence.get('files')
     need(isinstance(files,dict) and set(files) == set(CONTENT_FILES),'invalid_content_payload_set')
@@ -603,13 +609,28 @@ def validate_content_evidence(root,evidence,now=None):
     for data in (metadata,claims,visuals):
         need(all(data.get(k) == evidence[k] for k in ('title','publisher')),'content_description_mismatch')
     need(metadata.get('source_duration_seconds') == claims.get('duration_seconds') == visuals.get('source_duration_seconds') == duration,'content_duration_mismatch')
-    need(metadata.get('control') == visuals.get('control') == 'native_chrome' and previous.get('full_visual_viewing') is False and
+    caption_control = 'mini_in_app_browser' if caption_method == 'native_browser_export' else 'native_chrome'
+    need(metadata.get('control') == caption_control and visuals.get('control') == 'native_chrome' and previous.get('full_visual_viewing') is False and
          visuals.get('full_visual_viewing') is False,'native_visual_control_or_coverage_invalid')
     starts = metadata.get('caption_start_seconds_in_sequence'); count = metadata.get('observed_caption_count')
     need(type(count) is int and 0 < count <= 20000 and isinstance(starts,list) and len(starts) == count and
          all(finite_number(t) and 0 <= t < duration for t in starts) and starts == sorted(starts),'invalid_caption_start_sequence')
-    need(metadata.get('first_caption_reached') is True and metadata.get('last_caption_reached') is True and
-         evidence.get('caption_sequence_status') == 'all_exposed_rows_inspected','native_caption_sequence_incomplete')
+    native_export = None
+    if caption_method == 'native_panel':
+        need(metadata.get('first_caption_reached') is True and metadata.get('last_caption_reached') is True and
+             evidence.get('caption_sequence_status') == 'all_exposed_rows_inspected','native_caption_sequence_incomplete')
+    else:
+        need(metadata.get('first_exported_row_inspected') is True and metadata.get('last_exported_row_inspected') is True and
+             evidence.get('caption_sequence_status') == 'all_exported_rows_inspected','native_export_sequence_incomplete')
+        native_export = metadata.get('native_export')
+        need(isinstance(native_export,dict) and native_export.get('api') == 'tab.content.exportYouTubeTranscript' and
+             native_export.get('source_url') == source['url'] and
+             isinstance(native_export.get('sha256'),str) and re.fullmatch('[a-f0-9]{64}',native_export['sha256']) and
+             type(native_export.get('bytes')) is int and 0 < native_export['bytes'] <= 2*1024**2 and
+             type(native_export.get('row_count')) is int and native_export['row_count'] == count and
+             finite_number(native_export.get('first_start_seconds')) and native_export['first_start_seconds'] == starts[0] and
+             finite_number(native_export.get('last_start_seconds')) and native_export['last_start_seconds'] == starts[-1],
+             'native_export_binding_invalid')
     label = metadata.get('provenance_label_exact'); language = metadata.get('caption_language'); provenance = evidence.get('caption_provenance_kind')
     need(isinstance(label,str) and 0 < len(label) <= 512 and isinstance(language,str) and 0 < len(language) <= 256 and
          provenance in ('auto_generated','manual','unknown'),'caption_provenance_missing')
@@ -630,11 +651,11 @@ def validate_content_evidence(root,evidence,now=None):
     for item in observations:
         need(isinstance(item,dict) and finite_number(item.get('requested_second')) and 0 <= item['requested_second'] <= duration and
              finite_number(item.get('observation_call_started_epoch')) and finite_number(item.get('observed_epoch')) and
-             0 < item['observation_call_started_epoch'] <= item['observed_epoch'] <= created,'invalid_visual_observation_timing')
+             0 < item['observation_call_started_epoch'] and observation_start <= item['observation_call_started_epoch'] <= item['observed_epoch'] <= observation_limit,'invalid_visual_observation_timing')
         clock = item.get('clock_seconds')
         need(clock is None or (finite_number(clock) and 0 <= clock <= duration),'invalid_observed_source_clock')
         need(all(isinstance(item.get(k),str) and 0 < len(item[k]) <= 16384 for k in ('description','uncertainty')),'visual_description_or_uncertainty_missing')
-    return {'evidence_type':'caption_visual','method':'native_captions_and_visual_checks','complete_media_available':False,
+    result = {'evidence_type':'caption_visual','method':'native_captions_and_visual_checks','complete_media_available':False,
         'analysis_kind':'timestamped_paraphrase','raw_caption_retention_status':evidence['raw_caption_retention_status'],
         'raw_caption_retention_reason':evidence['raw_caption_retention_reason'],'caption_end_times':'not_exposed','speech_completeness':'unverified',
         'caption_count':count,'first_caption_start':starts[0],'last_caption_start':starts[-1],'caption_language':language,
@@ -645,6 +666,10 @@ def validate_content_evidence(root,evidence,now=None):
         'visual_observation_count':len(observations),'visual_observations':observations,'full_visual_review':False,
         'visual_artifacts':'native_observation_notes_not_retained_video_frames',
         'source_uncertainty':'Caption evidence and worker paraphrase are not independently verified source claims or complete speech'}
+    # Preserve exact historical panel coverage bytes in immutable manifests.
+    if caption_method == 'native_browser_export':
+        result.update(caption_acquisition_method=caption_method,native_export=native_export)
+    return result
 
 
 def publish_content(url,request_id,evidence_digest,state):

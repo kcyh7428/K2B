@@ -2,7 +2,11 @@
 
 Authority: the current content-first revision in
 `plans/2026-11-08_video-extraction-design.md`, explicitly approved by Keith on
-8 November 2026. Read the delivery record for actual installed/active state.
+8 November 2026, supplemented by Keith's 17 November native browser-export
+approval in `plans/2026-11-17_youtube-native-export.md`. The versioned Home and
+Mini packages retain this procedure as hash-bound `workflow.md`. Read the
+delivery record for actual installed/active state. Source edits do not install
+runtime packages.
 
 ## Supported evidence
 
@@ -12,7 +16,8 @@ Neither site automatically falls back to recording or another provider. SJM
 processing and activation remain explicitly deferred; use Home for this release.
 
 If a request requires a complete actual YouTube video/audio file, or native
-captions are absent/inaccessible/incomplete, report unsupported/deferred with
+captions remain absent/inaccessible/incomplete after checking the two supported
+native routes below, report unsupported/deferred with
 the exact reason. A worker paraphrase is not a verbatim transcript. Blocked
 Facebook acquisition also stops. No audio download, transcript service, provider
 switch, recording, renewed expired request or truncation is a hidden alternate.
@@ -34,9 +39,59 @@ current request, retaining original observation time, provenance and uncertainty
 
 Read the actual native Show transcript sequence, including first/last exposed
 rows. Retain count, ordered start times, language and the exact auto/manual/unknown
-label. Missing rows or inaccessible captions stop. Unknown caption end times
+label. If this panel is inaccessible, use the native browser export below before
+reporting caption acquisition blocked. Unknown caption end times
 stay unknown; speech completeness is unverified. Preserve copyright limits and
 explicit raw-caption retention status. Do not invent or translate missing rows.
+
+### Alternate native caption route
+
+On the same named Mini, verify that its current in-app browser documentation
+actually exposes `tab.content.exportYouTubeTranscript()`. Open the same canonical
+HTTPS YouTube `/watch` URL there and call that documented method. This is a
+built-in browser export of source captions, not an audio transcription or
+third-party transcript service. A method that is unavailable on the current
+host is unavailable; do not infer it from Home's tools. An `ad_playing` result
+is not a transcript: finish ordinary ad navigation and collect a bounded source
+attempt within the original deadline. Never renew an expired request.
+
+Read the returned private UTF-8 file on the Mini. Check its video URL/title
+against native source identity, then inspect every exported timestamped row,
+including first and last. Preserve actual language/automatic-caption provenance
+or unknown; do not copy the Chrome label onto a different exported track without
+evidence. Record SHA-256, byte count, row count, ordered starts, first/last starts,
+the API and observation window. Empty output, source mismatch, malformed or
+incomplete rows, an inaccessible export, or a security/login prompt stays a
+precise blocked result. Source captions can omit speech even when all exported
+rows are inspected. Inspect relevant native Chrome visuals as before.
+
+Keep raw exports private on the Mini and publish only metadata and paraphrase.
+Count the private file in the existing operation budget. Its digest binds the
+worker's inspected bytes; Home's NAS payload checks do not independently rehash
+the private raw export. Do not print full copyrighted transcripts in chat.
+
+For this route set `caption_acquisition_method: native_browser_export`,
+`caption_sequence_status: all_exported_rows_inspected`, and caption metadata
+`control: mini_in_app_browser`, `first_exported_row_inspected: true`,
+`last_exported_row_inspected: true`. Add metadata `native_export` with `api`
+equal to `tab.content.exportYouTubeTranscript`, matching `source_url`, `sha256`,
+`bytes` (1 through 2 MiB), `row_count`, `first_start_seconds` and
+`last_start_seconds`. Raw retention is `private_export` while the raw file exists,
+or the existing honest statuses if it does not. The top-level and visual control
+remain `native_chrome` for source identity and visual observations only. Preserve
+unknown caption ends, unverified speech completeness and sampled visuals.
+New export caption and fresh visual observations must start at or after the
+original request creation, finish within its original deadline and be no later
+than actual validation time. A follow-up reuses the original verified bundle;
+it cannot rebind old export observations to a new request. Earlier visual notes
+remain dated in the separate prior-notes payload. Legacy panel timing is unchanged.
+
+The original panel contract remains valid with default acquisition method
+`native_panel`, caption control `native_chrome` and
+`all_exposed_rows_inspected`. Never forge panel fields to satisfy an older
+installed validator. Export bundles require the updated validator on Mini and
+Home; until reviewed runtime delivery, retain private evidence and report
+publication as pending, separately from successful caption acquisition.
 
 The model selects scenes relevant to the question from actual caption timestamps.
 Inspect them through native controls and screenshots. Retain actual visible
@@ -62,6 +117,10 @@ Create one publication UUID and immutable deadline. Under Mini
 - `prior-visual-notes.json`: earlier observations with original timing limits.
 - `visual-observations.json`: actual relevant native scene observations.
 - `evidence.json`: typed source/request fields and hashes for those five files.
+
+The paragraph below describes the original panel branch. The alternate native
+export branch uses the distinct method, caption-control, sequence and retention
+fields specified above. Source identity and visual control remain shared.
 
 Structured payloads name the same canonical source URL. Keep originals unchanged;
 do not rewrite old observations as fresh capture. Evidence version1 has
