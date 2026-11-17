@@ -1,5 +1,10 @@
 # Video extraction delivery
 
+17 November update: the native browser-export route is deployed and accepted
+on Home and Mini. See `plans/2026-11-17_youtube-native-export-delivery.md` for
+current package identities, independent review and actual acceptance evidence.
+The dated 8 November release evidence below remains retained.
+
 Design: `plans/2026-11-08_video-extraction-design.md`.
 Implementation: `plans/2026-11-08_video-extraction-implementation.md`.
 Builder: OpenAI, isolated `codex/video-extract` from `bd4a25b`.

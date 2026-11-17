@@ -1,5 +1,10 @@
 # YouTube native caption export
 
+Delivery is complete on Home and Mini. Current active package identities and
+post-activation evidence are in
+`plans/2026-11-17_youtube-native-export-delivery.md`. Prepared-only states later
+in this design are explicitly historical pre-deployment checkpoints.
+
 Date: 17 November 2026. Source chat: 01a1e998-11cd-77a2-9220-edb799de07bb.
 Keith explicitly approved trying the Mini's built-in browser transcript export
 and updating the workflow if it works. This supplements the 8 November design.
