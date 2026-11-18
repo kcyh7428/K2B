@@ -24,6 +24,8 @@ After timing and message behavior is confirmed, enable the operator policy. Pres
 
 Advance and expiry are two different intended messages for a service period. Each has its own single-use identity. An uncertain advance outcome is not replayed automatically and does not suppress the separate expiry message. A paid renewal cancels obsolete queued reminders.
 
+Preserve the existing Chinese texts privately. Map the old Merchant Code field to `{merchant}`. The expiry text's two `formatDate(addDays(now; 3))` expressions become `{payment_deadline_month}` and `{payment_deadline_day}`. These two placeholders are accepted only in the expiry template. They render the zero-padded month and day three days after service end, matching the existing Make calculation on the exact expiry-send day, including month and year boundaries. This is a payment deadline in the message, independent of the retained `grace_days` compatibility field and merchant access control.
+
 1. POST `/hooks/actions/{id}/claim` with the same key. Only a successful claim authorizes proceeding. Renewed/cancelled/stale actions and claims outside their original scheduled day are rejected. Use the structured `payload` returned by the claim, which renders the current approved SMS text. Do not send the earlier planning response's text.
 2. For `kind=reminder`, send the verified international phone and configured text through MessageBird. Report provider acceptance as `submitted`, never handset delivery.
 3. POST `/hooks/actions/{id}/finish` with `{status:"submitted"}` for SMS acceptance. Use `failed` for a confirmed failure or `uncertain` if the effect is unknown. Do not automatically replay an in-progress/uncertain action.

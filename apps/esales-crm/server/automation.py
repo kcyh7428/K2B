@@ -42,9 +42,11 @@ def validate_policy(policy):
     if policy['lead_days']!=1:raise ValueError('The verified advance reminder is one day before service end')
     for key in ('lead_template','due_template'):
         if not isinstance(policy[key],str) or not 1<=len(policy[key])<=600:raise ValueError('SMS text must be 1 to 600 characters')
+        allowed={'merchant','service_end'}
+        if key=='due_template':allowed.update(('payment_deadline_month','payment_deadline_day'))
         try:
             for _,name,spec,conversion in Formatter().parse(policy[key]):
-                if name is not None and (name not in ('merchant','service_end') or spec or conversion):raise ValueError('Only merchant and service_end placeholders are supported')
+                if name is not None and (name not in allowed or spec or conversion):raise ValueError('Unsupported SMS placeholder')
         except ValueError:raise ValueError('Invalid SMS placeholders') from None
     if policy['enabled'] and not policy['approved']:raise ValueError('Confirm timing and SMS text before enabling')
 
@@ -113,7 +115,14 @@ def plan_actions(store,today=None):
 
 
 def message_text(policy,slot,code,service_end):
-    return policy['lead_template' if slot=='lead' else 'due_template'].format(merchant=code,service_end=service_end)
+    template=policy['lead_template' if slot=='lead' else 'due_template']
+    values={'merchant':code,'service_end':service_end}
+    if '{payment_deadline_month}' in template or '{payment_deadline_day}' in template:
+        # Legacy Make expiry wording uses now + 3 days on the service-end day.
+        # This is message content, independent of the unused grace_days setting.
+        deadline=date.fromisoformat(service_end)+timedelta(days=3)
+        values.update(payment_deadline_month=deadline.strftime('%m'),payment_deadline_day=deadline.strftime('%d'))
+    return template.format(**values)
 
 
 def require_scheduled_day(row,policy):

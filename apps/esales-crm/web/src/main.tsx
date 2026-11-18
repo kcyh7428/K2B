@@ -1651,6 +1651,9 @@ function AutomationSettings() {
           <p className="hint">
             Use {"{merchant}"} and {"{service_end}"} as placeholders. Make sends
             the advance and expiry SMS using the e-sales service end date.
+            Use {"{payment_deadline_month}"} and {"{payment_deadline_day}"} in
+            the expiry SMS only, for the payment deadline three days
+            after service end.
             Merchant access is managed in e-sales.
           </p>
           <label className="check">
