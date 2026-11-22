@@ -623,25 +623,25 @@ def _classify_receipt(
 
 
 def _read_run_receipts(
-    state_root: Path, *, job_id: str, writer_role: str
-) -> tuple[str | None, str, str | None]:
-    """Return (last_completed_at, last_run_outcome, diagnostic)."""
+    state_root: Path, *, job_id: str, writer_role: str,
+) -> tuple[str | None, str, str | None, str | None]:
+    """Return the latest outcome and the latest classified completion time."""
     receipt_dir = state_root / RUN_RECEIPT_DIR
     # lstat before existence checks: a dangling or valid receipt-directory
     # symlink is unsafe unknown evidence, never a missing directory.
     try:
         dir_stat = _lstat(receipt_dir)
     except OSError:
-        return None, UNKNOWN, "run receipt directory is not readable"
+        return None, UNKNOWN, "run receipt directory is not readable", None
     if dir_stat is None:
-        return None, UNKNOWN, None
+        return None, UNKNOWN, None, None
     if stat.S_ISLNK(dir_stat.st_mode):
-        return None, UNKNOWN, "run receipt directory is a symlink"
+        return None, UNKNOWN, "run receipt directory is a symlink", None
     if not stat.S_ISDIR(dir_stat.st_mode):
-        return None, UNKNOWN, "run receipt directory is not a directory"
+        return None, UNKNOWN, "run receipt directory is not a directory", None
     dir_status, _ = _safe_dir(receipt_dir, state_root)
     if dir_status != "ok":
-        return None, UNKNOWN, "run receipt directory is not safely readable"
+        return None, UNKNOWN, "run receipt directory is not safely readable", None
     # Streaming scan with constant retained memory: os.scandir yields one
     # directory entry at a time (Path.iterdir would first materialize the
     # whole name list via os.listdir). Only the best validated candidate
@@ -653,10 +653,12 @@ def _read_run_receipts(
     # deleted or capped.
     best_valid: tuple[tuple[float, int, str], tuple] | None = None
     worst_unvalidated: tuple[tuple[float, str], str | None] | None = None
+    last_success: datetime | None = None
+    clock_skew = False
     try:
         with os.scandir(receipt_dir) as entries:
             for entry in entries:
-                if not entry.name.endswith(".json"):
+                if not entry.name.endswith(".json") or entry.name.startswith(".tmp_"):
                     continue
                 path = receipt_dir / entry.name
                 st = _lstat(path)
@@ -677,7 +679,13 @@ def _read_run_receipts(
                 attempt_at, finished_at, outcome, diagnostic = _classify_receipt(
                     data, job_id=job_id, writer_role=writer_role
                 )
-                if attempt_at is None:
+                # The receipt classifier uses _parse_timestamp, which either
+                # returns a timezone-aware UTC datetime or rejects the stamp.
+                now = datetime.now(timezone.utc)
+                if any(stamp is not None and stamp > now for stamp in (attempt_at, finished_at)):
+                    clock_skew = True
+                    continue
+                if attempt_at is None or outcome is None:
                     candidate = (
                         (mtime, path.name),
                         diagnostic or "newest run receipt is invalid",
@@ -685,7 +693,10 @@ def _read_run_receipts(
                     if worst_unvalidated is None or candidate[0] >= worst_unvalidated[0]:
                         worst_unvalidated = candidate
                     continue
-                rank = {"completed": 0, UNKNOWN: 1, "failed": 2}[outcome]
+                if (outcome == "completed" and finished_at is not None
+                        and (last_success is None or finished_at > last_success)):
+                    last_success = finished_at
+                rank = 0 if outcome == "completed" else 2 if outcome == "failed" else 1
                 candidate = (
                     (attempt_at.timestamp(), rank, path.name),
                     (finished_at, outcome, diagnostic),
@@ -693,25 +704,27 @@ def _read_run_receipts(
                 if best_valid is None or candidate[0] >= best_valid[0]:
                     best_valid = candidate
     except OSError:
-        return None, UNKNOWN, "run receipt directory is not readable"
+        return None, UNKNOWN, "run receipt directory is not readable", None
 
+    success_at = last_success.isoformat() if last_success else None
+    skew_warning = "run receipt timestamp is in the future; check the local clock" if clock_skew else None
     if best_valid is not None:
         if (
             worst_unvalidated is not None
             and worst_unvalidated[0][0] >= best_valid[0][0]
         ):
-            return None, UNKNOWN, worst_unvalidated[1] or (
-                "newer run receipt cannot be validated"
-            )
+            diagnostic = worst_unvalidated[1] or "newer run receipt cannot be validated"
+            return None, UNKNOWN, "; ".join(filter(None, (diagnostic, skew_warning))), success_at
         finished_at, outcome, diagnostic = best_valid[1]
+        if skew_warning:
+            diagnostic = "; ".join(filter(None, (diagnostic, skew_warning)))
         if outcome != "completed":
-            return None, outcome, diagnostic
-        return finished_at.isoformat() if finished_at else None, outcome, diagnostic
+            return None, outcome, diagnostic, success_at
+        return finished_at.isoformat() if finished_at else None, outcome, diagnostic, success_at
     if worst_unvalidated is not None:
-        return None, UNKNOWN, worst_unvalidated[1] or (
-            "newest run receipt cannot be validated"
-        )
-    return None, UNKNOWN, None
+        diagnostic = worst_unvalidated[1] or "newest run receipt cannot be validated"
+        return None, UNKNOWN, "; ".join(filter(None, (diagnostic, skew_warning))), success_at
+    return None, UNKNOWN, skew_warning, success_at
 
 
 # --- operator hold ---
@@ -765,10 +778,12 @@ def read_native_job_status(
     state_root = Path(state_root)
 
     registration_state, config, reg_diagnostic = _read_registration(job_id, root)
-    last_completed_at, last_run_outcome, receipt_diagnostic = _read_run_receipts(
-        state_root, job_id=job_id, writer_role=writer_role
-    )
     extraction_hold, hold_diagnostic = _read_hold(state_root)
+    last_completed_at, last_run_outcome, receipt_diagnostic, last_successful_at = (
+        _read_run_receipts(state_root, job_id=job_id, writer_role=writer_role)
+    )
+    last_success = _parse_timestamp(last_successful_at)
+    elapsed = (datetime.now(timezone.utc) - last_success).total_seconds() if last_success else None
 
     diagnostics = [
         message
@@ -782,6 +797,8 @@ def read_native_job_status(
         "configured_reasoning": config.get("reasoning_effort"),
         "schedule": config.get("rrule"),
         "last_completed_at": last_completed_at,
+        "last_successful_at": last_successful_at,
+        "last_successful_age_hours": round(elapsed / 3600, 1) if elapsed is not None and elapsed >= 0 else None,
         "last_run_outcome": last_run_outcome,
         "extraction_hold": extraction_hold,
         "diagnostic": "; ".join(diagnostics) or None,

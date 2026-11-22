@@ -165,6 +165,36 @@ def _receipt_dir(state: Path) -> Path:
     return receipt_dir
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_clock_skew_does_not_hide_later_genuine_success(tmp_path, failed):
+    state = tmp_path / "state"
+    now = datetime.now(timezone.utc)
+    future = (now + timedelta(days=1)).isoformat()
+    skewed_commands = {"memory_home_drain": {"status": "failed"}} if failed else None
+    _home_receipt(state, "skewed.json", started_at=future, finished_at=future, commands=skewed_commands)
+    degraded = native_job_status.read_native_job_status(writer_role="home", state_root=state)
+    assert degraded["last_run_outcome"] == "unknown"
+    assert degraded["last_successful_at"] is None
+
+    finished = (now - timedelta(seconds=30)).isoformat()
+    _home_receipt(state, "genuine.json", started_at=finished, finished_at=finished)
+    recovered = native_job_status.read_native_job_status(writer_role="home", state_root=state)
+    assert recovered["last_run_outcome"] == "completed"
+    assert recovered["last_successful_at"] == finished
+    assert "clock" in recovered["diagnostic"]
+
+
+def test_clock_skew_is_reported_alongside_invalid_receipt(tmp_path):
+    state = tmp_path / "state"
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    _home_receipt(state, "skewed.json", started_at=future, finished_at=future)
+    _home_receipt(state, "invalid.json", job_id="wrong-job")
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=state)
+    assert result["last_run_outcome"] == "unknown"
+    assert result["last_successful_at"] is None
+    assert "identity" in result["diagnostic"] and "clock" in result["diagnostic"]
+
+
 def _home_receipt(
     state: Path,
     name: str,
