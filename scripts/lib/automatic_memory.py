@@ -68,6 +68,10 @@ class ValidationError(ValueError):
     """An external bundle or envelope violates the durable contract."""
 
 
+class KeyKindCollisionError(ValidationError):
+    """A validated assertion requires an operator to distinguish its key."""
+
+
 class StateCorruptionError(RuntimeError):
     """Existing durable state is malformed and must not be overwritten."""
 
@@ -1069,7 +1073,10 @@ def apply_reviewed_envelope(memory_path: Path, envelope: object) -> dict:
                 key, {"kind": item["kind"], "versions": []}
             )
             if record["kind"] != item["kind"]:
-                raise ValidationError(f"memory key {key} cannot change kind")
+                if (key not in state["records"]
+                        or sum(other["key"] == key for other in bundle["items"]) != 1):
+                    raise ValidationError(f"delivery contains incompatible assertions for memory key {key}")
+                raise KeyKindCollisionError(f"memory key {key} cannot change kind")
             if any(existing["item_id"] == version["item_id"] for existing in record["versions"]):
                 duplicates += 1
                 continue

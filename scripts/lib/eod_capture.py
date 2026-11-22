@@ -3969,6 +3969,8 @@ def deliver_memory_outbox(
         "local_ack_failed": 0,
         "local_state_failed": 0,
     }
+    if limit == 0:
+        return summary
 
     def count_terminal_or_local_failure(
         delivery_id: str, *, local_failure: str
@@ -4144,14 +4146,21 @@ def record_memory_acknowledgement(
 MemoryTransport = Callable[[list[str], object | None], object]
 
 
+class SjmMemoryCommandError(RuntimeError):
+    """The SSH connection ran a command, but it returned an error."""
+
+
 def _default_sjm_memory_transport(
     args: list[str], input_payload: object | None = None
 ) -> object:
     if not args or not all(isinstance(arg, str) and "\x00" not in arg for arg in args):
         raise ValueError("SJM memory transport arguments are invalid")
     remote_command = (
-        f'exec "$HOME/{SJM_MEMORY_REMOTE_PYTHON_REL}" '
-        f'"$HOME/{SJM_MEMORY_REMOTE_COMMAND_REL}" {shlex.join(args)}'
+        f'"$HOME/{SJM_MEMORY_REMOTE_PYTHON_REL}" '
+        f'"$HOME/{SJM_MEMORY_REMOTE_COMMAND_REL}" {shlex.join(args)}; '
+        'k2b_remote_exit=$?; '
+        'if [ "$k2b_remote_exit" -eq 255 ]; then exit 254; fi; '
+        'exit "$k2b_remote_exit"'
     )
     command = [
         "/usr/bin/ssh",
@@ -4178,8 +4187,12 @@ def _default_sjm_memory_transport(
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ConnectionError("SJM memory transport is unavailable") from exc
-    if completed.returncode != 0:
+    if completed.returncode == 255:
         raise ConnectionError("SJM memory transport returned a nonzero status")
+    if completed.returncode != 0:
+        raise SjmMemoryCommandError(
+            f"SJM memory command returned exit status {completed.returncode}"
+        )
     if len(completed.stdout.encode("utf-8")) > MAX_MEMORY_TRANSPORT_STDOUT_BYTES:
         raise automatic_memory.ValidationError(
             "SJM memory transport exceeded its output limit"
@@ -4210,7 +4223,10 @@ def pull_sjm_memory(
         "failed": 0,
         "offline": 0,
         "delivery_ids": [],
+        "attempted": limit > 0,
     }
+    if limit == 0:
+        return summary
     list_args = [
         "memory-list-deliverable",
         "--writer-role",
@@ -4225,18 +4241,17 @@ def pull_sjm_memory(
     except (ConnectionError, TimeoutError, OSError):
         summary["offline"] = 1
         return summary
+    except SjmMemoryCommandError:
+        summary["failed"] = 1
+        return summary
     if (
         not isinstance(listing, dict)
         or listing.get("status") not in {"ready", "idle"}
         or not isinstance(listing.get("deliveries"), list)
     ):
-        raise automatic_memory.ValidationError(
-            "SJM delivery listing is malformed"
-        )
+        raise automatic_memory.ValidationError("SJM delivery listing is malformed")
     if len(listing["deliveries"]) > limit:
-        raise automatic_memory.ValidationError(
-            "SJM delivery listing exceeds requested limit"
-        )
+        raise automatic_memory.ValidationError("SJM delivery listing exceeds requested limit")
     for item in listing["deliveries"]:
         if (
             not isinstance(item, dict)
@@ -4288,6 +4303,9 @@ def pull_sjm_memory(
         except (ConnectionError, TimeoutError, OSError):
             summary["ack_failed"] += 1
             continue
+        except (SjmMemoryCommandError, automatic_memory.ValidationError):
+            summary["ack_failed"] += 1
+            continue
         if (
             not isinstance(recorded, dict)
             or recorded.get("status") != "accepted"
@@ -4327,73 +4345,177 @@ def drain_home_memory(
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError("memory drain limit must be from 1 through 1000")
 
-    local_delivery = deliver_memory_outbox(
-        state_root,
-        lambda envelope: accept_memory_envelope(
-            state_root, envelope, writer_role="home"
-        ),
-        limit=limit,
-        now=now,
-    )
-    sjm_delivery = (
-        pull_sjm_memory(
-            state_root,
-            writer_role="home",
-            transport_func=transport_func,
-            limit=limit,
-            now=now,
+    with _file_lock(state_root / ".home-drain.lock"):
+        return _drain_home_memory(
+            state_root, pull_sjm=pull_sjm, transport_func=transport_func, limit=limit,
+            now=now, memory_path=memory_path, publish=publish, vault_root=vault_root,
+            preflight=preflight, publisher_func=publisher_func,
         )
-        if pull_sjm
-        else {
-            "accepted": 0,
-            "duplicate_acceptances": 0,
-            "ack_failed": 0,
-            "failed": 0,
-            "offline": 0,
-            "delivery_ids": [],
-        }
+
+
+def _unreconciled_deliveries(state_root: Path) -> list[Path]:
+    reconciled = {path.name for path in (state_root / "reconciliation").glob("delivery:*.json")}
+    return sorted(
+        path for path in (state_root / "acceptance").glob("delivery:*.json")
+        if path.name not in reconciled
     )
 
+
+def _reconciliation_diagnostic_path(state_root: Path, acceptance_path: Path) -> Path:
+    path = state_root / "reconciliation-diagnostics" / acceptance_path.name
+    if path.parent.is_symlink() or path.is_symlink():
+        raise automatic_memory.StateCorruptionError("unsafe reconciliation diagnostic path")
+    return path
+
+
+def _load_accepted_memory_delivery(state_root: Path, delivery_id: str) -> dict:
+    if automatic_memory.DELIVERY_ID_RE.fullmatch(delivery_id) is None:
+        raise automatic_memory.ValidationError("invalid Home delivery identity")
+    receipt_path = state_root / "acceptance" / f"{delivery_id}.json"
+    if (receipt_path.parent.is_symlink() or receipt_path.is_symlink()
+            or (state_root / "inbox").is_symlink()
+            or (state_root / "inbox" / receipt_path.name).is_symlink()):
+        raise automatic_memory.StateCorruptionError("unsafe accepted delivery path")
+    envelope = automatic_memory.load_home_envelope(state_root, delivery_id)
+    receipt = _read_memory_json(receipt_path, "Home acceptance receipt")
+    if (envelope["delivery_id"] != delivery_id
+            or receipt != {"schema_version": 1, "delivery_id": delivery_id,
+                           "content_id": envelope["content_id"], "status": "accepted_not_reconciled"}
+            or type(receipt["schema_version"]) is not int):
+        raise automatic_memory.StateCorruptionError("Home acceptance receipt does not match inbox")
+    return envelope
+
+
+def _reconciliation_conflict_unchanged(state_root: Path, target: Path,
+                                       acceptance_path: Path, diagnostic: Path) -> bool:
+    if not diagnostic.exists():
+        return False
+
+    import automatic_memory_key_resolution
+
+    envelope = _load_accepted_memory_delivery(state_root, acceptance_path.stem)
+    saved = _read_memory_json(diagnostic, "reconciliation diagnostic")
+    target_identity = hashlib.sha256(str(target.resolve()).encode()).hexdigest()
+    resolution_digest = saved.get("key_resolution_sha256")
+    expected = {
+        "schema_version": 1, "reason": "key_kind_collision",
+        "delivery_id": envelope["delivery_id"], "content_id": envelope["content_id"],
+        "memory_target_sha256": target_identity, "key_resolution_sha256": resolution_digest,
+    }
+    if (saved != expected or type(saved["schema_version"]) is not int
+            or resolution_digest is not None and (
+                not isinstance(resolution_digest, str)
+                or automatic_memory.HEX_64_RE.fullmatch(resolution_digest) is None
+            )):
+        raise automatic_memory.StateCorruptionError("reconciliation diagnostic does not match its delivery")
+    if not target.is_file():
+        raise automatic_memory.StateCorruptionError("memory store for reconciliation diagnostic is missing")
+    _, current_digest = automatic_memory_key_resolution.effective(
+        state_root, envelope, memory_path=target,
+    )
+    return current_digest == resolution_digest
+
+
+def _drain_home_memory(
+    state_root: Path, *, pull_sjm: bool, transport_func: MemoryTransport | None,
+    limit: int, now: str | None, memory_path: Path | None, publish: bool,
+    vault_root: Path | None, preflight: Callable[[Path], dict] | None,
+    publisher_func: Callable[..., dict] | None,
+) -> dict:
+    target = (memory_path or state_root / "memory.json").expanduser()
+    automatic_memory.memory_snapshot(target)
+    pending_at_start = _unreconciled_deliveries(state_root)
+    initially_pending = set(pending_at_start)
+    replay_paths = sorted(
+        path for path in (state_root / "acceptance").glob("delivery:*.json")
+        if path not in initially_pending
+    )
+    attempts = 0
     reconciled = 0
-    replayed = 0
-    acceptance_paths = sorted((state_root / "acceptance").glob("delivery:*.json"))
-    pending_paths = [
-        path
-        for path in acceptance_paths
-        if not (state_root / "reconciliation" / path.name).exists()
-    ]
-    replay_paths = [path for path in acceptance_paths if path not in pending_paths]
-    selected_paths = [*pending_paths, *replay_paths][:limit]
-    for acceptance_path in selected_paths:
-        result = reconcile_memory_delivery(
-            state_root,
-            acceptance_path.stem,
-            writer_role="home",
-            memory_path=memory_path,
-        )
-        if result["duplicate"]:
-            replayed += 1
-        else:
-            reconciled += 1
+    conflicts: set[Path] = set()
 
+    def reconcile_pending(paths: list[Path]) -> None:
+        nonlocal attempts, reconciled
+        for path in paths:
+            diagnostic = _reconciliation_diagnostic_path(state_root, path)
+            if (attempts >= limit and diagnostic.exists()
+                    or _reconciliation_conflict_unchanged(state_root, target, path, diagnostic)):
+                conflicts.add(path)
+                continue
+            if attempts >= limit:
+                continue
+            attempts += 1
+            try:
+                result = reconcile_memory_delivery(
+                    state_root, path.stem, writer_role="home", memory_path=target,
+                )
+            except automatic_memory.KeyKindCollisionError as exc:
+                _atomic_write_json(diagnostic, exc.diagnostic)
+                conflicts.add(path)
+            else:
+                reconciled += int(not result["duplicate"])
+
+    reconcile_pending(pending_at_start)
+    # Already accepted work is attempted first, so an existing conflict
+    # prevents admissions on this run as well as on later runs.
+    remaining = 0 if conflicts else max(0, limit - attempts)
+    local_limit = (remaining + 1) // 2 if pull_sjm else remaining
+
+    def accept_local(envelope: dict) -> dict:
+        return accept_memory_envelope(state_root, envelope, writer_role="home")
+
+    local_delivery = deliver_memory_outbox(
+        state_root, accept_local, limit=local_limit, now=now,
+    )
+    remaining = 0 if conflicts else max(0, limit - attempts - len(_unreconciled_deliveries(state_root)))
+    sjm_delivery = pull_sjm_memory(
+        state_root, writer_role="home", transport_func=transport_func,
+        limit=remaining if pull_sjm else 0, now=now,
+    )
+    pending_paths = _unreconciled_deliveries(state_root)
+    remaining = 0 if conflicts else max(0, limit - attempts - len(pending_paths))
+    # A failed local attempt leaves spare capacity for a later run. Avoid
+    # reattempting a possibly unacknowledged local delivery in the same run.
+    if pull_sjm and local_limit and local_delivery["accepted"] == local_limit and remaining:
+        rollover = deliver_memory_outbox(state_root, accept_local, limit=remaining, now=now)
+        for field, count in rollover.items():
+            local_delivery[field] += count
+        pending_paths = _unreconciled_deliveries(state_root)
+
+    reconcile_pending([path for path in pending_paths if path not in initially_pending])
+    replayed = 0
+    for path in replay_paths[:limit - attempts]:
+        reconcile_memory_delivery(state_root, path.stem, writer_role="home", memory_path=target)
+        replayed += 1
+
+    remaining_paths = set(_unreconciled_deliveries(state_root))
+    unreconciled_remaining = len(remaining_paths)
+    conflicts.intersection_update(remaining_paths)
     publication: object = "disabled"
     if publish:
         if vault_root is None:
             raise ValueError("memory publication requires an explicit vault root")
-        publication = publish_memory_state(
-            memory_state_path=memory_path or state_root / "memory.json",
-            state_root=state_root,
-            vault_root=vault_root,
-            writer_role="home",
-            preflight=preflight,
-            publisher_func=publisher_func,
-        )
+        if unreconciled_remaining:
+            publication = {"status": "not_attempted", "reason": (
+                "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
+            )}
+        else:
+            publication = publish_memory_state(
+                memory_state_path=memory_path or state_root / "memory.json",
+                state_root=state_root,
+                vault_root=vault_root,
+                writer_role="home",
+                preflight=preflight,
+                publisher_func=publisher_func,
+            )
     return {
-        "status": "reconciled" if reconciled or replayed else "idle",
+        "status": "needs_attention" if conflicts else "reconciled" if reconciled or replayed else "idle",
         "local_delivery": local_delivery,
         "sjm_delivery": sjm_delivery,
         "reconciled": reconciled,
         "replayed": replayed,
+        "unreconciled_remaining": unreconciled_remaining,
+        "reconciliation_conflicts": len(conflicts),
         "publication": publication,
     }
 
@@ -4448,7 +4570,7 @@ def reconcile_memory_delivery(
     ).hexdigest()
     receipt_path = home_root / "reconciliation" / f"{delivery_id}.json"
     with _file_lock(home_root / ".reconciliation.lock"):
-        envelope = automatic_memory.load_home_envelope(home_root, delivery_id)
+        envelope = _load_accepted_memory_delivery(home_root, delivery_id)
         import automatic_memory_key_resolution
         effective_envelope, resolution_hash = automatic_memory_key_resolution.effective(home_root, envelope, memory_path=target)
         resolution_binding = ({"key_resolution_sha256": resolution_hash} if resolution_hash else {})
@@ -4499,7 +4621,15 @@ def reconcile_memory_delivery(
                 "duplicate": True,
                 "repair_applied": verification["applied"],
             }
-        result = automatic_memory.apply_reviewed_envelope(target, effective_envelope)
+        try:
+            result = automatic_memory.apply_reviewed_envelope(target, effective_envelope)
+        except automatic_memory.KeyKindCollisionError as exc:
+            exc.diagnostic = {
+                "schema_version": 1, "reason": "key_kind_collision",
+                "delivery_id": delivery_id, "content_id": envelope["content_id"],
+                "memory_target_sha256": target_identity, "key_resolution_sha256": resolution_hash,
+            }
+            raise
         receipt = {
             "schema_version": 1,
             "delivery_id": delivery_id,

@@ -4380,7 +4380,7 @@ def test_default_sjm_transport_is_fixed_quoted_noninteractive_and_bounded(
         command[6],
     ]
     assert len(command) == 7
-    assert command[6].startswith('exec "$HOME/Projects/K2B/venv/washing-machine/bin/python"')
+    assert command[6].startswith('"$HOME/Projects/K2B/venv/washing-machine/bin/python"')
     assert '"$HOME/Projects/K2B/scripts/eod-capture.py"' in command[6]
     assert "'value with spaces; false'" in command[6]
     assert calls[0]["timeout"] == eod_capture.DEFAULT_MEMORY_TRANSPORT_TIMEOUT_SECONDS
@@ -4395,6 +4395,121 @@ def test_default_sjm_transport_is_fixed_quoted_noninteractive_and_bounded(
     monkeypatch.setattr(eod_capture.subprocess, "run", oversized)
     with pytest.raises(ValueError, match="output limit"):
         eod_capture._default_sjm_memory_transport(["memory-list-deliverable"])
+
+
+def test_sjm_remote_exit_255_is_not_an_ssh_transport_error(tmp_path, monkeypatch):
+    real_run = subprocess.run
+    remote_python = tmp_path / eod_capture.SJM_MEMORY_REMOTE_PYTHON_REL
+    remote_python.parent.mkdir(parents=True)
+    remote_python.write_text("#!/bin/sh\nexit 255\n")
+    remote_python.chmod(0o700)
+
+    def run_over_synthetic_ssh(command, **kwargs):
+        return real_run(["/bin/sh", "-c", command[-1]], env={"HOME": str(tmp_path)}, **kwargs)
+
+    monkeypatch.setattr(eod_capture.subprocess, "run", run_over_synthetic_ssh)
+    with pytest.raises(eod_capture.SjmMemoryCommandError, match="exit status 254"):
+        eod_capture._default_sjm_memory_transport(["memory-list-deliverable"])
+
+
+def test_key_kind_collision_pauses_intake_and_resumes_after_reviewed_resolution(tmp_path):
+    from test_automatic_memory import _bundle
+    import automatic_memory_key_resolution as resolution
+    from automatic_memory_publisher import _reconciliation_watermark
+
+    state = tmp_path / "home"
+    target = state / "memory.json"
+    anchor = automatic_memory.make_envelope(_bundle(session_id="anchor"))
+    automatic_memory.accept_home_envelope(state, anchor)
+    eod_capture.reconcile_memory_delivery(state, anchor["delivery_id"], writer_role="home")
+    conflict = automatic_memory.make_envelope(_bundle(session_id="conflict", kind="preference"))
+    automatic_memory.accept_home_envelope(state, conflict)
+    for session in ("first", "last"):
+        bundle = _bundle(session_id=session, key=f"fact.{session}")
+        automatic_memory.accept_home_envelope(state, automatic_memory.make_envelope(bundle))
+    automatic_memory.enqueue_bundle(state, _bundle(session_id="queued", key="fact.queued"))
+
+    first = eod_capture.drain_home_memory(
+        state, writer_role="home", publish=True, vault_root=tmp_path / "vault",
+    )
+    assert first["status"] == "needs_attention"
+    assert first["reconciled"] == 2
+    assert first["local_delivery"]["accepted"] == 0
+    assert first["unreconciled_remaining"] == 1
+    assert first["publication"] == {"status": "not_attempted", "reason": "reconciliation_needs_attention"}
+    diagnostic = state / "reconciliation-diagnostics" / (conflict["delivery_id"] + ".json")
+    assert diagnostic.is_file()
+    assert not (state / "reconciliation" / diagnostic.name).exists()
+    assert diagnostic.stat().st_mode & 0o777 == 0o600
+    untouched = diagnostic.stat().st_mtime_ns
+    assert automatic_memory.load_home_envelope(state, conflict["delivery_id"])["content_id"] == conflict["content_id"]
+    with pytest.raises(ValueError, match="no valid reconciliation receipt"):
+        _reconciliation_watermark(state, target, automatic_memory.memory_snapshot(target))
+
+    second = eod_capture.drain_home_memory(state, writer_role="home")
+    assert second["status"] == "needs_attention"
+    assert second["local_delivery"]["accepted"] == 0
+    assert diagnostic.stat().st_mtime_ns == untouched
+
+    planned = resolution.plan(state, conflict["delivery_id"], "fact.office", "Reviewed distinction")
+    resolution.record(state, planned, writer_role="home",
+                      expected_sha256=hashlib.sha256(automatic_memory._canonical_json(planned)).hexdigest())
+    fixed = eod_capture.drain_home_memory(state, writer_role="home")
+    assert fixed["unreconciled_remaining"] == 0
+    assert conflict["delivery_id"] in _reconciliation_watermark(
+        state, target, automatic_memory.memory_snapshot(target)
+    )
+
+
+def test_inbox_corruption_stops_drain_without_isolating_the_delivery(tmp_path):
+    from test_automatic_memory import _bundle
+
+    state = tmp_path / "home"
+    bad = automatic_memory.make_envelope(_bundle())
+    automatic_memory.accept_home_envelope(state, bad)
+    (state / "inbox" / (bad["delivery_id"] + ".json")).write_text("{broken")
+    with pytest.raises(automatic_memory.StateCorruptionError):
+        eod_capture.drain_home_memory(state, writer_role="home")
+    assert not (state / "reconciliation-diagnostics").exists()
+
+
+def test_sjm_bad_ack_keeps_durable_acceptance_available_for_reconciliation(tmp_path):
+    from test_automatic_memory import _bundle
+
+    sjm = tmp_path / "sjm"
+    home = tmp_path / "home"
+    automatic_memory.enqueue_bundle(sjm, _bundle())
+    base_transport = _fake_sjm_transport(sjm)
+
+    def bad_ack(args, payload):
+        if args[0] == "memory-record-ack":
+            raise automatic_memory.ValidationError("SJM returned malformed JSON")
+        return base_transport(args, payload)
+
+    first = eod_capture.drain_home_memory(
+        home, writer_role="home", pull_sjm=True, transport_func=bad_ack,
+    )
+    assert first["sjm_delivery"]["ack_failed"] == 1
+    assert first["reconciled"] == 1
+    assert first["unreconciled_remaining"] == 0
+
+    followup = eod_capture.drain_home_memory(
+        home, writer_role="home", pull_sjm=True, transport_func=base_transport,
+    )
+    assert followup["sjm_delivery"]["duplicate_acceptances"] == 1
+    assert followup["reconciled"] == 0
+
+
+@pytest.mark.parametrize("response", [
+    {"status": "idle", "deliveries": "invalid"},
+    {"status": "ready", "deliveries": [{}, {}]},
+])
+def test_sjm_invalid_listings_remain_explicit_contract_failures(tmp_path, response):
+    with pytest.raises(automatic_memory.ValidationError, match="listing"):
+        eod_capture.pull_sjm_memory(
+            tmp_path, writer_role="home", limit=1,
+            transport_func=lambda _args, _payload: response,
+        )
 
 
 def test_home_drain_reconciles_local_and_injected_sjm_sources_without_publish(
@@ -4452,6 +4567,45 @@ def test_home_drain_reconciles_local_and_injected_sjm_sources_without_publish(
     assert result["publication"] == "disabled"
     snapshot = automatic_memory.memory_snapshot(home / "memory.json")
     assert len(snapshot["records"]) == 2
+
+
+@pytest.mark.parametrize("start_pending", [0, 25])
+def test_home_drain_caps_combined_admission_and_uses_pending_capacity(tmp_path, start_pending):
+    from test_automatic_memory import _bundle
+
+    home = tmp_path / "home"
+    sjm = tmp_path / "sjm"
+    for idx in range(start_pending):
+        bundle = _bundle(session_id=f"accepted-{idx}", key=f"fact.accepted.{idx}")
+        automatic_memory.accept_home_envelope(home, automatic_memory.make_envelope(bundle))
+    for state, host in ((home, "home"), (sjm, "sjm")):
+        for idx in range(15):
+            bundle = _bundle(host_id=host, session_id=f"{host}-{idx}", key=f"fact.{host}.{idx}")
+            automatic_memory.enqueue_bundle(state, bundle)
+
+    result = eod_capture.drain_home_memory(
+        home, writer_role="home", pull_sjm=True,
+        transport_func=_fake_sjm_transport(sjm), limit=24,
+    )
+
+    assert result["reconciled"] == 24
+    assert result["unreconciled_remaining"] == max(0, start_pending - 24)
+    expected = 0 if start_pending else 12
+    assert result["local_delivery"]["accepted"] == expected
+    assert result["sjm_delivery"]["accepted"] == expected
+
+    if start_pending:
+        from automatic_memory_publisher import _reconciliation_watermark
+        target = home / "memory.json"
+        with pytest.raises(ValueError, match="no valid reconciliation receipt"):
+            _reconciliation_watermark(home, target, automatic_memory.memory_snapshot(target))
+    else:
+        followup = eod_capture.drain_home_memory(
+            home, writer_role="home", pull_sjm=True,
+            transport_func=_fake_sjm_transport(sjm), limit=24,
+        )
+        assert followup["reconciled"] == 6
+        assert followup["unreconciled_remaining"] == 0
 
 
 def test_home_drain_advances_past_reconciled_receipts_with_bounded_limit(
