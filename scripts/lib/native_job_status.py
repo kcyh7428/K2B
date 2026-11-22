@@ -66,7 +66,7 @@ COMMAND_OK_STATUSES = {
     # counts on the same command are still checked after the status.
     "memory_worklist": {"idle", "ready_with_exceptions"},
     "memory_record_extraction": {"queued", "reviewed_empty"},
-    "memory_home_drain": {"reconciled"},
+    "memory_home_drain": {"reconciled", "idle"},
     "memory_publish": {"published", "not_attempted"},
 }
 COMMAND_NONTERMINAL_STATUSES = {"ready"}
@@ -76,7 +76,14 @@ EXCEPTION_COUNT_FIELDS = ("needs_attention", "retry_backoff", "exhausted")
 # Bounded schema-v1 exception object shapes. Free-text fields (reason,
 # work_id) are validated for shape and never returned.
 EXCEPTION_RETRY_STATUSES = {"resolved_with_reviewed_empty"}
-EXCEPTION_HOLD_TYPES = {"input_budget_exceeded"}
+EXCEPTION_HOLD_TYPES = {
+    "input_budget_exceeded", "item_count_exceeded", "quota_exhausted",
+    "persistent_failure", "ambiguous_proposal_binding", "repeated_selection",
+}
+# Job-wide holds can occur before a turn is selected. Source-specific holds
+# continue to require a work ID; status readers never expose these IDs.
+HOLDS_WITH_OPTIONAL_WORK_ID = {"quota_exhausted", "persistent_failure", "repeated_selection"}
+WORKLIST_STOP_OUTCOMES = {"blocked", "needs_attention", "waiting_retry"}
 MAX_EXCEPTION_ITEMS = 32
 MAX_READ_BYTES = 64 * 1024
 
@@ -398,6 +405,10 @@ def _classify_exception(item: object) -> str | None:
         if item.get("type") not in EXCEPTION_HOLD_TYPES:
             return None
         work_id = item.get("work_id")
+        if work_id is None and item["type"] in HOLDS_WITH_OPTIONAL_WORK_ID:
+            # None rejects the whole exception as malformed. It cannot be
+            # ignored and accidentally let a run grade completed.
+            return "action" if action_required else None
         if not isinstance(work_id, str) or not work_id:
             return None
         # A held receipt exception is unresolved evidence even without an
@@ -457,9 +468,88 @@ def _classify_receipt(
     diagnostics: list[str] = []
     if legacy_schema:
         diagnostics.append("legacy string schema normalized for reading")
+    if writer_role != "home" and "memory_home_drain" in commands:
+        return None, None, None, "only a Home run can record the Home drain command"
+    drain = commands.get("memory_home_drain")
+    sjm_pull = commands.get("memory_sjm_pull")
+    explicit_local_count = isinstance(drain, dict) and "local_failed" in drain
+    local_failed = drain["local_failed"] if explicit_local_count else None
+    if explicit_local_count and (type(local_failed) is not int or local_failed < 0):
+        return None, None, None, "run receipt Home delivery counts are malformed"
+    has_sjm_pull = "memory_sjm_pull" in commands
+    # Legacy receipts can use local_failed alone. Both counters without a
+    # separate pull still prove the local outcome, but cannot attest SJM.
+    missing_sjm = explicit_local_count and "failed" in drain and not has_sjm_pull
+    if missing_sjm:
+        diagnostics.append("SJM transfer was not recorded")
+    if local_failed:
+        diagnostics.append("Home drain reported local delivery failures")
+    graded_drain = {**drain, "failed": local_failed} if explicit_local_count else drain
+    if has_sjm_pull:
+        if writer_role != "home":
+            return None, None, None, "only a Home run can record the SJM pull command"
+        if (not isinstance(drain, dict) or not isinstance(sjm_pull, dict)
+                or not {"status", "failed", "offline"} <= sjm_pull.keys()
+                or any(type(sjm_pull[key]) is not int or sjm_pull[key] < 0
+                       for key in ("failed", "offline"))):
+            return None, None, None, "run receipt SJM transfer is malformed"
+        # Only the writer that explicitly supplies both counts attests
+        # that all three values describe the same drain invocation.
+        if explicit_local_count:
+            failed = drain.get("failed")
+            if type(failed) is not int or failed != local_failed + sjm_pull["failed"]:
+                return None, None, None, "run receipt Home delivery counts conflict"
+        if sjm_pull["failed"] and sjm_pull["offline"]:
+            # A pull may report a connection wait alongside known errors.
+            # The failed count still takes priority when grading the run.
+            expected_statuses = ("failed", "waiting")
+        elif sjm_pull["failed"]:
+            expected_statuses = ("failed",)
+        elif sjm_pull["offline"]:
+            expected_statuses = ("waiting",)
+        else:
+            expected_statuses = ("completed", "not_attempted", UNKNOWN)
+        if not isinstance(sjm_pull["status"], str) or sjm_pull["status"] not in expected_statuses:
+            return None, None, None, "run receipt SJM transfer status conflicts with its counts"
+    drain_status = drain.get("status") if isinstance(drain, dict) else None
+    conflicts = drain.get("reconciliation_conflicts", 0) if isinstance(drain, dict) else 0
+    remaining = None
+    if has_sjm_pull and explicit_local_count and not {"reconciliation_conflicts", "unreconciled_remaining"} <= drain.keys():
+        return None, None, None, "run receipt is missing Home reconciliation counts"
+    if (type(conflicts) is not int or conflicts < 0
+            or (conflicts and drain_status != "needs_attention")
+            or (has_sjm_pull and drain_status == "needs_attention" and not conflicts)):
+        return None, None, None, "run receipt reconciliation conflict evidence is malformed"
+    if isinstance(drain, dict) and "unreconciled_remaining" in drain:
+        remaining = drain["unreconciled_remaining"]
+        if type(remaining) is not int or remaining < conflicts:
+            return None, None, None, "run receipt reconciliation backlog evidence is malformed"
+    publication_command = commands.get("memory_publish")
+    publication_reason = publication_command.get("reason") if isinstance(publication_command, dict) else None
+    if writer_role == "home" and not conflicts and not remaining and publication_reason in (
+        "reconciliation_needs_attention", "unreconciled_backlog_remaining",
+    ):
+        return None, None, None, "run receipt publication deferral has no verified backlog"
+    if conflicts or remaining:
+        # "reconciled" can describe progress in a bounded drain. Pending
+        # deliveries still prevent publication and leave the run waiting.
+        deferral = "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
+        if (not isinstance(publication_command, dict)
+                or publication_command.get("status") not in ("failed", "not_attempted")
+                or (publication_command.get("status") == "not_attempted"
+                    and publication_reason != deferral)):
+            return None, None, None, "run receipt publication conflicts with unresolved reconciliation"
     saw_terminal = False
     verdict = "ok"
     for name, command in commands.items():
+        if name == "memory_sjm_pull":
+            # Validated above and graded separately below. Offline must not
+            # make an otherwise completed Home command sequence ambiguous.
+            continue
+        # The aggregate keeps old readers compatible. Grade Home using the
+        # validated local count before evaluating either command shape.
+        if name == "memory_home_drain" and writer_role == "home":
+            command = graded_drain
         if name not in COMMAND_OK_STATUSES:
             # Unknown commands cannot prove success, but explicit failure
             # evidence on them still fails the run.
@@ -475,7 +565,11 @@ def _classify_receipt(
             saw_terminal = True
         elif verdict != "failed":
             status = command.get("status") if isinstance(command, dict) else None
-            if status not in COMMAND_NONTERMINAL_STATUSES:
+            explicitly_stopped = (
+                (name == "memory_worklist" and status in WORKLIST_STOP_OUTCOMES)
+                or (name == "memory_home_drain" and writer_role == "home" and status == "needs_attention")
+            )
+            if status not in COMMAND_NONTERMINAL_STATUSES and not explicitly_stopped:
                 verdict = "ambiguous"
     worklist = commands.get("memory_worklist")
     extraction = commands.get("memory_record_extraction")
@@ -513,7 +607,6 @@ def _classify_receipt(
         outcome = "failed"
     elif not saw_terminal or verdict == "ambiguous":
         outcome = UNKNOWN
-        diagnostics.append("run outcome is ambiguous")
     else:
         outcome = "completed"
 
@@ -552,10 +645,6 @@ def _classify_receipt(
             return None, None, None, f"run receipt {key} is malformed"
         if value is True:
             diagnostics.append("run created an operator hold")
-    for key in ("hold_check",):
-        value = data.get(key)
-        if value is not None and not isinstance(value, str):
-            return None, None, None, f"run receipt {key} is malformed"
 
     # Reconciliation metadata is the existing bounded string (e.g. SJM's
     # "not_run_sjm") or a bounded object from the reconciliation outcome
@@ -617,7 +706,77 @@ def _classify_receipt(
                 outcome = "failed"
                 diagnostics.append("run receipt publication failed")
 
+    if sjm_pull is not None:
+        if sjm_pull["failed"]:
+            diagnostics.append("SJM transfer failed")
+            outcome = "failed"
+        if sjm_pull["offline"]:
+            diagnostics.append("SJM transfer waiting for a connection")
+        if sjm_pull["status"] == UNKNOWN:
+            diagnostics.append("SJM transfer attempt could not be verified")
+
+    worklist_status = worklist.get("status") if isinstance(worklist, dict) else None
+    worklist_stopped = isinstance(worklist_status, str) and worklist_status in WORKLIST_STOP_OUTCOMES
+    hold_check = data.get("hold_check")
+    if "hold_check" not in data:
+        # Only the split writer guarantees a hold check. Keep already
+        # verified historical successes from older receipt shapes readable.
+        if has_sjm_pull:
+            diagnostics.append("split run receipt is missing its extraction hold observation")
+            hold_check = UNKNOWN
+    elif not isinstance(hold_check, str) or hold_check not in ("absent", "present", UNKNOWN):
+        diagnostics.append("run receipt hold_check value is malformed")
+        hold_check = UNKNOWN
+    if hold_check == "present":
+        diagnostics.append("extraction held")
+    if ((hold_check == "present" or missing_sjm) and drain_status == "reconciled"
+            and not _command_failure_evidence(graded_drain)):
+        diagnostics.append("Home reconciliation completed")
+    if hold_check == "present":
+        if (writer_role == "home" and isinstance(publication_command, dict)
+                and publication_command.get("status") == "published"
+                and not _command_failure_evidence(publication_command)):
+            diagnostics.append("Home publication completed")
+    idle_backlog_unverified = drain_status == "idle" and remaining is None
+    if idle_backlog_unverified:
+        diagnostics.append("idle Home drain did not verify its remaining backlog")
+    drain_needs_attention = drain_status == "needs_attention"
+    if drain_needs_attention:
+        diagnostics.append(
+            "Home reconciliation is waiting for operator resolution" if conflicts
+            else "Home reconciliation needs attention; conflict count was not reported"
+        )
+    if outcome != "failed":
+        if worklist_stopped and outcome in (UNKNOWN, "completed"):
+            # Keep the exact known extraction stop. Home conflicts are
+            # reported independently in the operator diagnostic above.
+            outcome = worklist_status
+        elif drain_needs_attention:
+            outcome = "needs_attention"
+        elif hold_check == "present" and outcome in (UNKNOWN, "completed"):
+            outcome = "blocked"
+        elif outcome == "completed" and sjm_pull is not None and sjm_pull["status"] == UNKNOWN:
+            outcome = "needs_attention"
+        elif outcome == "completed" and (
+            isinstance(sjm_pull, dict) and sjm_pull["status"] == "waiting"
+            or publication_reason == "unreconciled_backlog_remaining"
+        ):
+            outcome = "waiting"
+        elif outcome in (UNKNOWN, "completed") and (idle_backlog_unverified or missing_sjm):
+            outcome = "needs_attention"
+    if hold_check == UNKNOWN:
+        # An unverifiable hold requires attention even when other evidence
+        # explains why this batch stopped.
+        if outcome != "failed":
+            outcome = "needs_attention"
+        diagnostics.append("extraction hold could not be verified")
+    if worklist_status == "blocked" and hold_check == "absent":
+        diagnostics.append("extraction hold changed after the worklist check")
+    if outcome == UNKNOWN:
+        diagnostics.append("run outcome is ambiguous")
     if outcome != "completed":
+        # The second tuple element is success evidence, not the attempt's
+        # finish time. attempt_at preserves date/order even when unverified.
         return attempt_at, None, outcome, "; ".join(diagnostics) or None
     return attempt_at, finished, outcome, "; ".join(diagnostics) or None
 

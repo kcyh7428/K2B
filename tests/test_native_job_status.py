@@ -208,6 +208,7 @@ def _home_receipt(
     exceptions: object | None = None,
     user_action_required: object = False,
     publication: object = _UNSET,
+    hold_check: object = _UNSET,
 ) -> Path:
     if commands is None:
         commands = {
@@ -236,6 +237,8 @@ def _home_receipt(
     }
     if publication is not _UNSET:
         data["publication"] = publication
+    if hold_check is not _UNSET:
+        data["hold_check"] = hold_check
     path = _receipt_dir(state) / name
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
@@ -274,6 +277,219 @@ def _sjm_receipt(
     path = _receipt_dir(state) / name
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("outcome", ("blocked", "needs_attention", "waiting_retry"))
+@pytest.mark.parametrize("hold", ("absent", "present", "unknown"))
+def test_sjm_worklist_stop_is_not_ambiguous(tmp_path, outcome, hold):
+    receipt = _sjm_receipt(tmp_path, "run.json", worklist_status=outcome)
+    data = json.loads(receipt.read_text())
+    data["hold_check"] = hold
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(
+        writer_role="sjm-source-only", state_root=tmp_path,
+    )
+    assert result["last_run_outcome"] == ("needs_attention" if hold == "unknown" else outcome)
+    diagnostic = result["diagnostic"] or ""
+    if hold == "present":
+        assert "extraction held" in diagnostic
+    elif hold == "unknown":
+        assert "extraction hold could not be verified" in diagnostic
+    assert "run outcome is ambiguous" not in diagnostic
+
+
+def test_partial_home_reconciliation_waits_for_publication(tmp_path):
+    commands = {
+        "memory_home_drain": {"status": "reconciled", "unreconciled_remaining": 2},
+        "memory_publish": {"status": "not_attempted", "reason": "unreconciled_backlog_remaining"},
+    }
+    path = _home_receipt(tmp_path, "run.json", commands=commands)
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "waiting"
+    assert result["last_successful_at"] is None
+
+    commands["memory_publish"] = {"status": "published"}
+    _home_receipt(tmp_path, path.name, commands=commands)
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "unknown"
+    assert "unresolved reconciliation" in result["diagnostic"]
+
+
+@pytest.mark.parametrize(("omitted", "outcome", "message"), [
+    ("memory_sjm_pull", "needs_attention", "SJM transfer was not recorded"),
+    ("reconciliation_conflicts", "unknown", "missing Home reconciliation counts"),
+    ("unreconciled_remaining", "unknown", "missing Home reconciliation counts"),
+])
+def test_home_receipt_with_local_failures_field_requires_complete_evidence(tmp_path, omitted, outcome, message):
+    drain = {"status": "reconciled", "failed": 0, "local_failed": 0,
+             "reconciliation_conflicts": 0, "unreconciled_remaining": 0}
+    commands = {
+        "memory_home_drain": drain,
+        "memory_sjm_pull": {"status": "not_attempted", "failed": 0, "offline": 0},
+        "memory_publish": {"status": "published"},
+    }
+    (commands if omitted == "memory_sjm_pull" else drain).pop(omitted)
+    receipt = _home_receipt(tmp_path, "run.json", commands=commands)
+    data = json.loads(receipt.read_text())
+    data["hold_check"] = "absent"
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == outcome
+    assert message in result["diagnostic"]
+    if omitted == "memory_sjm_pull":
+        assert "Home reconciliation completed" in result["diagnostic"]
+
+
+@pytest.mark.parametrize("worklist_stop", ["blocked", "needs_attention", "waiting_retry"])
+def test_worklist_stop_with_home_conflict_and_hold_keeps_both_diagnostics(tmp_path, worklist_stop):
+    receipt = _home_receipt(tmp_path, "run.json", commands={
+        "memory_worklist": {"status": worklist_stop, "selected": 0},
+        "memory_home_drain": {"status": "needs_attention", "reconciliation_conflicts": 1,
+                              "unreconciled_remaining": 1},
+        "memory_publish": {"status": "not_attempted", "reason": "reconciliation_needs_attention"},
+    })
+    data = json.loads(receipt.read_text())
+    data["hold_check"] = "present"
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == worklist_stop
+    assert "extraction held" in result["diagnostic"]
+    assert "Home reconciliation is waiting for operator resolution" in result["diagnostic"]
+    assert "run outcome is ambiguous" not in (result["diagnostic"] or "")
+
+
+def test_sjm_connection_wait_does_not_make_completed_home_commands_ambiguous(tmp_path):
+    receipt = _home_receipt(tmp_path, "run.json", commands={
+        "memory_home_drain": {"status": "reconciled", "failed": 0, "local_failed": 0,
+                              "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+        "memory_sjm_pull": {"status": "waiting", "failed": 0, "offline": 1},
+        "memory_publish": {"status": "published"},
+    })
+    data = json.loads(receipt.read_text())
+    data["hold_check"] = "absent"
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "waiting"
+    assert "SJM transfer waiting for a connection" in result["diagnostic"]
+    assert "run outcome is ambiguous" not in (result["diagnostic"] or "")
+
+
+def test_home_backlog_wait_does_not_hide_an_unverified_sjm_transfer(tmp_path):
+    receipt = _home_receipt(tmp_path, "run.json", commands={
+        "memory_home_drain": {"status": "reconciled", "failed": 0, "local_failed": 0,
+                              "reconciliation_conflicts": 0, "unreconciled_remaining": 1},
+        "memory_sjm_pull": {"status": "unknown", "failed": 0, "offline": 0},
+        "memory_publish": {"status": "not_attempted", "reason": "unreconciled_backlog_remaining"},
+    })
+    data = json.loads(receipt.read_text())
+    data["hold_check"] = "absent"
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "needs_attention"
+    assert "SJM transfer attempt could not be verified" in result["diagnostic"]
+
+
+def test_sjm_receipt_cannot_attest_even_an_idle_home_drain(tmp_path):
+    receipt = _sjm_receipt(tmp_path, "run.json")
+    data = json.loads(receipt.read_text())
+    data["command_outcomes"]["memory_home_drain"] = {"status": "idle"}
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role="sjm-source-only", state_root=tmp_path)
+    assert result["last_run_outcome"] == "unknown"
+    assert "only a Home run can record the Home drain command" in result["diagnostic"]
+
+
+def test_no_backlog_cannot_explain_a_waiting_publication(tmp_path):
+    _home_receipt(tmp_path, "run.json", commands={
+        "memory_home_drain": {"status": "idle", "unreconciled_remaining": 0},
+        "memory_publish": {"status": "not_attempted", "reason": "unreconciled_backlog_remaining"},
+    })
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "unknown"
+    assert "publication deferral has no verified backlog" in result["diagnostic"]
+
+
+def test_home_split_receipt_without_hold_observation_cannot_complete(tmp_path):
+    commands = {
+        "memory_home_drain": {"status": "idle", "failed": 0, "local_failed": 0,
+                              "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+        "memory_sjm_pull": {"status": "not_attempted", "failed": 0, "offline": 0},
+        "memory_publish": {"status": "not_attempted"},
+    }
+    _home_receipt(tmp_path, "run.json", commands=commands)
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "needs_attention"
+    assert "missing its extraction hold observation" in result["diagnostic"]
+
+
+@pytest.mark.parametrize("pull_status", ["failed", "waiting"])
+def test_confirmed_sjm_failures_take_priority_when_some_items_are_offline(tmp_path, pull_status):
+    # Both statuses carry two confirmed remote errors. The separate offline
+    # count is also reported. The pure offline-only case is tested above.
+    commands = {
+        "memory_home_drain": {"status": "reconciled", "failed": 2, "local_failed": 0,
+                              "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+        "memory_sjm_pull": {"status": pull_status, "failed": 2, "offline": 1},
+        "memory_publish": {"status": "published"},
+    }
+    _home_receipt(tmp_path, "run.json", commands=commands)
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "failed"
+    assert "SJM transfer failed" in result["diagnostic"]
+
+
+@pytest.mark.parametrize(("hold", "message"), [
+    ("unknown", "extraction hold could not be verified"),
+    ("unexpected", "hold_check value is malformed"),
+    (42, "hold_check value is malformed"),
+])
+@pytest.mark.parametrize("role", ["home", "sjm-source-only"])
+def test_hold_evidence_diagnostics_distinguish_unknown_and_invalid(tmp_path, hold, message, role):
+    if role == "home":
+        _home_receipt(tmp_path, "run.json", hold_check=hold)
+    else:
+        receipt = _sjm_receipt(tmp_path, "run.json")
+        data = json.loads(receipt.read_text())
+        data["hold_check"] = hold
+        receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role=role, state_root=tmp_path)
+    assert result["last_run_outcome"] == "needs_attention"
+    assert message in result["diagnostic"]
+
+
+def test_job_wide_hold_requires_an_explicit_operator_action(tmp_path):
+    for name, exception in [
+        ("bare", {"type": "quota_exhausted"}),
+        ("invalid-id", {"type": "quota_exhausted", "operator_action_required": True, "work_id": ""}),
+        ("action", {"type": "quota_exhausted", "operator_action_required": True}),
+    ]:
+        state = tmp_path / name
+        _home_receipt(state, "run.json", exceptions=[exception])
+        result = native_job_status.read_native_job_status(writer_role="home", state_root=state)
+        expected = "requiring operator action" if name == "action" else "exceptions are malformed"
+        assert expected in result["diagnostic"]
+
+
+@pytest.mark.parametrize(("split", "counts", "outcome"), [
+    (True, {"reconciliation_conflicts": 0, "unreconciled_remaining": 0}, "completed"),
+    (True, {"reconciliation_conflicts": 0}, "unknown"),
+    (False, {}, "needs_attention"),
+])
+def test_idle_home_drain_requires_a_verified_empty_backlog(tmp_path, split, counts, outcome):
+    drain = {"status": "idle", "failed": 0, **counts}
+    commands = {
+        "memory_home_drain": drain,
+        "memory_publish": {"status": "not_attempted",
+                           "reason": "no_new_reconciliation_or_pending_publication"},
+    }
+    if split:
+        drain["local_failed"] = 0
+        commands["memory_sjm_pull"] = {"status": "not_attempted", "offline": 0, "failed": 0}
+    _home_receipt(tmp_path, "run.json", commands=commands, hold_check="absent")
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == outcome
+    if not split:
+        assert "idle Home drain did not verify its remaining backlog" in result["diagnostic"]
 
 
 def test_active_is_not_completion(tmp_path: Path) -> None:
