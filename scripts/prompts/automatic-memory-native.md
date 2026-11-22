@@ -32,18 +32,32 @@ bound which prepared views it accounts for, but it cannot prove that a
 concurrent producer prepared nothing, so one owner and start-before-prepare
 discipline are required.
 
-Before worklist selection, check `<state-root>/extraction-hold.json`. If present
+Before worklist selection, check `<state-root>/extraction-hold.json` in private
+machine-local state. If present
 or unreadable/malformed, do not select or extract another source; the hold needs
 operator intervention and must not be removed by a native run. Home still
 performs independently eligible drain/publication steps 4 and 5. On a new
 input-size/item-count limit, quota exhaustion, persistent failure, or repeated
-selection without progress, create this private hold with UTC timestamp, work
+selection without progress, create this private hold with UTC `created_at`, work
 ID when known, reason, and operator-action requirement. Preserve any existing
 hold; record failures in the run receipt and do not continue extraction if the
-hold cannot be written. Notify when a hold is newly created or changes, not on
-every unchanged check. A hold is not an extraction/success receipt.
+hold cannot be written. Notify when a hold is created, its reason, work ID
+or required action changes. Report the first unverifiable observation, or the
+transition from readable to unverifiable, using the previous run's saved
+hold observation for comparison. Keep reporting the blocked state without
+sending another hold-change notification while it stays unverifiable.
+If a hold observed at selection time disappears later in the same run,
+leave extraction stopped and report the change.
+The receipt helper checks the hold file directly and records `hold_check`
+as `absent`, `present`, or `unknown`. An unknown hold blocks extraction and
+requires operator attention. Startup also shows the observed hold.
+Existing valid holds remain in force. A hold does not certify extraction
+or a successful run.
 
-Before reading dialogue, call `scripts/eod-capture.py memory-extraction-input`
+Immediately before each extraction, recheck the local hold file. If it is
+present or unverifiable, stop extracting for the rest of this run and leave
+the affected selection pending. Before reading dialogue, call
+`scripts/eod-capture.py memory-extraction-input`
 with the selected `--work-id`, configured `--state-root` and `--writer-role`.
 Read only the returned `input_path`, never the full source bundle. This view
 contains every event of the selected completed turn and bounded recent context;
@@ -133,6 +147,20 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    --pull-sjm --limit 24` with the configured machine-local state root.
    The command may use only the established `sjm-ai` connection and must report
    Home/SJM downtime honestly.
+   Save the actual output of this run's drain invocation at a new path
+   inside its private run artifacts. Read `reconciliation_conflicts` and
+   `unreconciled_remaining` from that output only. Both must be
+   nonnegative integers. Report missing or invalid
+   counts and defer publication with status `not_attempted` and reason
+   `reconciliation_counts_unverifiable`. Do not invoke publication for this
+   run. The receipt command records a run-level failure without assigning a
+   failed extraction to any turn. Report missing fields as possible drain
+   command incompatibility only if the drain command succeeded and omitted the
+   fields. Report a failed invocation or unreadable output as such. An SJM
+   connection wait can appear in valid Home drain JSON. In the user-facing
+   run summary, report verified conflicts and the need for reviewed Home key
+   resolution, or report that the counts could not be verified. Preserve
+   accepted deliveries and diagnostics.
 
 5. On Home only, publish through the existing command with per-invocation
    `K2B_COMPILE_INDEX_LOCK="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/.k2b-compile-index.lock.d"`
@@ -149,8 +177,24 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    publication command with the same host Python 3.12 interpreter and unchanged
    exported environment in that subshell. Retain the existing run budget;
    unknown lock ownership stays blocked and never permits timeout deletion.
-   Only attempt this when a new reconciliation occurred or a prior durable
-   reconciliation still awaits publication. The separately provisioned Home
+   If either drain count is missing or invalid, defer with
+   `reconciliation_counts_unverifiable` as in step 4. If the drain JSON itself
+   is unreadable, do not invoke publication. Record `not_attempted` with that
+   same reason, and pass the expected drain path to the receipt command.
+   The next scheduled run uses fresh drain output and may
+   publish when its own verified counts and the normal eligibility check pass.
+   If the drain reports either `reconciliation_conflicts` or
+   `unreconciled_remaining` greater than zero, defer publication with
+   status `not_attempted`. Use reason `reconciliation_needs_attention` if
+   `reconciliation_conflicts` is positive, otherwise use
+   `unreconciled_backlog_remaining`. For backlog alone, the next bounded drain
+   can continue automatically. Report the verified remaining count and
+   deferral reason in the user-facing run summary. If this run reports
+   `reconciled: 0` while accepted work remains, flag Home operator
+   investigation. Replays are verification of earlier work.
+   Attempt publication only if both counts are verified zero and either a new
+   reconciliation occurred or a prior durable reconciliation still awaits
+   publication. The separately provisioned Home
    publication authority, approved policy-ledger hash, exclusive managed paths,
    publisher locks and the approved exact SMB publication-authority/live
    preflight remain mandatory. The imported index helper inherits the NAS
@@ -160,8 +204,20 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    shared memory/index/log files yourself. SJM must never run this step.
 
 Save actual drain and publication command JSON to private files. When publication
-is correctly not attempted, use the explicit status `not_attempted` and reason
-`no_new_reconciliation_or_pending_publication`. Generate the canonical run receipt
+is correctly not attempted, use status `not_attempted` and its reason above,
+or `no_new_reconciliation_or_pending_publication` only if both counts are verified zero
+and no publication is due.
+Whenever the worklist command ran, save its final JSON under this run's
+private local artifacts and pass it via
+`--worklist-json` regardless of status or selection count. The helper
+verifies this final selection against the run's attempted and deferred IDs.
+Pass the final result even if it selected zero turns. The attempted and
+deferred IDs represent the whole run. Retain earlier results privately.
+If there is no readable worklist output, supply its expected path. The receipt
+command records a run-level failure for missing or invalid command evidence
+without assigning a failed extraction to a turn. A `blocked`
+worklist exits normally with zero selections. Home still proceeds with its
+independently eligible work. Generate the canonical run receipt
 with `scripts/eod-capture.py memory-record-run --writer-role <role> --state-root
 <state> --started-at <UTC-start>` and one `--work-id` for each attempted turn.
 Pass each selected-but-unread boundary deferral with `--deferred-work-id` and its
@@ -181,6 +237,16 @@ native-run-receipts: the helper validates per-turn extraction artifacts, writes
 integer schema version 1, and leaves durable failed evidence with a sanitized
 diagnostic when command JSON is unreadable or the evidence is malformed. Never
 omit a failed attempted work ID to manufacture a successful batch.
+
+Exit 0 with status `recorded` means the run completed. Exit 3 with status
+`recorded` means a valid receipt for a non-completed outcome, including
+`blocked`, `waiting`, or `needs_attention`. Include the recorded outcome
+and diagnostic in the run summary. Keep the recorded receipt and do not
+report a receipt write failure for exit 3. On exit 2, report the helper's
+failure and the private evidence location. Keep the original artifacts and
+stop this batch. Only the existing verified per-turn extraction receipts
+prove turns were recorded. Never rerun an extraction to replace a missing
+or invalid run receipt.
 
 Run `memory-backlog --writer-role <role> --state-root <state> --codex-root <root>
 --since 2026-09-13 --through <current-HKT-date>` after the batch. Add
