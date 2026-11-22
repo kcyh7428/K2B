@@ -317,7 +317,7 @@ def _normalize_native(raw: Any) -> dict:
     if registration in ("active", "paused", "missing", "unknown"):
         result["registration_state"] = registration
     outcome = raw.get("last_run_outcome")
-    if outcome in ("completed", "failed", "unknown"):
+    if outcome in ("completed", "failed", "unknown", "blocked", "needs_attention", "waiting", "waiting_retry"):
         result["last_run_outcome"] = outcome
     hold = raw.get("extraction_hold")
     if hold in ("present", "absent", "unknown"):
