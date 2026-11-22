@@ -213,7 +213,9 @@ def test_noncanonical_publication_failure_is_durable_failed_evidence(tmp_path, b
     from datetime import datetime, timezone
     result = capture.record_native_memory_run(state_root=tmp_path / 'state', writer_role='home',
         started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
-        drain_result={'status': 'reconciled', 'local_delivery': {}, 'sjm_delivery': {}}, publication_result=bad)
+        drain_result={'status': 'reconciled', 'local_delivery': {'accepted': 0, 'failed': 0},
+                      'sjm_delivery': {'accepted': 0, 'failed': 0, 'attempted': False},
+                      'reconciliation_conflicts': 0, 'unreconciled_remaining': 0}, publication_result=bad)
     assert result['outcome'] == 'failed'
     persisted = json.loads(Path(result['receipt_path']).read_text())
     assert persisted['diagnostic'] == 'home_publication_failure_malformed'

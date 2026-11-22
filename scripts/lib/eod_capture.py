@@ -5037,8 +5037,10 @@ def _normalize_run_exception(item: dict) -> dict:
         reason = item["reason"]
         return {**item, "reason": reason if reason in CANONICAL_EXCEPTION_REASONS
                 else "redacted_reason"}
-    if item.get("type") == "input_budget_exceeded":
+    if item.get("type") in native_job_status.EXCEPTION_HOLD_TYPES:
         work_id = item.get("work_id")
+        if work_id is None and item["type"] in native_job_status.HOLDS_WITH_OPTIONAL_WORK_ID:
+            return {key: value for key, value in item.items() if key != "work_id"}
         if not isinstance(work_id, str) or MEMORY_WORK_ID_RE.fullmatch(work_id) is None:
             raise _MemoryRunError("exception_work_id_invalid")
     return dict(item)
@@ -5067,6 +5069,7 @@ def _build_native_run_receipt(
     *, state_root: Path, role: str, started: datetime, finished: datetime,
     work_ids: object, deferred_work_ids: object, deferred_reason: str,
     exceptions: object, drain_result: dict | None, publication_result: dict | None,
+    worklist_result: dict | None, hold_check: str,
 ) -> tuple[dict, dict]:
     """Assemble and validate one canonical run receipt."""
     if deferred_reason not in MEMORY_RUN_DEFER_REASONS:
@@ -5199,7 +5202,7 @@ def _build_native_run_receipt(
                 or elapsed > MEMORY_RUN_MAX_SECONDS)
     commands = {
         "memory_worklist": {"status": "ready" if attempted else "idle",
-                            "selected": len(attempted)},
+                            "selected": len(attempted), "observed_status": "not_recorded"},
         "memory_record_extraction": {
             "status": "failed" if failed else ("queued" if queued else "reviewed_empty"),
             "completed": completed, "failed": failed,
@@ -5207,10 +5210,63 @@ def _build_native_run_receipt(
         },
         "batch_budget": {"status": "exceeded" if exceeded else "bounded"},
     }
+    # The worker supplies the final JSON whenever it invokes the command.
+    # A run stopped at the initial hold check has no worklist JSON to supply.
+    if worklist_result is not None:
+        # The initial receipt status above already covers the whole run.
+        # This final selection can identify a stop or an unattempted turn.
+        if (
+            not isinstance(worklist_result, dict)
+            or worklist_result.get("writer_role") != role
+            or type(worklist_result.get("selected")) is not int
+            or not 0 <= worklist_result["selected"] <= MEMORY_RUN_MAX_TURNS
+            or not isinstance(worklist_result.get("status"), str)
+            or worklist_result["status"] not in {
+                "idle", "ready", "ready_with_exceptions", "blocked",
+                "needs_attention", "waiting_retry",
+            }
+        ):
+            raise _MemoryRunError("worklist_evidence_invalid")
+        status = worklist_result["status"]
+        # ready_with_exceptions describes other turns held by earlier
+        # failures or backoff, not exceptions authored by this run.
+        # Keep producer evidence distinct from the hold observed at receipt time.
+        commands["memory_worklist"]["observed_status"] = status
+        selected = worklist_result["selected"]
+        items = worklist_result.get("items")
+        if not isinstance(items, list) or len(items) != selected:
+            raise _MemoryRunError("worklist_evidence_invalid")
+        # The final selection is a subset of the accumulated work in this
+        # run. A selected-but-unread boundary turn can be in the deferred set.
+        # The final list need not repeat earlier selections. A job-wide hold
+        # without a work ID cannot attest any individual turn.
+        accounted = set(attempted) | set(deferred_pending) | {
+            item["work_id"] for item in validated_exceptions if "work_id" in item
+        }
+        if any(not isinstance(item, dict) or not isinstance(item.get("work_id"), str)
+               or MEMORY_WORK_ID_RE.fullmatch(item["work_id"]) is None for item in items):
+            raise _MemoryRunError("worklist_evidence_invalid")
+        # build_memory_worklist reports ready only when it selected items.
+        # A stopped invocation returns zero. Work IDs cover the whole run.
+        if bool(selected) != (status in {"ready", "ready_with_exceptions"}):
+            raise _MemoryRunError("worklist_evidence_invalid")
+        unaccounted = [item["work_id"] for item in items if item["work_id"] not in accounted]
+        if unaccounted:
+            # The last selection may have happened just before a budget
+            # stop or interruption. Retain other work as recorded and do
+            # not invent a failed extraction for the unread selection. The
+            # receipt classifier uses this status for the overall outcome.
+            commands["memory_worklist"]["status"] = "needs_attention"
+            commands["memory_worklist"]["unaccounted_work_ids"] = unaccounted
+        elif status in native_job_status.WORKLIST_STOP_OUTCOMES:
+            commands["memory_worklist"]["status"] = status
     if role == "home":
         if not isinstance(drain_result, dict) or not isinstance(publication_result, dict):
             raise _MemoryRunError("home_command_json_required")
-        if drain_result.get("status") == "failed":
+        drain_status = drain_result.get("status")
+        if drain_status not in ("idle", "reconciled", "needs_attention", "failed"):
+            raise _MemoryRunError("home_drain_status_invalid")
+        if drain_status == "failed":
             if (drain_result.get("diagnostic") != "memory_drain_failed"
                 or not {"status", "diagnostic", "error_type", "message"}.issubset(drain_result)
                 or not all(isinstance(drain_result[k], str) and drain_result[k].strip()
@@ -5220,21 +5276,121 @@ def _build_native_run_receipt(
                 "error_type": _sanitize_log_value(drain_result["error_type"])[:80],
                 "message": _sanitize_log_value(drain_result["message"])[:500]}
         else:
-            delivery_failures = 0
-            for key in ("local_delivery", "sjm_delivery"):
-                delivery = drain_result.get(key)
-                if not isinstance(delivery, dict):
-                    raise _MemoryRunError("home_drain_delivery_missing")
-                for name, count in delivery.items():
-                    if name.endswith("failed") or name in {"offline", "exhausted"}:
-                        if type(count) is not int or count < 0:
-                            raise _MemoryRunError("home_drain_failure_count_malformed")
-                        delivery_failures += count
+            local_delivery = drain_result.get("local_delivery")
+            sjm_delivery = drain_result.get("sjm_delivery")
+            if not isinstance(local_delivery, dict) or not isinstance(sjm_delivery, dict):
+                raise _MemoryRunError("home_drain_delivery_missing")
+            # Local "offline" records failed access to Home's own durable
+            # acceptance path. Local "exhausted" records a spent retry budget.
+            # Both are local failures. SJM offline is a separate peer wait.
+            local_failure_fields = {"failed", "offline", "exhausted", "local_ack_failed", "local_state_failed"}
+            sjm_failure_fields = {"failed", "ack_failed", "offline"}
+            # Step 4 and the receipt command run from the same Home checkout
+            # under the native batch lock. Unrecognized accounting is invalid.
+            local_fields = local_failure_fields | {"accepted"}
+            sjm_fields = sjm_failure_fields | {"accepted", "duplicate_acceptances", "delivery_ids", "attempted", "listed"}
+            required_counts = {"accepted", "failed"}
+            if (not required_counts <= local_delivery.keys() or not required_counts <= sjm_delivery.keys()
+                    or local_delivery.keys() - local_fields or sjm_delivery.keys() - sjm_fields):
+                raise _MemoryRunError("home_drain_delivery_fields_invalid")
+            for delivery, fields in ((local_delivery, local_failure_fields), (sjm_delivery, sjm_failure_fields)):
+                if any(type(delivery[name]) is not int or delivery[name] < 0 for name in fields & delivery.keys()):
+                    raise _MemoryRunError("home_drain_failure_count_malformed")
+            if type(local_delivery["accepted"]) is not int or local_delivery["accepted"] < 0:
+                raise _MemoryRunError("home_drain_failure_count_malformed")
+            local_failed = sum(local_delivery.get(key, 0) for key in local_failure_fields)
+            sjm_failed = sjm_delivery.get("failed", 0) + sjm_delivery.get("ack_failed", 0)
+            sjm_offline = sjm_delivery.get("offline", 0)
             commands["memory_home_drain"] = {
-                "status": drain_result.get("status"), "failed": delivery_failures,
+                "status": drain_result.get("status"),
+                # Retain the aggregate field for actual failures. An SJM
+                # connection wait is recorded only in the separate pull.
+                "failed": local_failed + sjm_failed,
+                "local_failed": local_failed,
             }
-        commands["memory_publish"] = {"status": publication_result.get("status")}
-        if publication_result.get("status") == "failed":
+            attempted_sjm = sjm_delivery.get("attempted")
+            if type(attempted_sjm) is not bool:
+                raise _MemoryRunError("sjm_delivery_attempt_invalid")
+            accepted = sjm_delivery.get("accepted", 0)
+            duplicate = sjm_delivery.get("duplicate_acceptances", 0)
+            if type(accepted) is not int or type(duplicate) is not int or not 0 <= duplicate <= accepted:
+                raise _MemoryRunError("home_drain_failure_count_malformed")
+            if "delivery_ids" in sjm_delivery:
+                delivery_ids = sjm_delivery["delivery_ids"]
+                if (not isinstance(delivery_ids, list) or len(delivery_ids) != accepted
+                        or any(not isinstance(item, str) or not automatic_memory.DELIVERY_ID_RE.fullmatch(item)
+                               for item in delivery_ids)):
+                    raise _MemoryRunError("sjm_delivery_identities_invalid")
+            listed = sjm_delivery.get("listed")
+            # A real connection or command failure can precede the listing.
+            if attempted_sjm is True and (
+                "listed" not in sjm_delivery or (
+                    listed is None and (
+                        accepted or sjm_delivery.get("ack_failed", 0)
+                        or not (sjm_delivery["failed"] or sjm_offline)
+                    )
+                )
+            ):
+                raise _MemoryRunError("sjm_delivery_listing_invalid")
+            # pull_sjm_memory increments accepted at most once per listing
+            # entry. A duplicate acceptance still belongs to that entry.
+            if listed is not None and (type(listed) is not int or accepted > listed):
+                raise _MemoryRunError("sjm_delivery_listing_invalid")
+            if attempted_sjm is False and (listed is not None or accepted or sjm_failed or sjm_offline):
+                raise _MemoryRunError("sjm_delivery_attempt_invalid")
+            # A completed pull accounts for every listed delivery, including
+            # the empty listing. The classifier grades unknown as attention.
+            commands["memory_sjm_pull"] = {
+                "status": "failed" if sjm_failed
+                else "waiting" if sjm_offline
+                else "completed" if attempted_sjm is True and listed == accepted
+                else "not_attempted" if attempted_sjm is False else "unknown",
+                "failed": sjm_failed,
+                "offline": sjm_offline,
+                "accepted": accepted,
+                "duplicate_acceptances": duplicate,
+                "listed": listed,
+            }
+        publication_status = publication_result.get("status")
+        if publication_status not in ("not_attempted", "published", "failed"):
+            raise _MemoryRunError("home_publication_status_invalid")
+        if drain_status == "failed" and publication_status == "published":
+            raise _MemoryRunError("publication_eligibility_unverified")
+        commands["memory_publish"] = {"status": publication_status}
+        if drain_status == "failed" and publication_status == "not_attempted":
+            commands["memory_publish"]["reason"] = "drain_failed"
+        # An authentic successful drain still contributes its independently
+        # verified counts when the later publication command failed.
+        if drain_status != "failed":
+            if (publication_status == "not_attempted"
+                    and publication_result.get("reason") not in (
+                        "no_new_reconciliation_or_pending_publication",
+                        "unreconciled_backlog_remaining", "reconciliation_needs_attention",
+                    )):
+                raise _MemoryRunError("publication_eligibility_unverified")
+            unreconciled = drain_result.get("unreconciled_remaining")
+            conflicts = drain_result.get("reconciliation_conflicts")
+            if (type(conflicts) is not int or conflicts < 0
+                    or type(unreconciled) is not int or unreconciled < conflicts
+                    or bool(conflicts) != (drain_status == "needs_attention")):
+                raise _MemoryRunError("publication_backlog_evidence_invalid")
+            commands["memory_home_drain"]["unreconciled_remaining"] = unreconciled
+            commands["memory_home_drain"]["reconciliation_conflicts"] = conflicts
+            reason = (
+                "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
+            )
+            # The drain counts accepted deliveries without a reconciliation
+            # receipt after all work. The publisher independently verifies
+            # those persisted receipts in its reconciliation watermark.
+            # The run recorder checks the two commands agree with each other.
+            if publication_status == "not_attempted":
+                expected_reason = reason if unreconciled else "no_new_reconciliation_or_pending_publication"
+                if publication_result["reason"] != expected_reason:
+                    raise _MemoryRunError("publication_backlog_evidence_invalid")
+                commands["memory_publish"]["reason"] = expected_reason
+            elif publication_status == "published" and unreconciled:
+                raise _MemoryRunError("publication_backlog_evidence_invalid")
+        if publication_status == "failed":
             if (publication_result.get("diagnostic") != "memory_publication_failed"
                 or not {"status", "diagnostic", "error_type", "message"}.issubset(publication_result)
                 or not all(isinstance(publication_result[k], str) and publication_result[k].strip()
@@ -5253,7 +5409,7 @@ def _build_native_run_receipt(
         "writer_role": role, "started_at": started.isoformat(),
         "finished_at": finished.isoformat(), "commands": commands,
         "selected_work_ids": selected_ids, "attempted_work_ids": attempted,
-        "exceptions": validated_exceptions,
+        "exceptions": validated_exceptions, "hold_check": hold_check,
         "hold_created": any(native_job_status._classify_exception(item) == "action"
                             for item in validated_exceptions),
         "work_outcomes": outcomes, "deferred_work_ids": deferred_pending,
@@ -5272,6 +5428,7 @@ def record_native_memory_run(
     deferred_work_ids: list[str] | None = None,
     deferred_reason: str = "byte_budget",
     exceptions: list | None = None,
+    worklist_result: dict | None = None,
 ) -> dict:
     """Write a canonical run receipt from validated per-turn durable evidence.
 
@@ -5286,6 +5443,12 @@ def record_native_memory_run(
     """
     role = _memory_writer_role(writer_role)
     started = _memory_instant(started_at, "run start")
+    # Observe the local hold at receipt time, immediately before finished_at.
+    # The worklist's observed_status separately preserves producer evidence.
+    try:
+        hold_check, _ = native_job_status._read_hold(state_root)
+    except (OSError, ValueError):
+        hold_check = native_job_status.UNKNOWN
     finished = datetime.now(timezone.utc)
     if started > finished:
         raise ValueError("run start is in the future")
@@ -5301,7 +5464,8 @@ def record_native_memory_run(
             state_root=state_root, role=role, started=started, finished=finished,
             work_ids=work_ids, deferred_work_ids=deferred_work_ids,
             deferred_reason=deferred_reason, exceptions=exceptions,
-            drain_result=drain_result, publication_result=publication_result)
+            drain_result=drain_result, publication_result=publication_result,
+            worklist_result=worklist_result, hold_check=hold_check)
     except _MemoryRunError as exc:
         return failed_evidence(exc.diagnostic)
     except PermissionError:
@@ -7805,6 +7969,7 @@ def main(argv: list[str] | None = None) -> int:
     memory_run_parser.add_argument("--deferred-reason",
                                    choices=MEMORY_RUN_DEFER_REASONS, default="byte_budget")
     memory_run_parser.add_argument("--exceptions-json", type=Path)
+    memory_run_parser.add_argument("--worklist-json", type=Path)
     memory_run_parser.add_argument("--drain-json", type=Path)
     memory_run_parser.add_argument("--publication-json", type=Path)
     memory_drain = sub.add_parser(
@@ -8158,6 +8323,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             exceptions = (_read_memory_json_list(args.exceptions_json, "exceptions JSON")
                           if args.exceptions_json else None)
+            worklist_result = (_read_memory_json(args.worklist_json, "worklist JSON")
+                               if args.worklist_json else None)
             drain_result = (_read_memory_json(args.drain_json, "drain JSON")
                             if args.drain_json else None)
             publication_result = (_read_memory_json(args.publication_json, "publication JSON")
@@ -8183,7 +8350,7 @@ def main(argv: list[str] | None = None) -> int:
                 writer_role=args.writer_role, started_at=args.started_at, work_ids=args.work_id,
                 deferred_work_ids=args.deferred_work_id, deferred_reason=args.deferred_reason,
                 exceptions=exceptions, drain_result=drain_result,
-                publication_result=publication_result)
+                publication_result=publication_result, worklist_result=worklist_result)
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             print(f"eod-capture: run receipt failed: {_sanitize_log_value(exc)}", file=sys.stderr)
             return 2

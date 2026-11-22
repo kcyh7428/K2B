@@ -3128,6 +3128,335 @@ def test_native_run_receipt_is_idempotent_for_duplicate_work_ids(tmp_path):
     assert data["commands"]["memory_record_extraction"]["completed"] == 1
 
 
+def test_held_run_receipt_preserves_previous_success_timestamp(tmp_path):
+    state = tmp_path / "state"
+    args = {"state_root": state, "writer_role": "sjm-source-only", "work_ids": []}
+    first = eod_capture.record_native_memory_run(
+        **args, started_at=datetime.now(timezone.utc).isoformat(),
+    )
+    success = json.loads(Path(first["receipt_path"]).read_text())["finished_at"]
+    (state / "extraction-hold.json").write_text(
+        json.dumps({"created_at": datetime.now(timezone.utc).isoformat()})
+    )
+    held = eod_capture.record_native_memory_run(
+        **args, started_at=datetime.now(timezone.utc).isoformat(),
+    )
+    assert held["outcome"] == "blocked"
+    status = eod_capture.native_job_status.read_native_job_status(
+        writer_role="sjm-source-only", state_root=state,
+        automation_root=tmp_path / "automations",
+    )
+    assert status["last_run_outcome"] == "blocked"
+    assert status["last_successful_at"] == success
+
+
+def test_held_worklist_stops_before_persisting_new_sources(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "extraction-hold.json").write_text('{"created_at":"2026-11-22T08:00:00Z"}')
+    sources = tmp_path / "sessions"
+    _modern_session(sources, "2026-11-22", "held-source")
+
+    result = eod_capture.build_memory_worklist(
+        state_root=state, codex_root=sources, since="2026-11-22",
+        through="2026-11-22", writer_role="home",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["selected"] == 0
+    assert result["scan"]["status"] == "not_attempted"
+    assert result["scan"]["budget_exhausted"] is False
+    assert result["persistence"]["status"] == "not_attempted"
+    assert not (state / "worklist").exists()
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/eod-capture.py"), "memory-worklist",
+         "--state-root", str(state), "--codex-root", str(sources),
+         "--since", "2026-11-22", "--through", "2026-11-22",
+         "--writer-role", "home"],
+        capture_output=True, text=True, check=True,
+    )
+    cli_worklist = json.loads(proc.stdout)
+    assert cli_worklist["status"] == "blocked"
+    assert cli_worklist["scan"]["status"] == cli_worklist["persistence"]["status"] == "not_attempted"
+    assert {path.name for path in state.iterdir()} == {"extraction-hold.json"}
+
+
+def test_worklist_resumes_after_the_synthetic_hold_is_removed(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    hold = state / "extraction-hold.json"
+    hold.write_text('{"created_at":"2026-11-22T08:00:00Z"}')
+    source = tmp_path / "sessions"
+    _modern_session(source, "2026-11-22", "resumed-source")
+    scan = {"state_root": state, "codex_root": source, "writer_role": "sjm-source-only",
+            "since": "2026-11-22", "through": "2026-11-22"}
+    blocked = eod_capture.build_memory_worklist(**scan)
+    assert blocked["status"] == "blocked"
+    hold.unlink()
+    resumed = eod_capture.build_memory_worklist(**scan)
+    assert resumed["status"] == "ready"
+    assert resumed["selected"] == 1
+
+
+def test_final_selection_without_an_attempt_keeps_the_source_pending(tmp_path):
+    state = tmp_path / "state"
+    sources = tmp_path / "sessions"
+    _modern_session(sources, "2026-11-22", "unattempted-source")
+    worklist = eod_capture.build_memory_worklist(
+        state_root=state, codex_root=sources, since="2026-11-22",
+        through="2026-11-22", writer_role="sjm-source-only",
+    )
+    assert worklist["status"] == "ready"
+    result = eod_capture.record_native_memory_run(
+        state_root=state, writer_role="sjm-source-only", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(), worklist_result=worklist,
+    )
+    assert result["outcome"] == "needs_attention"
+    assert result["failed"] == 0
+    receipt_file = Path(result["receipt_path"])
+    assert receipt_file.parent == state / "native-run-receipts"
+    receipt = json.loads(receipt_file.read_text())
+    work_id = worklist["items"][0]["work_id"]
+    assert receipt["commands"]["memory_worklist"]["unaccounted_work_ids"] == [work_id]
+    assert not list((state / "extraction-receipts").glob("*.json"))
+    after = eod_capture.build_memory_worklist(
+        state_root=state, codex_root=sources, since="2026-11-22",
+        through="2026-11-22", writer_role="sjm-source-only",
+    )
+    assert after["status"] == "ready"
+    assert [item["work_id"] for item in after["items"]] == [work_id]
+
+
+def test_cli_records_blocked_home_worklist_with_independent_success(tmp_path, capsys):
+    (tmp_path / "extraction-hold.json").write_text('{"created_at":"2026-11-22T08:00:00Z"}')
+    started = datetime.now(timezone.utc)
+    worklist = eod_capture.build_memory_worklist(
+        state_root=tmp_path, codex_root=tmp_path / "sessions", writer_role="home",
+        since="2026-09-13", through="2026-11-22",
+    )
+    assert worklist["status"] == "blocked"
+    args = ["memory-record-run", "--writer-role", "home", "--state-root", str(tmp_path),
+            "--started-at", started.isoformat()]
+    for name, result in {
+        "worklist": worklist,
+        "drain": {
+            "status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+            "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
+            "reconciliation_conflicts": 0, "unreconciled_remaining": 0,
+        },
+        "publication": {"status": "published"},
+    }.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(result))
+        args.extend((f"--{name}-json", str(path)))
+
+    assert eod_capture.main(args) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "recorded"
+    assert result["outcome"] == "blocked"
+    receipt = json.loads(Path(result["receipt_path"]).read_text())
+    assert receipt["commands"]["memory_worklist"]["observed_status"] == "blocked"
+    assert receipt["hold_check"] == "present"
+    diagnostic = result["diagnostic"]
+    assert isinstance(diagnostic, str)
+    assert "extraction held" in diagnostic
+    assert "run outcome is ambiguous" not in diagnostic
+    assert "Home reconciliation completed" in diagnostic
+    assert "Home publication completed" in diagnostic
+
+
+def test_held_home_reports_independent_publication_success(tmp_path):
+    (tmp_path / "extraction-hold.json").write_text('{"created_at":"2026-11-22T08:00:00Z"}')
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result={"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+                      "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
+                      "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+        publication_result={"status": "published"},
+    )
+    assert result["outcome"] == "blocked"
+    assert "Home reconciliation completed" in result["diagnostic"]
+    assert "Home publication completed" in result["diagnostic"]
+
+    # The sanitized fixture preserves the keys and command shapes of the
+    # deployed legacy Home receipt. The live hold remains independently visible.
+    fixture = Path(__file__).parent / "fixtures" / "legacy-automatic-memory-home-run.json"
+    fixture_bytes = fixture.read_bytes()
+    data = json.loads(fixture_bytes)
+    assert data["schema_version"] == 1
+    assert data["automation_id"] == "k2b-automatic-memory-home"
+    assert data["writer_role"] == "home"
+    assert data["commands"]["memory_home_drain"] == {"status": "reconciled", "failed": 0}
+    assert datetime.fromisoformat(data["started_at"]) == datetime(2026, 9, 13, 1, tzinfo=timezone.utc)
+    assert datetime.fromisoformat(data["finished_at"]) == datetime(2026, 9, 13, 1, 0, 1, tzinfo=timezone.utc)
+    legacy = tmp_path / "legacy"
+    receipts = legacy / "native-run-receipts"
+    receipts.mkdir(parents=True)
+    (receipts / "run.json").write_bytes(fixture_bytes)
+    (legacy / "extraction-hold.json").write_bytes((tmp_path / "extraction-hold.json").read_bytes())
+    state = eod_capture.native_job_status.read_native_job_status(
+        writer_role="home", state_root=legacy, automation_root=tmp_path / "automations",
+    )
+    assert state["extraction_hold"] == "present"
+    assert state["last_run_outcome"] == "completed"
+    assert state["last_successful_at"] == data["finished_at"]
+
+
+@pytest.mark.parametrize("expected,error", [
+    ("completed", None), ("waiting", ConnectionError), ("failed", eod_capture.SjmMemoryCommandError),
+])
+def test_home_receipt_distinguishes_sjm_unavailability_from_remote_failure(
+    tmp_path, expected, error,
+):
+    state, work, started = _native_run_fixture(tmp_path, count=1, role="home")
+    work_id = work[0]["work_id"]
+    bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
+    eod_capture.record_memory_extraction(
+        state_root=state, work_id=work_id, writer_role="home",
+        reviewed=_reviewed_memory_item(bundle, value="Synthetic local fact"),
+    )
+    remote_calls = []
+
+    def synthetic_transport(args, envelope):
+        remote_calls.append((args, envelope))
+        if error is not None:
+            raise error("synthetic SJM transport outcome")
+        return {"status": "idle", "deliveries": []}
+
+    drain = eod_capture.drain_home_memory(
+        state, writer_role="home", pull_sjm=True, transport_func=synthetic_transport,
+    )
+    assert len(remote_calls) == 1
+    args, envelope = remote_calls[0]
+    assert args[:3] == ["memory-list-deliverable", "--writer-role", "sjm-source-only"]
+    assert envelope is None
+    assert drain["reconciled"] == 1
+    result = eod_capture.record_native_memory_run(
+        state_root=state, writer_role="home", work_ids=[work_id],
+        started_at=started.isoformat(),
+        drain_result=drain, publication_result={"status": "published"},
+    )
+    assert result["outcome"] == expected
+    commands = json.loads(Path(result["receipt_path"]).read_text())["commands"]
+    assert commands["memory_home_drain"]["local_failed"] == 0
+    assert commands["memory_home_drain"]["failed"] == int(error is eod_capture.SjmMemoryCommandError)
+    assert commands["memory_sjm_pull"]["status"] == expected
+    assert commands["memory_sjm_pull"]["failed"] == int(error is eod_capture.SjmMemoryCommandError)
+    assert commands["memory_sjm_pull"]["offline"] == int(error is ConnectionError)
+    assert commands["memory_sjm_pull"]["listed"] == (0 if error is None else None)
+
+
+@pytest.mark.parametrize(("error", "expected"), [
+    (ConnectionError, "waiting"),
+    (eod_capture.SjmMemoryCommandError, "failed"),
+])
+def test_sjm_transport_outcome_preserves_the_last_successful_home_run(tmp_path, error, expected):
+    request = {
+        "state_root": tmp_path, "writer_role": "home", "work_ids": [],
+        "publication_result": {"status": "not_attempted",
+                               "reason": "no_new_reconciliation_or_pending_publication"},
+    }
+    completed = eod_capture.record_native_memory_run(
+        **request, started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result=eod_capture.drain_home_memory(tmp_path, writer_role="home"),
+    )
+    assert completed["outcome"] == "completed"
+    success_at = json.loads(Path(completed["receipt_path"]).read_text())["finished_at"]
+
+    def synthetic_transport(_args, _envelope):
+        raise error("synthetic SJM transport problem")
+
+    result = eod_capture.record_native_memory_run(
+        **request, started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result=eod_capture.drain_home_memory(
+            tmp_path, writer_role="home", pull_sjm=True, transport_func=synthetic_transport,
+        ),
+    )
+    assert result["outcome"] == expected
+    status = eod_capture.native_job_status.read_native_job_status(
+        writer_role="home", state_root=tmp_path, automation_root=tmp_path / "automations",
+    )
+    assert status["last_run_outcome"] == expected
+    assert status["last_successful_at"] == success_at
+
+
+def test_unreadable_hold_needs_attention_while_sjm_is_waiting(tmp_path):
+    (tmp_path / "extraction-hold.json").write_text("{invalid")
+
+    def offline_transport(_args, _envelope):
+        raise ConnectionError("synthetic unavailable SJM")
+
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result=eod_capture.drain_home_memory(
+            tmp_path, writer_role="home", pull_sjm=True, transport_func=offline_transport,
+        ),
+        publication_result={"status": "not_attempted",
+                            "reason": "no_new_reconciliation_or_pending_publication"},
+    )
+    assert result["outcome"] == "needs_attention"
+    assert "extraction hold could not be verified" in result["diagnostic"]
+    commands = json.loads(Path(result["receipt_path"]).read_text())["commands"]
+    assert commands["memory_sjm_pull"]["status"] == "waiting"
+
+
+@pytest.mark.parametrize(("publication_status", "diagnostic"), [
+    ("unknown_status", "home_publication_status_invalid"),
+    ("published", "publication_eligibility_unverified"),
+])
+def test_failed_drain_cannot_record_unverified_publication(tmp_path, publication_status, diagnostic):
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result={
+            "status": "failed", "diagnostic": "memory_drain_failed",
+            "error_type": "RuntimeError", "message": "verified drain failure",
+        },
+        publication_result={"status": publication_status},
+    )
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == diagnostic
+
+
+def test_failed_drain_preserves_error_without_interpreting_backlog(tmp_path):
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result={
+            "status": "failed", "diagnostic": "memory_drain_failed",
+            "error_type": "RuntimeError", "message": "verified drain failure",
+            "reconciliation_conflicts": 1,
+        },
+        publication_result={
+            "status": "not_attempted", "reason": "unreconciled_backlog_remaining",
+        },
+    )
+    assert result["outcome"] == "failed"
+    commands = json.loads(Path(result["receipt_path"]).read_text())["commands"]
+    assert commands["memory_home_drain"]["message"] == "verified drain failure"
+    assert commands["memory_publish"] == {"status": "not_attempted", "reason": "drain_failed"}
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("unreconciled_backlog_remaining", "waiting"),
+    ("no_new_reconciliation_or_pending_publication", "failed"),
+])
+def test_home_receipt_requires_matching_backlog_deferral(tmp_path, reason, expected):
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result={
+            "status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+            "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
+            "reconciliation_conflicts": 0, "unreconciled_remaining": 1,
+        },
+        publication_result={"status": "not_attempted", "reason": reason},
+    )
+    assert result["outcome"] == expected
+
+
 def test_home_run_without_command_json_leaves_failed_evidence(tmp_path):
     state = tmp_path / "state"
     result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
@@ -3137,31 +3466,76 @@ def test_home_run_without_command_json_leaves_failed_evidence(tmp_path):
     assert Path(result["receipt_path"]).is_file()
 
 
-def test_home_run_records_valid_drain_and_publication(tmp_path):
+@pytest.mark.parametrize("publication", [
+    {"status": "not_attempted"},
+    {"status": "not_attempted", "reason": "publication_eligibility_unverified_after_drain_state_change"},
+])
+def test_home_run_cannot_complete_when_publication_eligibility_is_unverified(tmp_path, publication):
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result=eod_capture.drain_home_memory(tmp_path, writer_role="home"),
+        publication_result=publication,
+    )
+    assert result["outcome"] == "failed"
+    assert result["diagnostic"] == "publication_eligibility_unverified"
+    assert result["failed"] is None
+
+
+@pytest.mark.parametrize("sjm_delivery,transfer_status,expected", [
+    ({"attempted": False}, "not_attempted", "completed"),
+    ({"attempted": True, "listed": 1, "accepted": 1}, "completed", "completed"),
+    ({"attempted": True, "listed": 2, "accepted": 1}, "unknown", "needs_attention"),
+])
+def test_home_run_records_valid_drain_and_publication(tmp_path, sjm_delivery, transfer_status, expected):
     state = tmp_path / "state"
     result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
         started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
-        drain_result={"status": "reconciled", "local_delivery": {"reconciled": 0},
-                      "sjm_delivery": {"failed": 0}},
-        publication_result={"status": "not_attempted"})
-    assert result["outcome"] == "completed"
+        drain_result={"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+                      "sjm_delivery": {"accepted": 0, "failed": 0, **sjm_delivery}, "reconciliation_conflicts": 0,
+                      "unreconciled_remaining": 0},
+        publication_result={"status": "not_attempted",
+                            "reason": "no_new_reconciliation_or_pending_publication"})
+    assert result["outcome"] == expected
     data = json.loads(Path(result["receipt_path"]).read_text())
     assert data["commands"]["memory_home_drain"]["status"] == "reconciled"
-    assert data["commands"]["memory_publish"]["status"] == "not_attempted"
+    assert data["commands"]["memory_sjm_pull"] == {
+        "status": transfer_status, "failed": 0, "offline": int(transfer_status == "waiting"),
+        "accepted": sjm_delivery.get("accepted", 0), "duplicate_acceptances": 0,
+        "listed": sjm_delivery.get("listed"),
+    }
+    assert data["commands"]["memory_publish"] == {
+        "status": "not_attempted", "reason": "no_new_reconciliation_or_pending_publication",
+    }
 
 
 @pytest.mark.parametrize("drain", [
-    {"status": "reconciled", "local_delivery": "nope", "sjm_delivery": {"failed": 0}},
-    {"status": "reconciled", "local_delivery": {"failed": None}, "sjm_delivery": {"failed": 0}},
-    {"status": "reconciled", "local_delivery": {"failed": -1}, "sjm_delivery": {"failed": 0}},
-    {"status": "reconciled", "local_delivery": {"failed": True}, "sjm_delivery": {"failed": 0}},
-    {"status": "reconciled", "local_delivery": {}, "sjm_delivery": {"failed": 2 ** 70}},
+    {"status": "reconciled", "local_delivery": "nope", "sjm_delivery": {"accepted": 0, "failed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": None}, "sjm_delivery": {"accepted": 0, "failed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": -1}, "sjm_delivery": {"accepted": 0, "failed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": True}, "sjm_delivery": {"accepted": 0, "failed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0}, "sjm_delivery": {"accepted": 0, "failed": 2 ** 70}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0}, "sjm_delivery": {"accepted": 0, "failed": 0, "exhausted": 1}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0}, "sjm_delivery": {"accepted": 0, "failed": 0, "transient_failed": 1}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+     "sjm_delivery": {"attempted": True, "listed": 1, "accepted": 2, "failed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+     "sjm_delivery": {"attempted": False, "accepted": 0, "failed": 0, "offline": 1}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+     "sjm_delivery": {"attempted": True, "accepted": 0, "failed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+     "sjm_delivery": {"attempted": True, "accepted": 0, "failed": 0, "listed": None}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+     "sjm_delivery": {"accepted": 0, "failed": 0, "listed": 0}},
+    {"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
+     "sjm_delivery": {"attempted": True, "accepted": 0, "failed": 0, "ack_failed": 1, "listed": None}},
 ])
 def test_home_run_rejects_malformed_drain_json_with_durable_evidence(tmp_path, drain):
     state = tmp_path / "state"
     result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
         started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
-        drain_result=drain, publication_result={"status": "not_attempted"})
+        drain_result=drain, publication_result={"status": "not_attempted",
+                            "reason": "no_new_reconciliation_or_pending_publication"})
     assert result["outcome"] == "failed"
     assert Path(result["receipt_path"]).is_file()
 
@@ -3177,6 +3551,20 @@ def test_native_run_receipt_persists_validated_hold_exception(tmp_path):
     assert result["outcome"] == "completed"
     data = json.loads(Path(result["receipt_path"]).read_text())
     assert data["exceptions"] == [hold]
+    assert data["hold_created"] is True
+
+
+@pytest.mark.parametrize("work_id", [{}, {"work_id": None}])
+def test_native_run_receipt_accepts_quota_hold_without_a_selected_turn(tmp_path, work_id):
+    (tmp_path / "extraction-hold.json").write_text('{"created_at":"2026-11-22T08:00:00Z"}')
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="sjm-source-only", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        exceptions=[{"type": "quota_exhausted", "operator_action_required": True, **work_id}],
+    )
+    assert result["outcome"] == "blocked"
+    data = json.loads(Path(result["receipt_path"]).read_text())
+    assert data["exceptions"] == [{"type": "quota_exhausted", "operator_action_required": True}]
     assert data["hold_created"] is True
 
 
@@ -3936,6 +4324,21 @@ def test_all_filtered_extraction_retries_with_backoff_then_needs_attention(
         "needs_attention": 1,
         "retry_backoff": 0,
     }
+    for worklist, expected in ((waiting, "waiting_retry"), (final, "needs_attention")):
+        assert worklist["status"] == expected
+        run = eod_capture.record_native_memory_run(
+            state_root=state, writer_role="home", work_ids=[],
+            started_at=datetime.now(timezone.utc).isoformat(),
+            worklist_result=worklist,
+            drain_result={"status": "idle", "local_delivery": {"accepted": 0, "failed": 0},
+                          "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
+                          "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+            publication_result={"status": "not_attempted",
+                            "reason": "no_new_reconciliation_or_pending_publication"},
+        )
+        assert run["outcome"] == expected
+        receipt = json.loads(Path(run["receipt_path"]).read_text())
+        assert receipt["commands"]["memory_worklist"]["status"] == expected
     assert not list((state / "extraction-receipts").glob("*.json"))
     assert not list((state / "outbox").glob("*.json"))
 
@@ -4440,6 +4843,15 @@ def test_key_kind_collision_pauses_intake_and_resumes_after_reviewed_resolution(
     assert first["local_delivery"]["accepted"] == 0
     assert first["unreconciled_remaining"] == 1
     assert first["publication"] == {"status": "not_attempted", "reason": "reconciliation_needs_attention"}
+    receipt = eod_capture.record_native_memory_run(
+        state_root=state, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result=first, publication_result=first["publication"],
+    )
+    assert receipt["outcome"] == "needs_attention"
+    data = json.loads(Path(receipt["receipt_path"]).read_text())
+    assert data["commands"]["memory_home_drain"]["unreconciled_remaining"] == 1
+    assert data["commands"]["memory_publish"] == first["publication"]
     diagnostic = state / "reconciliation-diagnostics" / (conflict["delivery_id"] + ".json")
     assert diagnostic.is_file()
     assert not (state / "reconciliation" / diagnostic.name).exists()
