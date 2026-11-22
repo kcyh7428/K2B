@@ -302,6 +302,8 @@ def _normalize_native(raw: Any) -> dict:
         "caller_dispatch_claim": None,
         "last_run_outcome": "unknown",
         "last_completed_at": None,
+        "last_successful_at": None,
+        "last_successful_age_hours": None,
         "extraction_hold": "unknown",
         "diagnostic": None,
         "observed_at": None,
@@ -344,6 +346,11 @@ def _normalize_native(raw: Any) -> dict:
         result["native_job_id"] = raw["native_job_id"]
     if _parse_iso(raw.get("last_completed_at")) is not None:
         result["last_completed_at"] = raw["last_completed_at"]
+    if _parse_iso(raw.get("last_successful_at")) is not None:
+        result["last_successful_at"] = raw["last_successful_at"]
+        age = raw.get("last_successful_age_hours")
+        if type(age) in (int, float) and 0 <= age < math.inf:
+            result["last_successful_age_hours"] = age
     if isinstance(raw.get("diagnostic"), str) and raw["diagnostic"]:
         result["diagnostic"] = raw["diagnostic"]
     observed = raw.get("observed_at")
@@ -991,8 +998,8 @@ def summarize(observations: dict, *, now: str) -> dict:
             )
         else:
             limitations.append("native dispatch was not observed")
-    if native["last_run_outcome"] == "unknown":
-        limitations.append("native run outcome is unknown")
+    if native["last_run_outcome"] != "completed":
+        limitations.append(f"native run outcome is {native['last_run_outcome']}")
     if native["observed_at_valid"] is False:
         limitations.append("native observation is missing or has an invalid timestamp")
     native_stale, native_note, _ = _stale(

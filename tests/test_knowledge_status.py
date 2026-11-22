@@ -452,11 +452,19 @@ def test_forged_verified_dispatch_declaration_still_unverified():
     assert any("not verified" in line for line in report["limitations"])
 
 
-def test_failed_run_outcome_is_reported():
+@pytest.mark.parametrize("outcome", ("failed", "unknown", "blocked", "needs_attention", "waiting", "waiting_retry"))
+def test_noncompleted_run_preserves_last_success_and_reports_limitation(outcome):
     observations = _base_observations()
-    observations["native_job"]["last_run_outcome"] = "failed"
+    successful_at = "2026-10-25T02:00:00Z"
+    observations["native_job"].update(
+        last_run_outcome=outcome, last_completed_at=None,
+        last_successful_at=successful_at, last_successful_age_hours=1.0,
+    )
     report = knowledge_status.summarize(observations, now=NOW)
-    assert report["native_job"]["last_run_outcome"] == "failed"
+    assert report["native_job"]["last_run_outcome"] == outcome
+    assert report["native_job"]["last_successful_at"] == successful_at
+    assert report["native_job"]["last_successful_age_hours"] == 1.0
+    assert f"native run outcome is {outcome}" in report["limitations"]
 
 
 def test_invalid_now_raises():
