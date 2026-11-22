@@ -4412,7 +4412,10 @@ def test_sjm_remote_exit_255_is_not_an_ssh_transport_error(tmp_path, monkeypatch
         eod_capture._default_sjm_memory_transport(["memory-list-deliverable"])
 
 
-def test_key_kind_collision_pauses_intake_and_resumes_after_reviewed_resolution(tmp_path):
+@pytest.mark.parametrize("cleanup_interrupted", [False, True])
+def test_key_kind_collision_pauses_intake_and_resumes_after_reviewed_resolution(
+    tmp_path, monkeypatch, cleanup_interrupted, capsys,
+):
     from test_automatic_memory import _bundle
     import automatic_memory_key_resolution as resolution
     from automatic_memory_publisher import _reconciliation_watermark
@@ -4454,8 +4457,39 @@ def test_key_kind_collision_pauses_intake_and_resumes_after_reviewed_resolution(
     planned = resolution.plan(state, conflict["delivery_id"], "fact.office", "Reviewed distinction")
     resolution.record(state, planned, writer_role="home",
                       expected_sha256=hashlib.sha256(automatic_memory._canonical_json(planned)).hexdigest())
+    synced = []
+    sync_dir = eod_capture._fsync_dir
+
+    def track_sync(path):
+        if path == diagnostic.parent:
+            assert not diagnostic.exists()
+            synced.append(path)
+        sync_dir(path)
+
+    monkeypatch.setattr(eod_capture, "_fsync_dir", track_sync)
+    if cleanup_interrupted:
+        unlink = Path.unlink
+
+        def interrupt_cleanup(path, *args, **kwargs):
+            if path == diagnostic:
+                raise PermissionError("interrupted diagnostic cleanup")
+            return unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", interrupt_cleanup)
+            first_retry = eod_capture.drain_home_memory(state, writer_role="home")
+        assert first_retry["reconciled"] == 2
+        assert first_retry["reconciliation_conflicts"] == 0
+        assert diagnostic.exists()
+        assert (state / "reconciliation" / diagnostic.name).is_file()
+        assert "diagnostic could not be removed" in capsys.readouterr().err
+
     fixed = eod_capture.drain_home_memory(state, writer_role="home")
     assert fixed["unreconciled_remaining"] == 0
+    if cleanup_interrupted:
+        assert fixed["replayed"] > 0
+    assert not diagnostic.exists()
+    assert synced == [diagnostic.parent]
     assert conflict["delivery_id"] in _reconciliation_watermark(
         state, target, automatic_memory.memory_snapshot(target)
     )

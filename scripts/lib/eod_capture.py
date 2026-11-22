@@ -4460,9 +4460,41 @@ def _drain_home_memory(
         path for path in (state_root / "acceptance").glob("delivery:*.json")
         if path not in initially_pending
     )
+    # Retry unfinished diagnostic cleanup ahead of ordinary reconciliation replays.
+    replay_paths.sort(key=lambda path: not _reconciliation_diagnostic_path(state_root, path).exists())
     attempts = 0
     reconciled = 0
     conflicts: set[Path] = set()
+
+    def clear_resolved_diagnostic(diagnostic: Path, receipt: dict) -> None:
+        if receipt.get("status") != "reconciled" or not diagnostic.exists():
+            return
+        # The reconciler has already validated or atomically written the
+        # durable receipt. Its duplicate replays retain status "reconciled".
+        try:
+            saved = _read_memory_json(state_root / "reconciliation" / diagnostic.name,
+                                      "Home reconciliation receipt")
+        except RuntimeError:
+            print("warning: diagnostic retained because its reconciliation receipt could not be rechecked",
+                  file=sys.stderr)
+            return
+        binding = ("status", "delivery_id", "content_id", "memory_target_sha256", "key_resolution_sha256")
+        if (saved.get("delivery_id") != diagnostic.stem
+                or any(saved.get(key) != receipt.get(key) for key in binding)):
+            print("warning: diagnostic retained because its reconciliation receipt binding changed",
+                  file=sys.stderr)
+            return
+        try:
+            diagnostic.unlink()
+        except FileNotFoundError:
+            return
+        except OSError:
+            print("warning: resolved reconciliation diagnostic could not be removed", file=sys.stderr)
+            return
+        try:
+            _fsync_dir(diagnostic.parent)
+        except OSError:
+            print("warning: reconciliation diagnostic removal may not persist after restart", file=sys.stderr)
 
     def reconcile_pending(paths: list[Path]) -> None:
         nonlocal attempts, reconciled
@@ -4483,6 +4515,7 @@ def _drain_home_memory(
                 _atomic_write_json(diagnostic, exc.diagnostic)
                 conflicts.add(path)
             else:
+                clear_resolved_diagnostic(diagnostic, result)
                 reconciled += int(not result["duplicate"])
 
     reconcile_pending(pending_at_start)
@@ -4515,7 +4548,8 @@ def _drain_home_memory(
     reconcile_pending([path for path in pending_paths if path not in initially_pending])
     replayed = 0
     for path in replay_paths[:limit - attempts]:
-        reconcile_memory_delivery(state_root, path.stem, writer_role="home", memory_path=target)
+        result = reconcile_memory_delivery(state_root, path.stem, writer_role="home", memory_path=target)
+        clear_resolved_diagnostic(_reconciliation_diagnostic_path(state_root, path), result)
         replayed += 1
 
     remaining_paths = set(_unreconciled_deliveries(state_root))
