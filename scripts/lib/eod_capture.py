@@ -5497,6 +5497,8 @@ def memory_status(
         "native_configured_reasoning": native["configured_reasoning"],
         "native_schedule": native["schedule"],
         "native_last_completed_at": native["last_completed_at"],
+        "native_last_successful_at": native.get("last_successful_at"),
+        "native_last_successful_age_hours": native.get("last_successful_age_hours"),
         "native_run_outcome": native["last_run_outcome"],
         "native_extraction_hold": native["extraction_hold"],
         "native_diagnostic": native["diagnostic"],
