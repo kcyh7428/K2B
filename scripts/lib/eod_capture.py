@@ -3413,13 +3413,33 @@ def build_memory_worklist(
     if (isinstance(max_scan_seconds, bool) or not isinstance(max_scan_seconds, (int, float))
             or not math.isfinite(max_scan_seconds) or not 0 <= max_scan_seconds <= 1050):
         raise ValueError("worklist scan budget must be from 0 through 1050 seconds (30-second persistence reserve)")
+    requested_dates = set(_date_range(since, through))
+    exception_counts = {"needs_attention": 0, "retry_backoff": 0}
+    parse_exception_counts: dict[str, int] = {}
+    result = {
+        "writer_role": role,
+        "selected": 0,
+        "excluded": 0,
+        "skipped_receipted": 0,
+        "scan": {"status": "not_attempted", "budget_exhausted": False,
+                 "first_unverified_source": None, "budget_seconds": max_scan_seconds},
+        "persistence": {"status": "not_attempted", "budget_exhausted": False,
+                        "first_unverified_source": None, "budget_seconds": 30},
+        "exception_counts": exception_counts,
+        "parse_exception_counts": parse_exception_counts,
+        "items": [],
+    }
+    hold, hold_diagnostic = native_job_status._read_hold(state_root)
+    if hold != "absent":
+        return {
+            **result, "status": "blocked" if hold == "present" else "needs_attention",
+            "hold_diagnostic": hold_diagnostic,
+        }
     selection_deadline = time.monotonic() + max_scan_seconds
     first_unverified_source = None
     persistence_unverified_source = None
-    requested_dates = set(_date_range(since, through))
     eligible: list[dict] = []
     excluded = 0
-    parse_exception_counts: dict[str, int] = {}
     # Parse each source once. Its completed prefixes already carry dates; a
     # separate discovery parse doubles the cost of every archived log.
     root = _resolve_codex_root(codex_root)
@@ -3518,11 +3538,23 @@ def build_memory_worklist(
         )
     )
 
+    result["scan"] = {
+        "status": "bounded" if first_unverified_source else "finished",
+        "budget_exhausted": first_unverified_source is not None,
+        "first_unverified_source": first_unverified_source,
+        "budget_seconds": max_scan_seconds,
+    }
     selected: list[dict] = []
     skipped_receipted = 0
-    exception_counts = {"needs_attention": 0, "retry_backoff": 0}
     lock_path = state_root / ".memory-worklist.lock"
     with _file_lock(lock_path):
+        hold, hold_diagnostic = native_job_status._read_hold(state_root)
+        if hold != "absent":
+            return {
+                **result, "excluded": excluded,
+                "status": "blocked" if hold == "present" else "needs_attention",
+                "hold_diagnostic": hold_diagnostic,
+            }
         failed_sources: set[str] = set()
         verified_sources: dict[str, tuple] = {}
         persistence_deadline = time.monotonic() + 30
@@ -3667,19 +3699,15 @@ def build_memory_worklist(
     else:
         status = "idle"
     return {
+        **result,
         "status": status,
-        "writer_role": role,
         "selected": len(selected),
         "excluded": excluded,
         "skipped_receipted": skipped_receipted,
-        "scan": {"budget_exhausted": bool(parse_exception_counts.get("source_scan_time_budget")),
-                 "first_unverified_source": first_unverified_source,
-                 "budget_seconds": max_scan_seconds},
-        "persistence": {"budget_exhausted": bool(parse_exception_counts.get("source_persistence_time_budget")),
+        "persistence": {"status": "bounded" if persistence_unverified_source else "finished",
+                        "budget_exhausted": bool(parse_exception_counts.get("source_persistence_time_budget")),
                         "first_unverified_source": persistence_unverified_source,
                         "budget_seconds": 30},
-        "exception_counts": exception_counts,
-        "parse_exception_counts": parse_exception_counts,
         "items": selected,
     }
 
@@ -4224,6 +4252,7 @@ def pull_sjm_memory(
         "offline": 0,
         "delivery_ids": [],
         "attempted": limit > 0,
+        "listed": None,
     }
     if limit == 0:
         return summary
@@ -4252,6 +4281,7 @@ def pull_sjm_memory(
         raise automatic_memory.ValidationError("SJM delivery listing is malformed")
     if len(listing["deliveries"]) > limit:
         raise automatic_memory.ValidationError("SJM delivery listing exceeds requested limit")
+    summary["listed"] = len(listing["deliveries"])
     for item in listing["deliveries"]:
         if (
             not isinstance(item, dict)
