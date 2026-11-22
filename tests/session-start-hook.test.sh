@@ -233,6 +233,24 @@ elapsed=$((SECONDS - start))
 [ "$elapsed" -lt 6 ] || fail "native status observation must have a short deadline"
 echo "PASS: stalled native status is bounded and remains unknown"
 
+cat > "$stub_root/scripts/lib/native_job_status.py" <<'EOF'
+def read_native_job_status(**kwargs):
+    return {
+        "registration_state": "active", "last_completed_at": "2026-11-08T00:00:00+00:00",
+        "last_successful_age_hours": 7.0,
+        "last_run_outcome": "completed", "extraction_hold": "unknown",
+        "diagnostic": "extraction hold is a symlink",
+    }
+EOF
+out="$(env HOME="$home_dir" K2B_PROJECT_ROOT="$stub_root" K2B_VAULT_PATH="$vault" bash "$SCRIPT")"
+[[ "$out" == *"last success=2026-11-08T00:00:00+00:00"* ]] \
+  || fail "startup should still use the established timestamp from an older native reader"
+[[ "$out" == *"extraction hold is a symlink"* ]] \
+  || fail "startup should show the diagnostic for an unsafe hold"
+[[ "$out" != *"(7h ago)"* ]] \
+  || fail "startup should omit an age without its corresponding success timestamp"
+echo "PASS: older native readers and unsafe hold details remain visible"
+
 # A stalled module import must also be bounded and reported distinctly: it
 # is a reader problem, not unknown job evidence, and it must not consume
 # the whole SessionStart timeout.

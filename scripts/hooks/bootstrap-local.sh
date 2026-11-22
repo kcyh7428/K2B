@@ -167,12 +167,23 @@ try:
         str(Path.home() / ".local/state/k2b/automatic-memory"),
     ))
     native = read_native_job_status(writer_role=role, state_root=state_root)
+    hours = native.get("last_successful_age_hours")
+    last_reported_success = native.get("last_successful_at")
+    age = (
+        f" ({hours:g}h ago)" if last_reported_success
+        and type(hours) in (int, float) and 0 <= hours < float("inf") else ""
+    )
+    hold = native.get("extraction_hold", "unknown")
+    details = native.get("diagnostic") if hold != "absent" else None
+    details = " ".join(details[:800].split())[:160] if isinstance(details, str) else ""
+    last_success = native.get("last_successful_at", native.get("last_completed_at"))
     print(
         "AUTOMATIC MEMORY (local evidence; coverage and synchronization unverified): "
         f"registration={native['registration_state']}; "
-        f"last success={native['last_completed_at'] or 'unknown'}; "
+        f"last success={last_success or 'unknown'}{age}; "
         f"outcome={native['last_run_outcome']}; "
-        f"extraction hold={native['extraction_hold']}; role={role}"
+        f"extraction hold={hold}; role={role}"
+        + (f"; {details}" if details else "")
     )
 except TimeoutError:
     if phase == "import":
