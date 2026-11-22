@@ -744,9 +744,10 @@ def _validate_records_and_corrections(
                 "transcript_hash",
             }:
                 raise StateCorruptionError(f"memory record {key} has invalid citation")
+            evidence_quote = version["evidence_quote"]
             try:
-                evidence_quote = _required_string(
-                    version["evidence_quote"],
+                _required_string(
+                    evidence_quote,
                     "memory evidence_quote",
                     max_chars=MAX_ITEM_TEXT_CHARS,
                 )

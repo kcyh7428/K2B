@@ -63,6 +63,22 @@ def _bundle(
     }
 
 
+def test_reconciliation_preserves_whitespace_in_source_evidence(tmp_path):
+    quote = "Exact source evidence. \n"
+    envelope = automatic_memory.make_envelope(_bundle(quote=quote))
+    target = tmp_path / "memory.json"
+
+    first = automatic_memory.apply_reviewed_envelope(target, envelope)
+    before_replay = target.read_bytes()
+    replay = automatic_memory.apply_reviewed_envelope(target, envelope)
+
+    assert first["applied"] == 1
+    assert replay["duplicates"] == 1
+    assert target.read_bytes() == before_replay
+    snapshot = automatic_memory.memory_snapshot(target)
+    assert snapshot["records"]["fact.office"]["versions"][0]["evidence_quote"] == quote
+
+
 def test_offline_outbox_survives_restart_and_drains_after_bounded_retries(
     tmp_path: Path,
 ) -> None:
