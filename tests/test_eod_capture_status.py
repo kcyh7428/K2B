@@ -3242,7 +3242,7 @@ def test_cli_records_blocked_home_worklist_with_independent_success(tmp_path, ca
         "drain": {
             "status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
             "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
-            "reconciliation_conflicts": 0, "unreconciled_remaining": 0,
+                "reconciled": 1, "reconciliation_conflicts": 0, "unreconciled_remaining": 0,
         },
         "publication": {"status": "published"},
     }.items():
@@ -3272,7 +3272,7 @@ def test_held_home_reports_independent_publication_success(tmp_path):
         started_at=datetime.now(timezone.utc).isoformat(),
         drain_result={"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
                       "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
-                      "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+                      "reconciled": 1, "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
         publication_result={"status": "published"},
     )
     assert result["outcome"] == "blocked"
@@ -3468,6 +3468,7 @@ def test_home_run_without_command_json_leaves_failed_evidence(tmp_path):
 
 @pytest.mark.parametrize("publication", [
     {"status": "not_attempted"},
+    {"status": "not_attempted", "reason": "publication_eligibility_unverified"},
     {"status": "not_attempted", "reason": "publication_eligibility_unverified_after_drain_state_change"},
 ])
 def test_home_run_cannot_complete_when_publication_eligibility_is_unverified(tmp_path, publication):
@@ -3480,6 +3481,35 @@ def test_home_run_cannot_complete_when_publication_eligibility_is_unverified(tmp
     assert result["outcome"] == "failed"
     assert result["diagnostic"] == "publication_eligibility_unverified"
     assert result["failed"] is None
+    assert Path(result["receipt_path"]).is_file()
+
+
+@pytest.mark.parametrize("counts,status,expected", [
+    ({}, "published", "failed"),
+    ({"reconciled": None}, "published", "failed"),
+    ({"reconciled": True}, "published", "failed"),
+    ({"reconciled": -1}, "published", "failed"),
+    ({"reconciled": 1.0}, "published", "failed"),
+    ({"reconciled": 0.5}, "published", "failed"),
+    ({"reconciled": "0"}, "not_attempted", "failed"),
+    ({"reconciled": 1}, "not_attempted", "failed"),
+    ({"reconciled": 0}, "published", "completed"),
+    ({"reconciled": 1}, "published", "completed"),
+])
+def test_home_run_requires_valid_reconciliation_count_for_publication(tmp_path, counts, status, expected):
+    drain = eod_capture.drain_home_memory(tmp_path, writer_role="home")
+    del drain["reconciled"]
+    publication = {"status": status}
+    if status == "not_attempted":
+        publication["reason"] = "no_new_reconciliation_or_pending_publication"
+    result = eod_capture.record_native_memory_run(
+        state_root=tmp_path, writer_role="home", work_ids=[],
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drain_result={**drain, **counts}, publication_result=publication,
+    )
+    assert result["outcome"] == expected
+    if expected == "failed":
+        assert result["diagnostic"] == "publication_eligibility_unverified"
 
 
 @pytest.mark.parametrize("sjm_delivery,transfer_status,expected", [
@@ -3493,7 +3523,7 @@ def test_home_run_records_valid_drain_and_publication(tmp_path, sjm_delivery, tr
         started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
         drain_result={"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
                       "sjm_delivery": {"accepted": 0, "failed": 0, **sjm_delivery}, "reconciliation_conflicts": 0,
-                      "unreconciled_remaining": 0},
+                      "reconciled": 0, "unreconciled_remaining": 0},
         publication_result={"status": "not_attempted",
                             "reason": "no_new_reconciliation_or_pending_publication"})
     assert result["outcome"] == expected
@@ -4332,7 +4362,7 @@ def test_all_filtered_extraction_retries_with_backoff_then_needs_attention(
             worklist_result=worklist,
             drain_result={"status": "idle", "local_delivery": {"accepted": 0, "failed": 0},
                           "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},
-                          "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+                          "reconciled": 0, "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
             publication_result={"status": "not_attempted",
                             "reason": "no_new_reconciliation_or_pending_publication"},
         )

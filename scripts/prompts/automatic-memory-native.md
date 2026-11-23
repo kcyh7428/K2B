@@ -32,8 +32,17 @@ bound which prepared views it accounts for, but it cannot prove that a
 concurrent producer prepared nothing, so one owner and start-before-prepare
 discipline are required.
 
-Before worklist selection, check `<state-root>/extraction-hold.json` in private
-machine-local state. If present
+Run selection, input preparation, and receipt commands as separate calls that
+complete without interactive input. Do not keep a helper waiting on stdin
+between steps, including a Python helper launched with a here-document. Use
+the selected work ID and the same recorded start time in the next command.
+The native job remains the sole owner of the batch across those calls.
+
+Before worklist selection in each scheduled run, check
+`<state-root>/extraction-hold.json` afresh in private machine-local state.
+If it is absent at this run's first check, proceed to Step 1 even if the
+previous run saw a hold. An operator release between scheduled runs is
+permission to resume the normal bounded selection. If present
 or unreadable/malformed, do not select or extract another source; the hold needs
 operator intervention and must not be removed by a native run. Home still
 performs independently eligible drain/publication steps 4 and 5. On a new
@@ -46,8 +55,12 @@ or required action changes. Report the first unverifiable observation, or the
 transition from readable to unverifiable, using the previous run's saved
 hold observation for comparison. Keep reporting the blocked state without
 sending another hold-change notification while it stays unverifiable.
-If a hold observed at selection time disappears later in the same run,
-leave extraction stopped and report the change.
+Use the previous run's observation only for notifications. If a hold is
+present or unverifiable at any check in this run, stop extraction for the
+rest of this run, even if the file later becomes absent. Keep the observed
+hold state and time in the private run artifacts and report any same-run change.
+If the worklist itself returned `blocked`, pass that actual result to the receipt
+helper. The helper can report that the hold changed after the worklist check.
 The receipt helper checks the hold file directly and records `hold_check`
 as `absent`, `present`, or `unknown`. An unknown hold blocks extraction and
 requires operator attention. Startup also shows the observed hold.
@@ -177,7 +190,9 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    publication command with the same host Python 3.12 interpreter and unchanged
    exported environment in that subshell. Retain the existing run budget;
    unknown lock ownership stays blocked and never permits timeout deletion.
-   If either drain count is missing or invalid, defer with
+   Read `reconciliation_conflicts` and `unreconciled_remaining` directly from
+   this run's saved drain JSON. Two integer zeroes are verified counts,
+   including when `reconciled` is zero. If either backlog count is missing or invalid, defer with
    `reconciliation_counts_unverifiable` as in step 4. If the drain JSON itself
    is unreadable, do not invoke publication. Record `not_attempted` with that
    same reason, and pass the expected drain path to the receipt command.
@@ -194,7 +209,24 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    investigation. Replays are verification of earlier work.
    Attempt publication only if both counts are verified zero and either a new
    reconciliation occurred or a prior durable reconciliation still awaits
-   publication. The separately provisioned Home
+   publication. Once both backlog counts are verified zero, require
+   `reconciled` to be a nonnegative integer in the same drain output. A missing
+   or invalid `reconciled` count defers with `reconciliation_counts_unverifiable`.
+   With `reconciled: 0`, run the same
+   Home command and arguments with `--check-only` after preflight. Keep its
+   actual JSON in the private run artifacts. This check does not write or take
+   writer locks. On exit 0 with `publication_due: false`, record
+   `not_attempted` with reason `no_new_reconciliation_or_pending_publication`.
+   On exit 0 with `publication_due: true`, invoke the normal publication
+   command without `--check-only`. If the check fails or the decision is
+   missing, malformed, or unclear, do not invoke publication. Pass a
+   publication deferral artifact with status `not_attempted` and reason
+   `publication_eligibility_unverified`. This evidence is insufficient for
+   a completed run. The receipt command exits 2 and leaves a durable
+   `failed` run receipt with diagnostic `publication_eligibility_unverified`.
+   Report the diagnostic and retain the receipt path returned by the command.
+   Pass the publication result or the recorded deferral to the run receipt,
+   not the eligibility check JSON. The separately provisioned Home
    publication authority, approved policy-ledger hash, exclusive managed paths,
    publisher locks and the approved exact SMB publication-authority/live
    preflight remain mandatory. The imported index helper inherits the NAS

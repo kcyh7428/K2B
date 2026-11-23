@@ -340,6 +340,8 @@ def test_historical_home_namespace_uses_verified_smb_without_rewriting_history(n
     after_publication = {str(path): path.read_bytes() for folder in (env.vault, env.state)
                          for path in folder.rglob("*") if path.is_file()}
     assert env.p.publish(env.state / "memory.json", env.state, env.logical, "home")["duplicate"]
+    assert env.p.publish(env.state / "memory.json", env.state, env.logical, "home",
+                         check_only=True) == {"publication_due": False}
     assert legacy.read_bytes() == original
     assert_receipt_directories()
     assert after_publication == {str(path): path.read_bytes() for folder in (env.vault, env.state)
@@ -595,6 +597,9 @@ def test_interrupted_publication_recovers_after_newer_memory_arrives(tmp_path, m
     result = p.publish(state / "memory.json", state, vault, "home", preflight=ready)
     assert result["status"] == "published"
     assert "The office is now Green." in (vault / "wiki/context/context_automatic-memory-recall.md").read_text()
+    assert list((state / "publication-pending").glob("*.json"))
+    assert p.publish(state / "memory.json", state, vault, "home", preflight=ready,
+                     check_only=True) == {"publication_due": False}
 
 
 def test_additional_duplicate_provenance_advances_watermark_without_failure(tmp_path):
@@ -609,6 +614,204 @@ def test_additional_duplicate_provenance_advances_watermark_without_failure(tmp_
     assert len(second["reconciliation_watermark"]) == 2
     assert p.publish(state / "memory.json", state, vault, "home", preflight=ready)["duplicate"] is True
     assert (vault / "wiki/log.md").read_text().count(second["snapshot_sha256"]) == 1
+
+
+def test_read_only_eligibility_checks_publication_and_new_provenance(tmp_path, monkeypatch):
+    vault, state = setup(tmp_path)
+    p = publisher()
+    target = state / "memory.json"
+
+    def check_only():
+        return p.publish(target, state, vault, "home", preflight=ready, check_only=True)
+
+    def files():
+        return {f: (f.stat().st_mtime_ns, f.read_bytes()) for f in tmp_path.rglob("*") if f.is_file()}
+
+    def unexpected_lock(*args, **kwargs):
+        pytest.fail("read-only publication check took a write lock")
+
+    before = files()
+    assert check_only() == {"publication_due": True}
+    assert files() == before
+    first = p.publish(target, state, vault, "home", preflight=ready)
+
+    before = files()
+    with monkeypatch.context() as check:
+        check.setattr(p, "_lock", unexpected_lock)
+        check.setattr(automatic_memory, "_lock", unexpected_lock)
+        assert check_only() == {"publication_due": False}
+    assert files() == before
+
+    duplicate = automatic_memory.enqueue_bundle(state, _bundle(thread_source="desktop"))
+    eod_capture.accept_memory_envelope(state, duplicate, writer_role="home")
+    eod_capture.reconcile_memory_delivery(state, duplicate["delivery_id"], writer_role="home")
+    before = files()
+    assert check_only() == {"publication_due": True}
+    assert files() == before
+    second = p.publish(target, state, vault, "home", preflight=ready)
+    assert first["snapshot_sha256"] == second["snapshot_sha256"]
+    assert check_only() == {"publication_due": False}
+
+
+@pytest.mark.parametrize("damage", ["missing_artifact", "edited_artifact", "bad_receipt",
+                                    "missing_receipt", "bad_reconciliation", "unreconciled"])
+def test_eligibility_fails_closed_on_unsafe_evidence(tmp_path, damage):
+    vault, state = setup(tmp_path)
+    p = publisher()
+    target = state / "memory.json"
+    p.publish(target, state, vault, "home", preflight=ready)
+    artifact = vault / p.NOTE_REL
+    receipt = next((state / "publication").glob("*.json"))
+    if damage == "missing_artifact":
+        artifact.unlink()
+        assert p.publish(target, state, vault, "home", preflight=ready,
+                         check_only=True) == {"publication_due": True}
+        assert not artifact.exists()
+        return
+    if damage == "edited_artifact":
+        artifact.write_text("unexpected edit")
+    elif damage == "bad_receipt":
+        receipt.write_text("{")
+    elif damage == "missing_receipt":
+        receipt.unlink()
+    elif damage == "bad_reconciliation":
+        next((state / "reconciliation").glob("*.json")).write_text("{}")
+    elif damage == "unreconciled":
+        extra = automatic_memory.enqueue_bundle(state, _bundle(thread_source="desktop"))
+        eod_capture.accept_memory_envelope(state, extra, writer_role="home")
+    before = {f: f.read_bytes() for f in tmp_path.rglob("*") if f.is_file()}
+    with pytest.raises((ValueError, PermissionError)):
+        p.publish(target, state, vault, "home", preflight=ready, check_only=True)
+    assert before == {f: f.read_bytes() for f in tmp_path.rglob("*") if f.is_file()}
+
+
+def test_read_only_eligibility_detects_interrupted_publication(tmp_path, monkeypatch):
+    vault, state = setup(tmp_path)
+    p = publisher()
+    target = state / "memory.json"
+    original = eod_capture._atomic_write_text
+
+    def fail_note(path, text):
+        if path == vault / p.NOTE_REL:
+            raise OSError("interrupted before note")
+        original(path, text)
+
+    with monkeypatch.context() as fail:
+        fail.setattr(eod_capture, "_atomic_write_text", fail_note)
+        with pytest.raises(OSError, match="interrupted"):
+            p.publish(target, state, vault, "home", preflight=ready)
+    journal = next((state / "publication-pending").glob("*.json"))
+    assert p.publish(target, state, vault, "home", preflight=ready,
+                     check_only=True) == {"publication_due": True}
+    assert journal.is_file()
+    assert not (vault / p.NOTE_REL).exists()
+    p.publish(target, state, vault, "home", preflight=ready)
+    assert p.publish(target, state, vault, "home", preflight=ready,
+                     check_only=True) == {"publication_due": False}
+
+
+def test_read_only_eligibility_recognizes_a_completed_journal(tmp_path, monkeypatch):
+    vault, state = setup(tmp_path)
+    p = publisher()
+    target = state / "memory.json"
+    original = Path.unlink
+
+    def interrupt_journal_cleanup(path, *args, **kwargs):
+        if path.parent == state / "publication-pending":
+            raise OSError("interrupted after writing receipt")
+        original(path, *args, **kwargs)
+
+    with monkeypatch.context() as fail:
+        fail.setattr(Path, "unlink", interrupt_journal_cleanup)
+        with pytest.raises(OSError, match="after writing receipt"):
+            p.publish(target, state, vault, "home", preflight=ready)
+    journal = next((state / "publication-pending").glob("*.json"))
+    original_bytes = journal.read_bytes()
+    assert p.publish(target, state, vault, "home", preflight=ready,
+                     check_only=True) == {"publication_due": False}
+    assert journal.read_bytes() == original_bytes
+
+    journal.write_text('{"status":"staged","publication":{}}')
+    with pytest.raises(ValueError, match="pending journal"):
+        p.publish(target, state, vault, "home", preflight=ready, check_only=True)
+
+
+@pytest.mark.parametrize("change", ["local", "vault"])
+def test_publish_check_cli_fails_closed_if_evidence_changes(tmp_path, monkeypatch, capsys, change):
+    vault, state = setup(tmp_path)
+    p = publisher()
+    target = state / "memory.json"
+    p.publish(target, state, vault, "home", preflight=ready)
+    monkeypatch.setattr(p, "live_preflight", ready)
+    command = ["memory-publish", "--check-only", "--state-root", str(state),
+               "--vault-root", str(vault), "--writer-role"]
+    assert eod_capture.main([*command, "home"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"publication_due": False}
+    assert eod_capture.main([*command, "sjm-source-only"]) == 2
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["publication_due"] is None
+    assert refused["error_type"] == "PermissionError"
+
+    watermark = p._reconciliation_watermark
+
+    def concurrent_change(*args):
+        result = watermark(*args)
+        if change == "local":
+            eod_capture._atomic_write_json(target, json.loads(target.read_bytes()))
+        else:
+            published = vault / p.NOTE_REL
+            eod_capture._atomic_write_text(published, published.read_text())
+        return result
+
+    monkeypatch.setattr(p, "_reconciliation_watermark", concurrent_change)
+    assert eod_capture.main([*command, "home"]) == 2
+    output = capsys.readouterr()
+    refused = json.loads(output.out)
+    assert refused["publication_due"] is None
+    assert "evidence changed during eligibility check" in refused["message"]
+
+
+def test_read_only_eligibility_refuses_shared_byte_changes_with_unchanged_smb_metadata(tmp_path, monkeypatch):
+    vault, state = setup(tmp_path)
+    p = publisher()
+    target = state / "memory.json"
+    p.publish(target, state, vault, "home", preflight=ready)
+    shared = vault / p.NOTE_REL
+    original = shared.read_bytes()
+    calls = []
+
+    def preflight(candidate_vault):
+        if calls:
+            shared.write_bytes(original + b"\n")
+        calls.append(candidate_vault)
+        return ready(candidate_vault)
+
+    monkeypatch.setattr(p, "_publication_input_version", lambda paths: ("unchanged",))
+    with pytest.raises(ValueError, match="evidence changed during eligibility check"):
+        p.publish(target, state, vault, "home", preflight=preflight, check_only=True)
+    assert shared.read_bytes() == original + b"\n"
+
+
+def test_read_only_snapshot_refuses_local_replacement_while_reading(tmp_path, monkeypatch):
+    _, state = setup(tmp_path)
+    target = state / "memory.json"
+    load = automatic_memory._load_memory
+
+    def replace_after_read(path):
+        snapshot = load(path)
+        eod_capture._atomic_write_json(path, json.loads(path.read_bytes()))
+        return snapshot
+
+    monkeypatch.setattr(automatic_memory, "_load_memory", replace_after_read)
+    with pytest.raises(automatic_memory.StateCorruptionError, match="changed while reading"):
+        automatic_memory.memory_snapshot(target, read_only=True)
+
+
+def test_read_only_snapshot_accepts_a_still_missing_file_without_creating_locks(tmp_path):
+    missing = tmp_path / "memory.json"
+    snapshot = automatic_memory.memory_snapshot(missing, read_only=True)
+    assert automatic_memory.recall_snapshot_records(snapshot) == []
+    assert not list(tmp_path.iterdir())
 
 
 def test_vault_lock_does_not_depend_on_process_temp_directory(tmp_path, monkeypatch):
@@ -777,6 +980,8 @@ def test_v2_corrections_are_published_and_recall_from_shared_snapshot(tmp_path):
     published = json.loads(shared.read_text())
     assert published["schema_version"] == 2
     assert len(published["corrections"]) == 1
+    assert publisher().publish(state / "memory.json", state, vault, "home", preflight=ready,
+                               check_only=True) == {"publication_due": False}
     recalled = automatic_memory.recall(shared, "fact.office", read_only=True)
     assert recalled["status"] == "superseded"
     assert recalled["replacement"]["key"] == "decision.office"

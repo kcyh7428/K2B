@@ -18,7 +18,7 @@ import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -266,8 +266,33 @@ def _reconciliation_watermark(state: Path, target: Path, snapshot: dict) -> dict
     return watermark
 
 
+def _publication_input_version(paths: tuple[Path, ...]) -> tuple:
+    """Observe changes to publication evidence without acquiring a writer lock."""
+    versions = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            versions.append(None)
+        else:
+            versions.append((info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns))
+    return tuple(versions)
+
+
+def _publication_artifact_hashes(paths: tuple[Path, ...]) -> tuple[str | None, ...]:
+    hashes = []
+    for path in paths:
+        try:
+            hashes.append(_hash(path.read_bytes()))
+        except FileNotFoundError:
+            hashes.append(None)
+    return tuple(hashes)
+
+
 def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
-            writer_role: str, *, preflight=None) -> dict:
+            writer_role: str, *, preflight=None, check_only: bool = False) -> dict:
+    if type(check_only) is not bool:
+        raise ValueError("publication check_only must be a boolean")
     if writer_role != "home":
         raise PermissionError("shared publication requires the Home writer")
     vault, state, target = Path(vault_root).resolve(), Path(state_root), Path(memory_state_path)
@@ -298,12 +323,36 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
     # Fixed machine-local lock namespace, like the designated index/log writers;
     # TMPDIR must not let two native processes acquire different ownership locks.
     vault_lock = Path("/tmp") / ("k2b-memory-publication-" + _hash(str(vault).encode()) + ".lock")
-    with _lock(vault_lock), _lock(state / ".publication.lock"), _lock(state / ".reconciliation.lock"):
+    inputs = (target, *paths.values(), *(state / name for name in (
+        "inbox", "reconciliation", "key-resolutions", "publication", "publication-pending"
+    )))
+    input_version = _publication_input_version(inputs) if check_only else None
+    shared_artifacts = (paths[JSON_REL], paths[NOTE_REL])
+    shared_hashes = _publication_artifact_hashes(shared_artifacts) if check_only else None
+
+    def eligibility(publication_due: bool) -> dict:
+        # Storage must still be bound at the decision. Compare the managed
+        # bytes too, since SMB may preserve or coarsen file timestamps.
+        if (check(vault) != evidence or _publication_input_version(inputs) != input_version
+                or _publication_artifact_hashes(shared_artifacts) != shared_hashes):
+            raise ValueError("publication evidence changed during eligibility check; "
+                             "check for a concurrent publisher or reconciler")
+        return {"publication_due": publication_due}
+
+    with ExitStack() as locks:
+        if not check_only:
+            for path in (vault_lock, state / ".publication.lock", state / ".reconciliation.lock"):
+                locks.enter_context(_lock(path))
         if not target.is_file():
             raise ValueError("reconciled memory state is missing")
-        rendered = {}
-        eod_capture.publish_shared_recall(state, writer_role="home", memory_path=target,
-                                         write_func=lambda name, text: rendered.__setitem__(name, text))
+        if check_only:
+            rendered = eod_capture.render_shared_recall(
+                automatic_memory.memory_snapshot(target, read_only=True))
+        else:
+            rendered = {}
+            eod_capture.publish_shared_recall(
+                state, writer_role="home", memory_path=target,
+                write_func=lambda name, text: rendered.__setitem__(name, text))
         if set(rendered) != {JSON_REL, NOTE_REL}:
             raise ValueError("publication renderer returned an incomplete artifact pair")
         snapshot = automatic_memory._validate_memory_state(json.loads(rendered[JSON_REL]))
@@ -341,10 +390,46 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
             if (all(paths[rel].is_file() and _hash(paths[rel].read_bytes()) == sha for rel, sha in artifact_hashes.items())
                 and "[[context_automatic-memory-recall]]" in paths[INDEX_REL].read_text()
                 and expected["log_marker"] in paths["wiki/log.md"].read_text()):
+                if check_only:
+                    for journal in (state / "publication-pending").glob("*.json"):
+                        staged = json.loads(journal.read_bytes())
+                        binding = staged.get("publication") if isinstance(staged, dict) else None
+                        if (not isinstance(binding, dict)
+                            or _publication_id(binding) != journal.stem
+                            or staged != {"status": "staged", "publication": binding}):
+                            raise ValueError("pending journal has an invalid publication binding")
+                        try:
+                            completed = json.loads((state / "publication" / journal.name).read_bytes())
+                        except FileNotFoundError:
+                            # A later verified publication covers an interrupted
+                            # earlier one when it includes the same receipt hashes.
+                            prior_watermark = binding.get("reconciliation_watermark")
+                            # Apply the same approved legacy namespace as the
+                            # locked writer. Older journals predate SMB fields.
+                            comparable = binding
+                            if accept_historical and binding.get("vault_root") == historical_vault:
+                                comparable = {**binding, "vault_root": str(vault)}
+                                if "storage" not in binding and "binding" not in binding:
+                                    comparable.update(storage=evidence["storage"], binding=evidence["binding"])
+                            if (not isinstance(prior_watermark, dict)
+                                or set(comparable) != set(expected)
+                                or any(comparable.get(k) != expected.get(k) for k in (
+                                    "schema_version", "writer_role", "status", "vault_root",
+                                    "policy_ledger_sha256", "storage", "binding"
+                                ))
+                                or any(watermark.get(delivery_id) != digest
+                                       for delivery_id, digest in prior_watermark.items())):
+                                raise ValueError("pending journal is not covered by the current publication")
+                        else:
+                            if (not isinstance(completed, dict) or not completed.get("published_at")
+                                or completed != {**binding, "published_at": completed["published_at"]}):
+                                raise ValueError("pending journal does not match its completion receipt")
+                    return eligibility(False)
                 return {**receipt, "duplicate": True}
         # Only replace our own generated artifacts. Unexpected edits are not
         # an invitation to overwrite a human or another writer's work.
         known = {rel: {sha} for rel, sha in artifact_hashes.items()}
+        prior_found = False
         for folder in ("publication", "publication-pending"):
             for prior_path in (state / folder).glob("*.json"):
                 try:
@@ -371,6 +456,7 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                 binding = {k: v for k, v in prior.items() if k != "published_at"}
                 if _publication_id(binding) != prior_path.stem:
                     raise ValueError(f"publication receipt content binding is invalid: {prior_path}")
+                prior_found = True
                 for rel in known:
                     prior_hash = prior.get("artifact_sha256", {}).get(rel)
                     if isinstance(prior_hash, str):
@@ -380,6 +466,14 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
             before[rel] = _hash(paths[rel].read_bytes()) if paths[rel].exists() else None
             if before[rel] is not None and before[rel] not in known[rel]:
                 raise PermissionError("generated recall was modified by another writer; preserve it")
+        if check_only:
+            if not prior_found and (
+                any(digest is not None for digest in before.values())
+                or "[[context_automatic-memory-recall]]" in paths[INDEX_REL].read_text()
+                or "automatic-memory snapshot=" in paths["wiki/log.md"].read_text()
+            ):
+                raise ValueError("existing publication has no durable receipt or pending journal")
+            return eligibility(True)
         # Rendering/staging is complete before either shared artifact changes.
         # Recheck live storage before writing; prior cached health is insufficient.
         if check(vault) != evidence:

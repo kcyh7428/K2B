@@ -1588,11 +1588,35 @@ def outbox_status(state_root: Path, *, limit: int = 10_000) -> dict:
     }
 
 
-def memory_snapshot(memory_path: Path) -> dict:
+def _memory_snapshot_version(path: Path) -> tuple[int, ...] | None:
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size
+
+
+def memory_snapshot(memory_path: Path, *, read_only: bool = False) -> dict:
     """Return a detached, fully validated snapshot for recall publication."""
 
+    if type(read_only) is not bool:
+        raise ValidationError("memory_snapshot read_only must be a boolean")
+    if read_only:
+        before = _memory_snapshot_version(memory_path)
+        snapshot = _load_memory(memory_path)
+        if before != _memory_snapshot_version(memory_path):
+            raise StateCorruptionError("memory state changed while reading publication evidence")
+        return snapshot
     with _lock(memory_path.with_name(f".{memory_path.name}.lock")):
         return _load_memory(memory_path)
+
+
+def recall_snapshot_records(snapshot: object) -> list[dict]:
+    """Resolve all records after validating the snapshot once."""
+
+    state = _state_from_snapshot(snapshot)
+    records = state["records"]
+    return [_recall_with_corrections(state, key, records[key]) for key in sorted(records)]
 
 
 def recall_snapshot(snapshot: object, key: str) -> dict:

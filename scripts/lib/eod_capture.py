@@ -4592,21 +4592,26 @@ def publish_memory_state(
     *,
     preflight: Callable[[Path], dict] | None = None,
     publisher_func: Callable[..., dict] | None = None,
+    check_only: bool = False,
 ) -> dict:
     """Lazy boundary to the separately reviewed Home publication adapter."""
 
     if _memory_writer_role(writer_role) != "home":
         raise PermissionError("memory publication requires the Home writer")
+    if type(check_only) is not bool:
+        raise ValueError("publication check_only must be a boolean")
     if publisher_func is None:
         import automatic_memory_publisher
 
         publisher_func = automatic_memory_publisher.publish
+    options = {"check_only": True} if check_only else {}
     return publisher_func(
         memory_state_path=memory_state_path,
         state_root=state_root,
         vault_root=vault_root,
         writer_role="home",
         preflight=preflight,
+        **options,
     )
 
 
@@ -5376,6 +5381,14 @@ def _build_native_run_receipt(
                 raise _MemoryRunError("publication_backlog_evidence_invalid")
             commands["memory_home_drain"]["unreconciled_remaining"] = unreconciled
             commands["memory_home_drain"]["reconciliation_conflicts"] = conflicts
+            if unreconciled == 0 and publication_status in ("not_attempted", "published"):
+                reconciled = drain_result.get("reconciled")
+                # A positive count always invokes the normal publisher.
+                # An already-published watermark returns a published receipt
+                # marked duplicate; it never reports a quiet skip.
+                if (type(reconciled) is not int or reconciled < 0
+                        or (publication_status == "not_attempted" and reconciled != 0)):
+                    raise _MemoryRunError("publication_eligibility_unverified")
             reason = (
                 "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
             )
@@ -5706,10 +5719,15 @@ def publish_shared_recall(
         raise PermissionError("shared recall publication requires the home writer")
     target = memory_path or state_root / "memory.json"
     snapshot = automatic_memory.memory_snapshot(target)
-    recalls = [
-        automatic_memory.recall_snapshot(snapshot, key)
-        for key in sorted(snapshot["records"])
-    ]
+    for relative, content in render_shared_recall(snapshot).items():
+        write_func(relative, content)
+    return {"status": "published_by_injected_home_writer", "records": len(snapshot["records"])}
+
+
+def render_shared_recall(snapshot: dict) -> dict[str, str]:
+    """Render both publication artifacts in memory with no writer callback."""
+
+    recalls = automatic_memory.recall_snapshot_records(snapshot)
     # Publish the validated redacted state, not a second lossy projection, so
     # the same recall entry point works against the Syncthing-delivered copy on
     # SJM while retaining source history and citations.
@@ -5730,9 +5748,10 @@ def publish_shared_recall(
     ]
     for recalled in recalls:
         lines.extend(_render_recall_lines(recalled))
-    write_func("System/memory/automatic-memory-current.json", json_content)
-    write_func("wiki/context/context_automatic-memory-recall.md", "\n".join(lines))
-    return {"status": "published_by_injected_home_writer", "records": len(recalls)}
+    return {
+        "System/memory/automatic-memory-current.json": json_content,
+        "wiki/context/context_automatic-memory-recall.md": "\n".join(lines),
+    }
 
 
 def _render_recall_lines(recalled: dict) -> list[str]:
@@ -7997,6 +8016,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     memory_publish.add_argument("--memory-path", type=Path)
     memory_publish.add_argument("--vault-root", type=Path, required=True)
+    memory_publish.add_argument("--check-only", action="store_true",
+                                help="check publication eligibility without writing or taking locks")
     memory_publish.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
@@ -8252,11 +8273,15 @@ def main(argv: list[str] | None = None) -> int:
                 state_root=args.state_root,
                 vault_root=args.vault_root,
                 writer_role=args.writer_role,
+                check_only=args.check_only,
             )
         except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
             print(f"eod-capture: memory publication failed: {_sanitize_log_value(exc)}", file=sys.stderr)
-            print(json.dumps({"status": "failed", "diagnostic": "memory_publication_failed",
-                "error_type": type(exc).__name__, "message": _sanitize_log_value(exc)[:500]}, sort_keys=True))
+            result = {"status": "failed", "diagnostic": "memory_publication_failed",
+                      "error_type": type(exc).__name__, "message": _sanitize_log_value(exc)[:500]}
+            if args.check_only:
+                result["publication_due"] = None
+            print(json.dumps(result, sort_keys=True))
             return 2
         print(json.dumps(result, sort_keys=True))
         return 0
