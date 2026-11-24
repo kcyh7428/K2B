@@ -3713,7 +3713,7 @@ def build_memory_worklist(
 
 
 def prepare_memory_extraction_input(
-    *, state_root: Path, work_id: str, writer_role: str,
+    *, state_root: Path, work_id: str, writer_role: str, save_view: bool = True,
 ) -> dict:
     """Project one complete turn plus bounded context; keep source/receipts intact."""
     role = _memory_writer_role(writer_role)
@@ -3764,6 +3764,8 @@ def prepare_memory_extraction_input(
     if size > 48000:
         return {"status": "input_budget_exceeded", "work_id": work_id,
                 "input_bytes": size, "limit_bytes": 48000}
+    if not save_view:
+        return {"status": "within_input_budget", "work_id": work_id}
     # Add a contiguous suffix of whole prior events, never fragments or a
     # misleading selection with holes. Context gets at most 16 KB of the cap.
     context_bytes = 0
@@ -4952,6 +4954,10 @@ MEMORY_RUN_DEFER_REASONS = ("byte_budget", "time_budget", "turn_budget")
 # The prompt stops selecting new turns after 18 minutes, so a time_budget
 # deferral is only honest once that selection cutoff has actually elapsed.
 MEMORY_RUN_SELECTION_CUTOFF_SECONDS = 1080
+HOME_EXTRACTION_HOLD_REASONS = (
+    "input_budget_exceeded", "item_count_exceeded", "ambiguous_proposal_binding",
+    "persistent_failure", "repeated_selection",
+)
 # Fixed, sanitized reason codes allowed into a canonical receipt. Any other
 # reason text is normalized to "redacted_reason" so free text is never stored.
 CANONICAL_EXCEPTION_REASONS = {
@@ -4985,6 +4991,121 @@ def _memory_run_receipt_path(state_root: Path, finished: datetime) -> Path:
         if not candidate.exists():
             return candidate
     raise RuntimeError("native run receipt directory is saturated")
+
+
+def _read_current_home_hold_evidence(
+    state_root: Path, path: Path, started: datetime, observed: datetime
+) -> dict:
+    """Read bounded private evidence written inside this Home run's window."""
+    info = path.lstat()
+    if (path.is_symlink() or not path.is_file()
+            or not path.resolve().is_relative_to(state_root.resolve())
+            or not started.timestamp() <= info.st_mtime <= observed.timestamp()):
+        raise ValueError("extraction hold evidence is outside the current Home run")
+    status, contents = native_job_status._safe_read(path, state_root)
+    after = path.lstat()
+    if (status != "ok" or contents is None
+            or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+        raise ValueError("extraction hold evidence is unreadable or changed")
+    data = json.loads(contents)
+    if not isinstance(data, dict):
+        raise ValueError("extraction hold evidence must be an object")
+    return data
+
+
+def record_home_extraction_hold(
+    *, state_root: Path, started_at: str, work_id: str, reason: str,
+    worklist_path: Path, reviewed_path: Path | None = None,
+) -> dict:
+    """Create a Home hold only when current, source-bound evidence supports it."""
+    if reason not in HOME_EXTRACTION_HOLD_REASONS:
+        raise ValueError("unsupported Home extraction hold reason")
+    if (reason == "item_count_exceeded") != (reviewed_path is not None):
+        raise ValueError("reviewed JSON is required only for an item-count hold")
+    started = _memory_instant(started_at, "run start")
+    if not started_at:
+        raise ValueError("Home extraction hold needs the original run start")
+    with _file_lock(state_root / ".memory-extraction.lock"):
+        hold, _ = native_job_status._read_hold(state_root)
+        if hold == "present":
+            return {"status": "already_present"}
+        if hold != "absent":
+            raise ValueError("existing extraction hold is unverifiable")
+        observed = datetime.now(timezone.utc)
+        if not timedelta(0) <= observed - started <= timedelta(seconds=MEMORY_RUN_MAX_SECONDS):
+            raise ValueError("extraction hold needs an active Home run window")
+        selection = _read_current_home_hold_evidence(state_root, worklist_path, started, observed)
+        if (selection.get("writer_role") != "home"
+                or selection.get("status") not in {"ready", "ready_with_exceptions"}
+                or type(selection.get("selected")) is not int or selection["selected"] != 1
+                or not isinstance(selection.get("items"), list) or len(selection["items"]) != 1
+                or not isinstance(selection["items"][0], dict)
+                or selection["items"][0].get("work_id") != work_id):
+            raise ValueError("extraction hold requires this run's selected Home turn")
+        record_path = _memory_work_path(state_root, work_id, "worklist")
+        source_path = _memory_work_path(state_root, work_id, "source-bundles")
+        if (selection["items"][0].get("work_record_path") != str(record_path)
+                or selection["items"][0].get("source_bundle_path") != str(source_path)):
+            raise ValueError("extraction hold selection paths do not match current Home work")
+        record = _read_memory_json(record_path, "memory work record")
+        bundle = _read_memory_json(source_path, "memory source bundle")
+        _validate_modern_artifact_binding(bundle, label="memory source", require_chunks=True)
+        if (record.get("writer_role") != "home" or record.get("source_host") != "home"
+                or record.get("work_id") != work_id or bundle.get("source_host") != "home"
+                or _memory_work_id(bundle) != work_id
+                or record.get("completed_prefix_sha256") != bundle["completed_prefix_sha256"]):
+            raise ValueError("extraction hold source does not match current Home work")
+        receipt_path = _memory_work_path(state_root, work_id, "extraction-receipts")
+        if receipt_path.exists() or receipt_path.is_symlink():
+            raise ValueError("completed work cannot trigger an extraction hold")
+        if reason in {"persistent_failure", "repeated_selection"}:
+            observed_diagnostic = _read_current_home_hold_evidence(
+                state_root, _memory_work_path(state_root, work_id, "extraction-diagnostics"),
+                started, observed,
+            )
+            diagnostic = _load_memory_extraction_diagnostic(state_root, work_id, bundle)
+            recorded = _memory_instant(diagnostic["recorded_at"], "extraction diagnostic time")
+            if (diagnostic != observed_diagnostic or diagnostic["status"] != "needs_attention"
+                    or not started <= recorded <= observed):
+                raise ValueError("extraction hold requires a current terminal extraction failure")
+        elif reason == "input_budget_exceeded":
+            result = prepare_memory_extraction_input(
+                state_root=state_root, work_id=work_id, writer_role="home", save_view=False,
+            )
+            if result["status"] != "input_budget_exceeded":
+                raise ValueError("current turn fits the extraction input budget")
+        else:
+            view = _read_current_home_hold_evidence(
+                state_root, _memory_work_path(state_root, work_id, "extraction-inputs"), started, observed,
+            )
+            if (view.get("work_id") != work_id
+                    or view.get("completed_prefix_sha256") != bundle["completed_prefix_sha256"]):
+                raise ValueError("extraction hold input does not match current Home work")
+            if reviewed_path is not None:
+                reviewed = _read_current_home_hold_evidence(state_root, reviewed_path, started, observed)
+                verified = _validated_reviewed_source_bundle(
+                    bundle, reviewed, run_date=record["run_date"], require_automatic_source=True,
+                )
+                if (reviewed.get("completed_prefix_sha256") != bundle["completed_prefix_sha256"]
+                        or len({item["dedupe_key"] for item in verified["items"]
+                                if item["confidence"] == "high"
+                                and item["kind"] in automatic_memory.ALLOWED_KINDS}) <= 20):
+                    raise ValueError("current extraction does not prove the item-count limit")
+        if datetime.now(timezone.utc) - started > timedelta(seconds=MEMORY_RUN_MAX_SECONDS):
+            raise ValueError("extraction hold needs an active Home run window")
+        try:
+            _atomic_write_json(
+                state_root / native_job_status.HOLD_FILE,
+                {"created_at": datetime.now(timezone.utc).isoformat(), "reason": reason,
+                 "work_id": work_id, "operator_action_required": True},
+                replace=False,
+            )
+        except FileExistsError:
+            if native_job_status._read_hold(state_root)[0] == "present":
+                return {"status": "already_present"}
+            raise
+        return {"status": "created", "work_id": work_id, "reason": reason}
 
 
 def record_failed_native_memory_run(
@@ -5792,7 +5913,7 @@ def _render_recall_lines(recalled: dict) -> list[str]:
     return lines
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
+def _atomic_write_json(path: Path, data: dict, *, replace: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".tmp_{path.name}_", suffix=".json"
@@ -5803,7 +5924,11 @@ def _atomic_write_json(path: Path, data: dict) -> None:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        if replace:
+            os.replace(tmp, path)
+        else:
+            os.link(tmp, path)
+            os.unlink(tmp)
         target_fd = os.open(str(path), os.O_RDONLY)
         try:
             os.fsync(target_fd)
@@ -7979,6 +8104,13 @@ def main(argv: list[str] | None = None) -> int:
                                        default=_default_automatic_memory_state_root())
     memory_backlog_parser.add_argument("--writer-role", choices=("home", "sjm-source-only"), required=True)
     memory_backlog_parser.add_argument("--max-scan-seconds", type=float, default=60)
+    home_hold = sub.add_parser("memory-record-home-hold", help="record a hold from current Home extraction evidence")
+    home_hold.add_argument("--state-root", type=Path, required=True)
+    home_hold.add_argument("--started-at", required=True)
+    home_hold.add_argument("--work-id", required=True)
+    home_hold.add_argument("--reason", choices=HOME_EXTRACTION_HOLD_REASONS, required=True)
+    home_hold.add_argument("--worklist-json", type=Path, required=True)
+    home_hold.add_argument("--reviewed-json", type=Path)
     memory_run_parser = sub.add_parser("memory-record-run", help="record canonical native run evidence")
     memory_run_parser.add_argument("--state-root", type=Path, default=_default_automatic_memory_state_root())
     memory_run_parser.add_argument("--writer-role", choices=("home", "sjm-source-only"), required=True)
@@ -8340,6 +8472,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (OSError, ValueError, RuntimeError, PermissionError) as exc:
             print(f"eod-capture: memory recall failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0
+
+    if args.cmd == "memory-record-home-hold":
+        try:
+            result = record_home_extraction_hold(
+                state_root=args.state_root, started_at=args.started_at, work_id=args.work_id,
+                reason=args.reason, worklist_path=args.worklist_json, reviewed_path=args.reviewed_json,
+            )
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(f"eod-capture: Home extraction hold refused: {_sanitize_log_value(exc)}", file=sys.stderr)
             return 2
         print(json.dumps(result, sort_keys=True))
         return 0

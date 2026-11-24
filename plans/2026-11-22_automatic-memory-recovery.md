@@ -96,3 +96,24 @@ deployment pending with its evidence preserved.
   record from each source host was recallable with its citation.
 - Home and SJM extraction holds stay in place until the rest of the recovery
   passes independent review and the relevant live checks.
+
+## 24 November Home hold repair
+
+Keith approved the repair, Home rollout, conditional Home hold release, and
+scheduled acceptance in Codex thread `01a2030e-0540-7f53-8fff-9110f3557ab2`.
+The 23 November Home worker read the patched prompt and created a new extraction
+hold from earlier publication receipts before selecting a turn.
+
+Home's worker uses a dedicated command to create a new hold. The command requires
+a current worklist selection bound to Home's private work record, and checks
+the reason against that turn's source, prepared input, or terminal extraction
+diagnostic. A prior publication receipt cannot serve as hold evidence. For an
+unverifiable quota or other stop, record the current failure and notify the
+operator instead of asserting a new durable hold. Any existing hold remains
+blocking. Publication and extraction decisions remain independent.
+
+Acceptance covers a prior publication failure with no current evidence, a fresh
+terminal extraction failure, a stale or mismatched work record, and a pre-existing
+hold. Proof on Home requires the first scheduled batch after release to process
+at least one pending turn and produce a valid source-bound receipt. SJM remains
+held and receives no rollout in this operation.

@@ -42,15 +42,28 @@ Before worklist selection in each scheduled run, check
 `<state-root>/extraction-hold.json` afresh in private machine-local state.
 If it is absent at this run's first check, proceed to Step 1 even if the
 previous run saw a hold. An operator release between scheduled runs is
-permission to resume the normal bounded selection. If present
+permission to resume the normal bounded selection. On Home, Step 1 is the
+first work decision when the current hold is absent. Prior publication errors
+never justify an extraction hold. If present
 or unreadable/malformed, do not select or extract another source; the hold needs
 operator intervention and must not be removed by a native run. Home still
 performs independently eligible drain/publication steps 4 and 5. On a new
 input-size/item-count limit, quota exhaustion, persistent failure, or repeated
-selection without progress, create this private hold with UTC `created_at`, work
-ID when known, reason, and operator-action requirement. Preserve any existing
-hold; record failures in the run receipt and do not continue extraction if the
-hold cannot be written. Notify when a hold is created, its reason, work ID
+selection without progress, stop taking new turns. On Home, use only
+`memory-record-home-hold --state-root <state> --started-at <UTC-start>
+--work-id <current-work-id> --reason <type> --worklist-json <current-worklist>`
+to create a durable hold. Supply `--reviewed-json <current-reviewed-output>`
+for `item_count_exceeded` only. Use the actual private worklist JSON from the
+selection of that turn, even if it is different from the last worklist used
+for the run receipt. Use the original run start. The helper rechecks the
+source limit, current input, or terminal extraction diagnostic. Never create,
+replace, or remove a Home hold directly. If it refuses, or a current quota
+error has no locally verifiable hold evidence, stop the batch and report the
+current failure and required operator action. This is a stop for this run
+without a new durable hold. SJM retains its operator-hold procedure with UTC
+`created_at`, work ID when known, reason, and operator-action requirement.
+Preserve any existing hold and record the actual run failure.
+Notify when a hold is created, its reason, work ID
 or required action changes. Report the first unverifiable observation, or the
 transition from readable to unverifiable, using the previous run's saved
 hold observation for comparison. Keep reporting the blocked state without
