@@ -164,7 +164,7 @@ def test_smb_binding_drift_before_write(tmp_path):
     assert not (vault/'System').exists()
 
 
-@pytest.mark.parametrize('failure', [None, 'host', 'policy', 'paths', 'null-storage'])
+@pytest.mark.parametrize('failure', [None, 'host', 'policy', 'paths', 'null-storage', 'legacy'])
 def test_live_smb_authority_gates(smb_environment, monkeypatch, failure):
     e = smb_environment
     p = e.p
@@ -182,10 +182,11 @@ def test_live_smb_authority_gates(smb_environment, monkeypatch, failure):
     if failure == 'policy': authority['policy_ledger_sha256'] = '0'*64
     if failure == 'paths': authority['exclusive_paths'] = []
     if failure == 'null-storage': authority['storage'] = None
+    if failure == 'legacy': authority.pop('storage')
     monkeypatch.setattr(Path, 'read_text', lambda self: json.dumps(authority))
     monkeypatch.setattr(Path, 'read_bytes', lambda self: ledger)
     if failure:
-        with pytest.raises(PermissionError): p.live_preflight(e.vault)
+        with pytest.raises(PermissionError): p.live_preflight(e.vault, require_smb=True)
     else:
         assert p.live_preflight(e.vault) == {
             'policy_ledger_sha256': p._hash(ledger), 'storage': 'smb-ready', 'binding': e.binding}
@@ -218,6 +219,18 @@ def ready(vault):
     return {"policy_ledger_sha256": hashlib.sha256(
         (vault / "wiki/context/policy-ledger.jsonl").read_bytes()).hexdigest(),
         "syncthing": "idle"}
+
+
+def test_native_publisher_refuses_legacy_or_custom_preflight(tmp_path, monkeypatch):
+    p = publisher()
+    vault, state = setup(tmp_path)
+    args = (state / "memory.json", state, vault, "home")
+    with pytest.raises(ValueError, match="requires live preflight"):
+        p.publish(*args, require_smb=True, preflight=ready)
+    monkeypatch.setattr(p, "live_preflight", lambda path, *, require_smb: ready(path))
+    with pytest.raises(PermissionError, match="healthy, policy-bound"):
+        p.publish(*args, require_smb=True)
+    assert not (state / "publication-pending").exists()
 
 
 @pytest.fixture

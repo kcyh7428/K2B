@@ -49,6 +49,10 @@ PRE_TAILSCALE_STORAGE = {
 }
 
 
+class SmbAuthorityUnverified(PermissionError):
+    """Native Home publication has no exact SMB authority to use."""
+
+
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -140,7 +144,7 @@ def _smb_readiness(vault: Path, storage: dict) -> dict:
     return {"storage": "smb-ready", "binding": dict(storage)}
 
 
-def live_preflight(vault: Path) -> dict:
+def live_preflight(vault: Path, *, require_smb: bool = False) -> dict:
     """Check Home ownership, policy and live legacy Syncthing or authorized SMB.
 
     Authorization file fields: schema_version=1, enabled=true, vault_root,
@@ -171,6 +175,8 @@ def live_preflight(vault: Path) -> dict:
         or authority.get("vault_root") != str(configured)
         or authority.get("exclusive_paths") != [JSON_REL, NOTE_REL]):
         raise PermissionError("production publication ownership is not authorized")
+    if require_smb and authority.get("storage") != SMB_STORAGE:
+        raise SmbAuthorityUnverified("native Home publication requires the approved SMB authority")
     storage_evidence = (_smb_readiness(vault, authority["storage"])
                         if "storage" in authority else None)
     ledger = _safe(vault, "wiki/context/policy-ledger.jsonl").read_bytes()
@@ -306,7 +312,8 @@ def _publication_artifact_hashes(paths: tuple[Path, ...]) -> tuple[str | None, .
 
 
 def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
-            writer_role: str, *, preflight=None, check_only: bool = False) -> dict:
+            writer_role: str, *, preflight=None, check_only: bool = False,
+            require_smb: bool = False) -> dict:
     if type(check_only) is not bool:
         raise ValueError("publication check_only must be a boolean")
     if writer_role != "home":
@@ -315,13 +322,21 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
     if state.resolve().is_relative_to(vault) or target.resolve().is_relative_to(vault):
         raise PermissionError("publisher receipts and working memory must remain machine-local")
     check = preflight or live_preflight
+    if require_smb:
+        if preflight is not None:
+            raise ValueError("native Home publication requires live preflight")
+
+        def check(path):
+            return live_preflight(path, require_smb=True)
+
     # Preflight before even creating the local publication lock.
     evidence = check(vault)
-    if (not isinstance(evidence, dict)
-        or not (("storage" not in evidence and evidence.get("syncthing") == "idle")
-                or (evidence.get("storage") == "smb-ready"
-                    and evidence.get("binding") == SMB_STORAGE))
-        or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("policy_ledger_sha256", "")))):
+    if not isinstance(evidence, dict):
+        raise PermissionError("publication preflight did not return policy-bound evidence")
+    smb_ok = evidence.get("storage") == "smb-ready" and evidence.get("binding") == SMB_STORAGE
+    legacy_ok = not require_smb and "storage" not in evidence and evidence.get("syncthing") == "idle"
+    if not (smb_ok or legacy_ok) or not re.fullmatch(
+            r"[0-9a-f]{64}", str(evidence.get("policy_ledger_sha256", ""))):
         raise PermissionError("publication preflight is not a healthy, policy-bound result")
     # One operator-authorized Home migration, never general realpath equivalence.
     # Only the production preflight can authorize historical namespace evidence.
