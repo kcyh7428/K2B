@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -4954,6 +4954,9 @@ MEMORY_RUN_DEFER_REASONS = ("byte_budget", "time_budget", "turn_budget")
 # The prompt stops selecting new turns after 18 minutes, so a time_budget
 # deferral is only honest once that selection cutoff has actually elapsed.
 MEMORY_RUN_SELECTION_CUTOFF_SECONDS = 1080
+HOME_NATIVE_CAPTURE_SINCE = "2026-09-13"
+HOME_NATIVE_MAX_WORKLIST_SCAN_SECONDS = 240
+HOME_NATIVE_COMMAND_LOCK = ".home-native-memory-command.lock"
 HOME_EXTRACTION_HOLD_REASONS = (
     "input_budget_exceeded", "item_count_exceeded", "ambiguous_proposal_binding",
     "persistent_failure", "repeated_selection",
@@ -4993,24 +4996,108 @@ def _memory_run_receipt_path(state_root: Path, finished: datetime) -> Path:
     raise RuntimeError("native run receipt directory is saturated")
 
 
+def _home_worklist_item_ids(result: object) -> set[str]:
+    items = result.get("items") if isinstance(result, dict) else None
+    if (not isinstance(items, list) or any(
+        not isinstance(item, dict) or not isinstance(item.get("work_id"), str)
+        or MEMORY_WORK_ID_RE.fullmatch(item["work_id"]) is None for item in items
+    )):
+        raise ValueError("native Home worklist items are malformed")
+    return {item["work_id"] for item in items}
+
+
+def _home_worklist_evidence_path(state_root: Path, started: datetime) -> Path:
+    return native_job_status.home_worklist_evidence_path(state_root, started)
+
+
+def _retain_home_run_worklist(state_root: Path, started: datetime, result: dict) -> None:
+    selected_ids = _home_worklist_item_ids(result)
+    path = _home_worklist_evidence_path(state_root, started)
+    with _file_lock(state_root / ".home-worklist-evidence.lock"):
+        now = datetime.now(timezone.utc)
+        evidence_status, previous = _load_home_run_worklist(state_root, started, now)
+        if evidence_status == "foreign":
+            raise ValueError("worklist evidence belongs to an overlapping Home run")
+        if evidence_status == "clock_skew":
+            raise ValueError("worklist evidence is ahead of the local clock")
+        if evidence_status == "unreadable":
+            raise ValueError("worklist evidence could not be read safely")
+        if evidence_status == "invalid" and previous is None:
+            status, _ = native_job_status._safe_stat(path, state_root)
+            if status != "ok":
+                raise ValueError("native Home worklist evidence path is unsafe")
+            # Preserve corrupt evidence, but prevent it from advancing this
+            # run's success time or preventing later batches from starting.
+            suffix = now.strftime("%Y%m%dT%H%M%S%fZ")
+            path.rename(path.with_name(f"{path.stem}.corrupt-{suffix}.json"))
+        if previous is not None:
+            selected_ids.update(previous["selected_work_ids"])
+        evidence_limit = MEMORY_RUN_MAX_TURNS + 1
+        _atomic_write_json(path, {
+            "started_at": started.isoformat(), "recorded_at": now.isoformat(),
+            "result": result, "selected_work_ids": sorted(selected_ids)[:evidence_limit],
+            # Once any selections are lost or truncated, a later result
+            # cannot attest all selections of this same run.
+            "invalidated": evidence_status == "invalid" or len(selected_ids) > evidence_limit,
+        })
+
+
+def _load_home_run_worklist(
+    state_root: Path, started: datetime, finished: datetime,
+) -> tuple[str, dict | None]:
+    path = _home_worklist_evidence_path(state_root, started)
+    try:
+        evidence = _read_home_evidence(state_root, path)
+        evidence_start = _memory_instant(evidence["started_at"], "worklist run start")
+        stamp = _memory_instant(evidence["recorded_at"], "worklist evidence time")
+        if evidence_start != started:
+            return "foreign", None
+        if stamp > finished:
+            return "clock_skew", None
+        ids = evidence.get("selected_work_ids")
+        if (stamp < started
+                or not isinstance(evidence.get("result"), dict)
+                or not isinstance(ids, list) or len(ids) > MEMORY_RUN_MAX_TURNS + 1
+                or any(not isinstance(item, str) or MEMORY_WORK_ID_RE.fullmatch(item) is None
+                       for item in ids) or type(evidence.get("invalidated")) is not bool):
+            return "invalid", None
+        return ("invalid" if evidence["invalidated"] else "verified"), evidence
+    except FileNotFoundError:
+        return "missing", None
+    except OSError:
+        return "unreadable", None
+    except (KeyError, ValueError):
+        return "invalid", None
+
+
 def _read_current_home_hold_evidence(
     state_root: Path, path: Path, started: datetime, observed: datetime
 ) -> dict:
     """Read bounded private evidence written inside this Home run's window."""
+    return _read_home_evidence(state_root, path, started=started, observed=observed)
+
+
+def _read_home_evidence(
+    state_root: Path, path: Path, *, started: datetime | None = None,
+    observed: datetime | None = None,
+) -> dict:
+    """Read a bounded private JSON object without accepting changed bytes."""
     info = path.lstat()
     if (path.is_symlink() or not path.is_file()
-            or not path.resolve().is_relative_to(state_root.resolve())
-            or not started.timestamp() <= info.st_mtime <= observed.timestamp()):
+            or not path.resolve().is_relative_to(state_root.resolve())):
+        raise ValueError("unsafe Home evidence path")
+    if (started is not None and observed is not None
+            and not started.timestamp() <= info.st_mtime <= observed.timestamp()):
         raise ValueError("extraction hold evidence is outside the current Home run")
     status, contents = native_job_status._safe_read(path, state_root)
     after = path.lstat()
     if (status != "ok" or contents is None
             or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
             != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
-        raise ValueError("extraction hold evidence is unreadable or changed")
+        raise OSError("Home evidence is unreadable or changed")
     data = json.loads(contents)
     if not isinstance(data, dict):
-        raise ValueError("extraction hold evidence must be an object")
+        raise ValueError("Home evidence must be an object")
     return data
 
 
@@ -5129,7 +5216,8 @@ def record_failed_native_memory_run(
     ))[:100] if isinstance(work_ids, list) else []
     token = _memory_diagnostic_token(diagnostic)
     data = {
-        "schema_version": 1, "automation_id": native_job_status.JOB_IDS[role],
+        "schema_version": native_job_status.HOME_WORKLIST_RECEIPT_SCHEMA if role == "home" else 1,
+        "automation_id": native_job_status.JOB_IDS[role],
         "writer_role": role, "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
         "commands": {
@@ -5142,8 +5230,13 @@ def record_failed_native_memory_run(
         },
         "selected_work_ids": selected, "exceptions": [], "diagnostic": token,
     }
+    if role == "home":
+        data["commands"]["memory_worklist"].update(
+            evidence_verified=False, evidence_problem="bookkeeping_failed",
+            observed_status="not_recorded",
+        )
     _, _, outcome, _ = native_job_status._classify_receipt(
-        data, job_id=data["automation_id"], writer_role=role)
+        data, job_id=data["automation_id"], writer_role=role, state_root=state_root)
     if outcome != "failed":
         raise RuntimeError("failed native run evidence violates the receipt contract")
     path = _memory_run_receipt_path(state_root, finished)
@@ -5195,7 +5288,8 @@ def _build_native_run_receipt(
     *, state_root: Path, role: str, started: datetime, finished: datetime,
     work_ids: object, deferred_work_ids: object, deferred_reason: str,
     exceptions: object, drain_result: dict | None, publication_result: dict | None,
-    worklist_result: dict | None, hold_check: str,
+    worklist_result: dict | None, hold_check: str, home_worklist_evidence: str,
+    home_observed_ids: list[str],
 ) -> tuple[dict, dict]:
     """Assemble and validate one canonical run receipt."""
     if deferred_reason not in MEMORY_RUN_DEFER_REASONS:
@@ -5336,6 +5430,10 @@ def _build_native_run_receipt(
         },
         "batch_budget": {"status": "exceeded" if exceeded else "bounded"},
     }
+    if role == "home":
+        commands["memory_worklist"]["evidence_verified"] = home_worklist_evidence == "verified"
+        if home_worklist_evidence != "verified":
+            commands["memory_worklist"]["evidence_problem"] = home_worklist_evidence
     # The worker supplies the final JSON whenever it invokes the command.
     # A run stopped at the initial hold check has no worklist JSON to supply.
     if worklist_result is not None:
@@ -5359,6 +5457,8 @@ def _build_native_run_receipt(
         # Keep producer evidence distinct from the hold observed at receipt time.
         commands["memory_worklist"]["observed_status"] = status
         selected = worklist_result["selected"]
+        if role == "home":
+            commands["memory_worklist"]["observed_selected"] = selected
         items = worklist_result.get("items")
         if not isinstance(items, list) or len(items) != selected:
             raise _MemoryRunError("worklist_evidence_invalid")
@@ -5376,7 +5476,13 @@ def _build_native_run_receipt(
         # A stopped invocation returns zero. Work IDs cover the whole run.
         if bool(selected) != (status in {"ready", "ready_with_exceptions"}):
             raise _MemoryRunError("worklist_evidence_invalid")
-        unaccounted = [item["work_id"] for item in items if item["work_id"] not in accounted]
+        if role == "home":
+            observed_ids = set(home_observed_ids)
+            if any(item["work_id"] not in observed_ids for item in items):
+                raise _MemoryRunError("worklist_evidence_invalid")
+            unaccounted = sorted(observed_ids - accounted)
+        else:
+            unaccounted = [item["work_id"] for item in items if item["work_id"] not in accounted]
         if unaccounted:
             # The last selection may have happened just before a budget
             # stop or interruption. Retain other work as recorded and do
@@ -5386,6 +5492,8 @@ def _build_native_run_receipt(
             commands["memory_worklist"]["unaccounted_work_ids"] = unaccounted
         elif status in native_job_status.WORKLIST_STOP_OUTCOMES:
             commands["memory_worklist"]["status"] = status
+    if home_worklist_evidence == "hold_conflict":
+        commands["memory_worklist"]["status"] = "blocked"
     if role == "home":
         if not isinstance(drain_result, dict) or not isinstance(publication_result, dict):
             raise _MemoryRunError("home_command_json_required")
@@ -5478,8 +5586,13 @@ def _build_native_run_receipt(
                 "listed": listed,
             }
         publication_status = publication_result.get("status")
+        publication_reason = publication_result.get("reason")
+        waiting_for_mount = publication_reason == native_job_status.PUBLICATION_MOUNT_UNAVAILABLE
         if publication_status not in ("not_attempted", "published", "failed"):
             raise _MemoryRunError("home_publication_status_invalid")
+        if waiting_for_mount and (publication_status != "not_attempted"
+                                  or drain_status not in ("idle", "reconciled")):
+            raise _MemoryRunError("publication_mount_deferral_conflicts")
         if drain_status == "failed" and publication_status == "published":
             raise _MemoryRunError("publication_eligibility_unverified")
         commands["memory_publish"] = {"status": publication_status}
@@ -5489,9 +5602,10 @@ def _build_native_run_receipt(
         # verified counts when the later publication command failed.
         if drain_status != "failed":
             if (publication_status == "not_attempted"
-                    and publication_result.get("reason") not in (
+                    and publication_reason not in (
                         "no_new_reconciliation_or_pending_publication",
                         "unreconciled_backlog_remaining", "reconciliation_needs_attention",
+                        native_job_status.PUBLICATION_MOUNT_UNAVAILABLE,
                     )):
                 raise _MemoryRunError("publication_eligibility_unverified")
             unreconciled = drain_result.get("unreconciled_remaining")
@@ -5504,11 +5618,13 @@ def _build_native_run_receipt(
             commands["memory_home_drain"]["reconciliation_conflicts"] = conflicts
             if unreconciled == 0 and publication_status in ("not_attempted", "published"):
                 reconciled = drain_result.get("reconciled")
-                # A positive count always invokes the normal publisher.
+                # A positive count invokes the normal publisher when the
+                # approved SMB binding is available.
                 # An already-published watermark returns a published receipt
                 # marked duplicate; it never reports a quiet skip.
                 if (type(reconciled) is not int or reconciled < 0
-                        or (publication_status == "not_attempted" and reconciled != 0)):
+                        or (publication_status == "not_attempted" and reconciled != 0
+                            and not waiting_for_mount)):
                     raise _MemoryRunError("publication_eligibility_unverified")
             reason = (
                 "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
@@ -5518,8 +5634,14 @@ def _build_native_run_receipt(
             # those persisted receipts in its reconciliation watermark.
             # The run recorder checks the two commands agree with each other.
             if publication_status == "not_attempted":
-                expected_reason = reason if unreconciled else "no_new_reconciliation_or_pending_publication"
-                if publication_result["reason"] != expected_reason:
+                # A known reconciliation backlog takes precedence over
+                # checking the mount. Otherwise this reason can defer, but
+                # cannot prove publication or mark the run completed.
+                expected_reason = reason if unreconciled else (
+                    native_job_status.PUBLICATION_MOUNT_UNAVAILABLE if waiting_for_mount
+                    else "no_new_reconciliation_or_pending_publication"
+                )
+                if publication_reason != expected_reason:
                     raise _MemoryRunError("publication_backlog_evidence_invalid")
                 commands["memory_publish"]["reason"] = expected_reason
             elif publication_status == "published" and unreconciled:
@@ -5539,7 +5661,8 @@ def _build_native_run_receipt(
     elif drain_result is not None or publication_result is not None:
         raise PermissionError("SJM cannot record Home publication")
     data = {
-        "schema_version": 1, "automation_id": native_job_status.JOB_IDS[role],
+        "schema_version": native_job_status.HOME_WORKLIST_RECEIPT_SCHEMA if role == "home" else 1,
+        "automation_id": native_job_status.JOB_IDS[role],
         "writer_role": role, "started_at": started.isoformat(),
         "finished_at": finished.isoformat(), "commands": commands,
         "selected_work_ids": selected_ids, "attempted_work_ids": attempted,
@@ -5576,6 +5699,30 @@ def record_native_memory_run(
     by the native model.
     """
     role = _memory_writer_role(writer_role)
+    command_lock = _file_lock(state_root / HOME_NATIVE_COMMAND_LOCK) if role == "home" else nullcontext()
+    try:
+        with command_lock:
+            return _record_native_memory_run(
+                state_root=state_root, role=role, started_at=started_at, work_ids=work_ids,
+                drain_result=drain_result, publication_result=publication_result,
+                deferred_work_ids=deferred_work_ids, deferred_reason=deferred_reason,
+                exceptions=exceptions, worklist_result=worklist_result,
+            )
+    except TimeoutError:
+        if role != "home":
+            raise
+        return record_failed_native_memory_run(
+            state_root=state_root, writer_role=role, started_at=started_at,
+            diagnostic="home_native_command_lock_unavailable", work_ids=work_ids,
+        )
+
+
+def _record_native_memory_run(
+    *, state_root: Path, role: str, started_at: str, work_ids: list[str],
+    drain_result: dict | None, publication_result: dict | None,
+    deferred_work_ids: list[str] | None, deferred_reason: str,
+    exceptions: list | None, worklist_result: dict | None,
+) -> dict:
     started = _memory_instant(started_at, "run start")
     # Observe the local hold at receipt time, immediately before finished_at.
     # The worklist's observed_status separately preserves producer evidence.
@@ -5594,12 +5741,52 @@ def record_native_memory_run(
             work_ids=work_ids if isinstance(work_ids, list) else None)
 
     try:
+        home_worklist_evidence = "missing"
+        home_observed_ids = []
+        mismatched_results = None
+        producer_evidence_sha256 = None
+        if role == "home":
+            home_worklist_evidence, observed = _load_home_run_worklist(state_root, started, finished)
+            if home_worklist_evidence == "verified" and observed is not None:
+                observed_result = observed["result"]
+                producer_evidence_sha256 = native_job_status.home_worklist_evidence_sha256(observed)
+                home_worklist_evidence = (
+                    "verified" if worklist_result is None or worklist_result == observed_result else "mismatch"
+                )
+                if home_worklist_evidence == "mismatch":
+                    if (hold_check == "present" and isinstance(worklist_result, dict)
+                            and worklist_result.get("status") == "blocked"):
+                        home_worklist_evidence = "hold_conflict"
+                    try:
+                        reported_ids = _home_worklist_item_ids(worklist_result)
+                        differing_ids = reported_ids ^ _home_worklist_item_ids(observed_result)
+                        mismatched_results = {
+                            "reported_sha256": hashlib.sha256(_canonical_memory_json(worklist_result)).hexdigest(),
+                            "observed_sha256": hashlib.sha256(_canonical_memory_json(observed_result)).hexdigest(),
+                            "differing_work_ids": sorted(differing_ids)[:MEMORY_RUN_MAX_TURNS],
+                        }
+                    except (ValueError, TypeError):
+                        # Keep the mismatch and known per-turn results even
+                        # when the caller reported an invalid structure.
+                        pass
+                worklist_result = observed_result
+                home_observed_ids = observed["selected_work_ids"]
+            elif not (hold_check == "present" and isinstance(worklist_result, dict)
+                      and worklist_result.get("status") == "blocked"):
+                # Only a hold observed directly by the recorder can survive
+                # missing or incompatible producer evidence.
+                worklist_result = None
         data, counts = _build_native_run_receipt(
             state_root=state_root, role=role, started=started, finished=finished,
             work_ids=work_ids, deferred_work_ids=deferred_work_ids,
             deferred_reason=deferred_reason, exceptions=exceptions,
             drain_result=drain_result, publication_result=publication_result,
-            worklist_result=worklist_result, hold_check=hold_check)
+            worklist_result=worklist_result, hold_check=hold_check,
+            home_worklist_evidence=home_worklist_evidence, home_observed_ids=home_observed_ids)
+        if mismatched_results is not None:
+            data["commands"]["memory_worklist"].update(mismatched_results)
+        if producer_evidence_sha256 is not None:
+            data["commands"]["memory_worklist"]["producer_evidence_sha256"] = producer_evidence_sha256
     except _MemoryRunError as exc:
         return failed_evidence(exc.diagnostic)
     except PermissionError:
@@ -5607,7 +5794,7 @@ def record_native_memory_run(
     except (OSError, ValueError, RuntimeError, KeyError, TypeError):
         return failed_evidence("run_evidence_invalid")
     _, _, outcome, diagnostic = native_job_status._classify_receipt(
-        data, job_id=data["automation_id"], writer_role=role)
+        data, job_id=data["automation_id"], writer_role=role, state_root=state_root)
     if outcome is None:
         return failed_evidence("run_receipt_contract_unsatisfied")
     path = _memory_run_receipt_path(state_root, finished)
@@ -7979,6 +8166,8 @@ def main(argv: list[str] | None = None) -> int:
     memory_worklist.add_argument("--limit", type=int, default=10)
     memory_worklist.add_argument("--max-scan-seconds", type=float, default=120)
     memory_worklist.add_argument("--now")
+    memory_worklist.add_argument("--run-started-at",
+                                 help="save the last verified local result for this Home native run")
     memory_worklist.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
@@ -8282,16 +8471,54 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "memory-worklist":
         try:
-            result = build_memory_worklist(
-                state_root=args.state_root,
-                codex_root=args.codex_root,
-                since=args.since,
-                through=args.through,
-                writer_role=args.writer_role,
-                limit=args.limit,
-                now=args.now,
-                max_scan_seconds=args.max_scan_seconds,
+            run_started = None
+            scan_seconds = args.max_scan_seconds
+            if args.run_started_at is not None:
+                if (not args.run_started_at or args.writer_role != "home"
+                        or args.limit != native_job_status.HOME_WORKLIST_SELECTION_LIMIT
+                        or args.now is not None):
+                    raise ValueError("native worklist evidence requires Home, one selection and the real clock")
+                if not 0 < scan_seconds <= 1050:
+                    raise ValueError("native worklist scan budget must be positive and bounded")
+                run_started = _memory_instant(args.run_started_at, "run start")
+                now = datetime.now(timezone.utc)
+                elapsed = (now - run_started).total_seconds()
+                # The builder uses up to 30 seconds after scanning to persist
+                # its selections. Both fit before the 18-minute cutoff; the
+                # final two minutes are reserved for finishing the batch.
+                available = MEMORY_RUN_SELECTION_CUTOFF_SECONDS - elapsed - 30
+                if elapsed < 0 or available <= 0:
+                    raise ValueError("native worklist selection window has closed")
+                scan_seconds = min(scan_seconds, available, HOME_NATIVE_MAX_WORKLIST_SCAN_SECONDS)
+                capture_dates = {instant.astimezone(HKT).date().isoformat()
+                                 for instant in (run_started, now)}
+                if args.since != HOME_NATIVE_CAPTURE_SINCE or args.through not in capture_dates:
+                    raise ValueError("native worklist must use the approved Home capture dates")
+                if args.through < args.since:
+                    raise ValueError("Home host clock is earlier than the approved capture window")
+            command_lock = (
+                _file_lock(args.state_root / HOME_NATIVE_COMMAND_LOCK)
+                if run_started is not None else nullcontext()
             )
+            with command_lock:
+                if run_started is not None:
+                    elapsed = (datetime.now(timezone.utc) - run_started).total_seconds()
+                    remaining = MEMORY_RUN_SELECTION_CUTOFF_SECONDS - elapsed - 30
+                    if elapsed < 0 or remaining <= 0:
+                        raise ValueError("native worklist selection window has closed")
+                    scan_seconds = min(scan_seconds, remaining)
+                result = build_memory_worklist(
+                    state_root=args.state_root,
+                    codex_root=args.codex_root,
+                    since=args.since,
+                    through=args.through,
+                    writer_role=args.writer_role,
+                    limit=args.limit,
+                    now=args.now,
+                    max_scan_seconds=scan_seconds,
+                )
+                if run_started is not None:
+                    _retain_home_run_worklist(args.state_root, run_started, result)
         except (OSError, ValueError, RuntimeError, PermissionError) as exc:
             print(f"eod-capture: memory worklist failed: {_sanitize_log_value(exc)}", file=sys.stderr)
             return 2
@@ -8300,6 +8527,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "memory-extraction-input":
         try:
+            if args.writer_role == "home":
+                hold, hold_diagnostic = native_job_status._read_hold(args.state_root)
+                if hold != "absent":
+                    print(json.dumps({"status": "blocked" if hold == "present" else "needs_attention",
+                                      "hold_diagnostic": hold_diagnostic}, sort_keys=True))
+                    return 3
             result = prepare_memory_extraction_input(
                 state_root=args.state_root, work_id=args.work_id, writer_role=args.writer_role
             )

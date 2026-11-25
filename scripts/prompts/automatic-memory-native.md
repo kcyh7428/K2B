@@ -23,6 +23,12 @@ Use 2026-09-13 through the current HKT date (including missed dates). Do not wid
 earlier history. Use Home's Python 3.12 or SJM's project
 `venv/washing-machine/bin/python`, never a provider wrapper.
 
+Home performs its local worklist and extraction steps before inspecting NAS
+mounts or starting the Home drain. The local source and private state are
+available independently of SMB. An unmounted share affects publication in
+Step 5. It never gates the worklist or extraction. Follow each step in this
+file, starting with the local gate, even when a previous run did other work.
+
 The machine-local automatic-memory state root belongs to this native job alone
 while a batch runs: do not run an interactive or second native batch against the
 same state root. Record the UTC start time BEFORE preparing or reading the first
@@ -38,8 +44,10 @@ between steps, including a Python helper launched with a here-document. Use
 the selected work ID and the same recorded start time in the next command.
 The native job remains the sole owner of the batch across those calls.
 
-Before worklist selection in each scheduled run, check
+Before SJM worklist selection in each scheduled run, check
 `<state-root>/extraction-hold.json` afresh in private machine-local state.
+Home's Step 1 command checks that same file before selecting and reports
+`blocked` for a present hold or `needs_attention` for an unverifiable hold.
 If it is absent at this run's first check, proceed to Step 1 even if the
 previous run saw a hold. An operator release between scheduled runs is
 permission to resume the normal bounded selection. On Home, Step 1 is the
@@ -85,6 +93,9 @@ present or unverifiable, stop extracting for the rest of this run and leave
 the affected selection pending. Before reading dialogue, call
 `scripts/eod-capture.py memory-extraction-input`
 with the selected `--work-id`, configured `--state-root` and `--writer-role`.
+Home's input command rechecks the hold and exits 3 with `blocked` or
+`needs_attention` when it cannot prepare a view because of that hold.
+Keep the selected turn pending and record the observed stop.
 Read only the returned `input_path`, never the full source bundle. This view
 contains every event of the selected completed turn and bounded recent context;
 the full immutable source stays on disk for validation. Check the view file's
@@ -119,13 +130,18 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    backlog. Its scan.first_unverified_source identifies where scanning stopped.
    Every selection scans from the configured source root's beginning, including
    older-source appends and any previously unavailable sources. A clean partial
-   scan may be retried with --max-scan-seconds bounded by the time still available
-   before this run's original 18-minute selection cutoff, reserving 30 seconds
-   for private-record validation. Do not reset the
+   scan may be retried with --max-scan-seconds bounded by the remaining time.
+   On Home the scan ends by 17:30 elapsed and selection persistence by 18:00
+   elapsed. Use the remaining time through 20:00 elapsed to complete the
+   batch and write its receipt. Do not reset the
    original start or exceed the 20-minute total. If the remaining budget cannot
    finish scanning, retain the pending work and report the capacity limit.
    source_persistence_time_budget is a separate private-record validation limit.
    Keep pending records; retry only within this run's remaining original budget.
+   On Home pass `--run-started-at <original-UTC-start>` on every selection
+   call and keep the entry command's HKT through date for that batch so
+   every call follows the same window. The command saves its own private evidence. Read its actual
+   output and handle the selected turn before inspecting any NAS mount.
    Save each actual worklist JSON in this run's existing private artifacts.
    If a full scan cannot finish in the remaining budget, report the capacity
    limit and leave work pending. Never claim empty coverage, skip unavailable
@@ -188,7 +204,7 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    resolution, or report that the counts could not be verified. Preserve
    accepted deliveries and diagnostics.
 
-5. On Home only, publish through the existing command with per-invocation
+5. On Home only, use the existing command with per-invocation
    `K2B_COMPILE_INDEX_LOCK="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/.k2b-compile-index.lock.d"`
    and `K2B_WIKI_LOG="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/wiki/log.md"`
    prefixed to `scripts/eod-capture.py memory-publish`, using
@@ -225,7 +241,14 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    publication. Once both backlog counts are verified zero, require
    `reconciled` to be a nonnegative integer in the same drain output. A missing
    or invalid `reconciled` count defers with `reconciliation_counts_unverifiable`.
-   With `reconciled: 0`, run the same
+   With those drain counts verified, check the mount table before traversing
+   the configured SMB path. If the approved binding is absent or fails
+   preflight, save `{"status":"not_attempted","reason":"publication_mount_unavailable"}`
+   for `--publication-json` and skip the publisher, including `--check-only`.
+   Keep the verified local extraction and drain outcomes. The run receipt
+   reports publication waiting for the approved binding. A recovered mount
+   requires the full binding checks before any write.
+   After the binding preflight succeeds, if `reconciled: 0`, run the same
    Home command and arguments with `--check-only` after preflight. Keep its
    actual JSON in the private run artifacts. This check does not write or take
    writer locks. On exit 0 with `publication_due: false`, record
@@ -238,8 +261,9 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    a completed run. The receipt command exits 2 and leaves a durable
    `failed` run receipt with diagnostic `publication_eligibility_unverified`.
    Report the diagnostic and retain the receipt path returned by the command.
-   Pass the publication result or the recorded deferral to the run receipt,
-   not the eligibility check JSON. The separately provisioned Home
+   Pass the publication result, a structured failure emitted by the check,
+   or the recorded deferral to the run receipt. A bare eligibility decision
+   is not a publication result. The separately provisioned Home
    publication authority, approved policy-ledger hash, exclusive managed paths,
    publisher locks and the approved exact SMB publication-authority/live
    preflight remain mandatory. The imported index helper inherits the NAS
@@ -256,6 +280,11 @@ Whenever the worklist command ran, save its final JSON under this run's
 private local artifacts and pass it via
 `--worklist-json` regardless of status or selection count. The helper
 verifies this final selection against the run's attempted and deferred IDs.
+The Home receipt also checks the result retained by the worklist command for
+the same original run start. With a clear hold, missing or unverified
+worklist evidence means the run cannot report `completed`. Preserve the
+producer's evidence file as generated. Preserve actual
+source-bound extraction receipts even when another stage cannot finish.
 Pass the final result even if it selected zero turns. The attempted and
 deferred IDs represent the whole run. Retain earlier results privately.
 If there is no readable worklist output, supply its expected path. The receipt
@@ -279,7 +308,7 @@ silently vanish from the receipt; it cannot prove that a concurrent producer
 prepared nothing. On Home also supply `--drain-json <actual-drain-output>` and
 `--publication-json <actual-publication-output>`. Do not handwrite
 native-run-receipts: the helper validates per-turn extraction artifacts, writes
-integer schema version 1, and leaves durable failed evidence with a sanitized
+schema version 2 on Home and 1 on SJM, and leaves durable failed evidence with a sanitized
 diagnostic when command JSON is unreadable or the evidence is malformed. Never
 omit a failed attempted work ID to manufacture a successful batch.
 

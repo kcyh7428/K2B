@@ -3303,6 +3303,20 @@ def test_held_home_reports_independent_publication_success(tmp_path):
     assert state["last_successful_at"] == data["finished_at"]
 
 
+def _retain_home_worklist(state, started, result=None):
+    # Receipt and transport tests supply real worklist results from isolated
+    # sources; native CLI argument handling is exercised in the Home CLI suite.
+    if result is None:
+        sources = state.with_name(f"{state.name}-empty-worklist-fixture")
+        sources.mkdir(parents=True, exist_ok=True)
+        result = eod_capture.build_memory_worklist(
+            state_root=state, codex_root=sources, writer_role="home",
+            since="2026-09-13", through="2026-09-13", limit=1,
+        )
+        assert result["status"] == "idle"
+    eod_capture._retain_home_run_worklist(state, started, result)
+
+
 @pytest.mark.parametrize("expected,error", [
     ("completed", None), ("waiting", ConnectionError), ("failed", eod_capture.SjmMemoryCommandError),
 ])
@@ -3311,6 +3325,10 @@ def test_home_receipt_distinguishes_sjm_unavailability_from_remote_failure(
 ):
     state, work, started = _native_run_fixture(tmp_path, count=1, role="home")
     work_id = work[0]["work_id"]
+    _retain_home_worklist(state, started, eod_capture.build_memory_worklist(
+        state_root=state, codex_root=tmp_path / "sessions", writer_role="home",
+        since="2026-09-13", through="2026-09-13", limit=1,
+    ))
     bundle = json.loads(Path(work[0]["source_bundle_path"]).read_text())
     eod_capture.record_memory_extraction(
         state_root=state, work_id=work_id, writer_role="home",
@@ -3357,8 +3375,10 @@ def test_sjm_transport_outcome_preserves_the_last_successful_home_run(tmp_path, 
         "publication_result": {"status": "not_attempted",
                                "reason": "no_new_reconciliation_or_pending_publication"},
     }
+    started = datetime.now(timezone.utc)
+    _retain_home_worklist(tmp_path, started)
     completed = eod_capture.record_native_memory_run(
-        **request, started_at=datetime.now(timezone.utc).isoformat(),
+        **request, started_at=started.isoformat(),
         drain_result=eod_capture.drain_home_memory(tmp_path, writer_role="home"),
     )
     assert completed["outcome"] == "completed"
@@ -3367,8 +3387,10 @@ def test_sjm_transport_outcome_preserves_the_last_successful_home_run(tmp_path, 
     def synthetic_transport(_args, _envelope):
         raise error("synthetic SJM transport problem")
 
+    next_started = datetime.now(timezone.utc)
+    _retain_home_worklist(tmp_path, next_started)
     result = eod_capture.record_native_memory_run(
-        **request, started_at=datetime.now(timezone.utc).isoformat(),
+        **request, started_at=next_started.isoformat(),
         drain_result=eod_capture.drain_home_memory(
             tmp_path, writer_role="home", pull_sjm=True, transport_func=synthetic_transport,
         ),
@@ -3442,6 +3464,7 @@ def test_failed_drain_preserves_error_without_interpreting_backlog(tmp_path):
 @pytest.mark.parametrize("reason,expected", [
     ("unreconciled_backlog_remaining", "waiting"),
     ("no_new_reconciliation_or_pending_publication", "failed"),
+    ("publication_mount_unavailable", "failed"),
 ])
 def test_home_receipt_requires_matching_backlog_deferral(tmp_path, reason, expected):
     result = eod_capture.record_native_memory_run(
@@ -3463,7 +3486,8 @@ def test_home_run_without_command_json_leaves_failed_evidence(tmp_path):
         started_at=datetime.now(timezone.utc).isoformat(), work_ids=[])
     assert result["outcome"] == "failed"
     assert result["diagnostic"] == "home_command_json_required"
-    assert Path(result["receipt_path"]).is_file()
+    receipt = json.loads(Path(result["receipt_path"]).read_bytes())
+    assert receipt["commands"]["memory_worklist"]["evidence_problem"] == "bookkeeping_failed"
 
 
 @pytest.mark.parametrize("publication", [
@@ -3502,9 +3526,11 @@ def test_home_run_requires_valid_reconciliation_count_for_publication(tmp_path, 
     publication = {"status": status}
     if status == "not_attempted":
         publication["reason"] = "no_new_reconciliation_or_pending_publication"
+    started = datetime.now(timezone.utc)
+    _retain_home_worklist(tmp_path, started)
     result = eod_capture.record_native_memory_run(
         state_root=tmp_path, writer_role="home", work_ids=[],
-        started_at=datetime.now(timezone.utc).isoformat(),
+        started_at=started.isoformat(),
         drain_result={**drain, **counts}, publication_result=publication,
     )
     assert result["outcome"] == expected
@@ -3519,8 +3545,10 @@ def test_home_run_requires_valid_reconciliation_count_for_publication(tmp_path, 
 ])
 def test_home_run_records_valid_drain_and_publication(tmp_path, sjm_delivery, transfer_status, expected):
     state = tmp_path / "state"
+    started = datetime.now(timezone.utc)
+    _retain_home_worklist(state, started)
     result = eod_capture.record_native_memory_run(state_root=state, writer_role="home",
-        started_at=datetime.now(timezone.utc).isoformat(), work_ids=[],
+        started_at=started.isoformat(), work_ids=[],
         drain_result={"status": "reconciled", "local_delivery": {"accepted": 0, "failed": 0},
                       "sjm_delivery": {"accepted": 0, "failed": 0, **sjm_delivery}, "reconciliation_conflicts": 0,
                       "reconciled": 0, "unreconciled_remaining": 0},
@@ -4356,9 +4384,11 @@ def test_all_filtered_extraction_retries_with_backoff_then_needs_attention(
     }
     for worklist, expected in ((waiting, "waiting_retry"), (final, "needs_attention")):
         assert worklist["status"] == expected
+        started = datetime.now(timezone.utc)
+        _retain_home_worklist(state, started, worklist)
         run = eod_capture.record_native_memory_run(
             state_root=state, writer_role="home", work_ids=[],
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=started.isoformat(),
             worklist_result=worklist,
             drain_result={"status": "idle", "local_delivery": {"accepted": 0, "failed": 0},
                           "sjm_delivery": {"accepted": 0, "failed": 0, "attempted": False},

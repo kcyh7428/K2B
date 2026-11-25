@@ -177,7 +177,22 @@ def test_clock_skew_does_not_hide_later_genuine_success(tmp_path, failed):
     assert degraded["last_successful_at"] is None
 
     finished = (now - timedelta(seconds=30)).isoformat()
-    _home_receipt(state, "genuine.json", started_at=finished, finished_at=finished)
+    # Inject both timestamps in the read-only classifier test to avoid
+    # relying on filesystem time. The Home CLI suite exercises the recorder.
+    path = _home_receipt(state, "genuine.json", started_at=finished, finished_at=finished,
+                         hold_check="absent")
+    data = json.loads(path.read_text())
+    data["schema_version"] = native_job_status.HOME_WORKLIST_RECEIPT_SCHEMA
+    evidence = {
+        "started_at": finished, "recorded_at": finished, "invalidated": False,
+        "result": {"writer_role": "home", "status": "idle", "selected": 0},
+    }
+    evidence_path = native_job_status.home_worklist_evidence_path(state, datetime.fromisoformat(finished))
+    evidence_path.write_text(json.dumps(evidence))
+    data["commands"]["memory_worklist"].update(
+        status="idle", selected=0, evidence_verified=True, observed_status="idle", observed_selected=0,
+        producer_evidence_sha256=native_job_status.home_worklist_evidence_sha256(evidence))
+    path.write_text(json.dumps(data))
     recovered = native_job_status.read_native_job_status(writer_role="home", state_root=state)
     assert recovered["last_run_outcome"] == "completed"
     assert recovered["last_successful_at"] == finished
@@ -478,6 +493,7 @@ def test_job_wide_hold_requires_an_explicit_operator_action(tmp_path):
 def test_idle_home_drain_requires_a_verified_empty_backlog(tmp_path, split, counts, outcome):
     drain = {"status": "idle", "failed": 0, **counts}
     commands = {
+        "memory_worklist": {"status": "idle", "selected": 0},
         "memory_home_drain": drain,
         "memory_publish": {"status": "not_attempted",
                            "reason": "no_new_reconciliation_or_pending_publication"},

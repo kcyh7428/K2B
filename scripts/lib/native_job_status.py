@@ -38,6 +38,7 @@ missing or absent.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -50,6 +51,10 @@ JOB_IDS = {
     "sjm-source-only": "k2b-automatic-memory-sjm",
 }
 RUN_RECEIPT_DIR = "native-run-receipts"
+HOME_WORKLIST_RECEIPT_SCHEMA = 2
+HOME_WORKLIST_RECEIPT_REQUIRED_FROM = datetime(2026, 11, 25, 8, tzinfo=timezone.utc)
+HOME_WORKLIST_SELECTION_LIMIT = 1
+PUBLICATION_MOUNT_UNAVAILABLE = "publication_mount_unavailable"
 HOLD_FILE = "extraction-hold.json"
 REGISTRATION_STATES = {"ACTIVE": "active", "PAUSED": "paused"}
 REGISTRATION_CONFIG_KEYS = ("model", "reasoning_effort", "rrule")
@@ -418,7 +423,7 @@ def _classify_exception(item: object) -> str | None:
 
 
 def _classify_receipt(
-    data: object, *, job_id: str, writer_role: str
+    data: object, *, job_id: str, writer_role: str, state_root: Path,
 ) -> tuple[datetime | None, datetime | None, str | None, str | None]:
     """Classify one decoded receipt.
 
@@ -436,7 +441,8 @@ def _classify_receipt(
     legacy_schema = schema == "1.0"
     if legacy_schema:
         schema = 1  # Read-only compatibility; never rewrite historical evidence.
-    if type(schema) is not int or schema != 1:
+    requires_verified_worklist = writer_role == "home" and schema == HOME_WORKLIST_RECEIPT_SCHEMA
+    if type(schema) is not int or (schema != 1 and not requires_verified_worklist):
         return None, None, None, "run receipt schema is unsupported"
 
     identity = [data.get(key) for key in RECEIPT_ID_KEYS if data.get(key) is not None]
@@ -445,6 +451,7 @@ def _classify_receipt(
         or not isinstance(identity[0], str)
         or identity[0] != job_id
         or data.get("writer_role") != writer_role
+        or JOB_IDS.get(writer_role) != job_id
     ):
         return None, None, None, "run receipt identity does not match this host role"
 
@@ -526,6 +533,14 @@ def _classify_receipt(
             return None, None, None, "run receipt reconciliation backlog evidence is malformed"
     publication_command = commands.get("memory_publish")
     publication_reason = publication_command.get("reason") if isinstance(publication_command, dict) else None
+    publication_waiting_for_mount = writer_role == "home" and publication_reason == PUBLICATION_MOUNT_UNAVAILABLE
+    if publication_waiting_for_mount and (
+        publication_command.get("status") != "not_attempted"
+        or remaining != 0 or drain_status not in ("idle", "reconciled")
+    ):
+        return None, None, None, "run receipt mount deferral conflicts with command outcomes"
+    if publication_waiting_for_mount:
+        diagnostics.append("Home publication waiting for the approved SMB binding")
     if writer_role == "home" and not conflicts and not remaining and publication_reason in (
         "reconciliation_needs_attention", "unreconciled_backlog_remaining",
     ):
@@ -575,6 +590,28 @@ def _classify_receipt(
     extraction = commands.get("memory_record_extraction")
     if isinstance(worklist, dict):
         selected = worklist.get("selected")
+        if (requires_verified_worklist and "evidence_verified" in worklist
+                and type(worklist["evidence_verified"]) is not bool):
+            return None, None, None, "run receipt worklist verification is malformed"
+        if requires_verified_worklist and "evidence_problem" in worklist:
+            problem = worklist["evidence_problem"]
+            problem_diagnostics = {
+                "missing": "Home producer worklist evidence is missing",
+                "invalid": "Home retained worklist evidence is unreadable or outside this run",
+                "unreadable": "Home retained worklist evidence could not be read safely",
+                "foreign": "Home retained worklist evidence belongs to an overlapping run",
+                "clock_skew": "Home worklist timestamp is ahead of the local receipt clock",
+                "mismatch": "Home supplied worklist differs from the retained result",
+                "hold_conflict": "Home worklist reported a hold after the retained selection",
+                "bookkeeping_failed": "Home run bookkeeping failed before it could record worklist evidence",
+            }
+            if (not isinstance(problem, str) or problem not in problem_diagnostics
+                    or worklist.get("evidence_verified") is not False):
+                return None, None, None, "run receipt worklist verification problem is malformed"
+            if problem == "missing" and data.get("hold_check") == "present":
+                diagnostics.append("Home producer worklist evidence was not recorded during the hold")
+            else:
+                diagnostics.append(problem_diagnostics[problem])
         if "selected" in worklist and (type(selected) is not int or selected < 0):
             return None, None, None, "run receipt selected count is malformed"
         needs_extraction = (isinstance(selected, int) and selected > 0) or worklist.get("status") in {"ready", "ready_with_exceptions"}
@@ -603,6 +640,7 @@ def _classify_receipt(
             return None, None, None, "run receipt batch budget is malformed"
         if budget_command["status"] == "exceeded" and verdict != "failed":
             verdict = "ambiguous"
+            diagnostics.append("run receipt batch budget was exceeded")
     if verdict == "failed":
         outcome = "failed"
     elif not saw_terminal or verdict == "ambiguous":
@@ -759,7 +797,7 @@ def _classify_receipt(
             outcome = "needs_attention"
         elif outcome == "completed" and (
             isinstance(sjm_pull, dict) and sjm_pull["status"] == "waiting"
-            or publication_reason == "unreconciled_backlog_remaining"
+            or publication_reason == "unreconciled_backlog_remaining" or publication_waiting_for_mount
         ):
             outcome = "waiting"
         elif outcome in (UNKNOWN, "completed") and (idle_backlog_unverified or missing_sjm):
@@ -772,6 +810,54 @@ def _classify_receipt(
         diagnostics.append("extraction hold could not be verified")
     if worklist_status == "blocked" and hold_check == "absent":
         diagnostics.append("extraction hold changed after the worklist check")
+    observed_status = worklist.get("observed_status") if isinstance(worklist, dict) else None
+    if requires_verified_worklist and observed_status == "ready_with_exceptions":
+        diagnostics.append("Home worklist selected a turn and reported other worklist exceptions")
+    observed_selected = worklist.get("observed_selected") if isinstance(worklist, dict) else None
+    batch_selected = worklist.get("selected") if isinstance(worklist, dict) else None
+    worklist_verified = (
+        isinstance(worklist, dict) and worklist.get("evidence_verified") is True
+        and observed_status in ("idle", "ready", "ready_with_exceptions")
+        and type(observed_selected) is int
+        and observed_selected == (HOME_WORKLIST_SELECTION_LIMIT
+                                  if observed_status in ("ready", "ready_with_exceptions") else 0)
+        and type(batch_selected) is int
+        and (worklist_status in ("ready", "ready_with_exceptions") if batch_selected
+             else worklist_status == "idle")
+        and (batch_selected > 0 or observed_selected == 0
+             or isinstance(extraction, dict) and extraction.get("deferred") == 1)
+        and hold_check == "absent"
+    )
+    # Older successful receipts remain readable. A legacy recorder that
+    # explicitly reports no selection observation cannot attest completion.
+    # Finished is validated above and is the conservative fallback when an
+    # older recorder did not save a start time.
+    # Compare the receipt's timestamp with the fixed rollout boundary. The
+    # classification of unchanged historical bytes does not age into v2.
+    missing_worklist_observation = writer_role == "home" and (
+        observed_status == "not_recorded"
+        or (worklist is None and "batch_budget" in commands and "hold_check" in data)
+    )
+    receipt_started = (
+        started if isinstance(started, datetime) and started.utcoffset() is not None else finished
+    )
+    obsolete_home_writer = (
+        writer_role == "home" and schema == 1 and receipt_started is not None
+        and receipt_started >= HOME_WORKLIST_RECEIPT_REQUIRED_FROM
+    )
+    if (outcome == "completed" and
+            ((requires_verified_worklist and not worklist_verified)
+             or missing_worklist_observation or obsolete_home_writer)):
+        outcome = "needs_attention"
+        diagnostics.append("Home local worklist evidence was not verified")
+    elif obsolete_home_writer or (requires_verified_worklist and hold_check == "absent"
+          and (not isinstance(worklist, dict) or worklist.get("evidence_verified") is not True)):
+        diagnostics.append("Home local worklist evidence was not verified")
+    if outcome == "completed" and requires_verified_worklist:
+        proof_problem = _home_completed_worklist_problem(state_root, data)
+        if proof_problem:
+            outcome = "needs_attention"
+            diagnostics.append(proof_problem)
     if outcome == UNKNOWN:
         diagnostics.append("run outcome is ambiguous")
     if outcome != "completed":
@@ -779,6 +865,63 @@ def _classify_receipt(
         # finish time. attempt_at preserves date/order even when unverified.
         return attempt_at, None, outcome, "; ".join(diagnostics) or None
     return attempt_at, finished, outcome, "; ".join(diagnostics) or None
+
+
+def home_worklist_evidence_path(state_root: Path, started: datetime) -> Path:
+    stamp = started.strftime("%Y%m%dT%H%M%S%fZ")
+    return state_root / f"home-worklist-evidence-{stamp}.json"
+
+
+def home_worklist_evidence_sha256(evidence: dict) -> str:
+    encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _home_completed_worklist_problem(state_root: Path, receipt: dict) -> str | None:
+    invalid = "Home producer worklist file does not match the completed receipt"
+    started = _parse_timestamp(receipt.get("started_at"))
+    finished = _parse_timestamp(receipt.get("finished_at"))
+    if started is None or finished is None:
+        return invalid
+    path = home_worklist_evidence_path(state_root, started)
+    try:
+        if _lstat(path) is None:
+            return "Home producer worklist file is missing"
+    except OSError:
+        return "Home producer worklist file is not safely readable"
+    status, before = _safe_stat(path, state_root)
+    if status != "ok" or before is None:
+        return "Home producer worklist file is not safely readable"
+    status, raw = _safe_read(path, state_root)
+    if status != "ok" or raw is None:
+        return "Home producer worklist file is not safely readable"
+    status, after = _safe_stat(path, state_root)
+    if status != "ok" or after is None or (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns
+    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        return "Home producer worklist file changed while it was read"
+    try:
+        evidence = json.loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        return invalid
+    if not isinstance(evidence, dict) or evidence.get("invalidated") is not False:
+        return invalid
+    if _parse_timestamp(evidence.get("started_at")) != started:
+        return invalid
+    observed = _parse_timestamp(evidence.get("recorded_at"))
+    result = evidence.get("result")
+    commands = receipt.get("commands", receipt.get("command_outcomes"))
+    worklist = commands.get("memory_worklist") if isinstance(commands, dict) else None
+    verified = (
+        observed is not None and started <= observed <= finished
+        and isinstance(result, dict) and result.get("writer_role") == "home"
+        and isinstance(worklist, dict)
+        and result.get("status") == worklist.get("observed_status")
+        and type(result.get("selected")) is int
+        and result.get("selected") == worklist.get("observed_selected")
+        and home_worklist_evidence_sha256(evidence) == worklist.get("producer_evidence_sha256")
+    )
+    return None if verified else invalid
 
 
 def _read_run_receipts(
@@ -836,7 +979,7 @@ def _read_run_receipts(
                         worst_unvalidated = candidate
                     continue
                 attempt_at, finished_at, outcome, diagnostic = _classify_receipt(
-                    data, job_id=job_id, writer_role=writer_role
+                    data, job_id=job_id, writer_role=writer_role, state_root=state_root,
                 )
                 # The receipt classifier uses _parse_timestamp, which either
                 # returns a timezone-aware UTC datetime or rejects the stamp.

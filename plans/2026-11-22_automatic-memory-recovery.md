@@ -117,3 +117,62 @@ terminal extraction failure, a stale or mismatched work record, and a pre-existi
 hold. Proof on Home requires the first scheduled batch after release to process
 at least one pending turn and produce a valid source-bound receipt. SJM remains
 held and receives no rollout in this operation.
+
+## 25 November Home worklist and receipt repair
+
+Keith approved the local-first worker change and Home deployment in Codex
+thread `01a2030e-0540-7f53-8fff-9110f3557ab2`. An unmounted Home SMB share
+is a publication constraint. Home's local worklist, extraction and staging
+use the local sessions and private state, so they run first with a clear
+extraction hold. The existing Home heartbeat starts with the worklist command.
+Publication waits for the approved binding. Once it returns, a quiet cycle
+can publish earlier reconciliation through the existing eligibility check.
+Record a mount deferral only after a successful drain verifies zero
+unreconciled deliveries. An unresolved delivery keeps its own backlog or
+conflict reason.
+
+The worklist command retains its latest result and the IDs selected so far
+in one private evidence file per run, keyed by the original UTC start. The
+next run keeps its own file so it cannot overwrite that evidence. The run receipt accounts for
+those IDs and keeps independently
+verified turn receipts even if publication fails. An unheld Home run without
+the worklist evidence cannot report completion. New Home batch receipts use a
+format that makes this check mandatory for runs started from 16:00 HKT
+on 25 November (`2026-11-25T08:00:00Z`), before the first intended Home
+run after rollout. Earlier receipts retain the status and
+last-success history supported by their original format. Those timestamps
+cannot attest the new worklist evidence. The 24 November 22:07 Home receipt
+explicitly recorded no worklist observation and cannot attest completion.
+A genuinely idle scan can complete, and a hold still blocks
+extraction. Acceptance requires a scheduled
+Home run to process a previously pending turn and leave a source-bound receipt.
+The SJM hold and both existing schedules stay in place.
+
+After approving and installing the reviewed Git commit on Home, prepend the
+exact `scripts/prompts/automatic-memory-home-entry.md` to the existing Home
+heartbeat with the Codex automation editor. Read back its registered prompt
+and confirm the first shell step supplies `--run-started-at`. Verify the same
+active job, target conversation and next schedule before watching that run.
+Treat a scheduled run with a missing receipt as requiring attention.
+The receipt validates the producer file in private state for consistency with
+the original run start and command result. The Home status reader checks
+that file against the digest in each v2 completed receipt. The existing single-owner native
+batch uses one UTC start at microsecond precision; no interactive run shares that
+state. Processes with the same local filesystem access share that trust
+boundary.
+The Home CLI serializes worklist scanning and evidenced receipt recording.
+The existing kernel lock releases with the command. Its acquisition has a
+30-second default timeout. The source start date is fixed by Keith's approval.
+If scanning reaches its limit, report the unverified range and keep the
+pending work for the next scheduled attempt.
+Input preparation rechecks the hold so an operator stop after selection
+does not open a selected turn to extraction.
+Keep the small per-run evidence files with the private run audit history.
+Each file stores the final worklist result and the bounded selected IDs.
+Retain and back up each Home producer file for as long as its native run
+receipt is kept. If status reports that the files no longer match, restore
+the producer file whose embedded UTC start and digest match the receipt
+from the same private-state backup and recheck `memory-status`. If the exact file is unavailable, retain the receipt and
+its diagnostic. The per-turn receipts remain usable, and the next verified
+batch can advance the success time. A backward clock change leaves the
+original evidence in place so it can still be checked once the clock recovers.
