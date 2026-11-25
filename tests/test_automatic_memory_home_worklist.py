@@ -11,7 +11,8 @@ from test_eod_capture_status import _modern_session, _reviewed_memory_item, eod_
 
 
 @pytest.fixture
-def native_clock(monkeypatch):
+def native_clock(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
     fixed = datetime(2026, 9, 14, 4, tzinfo=timezone.utc)
 
     class FixedClock(datetime):
@@ -70,8 +71,8 @@ def test_missing_or_caller_supplied_idle_worklist_cannot_report_completed(tmp_pa
 
 def test_only_matching_current_producer_evidence_can_report_idle_completion(tmp_path, capsys, native_clock):
     started = native_clock - timedelta(seconds=1)
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     worklist = _select(tmp_path, sources, started, native_clock, capsys)
     assert worklist["status"] == "idle"
     assert _record(tmp_path, started, work_ids=[], publication_result=QUIET)["outcome"] == "completed"
@@ -103,8 +104,8 @@ def test_canonical_home_batch_missing_verified_worklist_cannot_report_success(
     tmp_path, capsys, native_clock, field, value,
 ):
     started = native_clock - timedelta(seconds=1)
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     _select(tmp_path, sources, started, native_clock, capsys)
     run = _record(tmp_path, started, work_ids=[], publication_result=QUIET)
     receipt = json.loads(Path(run["receipt_path"]).read_bytes())
@@ -125,8 +126,8 @@ def test_reader_keeps_legacy_success_but_rejects_an_explicitly_unobserved_legacy
     tmp_path, capsys, native_clock,
 ):
     started = native_clock - timedelta(seconds=1)
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     _select(tmp_path, sources, started, native_clock, capsys)
     receipt = json.loads(Path(_record(tmp_path, started, work_ids=[],
                                     publication_result=QUIET)["receipt_path"]).read_bytes())
@@ -156,14 +157,13 @@ def test_a_later_idle_selection_cannot_hide_an_earlier_unprocessed_turn(
     tmp_path, capsys, native_clock,
 ):
     state = tmp_path / "state"
-    sources = tmp_path / "sessions"
-    _modern_session(sources, "2026-09-13", "selected-but-unread")
+    sources = tmp_path / ".codex" / "sessions"
+    source = _modern_session(sources, "2026-09-13", "selected-but-unread")
     started = native_clock - timedelta(seconds=1)
     selection = _select(state, sources, started, native_clock, capsys)
     work_id = selection["items"][0]["work_id"]
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    idle = _select(state, empty, started, native_clock, capsys)
+    source.rename(tmp_path / "selected-but-unread.jsonl")
+    idle = _select(state, sources, started, native_clock, capsys)
     assert idle["status"] == "idle"
     run = _record(state, started, work_ids=[], worklist_result=idle,
                   publication_result=QUIET)
@@ -178,7 +178,7 @@ def test_verified_multi_turn_run_accepts_final_idle_or_a_valid_deferral(
     tmp_path, capsys, native_clock, monkeypatch, defer_last,
 ):
     state = tmp_path / "state"
-    sources = tmp_path / "sessions"
+    sources = tmp_path / ".codex" / "sessions"
     _modern_session(sources, "2026-09-13", "first-turn")
     _modern_session(sources, "2026-09-13", "second-turn")
     started = native_clock - timedelta(seconds=1)
@@ -222,8 +222,8 @@ def test_registered_utc_start_is_accepted_by_both_cli_commands(
     tmp_path, capsys, native_clock, producer_format, recorder_format,
 ):
     started = native_clock - timedelta(microseconds=123456)
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     worklist = _select(tmp_path, sources, started, native_clock, capsys, producer_format)
     args = [
         "memory-record-run", "--state-root", str(tmp_path), "--writer-role", "home",
@@ -241,8 +241,8 @@ def test_registered_utc_start_is_accepted_by_both_cli_commands(
 
 
 def test_sjm_cli_keeps_its_existing_worklist_and_receipt_contract(tmp_path, capsys, native_clock):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     state = tmp_path / "state"
     common = ["--state-root", str(state), "--writer-role", "sjm-source-only"]
     assert eod_capture.main([
@@ -276,7 +276,7 @@ def test_held_home_batch_does_not_accept_unverified_caller_selection(tmp_path, n
 
 def test_hold_appearing_after_selection_stays_visible_in_the_receipt(tmp_path, capsys, native_clock):
     state = tmp_path / "state"
-    sources = tmp_path / "sessions"
+    sources = tmp_path / ".codex" / "sessions"
     _modern_session(sources, "2026-09-13", "held-after-selection")
     started = native_clock - timedelta(seconds=1)
     selection = _select(state, sources, started, native_clock, capsys)
@@ -303,8 +303,8 @@ def test_corrupt_worklist_evidence_is_preserved_and_does_not_block_next_batch(
     tmp_path, capsys, native_clock, corrupt,
 ):
     started = native_clock - timedelta(seconds=1)
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     path = eod_capture._home_worklist_evidence_path(tmp_path, started)
     path.write_bytes(corrupt)
     _select(tmp_path, sources, started, native_clock, capsys)
@@ -319,8 +319,8 @@ def test_corrupt_worklist_evidence_is_preserved_and_does_not_block_next_batch(
 
 
 def test_an_older_run_cannot_rename_a_newer_runs_worklist(tmp_path, capsys, native_clock):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     selection = _select(tmp_path, sources, native_clock, native_clock, capsys)
     path = eod_capture._home_worklist_evidence_path(tmp_path, native_clock)
     original = path.read_bytes()
@@ -342,8 +342,8 @@ def test_an_older_run_cannot_rename_a_newer_runs_worklist(tmp_path, capsys, nati
 
 
 def test_later_worklist_keeps_the_earlier_runs_evidence(tmp_path, capsys, native_clock):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     started = native_clock - timedelta(seconds=1)
     first = _select(tmp_path, sources, started, native_clock, capsys)
     _select(tmp_path, sources, native_clock, native_clock, capsys)
@@ -354,8 +354,8 @@ def test_later_worklist_keeps_the_earlier_runs_evidence(tmp_path, capsys, native
 def test_a_backwards_clock_change_does_not_replace_current_run_evidence(
     tmp_path, capsys, native_clock,
 ):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     started = native_clock - timedelta(seconds=1)
     selection = _select(tmp_path, sources, started, native_clock, capsys)
     path = eod_capture._home_worklist_evidence_path(tmp_path, started)
@@ -374,8 +374,8 @@ def test_a_backwards_clock_change_does_not_replace_current_run_evidence(
 def test_previous_valid_worklist_cannot_complete_after_the_original_run_expires(
     tmp_path, capsys, native_clock, monkeypatch,
 ):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     earlier = native_clock - timedelta(minutes=21)
 
     class EarlierClock(datetime):
@@ -398,8 +398,8 @@ def test_previous_valid_worklist_cannot_complete_after_the_original_run_expires(
 def test_status_requires_actual_producer_file_for_completed_home_receipt(
     tmp_path, capsys, native_clock, missing,
 ):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     _select(tmp_path, sources, native_clock, native_clock, capsys)
     run = _record(tmp_path, native_clock, work_ids=[], publication_result=QUIET)
     assert run["outcome"] == "completed"
@@ -420,8 +420,8 @@ def test_status_requires_actual_producer_file_for_completed_home_receipt(
 
 
 def test_completed_home_receipt_requires_the_producer_start(tmp_path, capsys, native_clock):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     _select(tmp_path, sources, native_clock, native_clock, capsys)
     run = _record(tmp_path, native_clock, work_ids=[], publication_result=QUIET)
     assert run["outcome"] == "completed"
@@ -437,7 +437,7 @@ def test_completed_home_receipt_requires_the_producer_start(tmp_path, capsys, na
 
 
 def test_native_worklist_retains_the_existing_hold_as_an_empty_selection(tmp_path, capsys, native_clock):
-    sources = tmp_path / "sessions"
+    sources = tmp_path / ".codex" / "sessions"
     _modern_session(sources, "2026-09-13", "held")
     (tmp_path / "extraction-hold.json").write_text(json.dumps({"created_at": native_clock.isoformat()}))
     worklist = _select(tmp_path, sources, native_clock, native_clock, capsys)
@@ -449,8 +449,8 @@ def test_native_worklist_retains_the_existing_hold_as_an_empty_selection(tmp_pat
 
 
 def test_native_worklist_reports_an_unverifiable_hold(tmp_path, capsys, native_clock):
-    sources = tmp_path / "sessions"
-    sources.mkdir()
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
     (tmp_path / "extraction-hold.json").write_text("bad hold JSON")
     worklist = _select(tmp_path, sources, native_clock, native_clock, capsys, expected_exit=3)
     assert worklist["status"] == "needs_attention" and worklist["hold_diagnostic"]
@@ -490,22 +490,98 @@ def test_home_receipt_records_command_lock_timeout(tmp_path, native_clock, monke
 
 def test_registered_entry_uses_home_run_clock_roles_and_capture_window():
     entry = Path(eod_capture.REPO_ROOT) / "scripts/prompts/automatic-memory-home-entry.md"
+    native = entry.with_name("automatic-memory-native.md").read_text()
     _, shell, _ = entry.read_text().split("```")
     assert "run_start=$(/usr/local/bin/python3.12 -c '" in shell.splitlines()
     assert 'datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")' in shell
     assert "through_date=$(TZ=Asia/Hong_Kong date +%F)" in shell.splitlines()
     assert 'scripts/eod-capture.py memory-worklist' in shell
     assert '--state-root "$HOME/.local/state/k2b/automatic-memory"' in shell
+    assert '--codex-root "$HOME/.codex/sessions"' in shell
     assert f"--writer-role home --since {eod_capture.HOME_NATIVE_CAPTURE_SINCE}" in shell
     assert '--through "$through_date"' in shell
     assert '--limit 1 --run-started-at "$run_start"' in shell
+    assert '`$HOME/.codex/sessions`' in native
+    assert 'add `--native-home` and use the same registered sessions root' in native
+
+
+def test_home_configured_source_root_excludes_older_archived_turn(tmp_path, capsys, native_clock):
+    state = tmp_path / "state"
+    codex = tmp_path / ".codex"
+    sessions = codex / "sessions"
+    active = _modern_session(sessions, "2026-09-14", "active")
+    _modern_session(codex / "archived_sessions", "2026-09-13", "older-archived")
+    common = ["--state-root", str(state), "--writer-role", "home",
+              "--since", "2026-09-13", "--through", "2026-09-14"]
+    assert eod_capture.main([
+        "memory-worklist", *common, "--codex-root", str(codex),
+        "--limit", "1", "--run-started-at", native_clock.isoformat(),
+    ]) == 2
+    assert "requires the registered Codex sessions directory" in capsys.readouterr().err
+    assert not state.exists()
+    worklist = _select(state, sessions, native_clock, native_clock, capsys)
+    assert worklist["selected"] == 1
+    assert Path(worklist["items"][0]["session_path"]) == active
+    assert eod_capture.main([
+        "memory-backlog", *common, "--codex-root", str(codex), "--native-home",
+    ]) == 2
+    assert "requires the registered Codex sessions directory" in capsys.readouterr().err
+    assert eod_capture.main([
+        "memory-backlog", *common, "--codex-root", str(sessions), "--native-home",
+    ]) == 0
+    backlog = json.loads(capsys.readouterr().out)
+    assert backlog["complete"] and backlog["pending_turns"] == 1
+    assert backlog["home_source_scope"] == "registered_sessions"
+    assert eod_capture.main([
+        "memory-backlog", *common, "--codex-root", str(codex),
+    ]) == 0
+    manual = json.loads(capsys.readouterr().out)
+    assert manual["pending_turns"] == 2 and manual["home_source_scope"] == "operator_selected"
+    assert manual["source_scope_diagnostic"]
+
+
+def test_native_home_does_not_follow_a_sessions_symlink_to_archives(tmp_path, capsys, native_clock):
+    codex = tmp_path / ".codex"
+    archived = codex / "archived_sessions"
+    _modern_session(archived, "2026-09-13", "archived")
+    sessions = codex / "sessions"
+    sessions.symlink_to(archived, target_is_directory=True)
+    assert eod_capture.main([
+        "memory-backlog", "--state-root", str(tmp_path / "state"), "--codex-root", str(sessions),
+        "--writer-role", "home", "--native-home", "--since", "2026-09-13", "--through", "2026-09-14",
+    ]) == 2
+    assert "requires the registered Codex sessions directory" in capsys.readouterr().err
+
+
+def test_native_home_does_not_reuse_an_out_of_scope_retained_binding(tmp_path, capsys, native_clock):
+    state = tmp_path / "state"
+    codex = tmp_path / ".codex"
+    sessions = codex / "sessions"
+    archived = _modern_session(codex / "archived_sessions", "2026-09-13", "older")
+    broad = eod_capture.build_memory_worklist(
+        state_root=state, codex_root=codex, writer_role="home",
+        since="2026-09-13", through="2026-09-14", limit=1,
+    )
+    retained = Path(broad["items"][0]["source_bundle_path"])
+    original = retained.read_bytes()
+    duplicate = sessions / archived.relative_to(codex / "archived_sessions")
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_bytes(archived.read_bytes())
+    active = _modern_session(sessions, "2026-09-14", "active")
+    result = _select(state, sessions, native_clock, native_clock, capsys)
+    assert result["status"] == "ready_with_exceptions"
+    assert result["parse_exception_counts"] == {"retained_sources_outside_native_root": 1}
+    assert result["retained_scope_work_ids"] == [broad["items"][0]["work_id"]]
+    assert not result["retained_scope_unreadable_work_ids"]
+    assert Path(result["items"][0]["session_path"]) == active
+    assert retained.read_bytes() == original
 
 
 def test_home_can_process_local_turn_with_no_nas_and_keep_its_receipt(
     tmp_path, capsys, native_clock, monkeypatch,
 ):
     state = tmp_path / "state"
-    sources = tmp_path / "sessions"
+    sources = tmp_path / ".codex" / "sessions"
     _modern_session(sources, "2026-09-13", "local-before-mount")
     started = native_clock - timedelta(seconds=1)
     discover = eod_capture.session_paths

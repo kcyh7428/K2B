@@ -142,6 +142,12 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    call and keep the entry command's HKT through date for that batch so
    every call follows the same window. The command saves its own private evidence. Read its actual
    output and handle the selected turn before inspecting any NAS mount.
+   Set `--codex-root` to the exact registered Home source root
+   `$HOME/.codex/sessions`. The parent directory includes archived chats
+   outside this job's source scope.
+   If that directory is missing or relocated, report the failed source
+   binding. Resume when the Home operator restores or reviews the registered
+   binding.
    Save each actual worklist JSON in this run's existing private artifacts.
    If a full scan cannot finish in the remaining budget, report the capacity
    limit and leave work pending. Never claim empty coverage, skip unavailable
@@ -294,6 +300,8 @@ worklist exits normally with zero selections. Home still proceeds with its
 independently eligible work. Generate the canonical run receipt
 with `scripts/eod-capture.py memory-record-run --writer-role <role> --state-root
 <state> --started-at <UTC-start>` and one `--work-id` for each attempted turn.
+A selected or prepared turn stays pending if extraction never started.
+Leave that work ID out of `--work-id`.
 Pass each selected-but-unread boundary deferral with `--deferred-work-id` and its
 `--deferred-reason`; the helper requires the view to be inside this run's window,
 in the current writer role, and without an existing extraction receipt, so a
@@ -323,13 +331,18 @@ prove turns were recorded. Never rerun an extraction to replace a missing
 or invalid run receipt.
 
 Run `memory-backlog --writer-role <role> --state-root <state> --codex-root <root>
---since 2026-09-13 --through <current-HKT-date>` after the batch. Add
+--since 2026-09-13 --through <current-HKT-date>` after the batch. On Home
+add `--native-home` and use the same registered sessions root as selection. Add
 `--max-scan-seconds <n>` only when a bounded scan genuinely needs longer; the
 budget is enforced inside single large session files too, so an incomplete scan
 reports `complete: false` with `status: needs_attention` and never "no backlog".
+Use a Home backlog for run reporting only when it says
+`home_source_scope: registered_sessions`.
 Save its aggregate JSON beside the run receipt; it validates extraction evidence
 without selecting or extracting work. Report pending turns and oldest pending time
-when attention is needed. If pending work remains with no completed extraction, or
+when attention is needed. If the worklist reports a retained bundle outside
+the registered root, report its work ID, keep the evidence, and continue
+with eligible work. If pending work remains with no completed extraction, or
 backlog age exceeds 24 hours after initial catch-up, flag the capacity/hold problem
 once and when it changes; do not claim current recall from an ACTIVE registration.
 Report `empty_completed_turns` from the backlog JSON as excluded empty completions

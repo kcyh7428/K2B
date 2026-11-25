@@ -176,3 +176,24 @@ from the same private-state backup and recheck `memory-status`. If the exact fil
 its diagnostic. The per-turn receipts remain usable, and the next verified
 batch can advance the success time. A backward clock change leaves the
 original evidence in place so it can still be checked once the clock recovers.
+
+The 16:08 HKT Home run on 25 November selected an archived chat after
+receiving the parent Codex directory as its source root. It stopped before
+extracting the selected turn. Home selection and backlog must both use the
+registered `$HOME/.codex/sessions` root. With an older eligible archived turn
+and a pending active-session turn, the next worklist must select only the
+active-session turn and the backlog must count only that turn.
+Native worklist and `memory-backlog --native-home` enforce that root at the
+command boundary. Ordinary read-only audits keep their existing scope options.
+An audit using a different Home root carries a separate scope diagnostic.
+A legacy retained bundle can still point into the archive if the same turn is
+also found in the current sessions. Leave those bytes intact. The worklist
+reports the bounded affected IDs and continues to eligible work. The read-only
+backlog counts active-session turns and validates their existing receipts.
+A nonzero scope diagnostic requires a separate provenance decision for the
+affected work ID. The scoped Home read-only audit found no such conflict
+before rollout.
+Compare each work-ID list length with its corresponding exception count to
+identify a bounded sample. A mismatched binding can be reviewed separately
+using the exact work ID, stored source path and current active copy. Keep
+old files and receipts together during any approved repair.

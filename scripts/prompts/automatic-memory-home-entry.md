@@ -18,7 +18,7 @@ through_date=$(TZ=Asia/Hong_Kong date +%F)
 printf 'Home run start %s\nHome run through %s\n' "$run_start" "$through_date"
 cd /Users/keithmbpm2/Projects/K2B || exit 2
 /usr/local/bin/python3.12 scripts/eod-capture.py memory-worklist \
-  --state-root "$HOME/.local/state/k2b/automatic-memory" --codex-root "$HOME/.codex" \
+  --state-root "$HOME/.local/state/k2b/automatic-memory" --codex-root "$HOME/.codex/sessions" \
   --writer-role home --since 2026-09-13 --through "$through_date" \
   --limit 1 --run-started-at "$run_start"
 ```
@@ -32,7 +32,8 @@ required operator action in the run summary. Both outcomes stop extraction.
 Read all of `scripts/prompts/automatic-memory-native.md`. Follow the selected turn
 through Steps 2 and 3. Repeat Steps 1 through 3 as permitted by the existing
 batch limits, using the same printed UTC start and HKT through date with
-every worklist call. A hold stops
+every worklist call. Use the same `$HOME/.codex/sessions` source root for each
+selection and for the final backlog check with `--native-home`. A hold stops
 selection and extraction for this batch. After the local steps or a hold,
 continue independently eligible Steps 4 and 5 and record actual outcomes. A missing
 SMB mount affects publication only. A run without verified local worklist

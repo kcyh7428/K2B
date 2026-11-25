@@ -893,6 +893,14 @@ def _resolve_codex_root(codex_root: Path | None = None) -> Path:
     return codex_root.resolve()
 
 
+def _home_native_sessions_root(codex_root: Path) -> Path:
+    """Keep the native Home job inside its registered session directory."""
+    registered = Path.home().resolve() / ".codex" / "sessions"
+    if codex_root.resolve() != registered or registered.resolve() != registered or not registered.is_dir():
+        raise ValueError("native Home capture requires the registered Codex sessions directory; verify the Home source binding")
+    return registered
+
+
 def detect_source_app(session_path: Path, *, codex_root: Path | None = None) -> str:
     """Return the canonical source app for a K2B capture session.
 
@@ -3402,6 +3410,7 @@ def build_memory_worklist(
     limit: int = 10,
     now: str | None = None,
     max_scan_seconds: float = 120,
+    constrain_retained_sources: bool = False,
 ) -> dict:
     """Persist a bounded list of eligible immutable completed-turn sources."""
 
@@ -3416,6 +3425,8 @@ def build_memory_worklist(
     requested_dates = set(_date_range(since, through))
     exception_counts = {"needs_attention": 0, "retry_backoff": 0}
     parse_exception_counts: dict[str, int] = {}
+    retained_scope_work_ids: list[str] = []
+    retained_scope_unreadable_work_ids: list[str] = []
     result = {
         "writer_role": role,
         "selected": 0,
@@ -3429,6 +3440,9 @@ def build_memory_worklist(
         "parse_exception_counts": parse_exception_counts,
         "items": [],
     }
+    if constrain_retained_sources:
+        result["retained_scope_work_ids"] = retained_scope_work_ids
+        result["retained_scope_unreadable_work_ids"] = retained_scope_unreadable_work_ids
     hold, hold_diagnostic = native_job_status._read_hold(state_root)
     if hold != "absent":
         return {
@@ -3577,6 +3591,24 @@ def build_memory_worklist(
                     != _memory_source_identity(current_bundle)
                 ):
                     raise RuntimeError("memory source bundle identity conflicts")
+                # root is already the resolved source root used for this scan.
+                if constrain_retained_sources:
+                    try:
+                        within_scope = Path(bundle["session_path"]).resolve().is_relative_to(root)
+                    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+                        parse_exception_counts["retained_source_scope_unreadable"] = (
+                            parse_exception_counts.get("retained_source_scope_unreadable", 0) + 1
+                        )
+                        if len(retained_scope_unreadable_work_ids) < MEMORY_RUN_MAX_TURNS:
+                            retained_scope_unreadable_work_ids.append(work_id)
+                        continue
+                    if not within_scope:
+                        parse_exception_counts["retained_sources_outside_native_root"] = (
+                            parse_exception_counts.get("retained_sources_outside_native_root", 0) + 1
+                        )
+                        if len(retained_scope_work_ids) < MEMORY_RUN_MAX_TURNS:
+                            retained_scope_work_ids.append(work_id)
+                        continue
             else:
                 if current_bundle["session_path"] in failed_sources:
                     continue
@@ -8292,6 +8324,8 @@ def main(argv: list[str] | None = None) -> int:
     memory_backlog_parser.add_argument("--state-root", type=Path,
                                        default=_default_automatic_memory_state_root())
     memory_backlog_parser.add_argument("--writer-role", choices=("home", "sjm-source-only"), required=True)
+    memory_backlog_parser.add_argument("--native-home", action="store_true",
+                                       help="require the registered Home sessions source root")
     memory_backlog_parser.add_argument("--max-scan-seconds", type=float, default=60)
     home_hold = sub.add_parser("memory-record-home-hold", help="record a hold from current Home extraction evidence")
     home_hold.add_argument("--state-root", type=Path, required=True)
@@ -8473,6 +8507,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             run_started = None
             scan_seconds = args.max_scan_seconds
+            source_root = args.codex_root
             if args.run_started_at is not None:
                 if (not args.run_started_at or args.writer_role != "home"
                         or args.limit != native_job_status.HOME_WORKLIST_SELECTION_LIMIT
@@ -8480,6 +8515,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("native worklist evidence requires Home, one selection and the real clock")
                 if not 0 < scan_seconds <= 1050:
                     raise ValueError("native worklist scan budget must be positive and bounded")
+                source_root = _home_native_sessions_root(source_root)
                 run_started = _memory_instant(args.run_started_at, "run start")
                 now = datetime.now(timezone.utc)
                 elapsed = (now - run_started).total_seconds()
@@ -8509,13 +8545,14 @@ def main(argv: list[str] | None = None) -> int:
                     scan_seconds = min(scan_seconds, remaining)
                 result = build_memory_worklist(
                     state_root=args.state_root,
-                    codex_root=args.codex_root,
+                    codex_root=source_root,
                     since=args.since,
                     through=args.through,
                     writer_role=args.writer_role,
                     limit=args.limit,
                     now=args.now,
                     max_scan_seconds=scan_seconds,
+                    constrain_retained_sources=run_started is not None,
                 )
                 if run_started is not None:
                     _retain_home_run_worklist(args.state_root, run_started, result)
@@ -8763,9 +8800,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "memory-backlog":
         try:
-            result = memory_backlog(state_root=args.state_root, codex_root=args.codex_root,
+            source_root = args.codex_root
+            if args.native_home:
+                if args.writer_role != "home":
+                    raise ValueError("native Home backlog requires the Home writer role")
+                source_root = _home_native_sessions_root(source_root)
+            result = memory_backlog(state_root=args.state_root, codex_root=source_root,
                 since=args.since, through=args.through, writer_role=args.writer_role,
                 max_scan_seconds=args.max_scan_seconds)
+            if args.writer_role == "home":
+                try:
+                    _home_native_sessions_root(source_root)
+                except (OSError, ValueError, RuntimeError):
+                    result["home_source_scope"] = "operator_selected"
+                    result["source_scope_diagnostic"] = (
+                        "this audit used a source root outside registered Home sessions"
+                    )
+                else:
+                    result["home_source_scope"] = "registered_sessions"
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"eod-capture: memory backlog failed: {_sanitize_log_value(exc)}", file=sys.stderr)
             return 2
