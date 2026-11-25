@@ -168,7 +168,7 @@ def test_pending_online_bindings(vault_env, monkeypatch, case):
     from types import SimpleNamespace
     mod = load_module()
     root = "/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault"
-    line = "//cheung@192.168.50.67/Keith-Work on /Users/keithmbpm2/Projects/K2B-NAS (smbfs, nodev)"
+    line = "//cheung@100.75.5.21/Keith-Work on /Users/keithmbpm2/Projects/K2B-NAS (smbfs, nodev)"
     monkeypatch.setattr(mod, "validate_operator", lambda: "keithmbpm2")
     monkeypatch.setattr(mod.subprocess, "check_output", lambda *a, **k: "" if case == "missing_mount" else line.replace("nodev", "read-only") if case == "read_only" else line)
     monkeypatch.setattr(mod.os.path, "islink", lambda p: True)
@@ -201,7 +201,7 @@ def test_pending_online_valid_each_host(vault_env, monkeypatch, actor):
     from types import SimpleNamespace
     mod = load_module()
     mount = "/Users/keithmbpm2/Projects/K2B-NAS" if actor == "keithmbpm2" else "/Volumes/Keith-Work"
-    source = "//cheung@192.168.50.67/Keith-Work" if actor == "keithmbpm2" else "//cheung@100.75.5.21/Keith-Work"
+    source = "//cheung@100.75.5.21/Keith-Work"
     root = mount + "/K2B-Vault"
     monkeypatch.setattr(mod, "validate_operator", lambda: actor)
     monkeypatch.setattr(mod.subprocess, "check_output", lambda *a, **k: source + " on " + mount + " (smbfs, nodev)")

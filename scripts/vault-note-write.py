@@ -1548,7 +1548,7 @@ def _pending_online():
     actor = validate_operator()
     if actor == "keithmbpm2":
         mount, source, logical = (
-            "/Users/keithmbpm2/Projects/K2B-NAS", "//cheung@192.168.50.67/Keith-Work",
+            "/Users/keithmbpm2/Projects/K2B-NAS", "//cheung@100.75.5.21/Keith-Work",
             "/Users/keithmbpm2/Projects/K2B-Vault")
     else:
         mount, source, logical = ("/Volumes/Keith-Work", "//cheung@100.75.5.21/Keith-Work",
@@ -1556,7 +1556,7 @@ def _pending_online():
     lines = subprocess.check_output(["/sbin/mount"], text=True).splitlines()
     matches = [line for line in lines if line.startswith(source + " on " + mount + " (smbfs,")]
     if len(matches) != 1 or "read-only" in matches[0]:
-        raise WriteError("pending delivery requires the approved writable SMB mount")
+        raise WriteError(f"pending delivery requires the approved writable SMB mount {source} on {mount}")
     root = mount + "/K2B-Vault"
     if (not os.path.islink(logical) or os.path.realpath(logical) != root
             or vault_root() != root or os.path.realpath(compile_lock_dir()) != root + "/.k2b-compile-index.lock.d"):
