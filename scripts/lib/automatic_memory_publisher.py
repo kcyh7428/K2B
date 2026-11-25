@@ -3,6 +3,10 @@
 Production requires a separately approved machine-local publication authority;
 this module never creates that authority or registers a schedule. Python tests
 may inject a preflight for synthetic roots, but the CLI exposes no such bypass.
+
+Rollback to the pre-cutover publisher is unsupported after the first
+Tailscale publication receipt. Future fixes must read both sets of immutable
+history.
 """
 from __future__ import annotations
 
@@ -33,7 +37,14 @@ REPO = Path(__file__).resolve().parents[2]
 SMB_STORAGE = {
     "kind": "smb",
     "mount_point": "/Users/keithmbpm2/Projects/K2B-NAS",
-    "source": "//cheung@192.168.50.67/Keith-Work",
+    "source": "//cheung@100.75.5.21/Keith-Work",
+    "relative_target": "K2B-Vault",
+}
+PRE_TAILSCALE_SOURCE = "//cheung@192.168.50.67/Keith-Work"
+PRE_TAILSCALE_STORAGE = {
+    "kind": "smb",
+    "mount_point": "/Users/keithmbpm2/Projects/K2B-NAS",
+    "source": PRE_TAILSCALE_SOURCE,
     "relative_target": "K2B-Vault",
 }
 
@@ -83,6 +94,9 @@ def _smb_readiness(vault: Path, storage: dict) -> dict:
     This adds no deadline to existing publication I/O or rollback. Subprocess
     termination depends on OS scheduling; it is not a universal kernel-I/O bound.
     """
+    if storage == PRE_TAILSCALE_STORAGE:
+        raise PermissionError("Home publication authority still names the former LAN source; "
+                              "complete the approved Tailscale cutover")
     if not isinstance(storage, dict) or storage != SMB_STORAGE:
         raise PermissionError("SMB storage binding is not authorized")
     print("SMB readiness: five-second subprocess probes only; parent path/policy "
@@ -107,6 +121,8 @@ def _smb_readiness(vault: Path, storage: dict) -> dict:
     if not ancestors:
         raise PermissionError("approved SMB mount is absent")
     _, source, mounted, flags = max(ancestors, key=lambda entry: entry[0])
+    if source == PRE_TAILSCALE_SOURCE and mounted == str(mount) and "smbfs" in flags:
+        raise PermissionError("Home is mounted through the former LAN source; reconnect over Tailscale")
     if (source != storage["source"] or mounted != str(mount)
         or "smbfs" not in flags or "read-only" in flags):
         raise PermissionError("approved SMB mount is absent, replaced or read-only")
@@ -310,11 +326,18 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
     # One operator-authorized Home migration, never general realpath equivalence.
     # Only the production preflight can authorize historical namespace evidence.
     historical_vault = "/Users/keithmbpm2/Projects/K2B-Vault"
-    accept_historical = (
+    verified_home_smb = (
         preflight is None and evidence.get("storage") == "smb-ready"
         and evidence.get("binding") == SMB_STORAGE
-        and vault == Path(SMB_STORAGE["mount_point"]) / SMB_STORAGE["relative_target"]
-        and Path(historical_vault).resolve() == vault)
+        and vault == Path(SMB_STORAGE["mount_point"]) / SMB_STORAGE["relative_target"])
+    accept_historical = verified_home_smb and Path(historical_vault).resolve() == vault
+    def previous_smb_binding(receipt: dict) -> bool:
+        return (verified_home_smb
+                and (receipt.get("vault_root") == str(vault)
+                     or (accept_historical and receipt.get("vault_root") == historical_vault))
+                and receipt.get("storage") == "smb-ready"
+                and receipt.get("binding") == PRE_TAILSCALE_STORAGE)
+
     paths = {rel: _safe(vault, rel) for rel in
              (JSON_REL, NOTE_REL, INDEX_REL, "wiki/index.md", "wiki/log.md")}
     for rel in (INDEX_REL, "wiki/index.md", "wiki/log.md"):
@@ -411,6 +434,8 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                                 comparable = {**binding, "vault_root": str(vault)}
                                 if "storage" not in binding and "binding" not in binding:
                                     comparable.update(storage=evidence["storage"], binding=evidence["binding"])
+                            if previous_smb_binding(binding):
+                                comparable = {**comparable, "binding": evidence["binding"]}
                             if (not isinstance(prior_watermark, dict)
                                 or set(comparable) != set(expected)
                                 or any(comparable.get(k) != expected.get(k) for k in (
@@ -451,6 +476,7 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                            for sha in prior["artifact_sha256"].values())
                     or prior.get("snapshot_sha256") != prior["artifact_sha256"][JSON_REL]
                     or (("storage" in prior or "binding" in prior)
+                        and not previous_smb_binding(prior)
                         and (prior.get("storage") != "smb-ready" or prior.get("binding") != SMB_STORAGE))):
                     raise ValueError(f"publication receipt is malformed or belongs to another vault: {prior_path}")
                 binding = {k: v for k, v in prior.items() if k != "published_at"}

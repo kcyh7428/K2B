@@ -70,13 +70,14 @@ def test_smb_binding_ready(smb_environment):
         'storage': 'smb-ready', 'binding': e.binding}
 
 
-@pytest.mark.parametrize('change', ['absent', 'source', 'mount', 'type', 'readonly',
+@pytest.mark.parametrize('change', ['absent', 'source', 'former-lan', 'mount', 'type', 'readonly',
                                    'nested', 'malformed', 'stat-readonly', 'access',
                                    'userless', 'alias', 'unrelated-malformed'])
 def test_smb_failed_readiness_makes_no_publication_writes(smb_environment, change):
     e = smb_environment
     if change == 'absent': e.output = '/dev/disk on / (apfs, local)\n'
-    if change == 'source': e.output = e.output.replace('192.168.50.67', '192.168.50.68')
+    if change == 'source': e.output = e.output.replace('100.75.5.21', '192.168.50.68')
+    if change == 'former-lan': e.output = e.output.replace('100.75.5.21', '192.168.50.67')
     if change == 'mount': e.output = e.output.replace(str(e.mount), str(e.mount) + '-old')
     if change == 'type': e.output = e.output.replace('smbfs', 'nfs')
     if change == 'readonly': e.output = e.output.replace('smbfs', 'smbfs, read-only')
@@ -85,7 +86,7 @@ def test_smb_failed_readiness_makes_no_publication_writes(smb_environment, chang
     if change == 'stat-readonly': e.flags = e.p.os.ST_RDONLY
     if change == 'access': e.writable = False
     if change == 'userless': e.output = e.output.replace('cheung@', '')
-    if change == 'alias': e.output = e.output.replace('192.168.50.67', 'NAS.local')
+    if change == 'alias': e.output = e.output.replace('100.75.5.21', 'NAS.local')
     if change == 'unrelated-malformed': e.output += 'unidentified mount\n'
     before = {str(f): f.read_bytes() for f in e.vault.rglob('*') if f.is_file()}
     with pytest.raises(PermissionError):
@@ -240,6 +241,8 @@ def namespace_migration(tmp_path, monkeypatch):
         mount_output=f"/dev/disk on / (apfs, local)\n{binding['source']} on {mount} (smbfs, nodev, nosuid)\n")
     resolve, read_text, run = Path.resolve, Path.read_text, p.subprocess.run
     monkeypatch.setattr(p, "SMB_STORAGE", binding)
+    monkeypatch.setattr(p, "PRE_TAILSCALE_STORAGE",
+                        {**p.PRE_TAILSCALE_STORAGE, "mount_point": str(mount)})
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setattr(p.getpass, "getuser", lambda: env.user)
     monkeypatch.setattr(Path, "resolve", lambda self, *a, **kw:
@@ -268,7 +271,7 @@ def namespace_migration(tmp_path, monkeypatch):
     return env
 
 
-def _namespace_history(env, kind, monkeypatch):
+def _namespace_history(env, kind, monkeypatch, *, previous_smb=False, smb_alias=False):
     """Create invented pre-migration history, never read production receipts."""
     p, vault, state = env.p, env.vault, env.state
     if kind == "published":
@@ -286,7 +289,10 @@ def _namespace_history(env, kind, monkeypatch):
         current = next((state / "publication-pending").glob("*.json"))
         outer = json.loads(current.read_text())
         prior = outer["publication"]
-    prior["vault_root"] = str(env.logical)
+    if previous_smb:
+        prior.update(storage="smb-ready", binding=p.PRE_TAILSCALE_STORAGE)
+    if not previous_smb or smb_alias:
+        prior["vault_root"] = str(env.logical)
     identity = p._publication_id({k: v for k, v in prior.items() if k != "published_at"})
     legacy = current.with_name(identity + ".json")
     current.unlink()
@@ -300,9 +306,13 @@ def _namespace_history(env, kind, monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["published", "staged"])
-def test_historical_home_namespace_uses_verified_smb_without_rewriting_history(namespace_migration, monkeypatch, kind):
+@pytest.mark.parametrize(("previous_smb", "smb_alias"),
+                         [(False, False), (True, False), (True, True)])
+def test_historical_home_namespace_uses_verified_smb_without_rewriting_history(
+    namespace_migration, monkeypatch, kind, previous_smb, smb_alias
+):
     env = namespace_migration
-    legacy = _namespace_history(env, kind, monkeypatch)
+    legacy = _namespace_history(env, kind, monkeypatch, previous_smb=previous_smb, smb_alias=smb_alias)
     original = legacy.read_bytes()
     historical = json.loads(original)
     if kind == "staged":
@@ -348,11 +358,12 @@ def test_historical_home_namespace_uses_verified_smb_without_rewriting_history(n
                                  for path in folder.rglob("*") if path.is_file()}
 
 
-@pytest.mark.parametrize("failure", ["other-root", "equivalent-path", "tampered", "identity-valid-hash-tamper", "schema", "status", "writer", "artifact-shape", "snapshot", "alias", "mount", "storage", "policy", "non-home", "legacy-mode", "injected-smb", "artifact-edited"])
+@pytest.mark.parametrize("failure", ["other-root", "equivalent-path", "tampered", "identity-valid-hash-tamper", "schema", "status", "writer", "artifact-shape", "snapshot", "alias", "mount", "former-lan-mount", "storage", "receipt-binding", "policy", "non-home", "legacy-mode", "injected-smb", "artifact-edited"])
 @pytest.mark.parametrize("kind", ["published", "staged"])
-def test_historical_namespace_refuses_invalid_binding_or_ownership_before_writes(namespace_migration, monkeypatch, failure, kind):
+@pytest.mark.parametrize("previous_smb", [False, True])
+def test_historical_namespace_refuses_invalid_binding_or_ownership_before_writes(namespace_migration, monkeypatch, failure, kind, previous_smb):
     env = namespace_migration
-    legacy = _namespace_history(env, kind, monkeypatch)
+    legacy = _namespace_history(env, kind, monkeypatch, previous_smb=previous_smb)
     outer = json.loads(legacy.read_text())
     prior = outer["publication"] if kind == "staged" else outer
     if failure == "other-root": prior["vault_root"] += "/unrelated"
@@ -364,7 +375,9 @@ def test_historical_namespace_refuses_invalid_binding_or_ownership_before_writes
     if failure == "writer": prior["writer_role"] = "sjm-source-only"
     if failure == "artifact-shape": prior["artifact_sha256"] = []
     if failure == "snapshot": prior["snapshot_sha256"] = "f" * 64
-    if failure in ("other-root", "equivalent-path", "identity-valid-hash-tamper", "schema", "status", "writer", "artifact-shape", "snapshot"):
+    if failure == "receipt-binding":
+        prior.update(storage="smb-ready", binding={**env.binding, "source": "wrong"})
+    if failure in ("other-root", "equivalent-path", "identity-valid-hash-tamper", "schema", "status", "writer", "artifact-shape", "snapshot", "receipt-binding"):
         renamed = legacy.with_name(env.p._publication_id(
             {k: v for k, v in prior.items() if k != "published_at"}) + ".json")
         legacy.rename(renamed)
@@ -377,6 +390,8 @@ def test_historical_namespace_refuses_invalid_binding_or_ownership_before_writes
     if failure == "mount":
         assert env.binding["source"] in env.mount_output
         env.mount_output = env.mount_output.replace(env.binding["source"], env.binding["source"] + "-wrong", 1)
+    if failure == "former-lan-mount":
+        env.mount_output = env.mount_output.replace(env.binding["source"], env.p.PRE_TAILSCALE_SOURCE, 1)
     if failure == "storage": env.authority["storage"] = {**env.binding, "source": "wrong"}
     if failure == "policy": env.authority["policy_ledger_sha256"] = "0" * 64
     if failure == "non-home": env.user = "keithcheung"
@@ -405,7 +420,9 @@ def test_historical_namespace_refuses_invalid_binding_or_ownership_before_writes
         "snapshot": malformed,
         "alias": (PermissionError, "approved SMB target is unavailable: wrong vault target"),
         "mount": (PermissionError, "approved SMB mount is absent, replaced or read-only"),
+        "former-lan-mount": (PermissionError, "mounted through the former LAN source"),
         "storage": (PermissionError, "SMB storage binding is not authorized"),
+        "receipt-binding": malformed,
         "policy": (PermissionError, "policy ledger changed; publication needs a fresh policy review"),
         "non-home": (PermissionError, "shared publication is allowed only on the Home Mac"),
         "legacy-mode": malformed,
