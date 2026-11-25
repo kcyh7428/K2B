@@ -16,7 +16,7 @@ legacy Syncthing vault connection keeps its existing state.
 
 K2B spans two authorized Macs: Keith's home MacBook and the SJM MacBook `GLPs-MacBook-Pro`. Reviewed code and skills move through Git and execute locally. Both Macs read one online NAS knowledge collection through the logical `Projects/K2B-Vault` aliases and exact SMB bindings in `AGENTS.md`. NAS is storage, not an execution server. Credentials and machine-local state stay on their owning machines; no automatic non-Codex chat capture is enabled.
 
-The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused on both Macs. No automatic write fallback, write return or reconnection is enabled. Preserved originals are dated copies, never fallback targets. Never treat a bare mount directory as NAS evidence or silently use it or an old copy when SMB is unavailable. Syncthing checks below apply only to an explicitly selected legacy local-replication mode.
+The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused on both Macs. On Home, the storage runbook allows one reconnect per active task when the approved mount is missing, shared across all reads and ordinary saves. Scheduled reconnect and SJM helper activation require separate authority. Preserved originals are dated copies, never fallback targets. Never treat a bare mount directory as NAS evidence or silently use it or an old copy when SMB is unavailable. Syncthing checks below apply only to an explicitly selected legacy local-replication mode.
 
 For active read/recall tasks, prefer the verified NAS. If its check fails, apply
 only the complete sole authoritative checklist in
@@ -93,7 +93,7 @@ The same-nonce/EEXIST and real SJM save, 44.566 seconds with matching Home hashe
 
 Syncthing owns transport only in the explicitly selected legacy local-replication mode. Its ordinary local-writer exception, including Home-offline saves, is retained for that mode and does not enable NAS write fallback. The receipt-verified read-copy exception above is separate.
 
-After a host reconnects, reread the current NAS note and expected hash before writing. Compare any private pending draft with that version; unexpected divergence blocks overwrite and preserves both versions. Do not publish stale local copies or infer that automatic write fallback/return or reconnection is installed. General unattended/concurrent-client writes remain outside this procedure until root accepts owner bindings; separately authorized native jobs retain their own authority and schedules.
+After a host reconnects, reread the current NAS note and expected hash before writing. Compare any private pending draft with that version; unexpected divergence blocks overwrite and preserves both versions. Do not publish stale local copies or automatically write back from an offline read copy. General unattended/concurrent-client writes remain outside this procedure until root accepts owner bindings; separately authorized native jobs retain their own authority and schedules.
 
 A `.sync-conflict-*.md` copy means both versions exist and must be preserved. Do not delete, rename, or hand-merge conflict files; the writer refuses to overwrite a conflicted target, and the SessionStart hook warns on real conflict copies. Resolution is Keith's call after both versions have been read.
 

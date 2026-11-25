@@ -83,7 +83,7 @@ untouched.
 - Home project: `/Users/keithmbpm2/Projects/K2B`. Home vault alias:
   `/Users/keithmbpm2/Projects/K2B-Vault` to
   `/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault` on
-  `//cheung@192.168.50.67/Keith-Work`.
+  `//cheung@100.75.5.21/Keith-Work`.
 - SJM project: `/Users/keithcheung/Projects/K2B` on `GLPs-MacBook-Pro`, reached only
   through its existing authorized SSH configuration. SJM vault alias:
   `/Users/keithcheung/Projects/K2B-Vault` to `/Volumes/Keith-Work/K2B-Vault` on
@@ -102,6 +102,10 @@ untouched.
   ownership and remains excluded from this local read route.
 - Before any online read or write, perform the mount and alias preflight in
   `.agents/skills/k2b-vault-writer/references/storage-and-writer-operations.md`.
+  On Home, if the mount is missing, one reconnect request is allowed per
+  active user-requested task across all read/recall and ordinary save
+  operations. Use the runbook's verified helper, then run preflight.
+  Scheduled jobs use preflight only.
   A directory alone is not mount evidence. If the mount is unavailable, mismatched or
   unverifiable, stop the online operation; never save into an unmounted shadow
   directory, silently use a preserved original, or divert a save mid-write.

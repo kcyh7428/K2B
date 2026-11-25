@@ -44,11 +44,93 @@ K2B is Keith's single-user knowledge and workflow system. Its current authorized
 
 Code and skills remain installed locally on both Macs and move through reviewed Git commits. Both Macs use one online knowledge collection on NAS through their logical `Projects/K2B-Vault` aliases. Credentials and machine-local state remain on their owning machines.
 
-The current online bindings are Home `/Users/keithmbpm2/Projects/K2B-Vault` to `/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault` on `//cheung@192.168.50.67/Keith-Work`, and SJM `/Users/keithcheung/Projects/K2B-Vault` to `/Volumes/Keith-Work/K2B-Vault` on `//cheung@100.75.5.21/Keith-Work`. Before online reads or writes, verify the logical alias resolves to the approved target on the actual mounted SMB share. A directory alone is not mount evidence. If unavailable or mismatched, stop the online operation; never save into an unmounted shadow directory or silently use a preserved original.
+Both Macs use `//cheung@100.75.5.21/Keith-Work` at home and at SJM.
+Home's alias `/Users/keithmbpm2/Projects/K2B-Vault` resolves to
+`/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault`. SJM's alias
+`/Users/keithcheung/Projects/K2B-Vault` resolves to
+`/Volumes/Keith-Work/K2B-Vault`. Before online reads or writes, verify the
+logical alias resolves to the approved target on the actual mounted SMB
+share with the exact approved source in `AGENTS.md`. A directory alone is
+insufficient.
+
+On Home, for active read/recall or an ordinary note save, use the Home
+note-write interpreter to run `scripts/k2b-vault-connect.py --check-only`
+for preflight. It verifies the exact mount and reads a bounded index
+sample through the usual shortcut. Checking does not request a mount.
+The separate invocation without `--check-only` may request the Home mount
+over Tailscale if it is missing. The Home helper
+was independently approved in commit `75adcac` and passed a controlled live
+unmount and reconnect at the original Home path.
+During activation, verify and record the installed hashes of
+`scripts/k2b-vault-connect.py` and `scripts/lib/k2b-vault-mount.c` against the
+reviewed Git revision. The Home activation record is
+`~/.local/state/k2b/operations/home-tailscale-cutover-20261126/activation.json`.
+It records the commit under `activated_commit` and hashes by relative
+file path under `installed_source_sha256`. Use the record for the installed
+Home activation. Run the reconnect only from that installed code.
+Before running the helper in either mode, confirm both local source files match
+the installed reviewed revision. Stop on a source change.
+When the mount is missing, allow one connect request per active task.
+This is shared across all reads and ordinary saves in that task.
+A task starts with the user's request for a distinct outcome. All
+sub-requests and follow-ups serving that outcome share one request.
+Before requesting a reconnect, verify the task's existing operation evidence
+has no request for the originating user turn. Record that turn and the
+request time before invocation, and append the result after it returns.
+An eligible pending ordinary save uses the same task's one request before
+its normal preflight. If the request fails or the mount drops again after
+success, stop online work for the task. Apply the normal read fallback or
+waiting-edit rules. Scheduled jobs use preflight without reconnecting.
+The reconnect request uses the installed macOS Command Line Tools.
+If Tailscale cannot reach the NAS, stop the online operation, report the failed route and keep
+drafts privately pending. Home publication waits for Tailscale to recover.
+This is the trade-off of the permanent Tailscale-only binding that Keith
+approved on 25 November and chose to activate on Home first on 26 November.
+An occupied path, mismatched mount or unreadable alias also stops the online
+operation. Leave the approved `//cheung@100.75.5.21/Keith-Work` mount in place.
+The following recovery applies only if `/sbin/mount` shows
+`//cheung@192.168.50.67/Keith-Work` at `~/Projects/K2B-NAS`. Record that exact
+line and have the operator unmount the retired share normally. A busy mount
+stays in place until its owner finishes. After unmounting, verify the mount
+point is a real empty directory. Stop and inspect any local residue before
+requesting the mount.
+Use the existing eligible read fallback or private waiting-edit procedure
+when applicable. SJM uses its existing Finder mount procedure until its
+separate activation is accepted.
+On Home, a failed saved-auth attempt consumes the task's request. Keith
+may restore the exact Home mount himself in Terminal. After verifying the
+Home mount point is empty and unmounted, run
+`/sbin/mount_smbfs -s '//cheung@100.75.5.21/Keith-Work' '/Users/keithmbpm2/Projects/K2B-NAS'`.
+Enter the password privately if prompted. A Finder mount in `/Volumes`
+does not satisfy Home's binding. Resume with normal preflight only after
+the operator restored the exact mount.
+The Home native worker reads the approved binding in step 5 and calls the
+Home publisher's exact-source check. The 26 November preflight inventory
+found no additional Home vault LAN literal in the native prompts or
+LaunchAgent files. The separate video capture share is outside this cutover.
+During an outage the native worker can still extract locally. It records
+publication waiting under its existing receipt rules and reevaluates at
+the next regular run after the mount returns.
+If publication is still waiting after another regular run, the operator
+reports the latest waiting receipt and required mount recovery to Keith
+during the next active status check. Use the existing status path.
 
 The manager confirmed collection equivalence with a common Home/SJM nonce, SJM EEXIST and matching Home readback hashes/marker after an actual SJM save. Different IP/account strings alone are not equivalence evidence. If a binding changes, require authorized marker/hash confirmation again before treating the targets as one collection.
 
-The selected former vault Syncthing folder `xyzwv-pgl4y` stays paused on both Macs. Syncthing descriptions below apply only to an explicitly selected legacy local-replication mode, not this online NAS default. Preserved local originals are dated copies, never fallback targets. No automatic write fallback, write return or reconnection is enabled. NAS stores knowledge; it is not an execution server and does not enable automatic capture of non-Codex chats.
+For the 26 November 2026 Home-first cutover, five file hashes matched
+between the Home Tailscale SMB mount and the NAS server. The two published
+artifacts and log marker matched the existing LAN-era publication receipt
+`7550e4f7027f30fa8fbd0b678c3ff14dd202ac34fe8c2645994bd9b2c2db4c0b`.
+This establishes the Home cutover's collection identity independently of SJM.
+The two-Mac rollout still requires the counterpart checks in
+[`plans/2026-11-25_k2b-tailscale-vault.md`](../../../../plans/2026-11-25_k2b-tailscale-vault.md).
+
+Outage-only fallback receipts citing the retired Home LAN source are
+ineligible on either Mac until a fresh comparison is performed using the
+current Home source. SJM's separately approved Synology Drive read
+preference remains available under its own checks above during that period.
+
+The selected former vault Syncthing folder `xyzwv-pgl4y` stays paused on both Macs. Syncthing descriptions below apply only to an explicitly selected legacy local-replication mode, not this online NAS default. Preserved local originals are dated copies, never fallback targets. The active-task reconnect above leaves private waiting edits subject to their existing delivery rules. NAS stores knowledge; it is not an execution server and does not enable automatic capture of non-Codex chats.
 
 For active user-requested read/recall, first prefer the exact verified NAS
 mount/alias. The following is an insufficient summary, not an executable

@@ -23,7 +23,7 @@ Create notes in the K2B Obsidian vault at `~/Projects/K2B-Vault/` with correct s
 
 ## Current online NAS target
 
-Both local writers use one online NAS collection through the exact Home/SJM aliases and mounts in `AGENTS.md`. NAS availability is required; Home availability is not required for an ordinary SJM save. The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused. Preserved originals are dated copies, never fallback targets. No automatic write fallback, write return or reconnection is enabled. Never select a shadow directory or old copy silently when the mounted target is unavailable.
+Both local writers use one online NAS collection through the exact Home/SJM aliases and mounts in `AGENTS.md`. NAS availability is required; Home availability is not required for an ordinary SJM save. On Home, the storage runbook allows one reconnect per active task when the approved mount is missing, shared across all reads and ordinary saves. Scheduled reconnect and SJM helper activation require separate authority. The selected former Syncthing vault folder `xyzwv-pgl4y` stays paused. Preserved originals are dated copies, never fallback targets. Never select a shadow directory or old copy silently when the mounted target is unavailable.
 
 ### Receipt-verified read fallback
 
@@ -37,7 +37,10 @@ This is the sole authoritative read-fallback checklist. AGENTS.md and sync
 summaries are insufficient procedures; every gate here is required.
 
 For an active user-requested read/recall, prefer the exact approved NAS
-mount/alias after the online identity/readability checks below. If those checks
+mount/alias after the online identity/readability checks below. If Home's
+mount is missing, one reconnect request is allowed per active task across
+all reads and ordinary saves. Use the runbook procedure before the online
+checks. If the online checks still
 fail, the assistant may select the downloaded local read copy without another
 routine permission question, only after checking the private regular receipt
 `~/.local/state/k2b/nas-offline-copy-verification.json`:
@@ -61,7 +64,8 @@ routine permission question, only after checking the private regular receipt
   The receipt's `nas_source`/`nas_root` describe the approved Home NAS source
   hashed once for both comparisons, not an SJM mount of Home's path. Verify
   this provenance against the approved Home binding in `AGENTS.md` separately
-  from the current host's local-root identity. The comparison receipt must be
+  from the current host's local-root identity. After a change of NAS binding,
+  require a fresh comparison through the current approved Home source. The comparison receipt must be
   readable retained private evidence on this host; no counterpart connection
   is required for an eligible offline read. A missing, unreadable, malformed,
   mismatched or inaccessible binding stops fallback; a client badge is not
@@ -124,6 +128,13 @@ return require a separate concrete accepted route. Do not infer headless Drive
 completion, future freshness or reconnection from this snapshot.
 
 Before an authorized save, use this operating procedure, not a newly installed enforcement mechanism:
+
+On Home, if the approved mount is missing, use the runbook reconnect before the
+save preflight if the task has its one request left. That request is shared
+across all reads and ordinary saves in the task. If the mount still fails
+preflight, abort the online save and use the applicable waiting-edit route.
+On SJM, a missing mount stops the online save. SJM uses its existing Finder
+mount until its separate reconnect activation is accepted.
 
 1. Inspect `/sbin/mount`: require the exact source and mount point from `AGENTS.md`, `smbfs`, and no `read-only` flag. A directory alone is insufficient. Set `note_python` to Home `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3` or SJM `$HOME/Projects/K2B/venv/k2b-note-save/bin/python`. Check the logical target and read a bounded index sample:
 
