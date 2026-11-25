@@ -56,9 +56,11 @@ HOME_WORKLIST_RECEIPT_REQUIRED_FROM = datetime(2026, 11, 25, 8, tzinfo=timezone.
 HOME_WORKLIST_SELECTION_LIMIT = 1
 PUBLICATION_MOUNT_UNAVAILABLE = "publication_mount_unavailable"
 PUBLICATION_MOUNT_PROBE_TIMEOUT = "publication_mount_probe_timed_out"
-HOME_MOUNT_WAIT_REASONS = {
+PUBLICATION_DUE_AGAIN = "publication_due_again"
+HOME_PUBLICATION_WAIT_REASONS = {
     PUBLICATION_MOUNT_UNAVAILABLE: "Home publication waiting for the approved SMB binding",
     PUBLICATION_MOUNT_PROBE_TIMEOUT: "Home publication waiting after the SMB readiness probe timed out",
+    PUBLICATION_DUE_AGAIN: "Home publication is due again and will retry in the next eligible run",
 }
 HOLD_FILE = "extraction-hold.json"
 REGISTRATION_STATES = {"ACTIVE": "active", "PAUSED": "paused"}
@@ -538,15 +540,15 @@ def _classify_receipt(
             return None, None, None, "run receipt reconciliation backlog evidence is malformed"
     publication_command = commands.get("memory_publish")
     publication_reason = publication_command.get("reason") if isinstance(publication_command, dict) else None
-    publication_waiting_for_mount = (writer_role == "home" and isinstance(publication_reason, str)
-                                     and publication_reason in HOME_MOUNT_WAIT_REASONS)
-    if publication_waiting_for_mount and (
+    publication_waiting = (writer_role == "home" and isinstance(publication_reason, str)
+                           and publication_reason in HOME_PUBLICATION_WAIT_REASONS)
+    if publication_waiting and (
         publication_command.get("status") != "not_attempted"
         or remaining != 0 or drain_status not in ("idle", "reconciled")
     ):
-        return None, None, None, "run receipt mount deferral conflicts with command outcomes"
-    if publication_waiting_for_mount:
-        diagnostics.append(HOME_MOUNT_WAIT_REASONS[publication_reason])
+        return None, None, None, "run receipt publication wait conflicts with command outcomes"
+    if publication_waiting:
+        diagnostics.append(HOME_PUBLICATION_WAIT_REASONS[publication_reason])
     if writer_role == "home" and not conflicts and not remaining and publication_reason in (
         "reconciliation_needs_attention", "unreconciled_backlog_remaining",
     ):
@@ -803,7 +805,7 @@ def _classify_receipt(
             outcome = "needs_attention"
         elif outcome == "completed" and (
             isinstance(sjm_pull, dict) and sjm_pull["status"] == "waiting"
-            or publication_reason == "unreconciled_backlog_remaining" or publication_waiting_for_mount
+            or publication_reason == "unreconciled_backlog_remaining" or publication_waiting
         ):
             outcome = "waiting"
         elif outcome in (UNKNOWN, "completed") and (idle_backlog_unverified or missing_sjm):

@@ -284,6 +284,66 @@ def namespace_migration(tmp_path, monkeypatch):
     return env
 
 
+def test_home_duplicate_cannot_borrow_a_newer_publication(namespace_migration, monkeypatch):
+    env = namespace_migration
+    memory = env.state / "memory.json"
+    monkeypatch.setenv("K2B_COMPILE_INDEX_LOCK", str(env.vault / ".k2b-compile-index.lock.d"))
+    older = env.p.publish(memory, env.state, env.vault, "home", require_smb=True)
+    older_duplicate = {**older, "duplicate": True}
+    drain = {"status": "reconciled", "reconciled": 1, "reconciliation_conflicts": 0,
+             "unreconciled_remaining": 0}
+    args = (env.state, env.vault, memory, drain)
+    delivery = automatic_memory.enqueue_bundle(env.state, _bundle(
+        completed_at="2026-09-10T10:00:00+08:00", cursor="turn:0002",
+        value="The office is now Green.", quote="The office is now Green."))
+    eod_capture.accept_memory_envelope(env.state, delivery, writer_role="home")
+    eod_capture.reconcile_memory_delivery(env.state, delivery["delivery_id"], writer_role="home")
+    due_again = eod_capture._native_home_publication_result(
+        *args, older_duplicate, started_at=older["published_at"])
+    assert due_again == {"status": "not_attempted", "reason": "publication_due_again"}
+    newer = env.p.publish(memory, env.state, env.vault, "home", require_smb=True)
+    assert older["reconciliation_watermark"] != newer["reconciliation_watermark"]
+    started = newer["published_at"]
+    accepted = env.p.publish(memory, env.state, env.vault, "home", require_smb=True)
+    assert accepted == {**newer, "duplicate": True}
+    assert eod_capture._native_home_publication_result(*args, accepted, started_at=started) == accepted
+    for invalid in ({}, {"duplicate": True}, {**accepted, "unverified_metadata": True},
+                    {key: value for key, value in accepted.items() if key != "reconciliation_watermark"}):
+        result = eod_capture._native_home_publication_result(*args, invalid, started_at=started)
+        assert result.get("status") != "published"
+    for evidence in (newer, None):
+        assert eod_capture._native_home_publication_result(*args, evidence, started_at=started) == newer
+    quiet = {**drain, "status": "idle", "reconciled": 0}
+    assert eod_capture._native_home_publication_result(
+        env.state, env.vault, memory, quiet, None, started_at=started) == {
+            "status": "not_attempted", "reason": eod_capture.HOME_NO_PUBLICATION_DUE}
+    rejected = eod_capture._native_home_publication_result(
+        *args, older_duplicate, started_at=started)
+    assert rejected["status"] == "failed"
+    assert rejected["error_type"] == "SupersededPublicationEvidence"
+    durable = {key: value for key, value in newer.items() if key != "duplicate"}
+    with monkeypatch.context() as scoped:
+        scoped.setattr(eod_capture, "publish_memory_state", lambda *a, **kw: {
+            "publication_due": False, "publication_receipt": {**durable, "observed_at": started}})
+        assert eod_capture._native_home_publication_result(*args, accepted, started_at=started) == accepted
+    def unreadable(*args, **kwargs):
+        raise OSError("fictional publisher read error")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(eod_capture, "publish_memory_state", unreadable)
+        result = eod_capture._native_home_publication_result(*args, accepted, started_at=started)
+        assert result["error_type"] == "OSError"
+    with monkeypatch.context() as scoped:
+        partial = {key: value for key, value in durable.items() if key != "reconciliation_watermark"}
+        scoped.setattr(eod_capture, "publish_memory_state", lambda *a, **kw: {
+            "publication_due": False, "publication_receipt": partial})
+        result = eod_capture._native_home_publication_result(*args, accepted, started_at=started)
+        assert result["error_type"] == "InvalidPublicationEvidence"
+    monkeypatch.setattr(eod_capture, "publish_memory_state", lambda *a, **kw: {"publication_due": False})
+    missing = eod_capture._native_home_publication_result(*args, accepted, started_at=started)
+    assert missing["error_type"] == "MissingRunEvidence"
+
+
 def _namespace_history(env, kind, monkeypatch, *, previous_smb=False, smb_alias=False):
     """Create invented pre-migration history, never read production receipts."""
     p, vault, state = env.p, env.vault, env.state

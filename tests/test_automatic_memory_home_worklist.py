@@ -841,7 +841,7 @@ def test_native_smb_flag_uses_the_real_publisher_when_ready(namespace_migration,
             *args, bad_duplicate, started_at=stale_start)["error_type"] == "InvalidPublicationEvidence"
     monkeypatch.setattr(eod_capture, "publish_memory_state", lambda *args, **kwargs: {"publication_due": True})
     rejected = eod_capture._native_home_publication_result(*args, duplicate, started_at=stale_start)
-    assert rejected["error_type"] == "MissingRunEvidence"
+    assert rejected == {"status": "not_attempted", "reason": "publication_due_again"}
 
 
 @pytest.mark.parametrize("error", [subprocess.CalledProcessError(2, "compile-helper"),

@@ -4715,7 +4715,10 @@ def _native_home_publication_result(state_root: Path, vault_root: Path, memory_p
             or conflicts > remaining):
         return _home_publication_evidence_failure(
             "InvalidDrainEvidence", "Home reconciliation counts could not be verified")
-    published = publication is not None and publication.get("status") == "published"
+    if publication is not None and not isinstance(publication, dict):
+        return _home_publication_evidence_failure(
+            "InvalidPublicationEvidence", "Home publication result is not an object")
+    published = isinstance(publication, dict) and publication.get("status") == "published"
     if publication is not None:
         quiet = (publication.get("status") == "not_attempted"
                  and publication.get("reason") == HOME_NO_PUBLICATION_DUE)
@@ -4740,7 +4743,7 @@ def _native_home_publication_result(state_root: Path, vault_root: Path, memory_p
             return publication
     # Read current publication evidence without starting a second writer.
     options = {"check_only": True, "native_smb": True}
-    if reconciled and publication is None:
+    if published or (reconciled and publication is None):
         options["include_receipt"] = True
     try:
         decision = publish_memory_state(memory_path, state_root, vault_root, "home", **options)
@@ -4752,9 +4755,24 @@ def _native_home_publication_result(state_root: Path, vault_root: Path, memory_p
     if not isinstance(decision, dict) or type(decision.get("publication_due")) is not bool:
         return _home_publication_evidence_failure(
             "InvalidPublicationEvidence", "Home publication eligibility could not be verified")
+    if published:
+        if decision["publication_due"]:
+            return {"status": "not_attempted", "reason": native_job_status.PUBLICATION_DUE_AGAIN}
+        current = decision.get("publication_receipt")
+        if current is None:
+            return _home_publication_evidence_failure(
+                "MissingRunEvidence", "the eligibility result omitted the current Home receipt")
+        identity_fields = ("vault_root", "binding", "reconciliation_watermark", "artifact_sha256",
+                           "snapshot_sha256", "published_at")
+        if not isinstance(current, dict) or any(
+                key not in current or key not in publication for key in identity_fields):
+            return _home_publication_evidence_failure(
+                "InvalidPublicationEvidence", "current Home publication identity is incomplete")
+        if any(current[key] != publication[key] for key in identity_fields):
+            return _home_publication_evidence_failure(
+                "SupersededPublicationEvidence", "duplicate receipt is not the current Home publication")
+        return publication
     if decision["publication_due"] is False:
-        if published:
-            return publication
         if not reconciled:
             return {"status": "not_attempted", "reason": HOME_NO_PUBLICATION_DUE}
         recovered = decision.get("publication_receipt")
@@ -5744,13 +5762,13 @@ def _build_native_run_receipt(
             }
         publication_status = publication_result.get("status")
         publication_reason = publication_result.get("reason")
-        waiting_for_mount = (isinstance(publication_reason, str)
-                             and publication_reason in native_job_status.HOME_MOUNT_WAIT_REASONS)
+        publication_waiting = (isinstance(publication_reason, str)
+                               and publication_reason in native_job_status.HOME_PUBLICATION_WAIT_REASONS)
         if publication_status not in ("not_attempted", "published", "failed"):
             raise _MemoryRunError("home_publication_status_invalid")
-        if waiting_for_mount and (publication_status != "not_attempted"
-                                  or drain_status not in ("idle", "reconciled")):
-            raise _MemoryRunError("publication_mount_deferral_conflicts")
+        if publication_waiting and (publication_status != "not_attempted"
+                                    or drain_status not in ("idle", "reconciled")):
+            raise _MemoryRunError("publication_wait_conflicts")
         if drain_status == "failed" and publication_status == "published":
             raise _MemoryRunError("publication_eligibility_unverified")
         commands["memory_publish"] = {"status": publication_status}
@@ -5763,7 +5781,7 @@ def _build_native_run_receipt(
                     and publication_reason not in (
                         HOME_NO_PUBLICATION_DUE,
                         "unreconciled_backlog_remaining", "reconciliation_needs_attention",
-                        *native_job_status.HOME_MOUNT_WAIT_REASONS,
+                        *native_job_status.HOME_PUBLICATION_WAIT_REASONS,
                     )):
                 raise _MemoryRunError("publication_eligibility_unverified")
             unreconciled = drain_result.get("unreconciled_remaining")
@@ -5782,7 +5800,7 @@ def _build_native_run_receipt(
                 # marked duplicate; it never reports a quiet skip.
                 if (type(reconciled) is not int or reconciled < 0
                         or (publication_status == "not_attempted" and reconciled != 0
-                            and not waiting_for_mount)):
+                            and not publication_waiting)):
                     raise _MemoryRunError("publication_eligibility_unverified")
             reason = (
                 "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
@@ -5793,10 +5811,10 @@ def _build_native_run_receipt(
             # The run recorder checks the two commands agree with each other.
             if publication_status == "not_attempted":
                 # A known reconciliation backlog takes precedence over
-                # checking the mount. Otherwise this reason can defer, but
+                # retrying publication. Otherwise this reason can defer, but
                 # cannot prove publication or mark the run completed.
                 expected_reason = reason if unreconciled else (
-                    publication_reason if waiting_for_mount
+                    publication_reason if publication_waiting
                     else HOME_NO_PUBLICATION_DUE
                 )
                 if publication_reason != expected_reason:

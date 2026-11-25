@@ -74,7 +74,11 @@ def _receipt_identity(value: dict) -> str:
 
 
 def native_run_receipt_problem(state_root: Path, publication: dict, started_at: str | None) -> str | None:
-    """Check schema-1 output against its private, machine-local SMB receipt."""
+    """Check schema-1 output against its private, machine-local SMB receipt.
+
+    A duplicate may predate the run. Callers must independently verify
+    that its receipt matches current publication and reconciliation state.
+    """
     if (type(publication.get("schema_version")) is not int or publication["schema_version"] != 1
             or publication.get("status") != "published" or publication.get("writer_role") != "home"
             or type(publication.get("duplicate")) is not bool

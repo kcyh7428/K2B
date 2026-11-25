@@ -373,6 +373,21 @@ def test_worklist_stop_with_home_conflict_and_hold_keeps_both_diagnostics(tmp_pa
     assert "run outcome is ambiguous" not in (result["diagnostic"] or "")
 
 
+def test_home_publication_due_again_records_a_wait(tmp_path):
+    receipt = _home_receipt(tmp_path, "run.json", commands={
+        "memory_home_drain": {"status": "reconciled", "failed": 0, "local_failed": 0,
+                              "reconciliation_conflicts": 0, "unreconciled_remaining": 0},
+        "memory_sjm_pull": {"status": "not_attempted", "failed": 0, "offline": 0},
+        "memory_publish": {"status": "not_attempted", "reason": "publication_due_again"},
+    })
+    data = json.loads(receipt.read_text())
+    data["hold_check"] = "absent"
+    receipt.write_text(json.dumps(data))
+    result = native_job_status.read_native_job_status(writer_role="home", state_root=tmp_path)
+    assert result["last_run_outcome"] == "waiting"
+    assert "next eligible run" in result["diagnostic"]
+
+
 def test_sjm_connection_wait_does_not_make_completed_home_commands_ambiguous(tmp_path):
     receipt = _home_receipt(tmp_path, "run.json", commands={
         "memory_home_drain": {"status": "reconciled", "failed": 0, "local_failed": 0,
