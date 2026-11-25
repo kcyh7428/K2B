@@ -5289,6 +5289,77 @@ def test_native_automatic_memory_prompt_uses_public_flow_without_publication() -
     assert "--publish" not in prompt
     assert "cron" not in prompt.lower()
 
+@pytest.mark.parametrize(("mode", "exit_code", "outcome"), [
+    ("missing_worklist", 3, "needs_attention"),
+    ("bad_eligibility", 2, "failed"),
+])
+def test_documented_home_receipt_outcomes(tmp_path, monkeypatch, capsys, mode, exit_code, outcome):
+    import automatic_memory_publisher as publisher
+
+    drain_path = tmp_path / "drain.json"
+    drain_path.write_text(json.dumps(eod_capture.drain_home_memory(tmp_path, writer_role="home")))
+    started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    command = ["memory-record-run", "--finish-home", "--writer-role", "home",
+               "--state-root", str(tmp_path), "--started-at", started, "--drain-json", str(drain_path),
+               "--vault-root", str(tmp_path / "vault"), "--memory-path", str(tmp_path / "memory.json")]
+    if mode == "bad_eligibility":
+        publication_path = tmp_path / "publication.json"
+        publication_path.write_text(json.dumps({
+            "status": "not_attempted", "reason": "publication_eligibility_unverified"}))
+        command.extend(("--publication-json", str(publication_path)))
+    else:
+        monkeypatch.setattr(publisher, "_smb_readiness",
+                            lambda path, binding: {"storage": "smb-ready", "binding": binding})
+        monkeypatch.setattr(publisher, "publish", lambda **kwargs: {"publication_due": False})
+    assert eod_capture.main(command) == exit_code
+    result = json.loads(capsys.readouterr().out)
+    assert result["outcome"] == outcome
+    assert Path(result["receipt_path"]).is_file()
+    if mode == "missing_worklist":
+        assert "Home producer worklist evidence is missing" in result["diagnostic"]
+    else:
+        assert result["diagnostic"] == "publication_eligibility_unverified"
+
+
+def test_home_receipt_matches_producer_start_in_both_utc_spellings(tmp_path, monkeypatch, capsys):
+    import automatic_memory_publisher as publisher
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    sessions = tmp_path / ".codex/sessions"
+    sessions.mkdir(parents=True)
+    now = datetime(2026, 11, 26, 2, tzinfo=timezone.utc)
+
+    class RecordedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(eod_capture, "datetime", RecordedClock)
+    started = now - timedelta(seconds=1)
+    iso = started.isoformat(timespec="microseconds")
+    utc_z = iso.replace("+00:00", "Z")
+    through = now.astimezone(eod_capture.HKT).date().isoformat()
+    assert eod_capture.main(["memory-worklist", "--state-root", str(tmp_path), "--codex-root", str(sessions),
+                             "--writer-role", "home", "--since", eod_capture.HOME_NATIVE_CAPTURE_SINCE, "--through", through,
+                             "--limit", "1", "--run-started-at", utc_z]) == 0
+    capsys.readouterr()
+    drain = tmp_path / "drain.json"
+    drain.write_text(json.dumps(eod_capture.drain_home_memory(tmp_path, writer_role="home")))
+    monkeypatch.setattr(publisher, "_smb_readiness",
+                        lambda path, binding: {"storage": "smb-ready", "binding": binding})
+    monkeypatch.setattr(publisher, "publish", lambda **kwargs: {"publication_due": False})
+    digests = set()
+    for spelling in (utc_z, iso):
+        assert eod_capture.main(["memory-record-run", "--finish-home", "--writer-role", "home",
+            "--state-root", str(tmp_path), "--started-at", spelling, "--drain-json", str(drain),
+            "--vault-root", str(tmp_path / "vault"), "--memory-path", str(tmp_path / "memory.json")]) == 0
+        result = json.loads(capsys.readouterr().out)
+        receipt = json.loads(Path(result["receipt_path"]).read_bytes())
+        assert datetime.fromisoformat(receipt["started_at"]) == started
+        assert datetime.fromisoformat(receipt["finished_at"]) == now
+        digests.add(receipt["commands"]["memory_worklist"]["producer_evidence_sha256"])
+    assert len(digests) == 1
+
 
 def test_memory_recall_help_makes_home_pending_recall_explicit() -> None:
     result = subprocess.run(

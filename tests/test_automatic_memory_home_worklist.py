@@ -801,6 +801,65 @@ def test_home_finishing_rejects_non_object_drain_with_a_receipt(tmp_path, capsys
     assert Path(result["receipt_path"]).is_file()
 
 
+@pytest.mark.parametrize(("change", "probe_exit", "reason", "outcome"), [
+    ("missing", 0, "publication_mount_unavailable", "waiting"),
+    ("former_lan", 0, "publication_mount_unavailable", "waiting"),
+    ("timeout", 0, "publication_mount_probe_timed_out", "waiting"),
+    ("read_only", 2, None, "failed"),
+    ("ready", 0, None, "failed"),
+])
+def test_native_cli_publication_boundary(namespace_migration, capsys, monkeypatch,
+                                         change, probe_exit, reason, outcome):
+    env = namespace_migration
+    timeout_calls = []
+    if change == "missing":
+        env.mount_output = env.mount_output.splitlines()[0] + "\n"
+    elif change == "former_lan":
+        env.mount_output = env.mount_output.replace(env.binding["source"],
+                                                    env.p.PRE_TAILSCALE_STORAGE["source"])
+    elif change == "read_only":
+        env.mount_output = env.mount_output.replace("(smbfs,", "(smbfs, read-only,")
+    elif change == "timeout":
+        run = env.p.subprocess.run
+
+        def timeout(args, **kwargs):
+            if args == ["/sbin/mount"]:
+                timeout_calls.append(kwargs["timeout"])
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            return run(args, **kwargs)
+
+        monkeypatch.setattr(env.p.subprocess, "run", timeout)
+    before = {path: path.read_bytes() for path in env.vault.rglob("*") if path.is_file()}
+    path_flags = ["--writer-role", "home", "--state-root", str(env.state), "--vault-root", str(env.vault),
+                  "--memory-path", str(env.state / "memory.json")]
+    assert eod_capture.main(["memory-publish", "--native-smb", "--check-only", *path_flags]) == probe_exit
+    attempt = json.loads(capsys.readouterr().out)
+    if reason:
+        assert attempt == {"status": "not_attempted", "reason": reason}
+    elif change == "ready":
+        assert attempt == {"publication_due": True}
+    else:
+        assert attempt["status"] == "failed"
+    drain = env.state / "drain.json"
+    drain.write_text(json.dumps(eod_capture.drain_home_memory(env.state, writer_role="home")))
+    started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    assert eod_capture.main(["memory-record-run", "--finish-home", *path_flags,
+                             "--started-at", started, "--drain-json", str(drain)]) == 3
+    result = json.loads(capsys.readouterr().out)
+    receipt = json.loads(Path(result["receipt_path"]).read_bytes())
+    assert result["outcome"] == outcome
+    if change == "timeout":
+        assert timeout_calls == [5, 5]
+    if reason:
+        assert receipt["commands"]["memory_publish"]["reason"] == reason
+    elif change == "ready":
+        assert receipt["commands"]["memory_publish"]["error_type"] == "MissingRunEvidence"
+    else:
+        assert receipt["commands"]["memory_publish"]["status"] == "failed"
+    assert {path: path.read_bytes() for path in env.vault.rglob("*") if path.is_file()} == before
+    assert not (env.state / ".publication.lock").exists()
+
+
 def test_native_smb_flag_uses_the_real_publisher_when_ready(namespace_migration, capsys, monkeypatch):
     env = namespace_migration
     started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
@@ -839,9 +898,17 @@ def test_native_smb_flag_uses_the_real_publisher_when_ready(namespace_migration,
         bad_duplicate = {**duplicate, "snapshot_sha256": "0" * 64}
         assert eod_capture._native_home_publication_result(
             *args, bad_duplicate, started_at=stale_start)["error_type"] == "InvalidPublicationEvidence"
-    monkeypatch.setattr(eod_capture, "publish_memory_state", lambda *args, **kwargs: {"publication_due": True})
-    rejected = eod_capture._native_home_publication_result(*args, duplicate, started_at=stale_start)
-    assert rejected == {"status": "not_attempted", "reason": "publication_due_again"}
+    with monkeypatch.context() as scoped:
+        scoped.setattr(eod_capture, "publish_memory_state", lambda *args, **kwargs: {"publication_due": True})
+        rejected = eod_capture._native_home_publication_result(*args, duplicate, started_at=stale_start)
+        assert rejected == {"status": "not_attempted", "reason": "publication_due_again"}
+    snapshot = env.vault / env.p.JSON_REL
+    altered = snapshot.read_bytes() + b"\n"
+    snapshot.write_bytes(altered)
+    for evidence in (None, duplicate):
+        rejected = eod_capture._native_home_publication_result(*args, evidence, started_at=stale_start)
+        assert rejected["status"] == "failed"
+    assert snapshot.read_bytes() == altered
 
 
 @pytest.mark.parametrize("error", [subprocess.CalledProcessError(2, "compile-helper"),
