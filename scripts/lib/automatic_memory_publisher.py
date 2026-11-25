@@ -53,12 +53,59 @@ class SmbAuthorityUnverified(PermissionError):
     """Native Home publication has no exact SMB authority to use."""
 
 
+class HomeMountUnavailable(PermissionError):
+    """The approved Home SMB share is absent or replaced."""
+
+
+class SmbProbeTimeout(PermissionError):
+    """The readiness probe could not attest SMB within its deadline."""
+
+
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def _publication_id(value: dict) -> str:
     return _hash(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _receipt_identity(value: dict) -> str:
+    return _publication_id({key: item for key, item in value.items() if key != "published_at"})
+
+
+def native_run_receipt_problem(state_root: Path, publication: dict, started_at: str | None) -> str | None:
+    """Check schema-1 output against its private, machine-local SMB receipt."""
+    if (type(publication.get("schema_version")) is not int or publication["schema_version"] != 1
+            or publication.get("status") != "published" or publication.get("writer_role") != "home"
+            or type(publication.get("duplicate")) is not bool
+            or publication.get("binding") != SMB_STORAGE or publication.get("storage") != "smb-ready"
+            or not started_at or not isinstance(publication.get("published_at"), str)
+            or not publication["published_at"].strip()):
+        return "publication output is not an approved schema-1 Home receipt"
+    stored = {key: value for key, value in publication.items() if key != "duplicate"}
+    identity = _receipt_identity(stored)
+    try:
+        run_start = eod_capture._memory_instant(started_at, "run start")
+    except ValueError:
+        return "Home run start is malformed"
+    path = state_root / "publication" / f"{identity}.json"
+    try:
+        stamp = eod_capture._memory_instant(stored["published_at"], "publication time")
+    except ValueError:
+        return "publication time is malformed"
+    try:
+        saved = eod_capture._read_home_evidence(state_root, path)
+    except FileNotFoundError:
+        return "matching durable publication receipt is missing"
+    except (OSError, ValueError):
+        return "matching durable publication receipt could not be read safely"
+    if saved != stored:
+        return "publisher output differs from the durable receipt"
+    # Use the timestamp in the verified local bytes, not filesystem mtime.
+    # The read-only eligibility check independently verifies duplicates.
+    if not publication["duplicate"] and stamp < run_start:
+        return "saved publication predates this Home run"
+    return None
 
 
 def _safe(vault: Path, relative: str) -> Path:
@@ -88,6 +135,7 @@ if mount.is_symlink() or target.is_symlink() or mount.resolve() != mount:
 if not target.is_dir(): raise SystemExit(3)
 if vault.resolve() != target: raise SystemExit(4)
 if os.statvfs(target).f_flag & os.ST_RDONLY: raise SystemExit(5)
+# os.access tests permissions without creating or writing a file.
 if not os.access(target, os.W_OK): raise SystemExit(6)
 """
 
@@ -111,6 +159,8 @@ def _smb_readiness(vault: Path, storage: dict) -> dict:
     try:
         result = subprocess.run(["/sbin/mount"], capture_output=True, text=True,
                                 timeout=5, check=True)
+    except subprocess.TimeoutExpired as exc:
+        raise SmbProbeTimeout("current mount identity is unavailable: probe timed out") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise PermissionError("current mount identity is unavailable") from exc
     ancestors = []
@@ -123,17 +173,21 @@ def _smb_readiness(vault: Path, storage: dict) -> dict:
             ancestors.append((len(Path(mounted).parts), source, mounted,
                               {flag.strip() for flag in flags.split(",")}))
     if not ancestors:
-        raise PermissionError("approved SMB mount is absent")
+        raise HomeMountUnavailable("approved SMB mount is absent")
     _, source, mounted, flags = max(ancestors, key=lambda entry: entry[0])
     if source == PRE_TAILSCALE_SOURCE and mounted == str(mount) and "smbfs" in flags:
-        raise PermissionError("Home is mounted through the former LAN source; reconnect over Tailscale")
-    if (source != storage["source"] or mounted != str(mount)
-        or "smbfs" not in flags or "read-only" in flags):
-        raise PermissionError("approved SMB mount is absent, replaced or read-only")
+        raise HomeMountUnavailable("Home is mounted through the former LAN source; reconnect over Tailscale")
+    if source != storage["source"] or mounted != str(mount) or "smbfs" not in flags:
+        raise HomeMountUnavailable("approved SMB mount is absent, replaced or read-only")
+    if "read-only" in flags:
+        # The approved share is present, but it cannot accept publication.
+        raise PermissionError("approved Home SMB mount is read-only")
     try:
         subprocess.run([sys.executable, "-I", "-c", _SMB_PROBE,
                         str(vault), str(mount), str(target)], cwd="/",
                        capture_output=True, text=True, timeout=5, check=True)
+    except subprocess.TimeoutExpired as exc:
+        raise SmbProbeTimeout("approved SMB target is unavailable: probe timed out") from exc
     except subprocess.CalledProcessError as exc:
         reason = {2: "symlink", 3: "missing target", 4: "wrong vault target",
                   5: "read-only target", 6: "target not writable"}.get(
@@ -313,9 +367,11 @@ def _publication_artifact_hashes(paths: tuple[Path, ...]) -> tuple[str | None, .
 
 def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
             writer_role: str, *, preflight=None, check_only: bool = False,
-            require_smb: bool = False) -> dict:
+            require_smb: bool = False, include_receipt: bool = False) -> dict:
     if type(check_only) is not bool:
         raise ValueError("publication check_only must be a boolean")
+    if include_receipt and not (check_only and require_smb):
+        raise ValueError("receipt readback requires native SMB check-only mode")
     if writer_role != "home":
         raise PermissionError("shared publication requires the Home writer")
     vault, state, target = Path(vault_root).resolve(), Path(state_root), Path(memory_state_path)
@@ -368,14 +424,17 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
     shared_artifacts = (paths[JSON_REL], paths[NOTE_REL])
     shared_hashes = _publication_artifact_hashes(shared_artifacts) if check_only else None
 
-    def eligibility(publication_due: bool) -> dict:
+    def eligibility(publication_due: bool, receipt: dict | None = None) -> dict:
         # Storage must still be bound at the decision. Compare the managed
         # bytes too, since SMB may preserve or coarsen file timestamps.
         if (check(vault) != evidence or _publication_input_version(inputs) != input_version
                 or _publication_artifact_hashes(shared_artifacts) != shared_hashes):
             raise ValueError("publication evidence changed during eligibility check; "
                              "check for a concurrent publisher or reconciler")
-        return {"publication_due": publication_due}
+        decision = {"publication_due": publication_due}
+        if include_receipt and receipt is not None:
+            decision["publication_receipt"] = receipt
+        return decision
 
     with ExitStack() as locks:
         if not check_only:
@@ -419,7 +478,7 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
             expected.update(storage="smb-ready", binding=dict(evidence["binding"]))
         # Provenance can grow without changing the semantic snapshot. Each
         # immutable receipt therefore identifies the full publication binding.
-        identity = _publication_id(expected)
+        identity = _receipt_identity(expected)
         receipt_path = state / "publication" / f"{identity}.json"
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text())
@@ -464,7 +523,7 @@ def publish(memory_state_path: Path, state_root: Path, vault_root: Path,
                             if (not isinstance(completed, dict) or not completed.get("published_at")
                                 or completed != {**binding, "published_at": completed["published_at"]}):
                                 raise ValueError("pending journal does not match its completion receipt")
-                    return eligibility(False)
+                    return eligibility(False, receipt)
                 return {**receipt, "duplicate": True}
         # Only replace our own generated artifacts. Unexpected edits are not
         # an invitation to overwrite a human or another writer's work.

@@ -55,6 +55,11 @@ HOME_WORKLIST_RECEIPT_SCHEMA = 2
 HOME_WORKLIST_RECEIPT_REQUIRED_FROM = datetime(2026, 11, 25, 8, tzinfo=timezone.utc)
 HOME_WORKLIST_SELECTION_LIMIT = 1
 PUBLICATION_MOUNT_UNAVAILABLE = "publication_mount_unavailable"
+PUBLICATION_MOUNT_PROBE_TIMEOUT = "publication_mount_probe_timed_out"
+HOME_MOUNT_WAIT_REASONS = {
+    PUBLICATION_MOUNT_UNAVAILABLE: "Home publication waiting for the approved SMB binding",
+    PUBLICATION_MOUNT_PROBE_TIMEOUT: "Home publication waiting after the SMB readiness probe timed out",
+}
 HOLD_FILE = "extraction-hold.json"
 REGISTRATION_STATES = {"ACTIVE": "active", "PAUSED": "paused"}
 REGISTRATION_CONFIG_KEYS = ("model", "reasoning_effort", "rrule")
@@ -533,14 +538,15 @@ def _classify_receipt(
             return None, None, None, "run receipt reconciliation backlog evidence is malformed"
     publication_command = commands.get("memory_publish")
     publication_reason = publication_command.get("reason") if isinstance(publication_command, dict) else None
-    publication_waiting_for_mount = writer_role == "home" and publication_reason == PUBLICATION_MOUNT_UNAVAILABLE
+    publication_waiting_for_mount = (writer_role == "home" and isinstance(publication_reason, str)
+                                     and publication_reason in HOME_MOUNT_WAIT_REASONS)
     if publication_waiting_for_mount and (
         publication_command.get("status") != "not_attempted"
         or remaining != 0 or drain_status not in ("idle", "reconciled")
     ):
         return None, None, None, "run receipt mount deferral conflicts with command outcomes"
     if publication_waiting_for_mount:
-        diagnostics.append("Home publication waiting for the approved SMB binding")
+        diagnostics.append(HOME_MOUNT_WAIT_REASONS[publication_reason])
     if writer_role == "home" and not conflicts and not remaining and publication_reason in (
         "reconciliation_needs_attention", "unreconciled_backlog_remaining",
     ):

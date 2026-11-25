@@ -4,10 +4,13 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from test_eod_capture_status import _modern_session, _reviewed_memory_item, eod_capture
+from test_automatic_memory_publisher import namespace_migration
 
 
 @pytest.fixture
@@ -604,17 +607,59 @@ def test_home_can_process_local_turn_with_no_nas_and_keep_its_receipt(
         state_root=state, work_id=work_id, writer_role="home",
         reviewed=_reviewed_memory_item(bundle, value="Local evidence while SMB is unavailable"),
     )["status"] == "queued"
-    waiting = _record(state, started, work_ids=[work_id], worklist_result=worklist,
-                      publication_result={"status": "not_attempted",
-                                          "reason": "publication_mount_unavailable"})
+    import automatic_memory_publisher as publisher
+
+    drain_path = state / "actual-drain.json"
+    drain_path.write_text(json.dumps(eod_capture.drain_home_memory(state, writer_role="home")))
+    command = ["memory-record-run", "--finish-home", "--writer-role", "home",
+               "--state-root", str(state), "--started-at", started.isoformat(), "--work-id", work_id,
+               "--memory-path", str(state / "memory.json"),
+               "--drain-json", str(drain_path), "--vault-root", str(tmp_path / "configured-vault")]
+
+    def mount(args, **kwargs):
+        assert args == ["/sbin/mount"]  # Never probe or write through the former mount.
+        mount_point = publisher.SMB_STORAGE["mount_point"]
+        return SimpleNamespace(stdout=f"{publisher.PRE_TAILSCALE_SOURCE} on {mount_point} (smbfs)\n")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(publisher.subprocess, "run", mount)
+        assert eod_capture.main(command) == 3
+        waiting = json.loads(capsys.readouterr().out)
+        for flags in ([], ["--check-only"]):
+            assert eod_capture.main(["memory-publish", "--native-smb", "--writer-role", "home",
+                "--state-root", str(state), "--vault-root", str(tmp_path / "vault"), *flags]) == 0
+            assert json.loads(capsys.readouterr().out) == {
+                "status": "not_attempted", "reason": "publication_mount_unavailable"}
+        def timeout_probe(*args):
+            raise publisher.SmbProbeTimeout("fixture probe timed out")
+
+        scoped.setattr(publisher, "_smb_readiness", timeout_probe)
+        assert eod_capture.main(command) == 3
+        timed_out = json.loads(capsys.readouterr().out)
+        assert timed_out["outcome"] == "waiting" and timed_out["completed"] == 1
+        assert "SMB readiness probe timed out" in timed_out["diagnostic"]
     assert waiting["outcome"] == "waiting"
     assert waiting["completed"] == 1
     assert "publication waiting for the approved SMB binding" in waiting["diagnostic"]
     waiting_receipt = json.loads(Path(waiting["receipt_path"]).read_bytes())
+    assert waiting_receipt["commands"]["memory_worklist"]["evidence_verified"] is True
     assert waiting_receipt["commands"]["memory_home_drain"]["status"] == "reconciled"
     assert eod_capture.native_job_status._classify_receipt(
         waiting_receipt, job_id="k2b-automatic-memory-home", writer_role="home", state_root=state,
     )[1] is None
+    with monkeypatch.context() as scoped:
+        def check(memory, root, vault, role, **options):
+            assert vault == tmp_path / "configured-vault"
+            assert options == {"check_only": True, "native_smb": True, "include_receipt": True}
+            return {"publication_due": True}
+
+        scoped.setattr(eod_capture, "publish_memory_state", check)
+        assert eod_capture.main(command) == 3
+        missing = json.loads(capsys.readouterr().out)
+        assert missing["outcome"] == "failed" and missing["completed"] == 1
+        record = json.loads(Path(missing["receipt_path"]).read_bytes())
+        assert record["commands"]["memory_worklist"]["evidence_verified"] is True
+        assert record["commands"]["memory_publish"]["error_type"] == "MissingRunEvidence"
     run = _record(state, started, work_ids=[work_id], worklist_result=worklist,
                   publication_result={"status": "failed", "diagnostic": "memory_publication_failed",
                                       "error_type": "PermissionError", "message": "SMB mount is absent"})
@@ -640,3 +685,223 @@ def test_home_can_process_local_turn_with_no_nas_and_keep_its_receipt(
         assert run["completed"] == 1
         receipt = json.loads(Path(run["receipt_path"]).read_bytes())
         assert receipt["commands"]["memory_worklist"]["evidence_verified"] is False
+
+
+@pytest.mark.parametrize("due", [True, False])
+def test_home_finishing_rechecks_quiet_drain_for_earlier_publication(tmp_path, monkeypatch, due):
+    vault = tmp_path / "vault"
+    state_file = tmp_path / "custom-memory.json"
+
+    def check(memory, state, target, role, **options):
+        assert (memory, state, target, role) == (state_file, tmp_path, vault, "home")
+        assert options == {"check_only": True, "native_smb": True}
+        return {"publication_due": due}
+
+    monkeypatch.setattr(eod_capture, "publish_memory_state", check)
+    drain = {"status": "idle", "reconciled": 0, "unreconciled_remaining": 0, "reconciliation_conflicts": 0}
+    result = eod_capture._native_home_publication_result(tmp_path, vault, state_file, drain, None)
+    if due:
+        assert result["error_type"] == "MissingRunEvidence"
+    else:
+        assert result == QUIET
+
+
+@pytest.mark.parametrize("failure", [
+    subprocess.CalledProcessError(2, "/sbin/mount"),
+    PermissionError("binding is read-only"),
+    RuntimeError("malformed mount table"),
+])
+def test_home_native_mount_probe_preserves_failure_classification(tmp_path, monkeypatch, failure):
+    import automatic_memory_publisher as publisher
+
+    def fail(*args):
+        raise failure
+
+    monkeypatch.setattr(publisher, "_smb_readiness", fail)
+    result = eod_capture._home_native_mount_deferral(tmp_path)
+    assert result["status"] == "failed"
+    assert result["error_type"] == type(failure).__name__
+
+
+def test_home_native_mount_distinguishes_the_approved_read_only_share(tmp_path, monkeypatch):
+    import automatic_memory_publisher as publisher
+
+    binding = publisher.SMB_STORAGE
+    output = f'{binding["source"]} on {binding["mount_point"]} (smbfs, read-only)\n'
+    monkeypatch.setattr(publisher.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=output))
+    result = eod_capture._home_native_mount_deferral(tmp_path)
+    assert result["status"] == "failed" and "read-only" in result["message"]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_home_native_smb_child_distinguishes_missing_target_from_probe_timeout(tmp_path, monkeypatch, timeout):
+    import automatic_memory_publisher as publisher
+
+    binding = publisher.SMB_STORAGE
+
+    def run(args, **kwargs):
+        if args == ["/sbin/mount"]:
+            return SimpleNamespace(stdout=f'{binding["source"]} on {binding["mount_point"]} (smbfs)\n')
+        if timeout:
+            raise subprocess.TimeoutExpired(args, 5)
+        raise subprocess.CalledProcessError(3, args)
+
+    monkeypatch.setattr(publisher.subprocess, "run", run)
+    result = eod_capture._home_native_mount_deferral(tmp_path)
+    if timeout:
+        assert result == {"status": "not_attempted", "reason": "publication_mount_probe_timed_out"}
+    else:
+        assert result["status"] == "failed" and "missing target" in result["message"]
+
+
+@pytest.mark.parametrize(("decision", "kind"), [
+    ({}, "InvalidPublicationEvidence"),
+    ({"status": "failed", "diagnostic": "memory_publication_failed",
+      "error_type": "PublisherError", "message": "publisher refused"}, "PublisherError"),
+    (KeyError("publisher field"), "KeyError"),
+])
+def test_home_finishing_preserves_publication_check_failures(tmp_path, monkeypatch, decision, kind):
+    def check(*args, **kwargs):
+        if isinstance(decision, Exception):
+            raise decision
+        return decision
+
+    monkeypatch.setattr(eod_capture, "publish_memory_state", check)
+    drain = {"status": "idle", "reconciled": 0, "unreconciled_remaining": 0, "reconciliation_conflicts": 0}
+    result = eod_capture._native_home_publication_result(tmp_path, tmp_path, tmp_path / "memory.json", drain, None)
+    assert result["status"] == "failed" and result["error_type"] == kind
+
+
+def test_home_finishing_never_reports_publication_over_a_failed_drain(tmp_path):
+    result = eod_capture._native_home_publication_result(
+        tmp_path, tmp_path, tmp_path / "memory.json", {"status": "failed"}, {"status": "published"})
+    assert result["status"] == "failed"
+    assert result["error_type"] == "UnexpectedPublicationEvidence"
+
+
+@pytest.mark.parametrize(("reconciled", "remaining"), [(1, 0), (0, 1)])
+def test_home_finishing_rejects_quiet_claim_over_new_or_unreconciled_items(tmp_path, reconciled, remaining):
+    drain = {"status": "reconciled", "reconciled": reconciled,
+             "unreconciled_remaining": remaining, "reconciliation_conflicts": 0}
+    result = eod_capture._native_home_publication_result(
+        tmp_path, tmp_path, tmp_path / "memory.json", drain, QUIET)
+    assert result["status"] == "failed"
+    assert result["error_type"] == "InvalidPublicationEvidence"
+
+
+def test_home_finishing_rejects_non_object_drain_with_a_receipt(tmp_path, capsys, native_clock):
+    drain = tmp_path / "drain.json"
+    drain.write_text("[]")
+    started = native_clock - timedelta(seconds=1)
+    assert eod_capture.main(["memory-record-run", "--finish-home", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--vault-root", str(tmp_path / "vault"), "--started-at",
+        started.isoformat(), "--memory-path", str(tmp_path / "memory.json"), "--drain-json", str(drain)]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["diagnostic"] == "command_json_unreadable"
+    assert Path(result["receipt_path"]).is_file()
+
+
+def test_native_smb_flag_uses_the_real_publisher_when_ready(namespace_migration, capsys, monkeypatch):
+    env = namespace_migration
+    started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    flags = ["memory-publish", "--native-smb", "--writer-role", "home",
+             "--state-root", str(env.state), "--vault-root", str(env.vault)]
+    original = {path: path.read_bytes() for path in env.vault.rglob("*") if path.is_file()}
+    assert eod_capture.main([*flags, "--check-only"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"publication_due": True}
+    assert {path: path.read_bytes() for path in env.vault.rglob("*") if path.is_file()} == original
+    monkeypatch.setenv("K2B_COMPILE_INDEX_LOCK", str(env.vault / ".k2b-compile-index.lock.d"))
+    assert eod_capture.main(flags) == 0
+    publication = json.loads(capsys.readouterr().out)
+    assert publication["status"] == "published"
+    assert publication["binding"] == env.binding
+    saved_receipt, = (env.state / "publication").glob("*.json")
+    coarse_time = int(datetime.fromisoformat(started).timestamp())
+    os.utime(saved_receipt, (coarse_time, coarse_time))
+    drain = {"status": "reconciled", "reconciled": 1, "unreconciled_remaining": 0, "reconciliation_conflicts": 0}
+    args = (env.state, env.vault, env.state / "memory.json", drain)
+    assert eod_capture._native_home_publication_result(*args, None, started_at=started) == publication
+    with monkeypatch.context() as scoped:
+        scoped.setattr(eod_capture, "publish_memory_state",
+                       lambda *args, **kwargs: pytest.fail("saved publication proof requires no new SMB operation"))
+        assert eod_capture._native_home_publication_result(*args, publication, started_at=started) == publication
+    rejected = eod_capture._native_home_publication_result(
+        *args, {**publication, "snapshot_sha256": "0" * 64}, started_at=started)
+    assert rejected["error_type"] == "InvalidPublicationEvidence"
+    stale_start = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+    rejected = eod_capture._native_home_publication_result(*args, publication, started_at=stale_start)
+    assert rejected["error_type"] == "InvalidPublicationEvidence"
+    duplicate = {**publication, "duplicate": True}
+    assert eod_capture._native_home_publication_result(*args, duplicate, started_at=stale_start) == duplicate
+    assert eod_capture._native_home_publication_result(*args, None, started_at=stale_start) == duplicate
+    with monkeypatch.context() as scoped:
+        scoped.setattr(eod_capture, "publish_memory_state", lambda *args, **kwargs: {"publication_due": False})
+        bad_duplicate = {**duplicate, "snapshot_sha256": "0" * 64}
+        assert eod_capture._native_home_publication_result(
+            *args, bad_duplicate, started_at=stale_start)["error_type"] == "InvalidPublicationEvidence"
+    monkeypatch.setattr(eod_capture, "publish_memory_state", lambda *args, **kwargs: {"publication_due": True})
+    rejected = eod_capture._native_home_publication_result(*args, duplicate, started_at=stale_start)
+    assert rejected["error_type"] == "MissingRunEvidence"
+
+
+@pytest.mark.parametrize("error", [subprocess.CalledProcessError(2, "compile-helper"),
+                                   PermissionError("publisher permission refused")])
+def test_memory_publish_dependency_failure_has_structured_output(tmp_path, monkeypatch, capsys, error):
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(eod_capture, "publish_memory_state", fail)
+    assert eod_capture.main(["memory-publish", "--native-smb", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--vault-root", str(tmp_path / "vault")]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "failed" and result["error_type"] == type(error).__name__
+
+
+def test_native_publish_waits_when_mount_disappears_after_readiness(tmp_path, monkeypatch, capsys):
+    import automatic_memory_publisher as publisher
+
+    def unavailable(**kwargs):
+        raise publisher.HomeMountUnavailable("fixture mount disconnected during publication preflight")
+
+    monkeypatch.setattr(eod_capture, "_home_native_mount_deferral", lambda vault: None)
+    monkeypatch.setattr(publisher, "publish", unavailable)
+    assert eod_capture.main(["memory-publish", "--native-smb", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--vault-root", str(tmp_path / "vault")]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "not_attempted", "reason": "publication_mount_unavailable"}
+
+
+def test_memory_publish_rejects_non_object_output(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(eod_capture, "publish_memory_state", lambda **kwargs: [])
+    assert eod_capture.main(["memory-publish", "--native-smb", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--vault-root", str(tmp_path / "vault")]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+def test_home_finishing_preserves_actual_drain_error(tmp_path, capsys, native_clock):
+    drain = tmp_path / "drain.json"
+    drain.write_text(json.dumps({"status": "failed", "diagnostic": "memory_drain_failed",
+                                 "error_type": "OSError", "message": "fixture drain access failed"}))
+    started = native_clock - timedelta(seconds=1)
+    assert eod_capture.main(["memory-record-run", "--finish-home", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--vault-root", str(tmp_path / "vault"), "--started-at",
+        started.isoformat(), "--memory-path", str(tmp_path / "memory.json"), "--drain-json", str(drain)]) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["outcome"] == "failed"
+    receipt = json.loads(Path(result["receipt_path"]).read_bytes())
+    assert receipt["commands"]["memory_home_drain"]["message"] == "fixture drain access failed"
+
+
+def test_home_finishing_records_unverified_eligibility_as_a_durable_failure(tmp_path, capsys, native_clock):
+    drain = tmp_path / "drain.json"
+    drain.write_text(json.dumps(eod_capture.drain_home_memory(tmp_path, writer_role="home")))
+    publication = tmp_path / "publication.json"
+    publication.write_text(json.dumps({"status": "not_attempted", "reason": "publication_eligibility_unverified"}))
+    started = (native_clock - timedelta(seconds=1)).isoformat()
+    assert eod_capture.main(["memory-record-run", "--finish-home", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--vault-root", str(tmp_path / "vault"), "--started-at", started,
+        "--memory-path", str(tmp_path / "memory.json"), "--drain-json", str(drain),
+        "--publication-json", str(publication)]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["diagnostic"] == "publication_eligibility_unverified"
+    assert Path(result["receipt_path"]).is_file()

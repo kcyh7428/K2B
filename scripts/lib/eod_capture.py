@@ -42,6 +42,7 @@ WIKI_LOG_APPEND = REPO_ROOT / "scripts" / "wiki-log-append.sh"
 SHELF_WRITER = REPO_ROOT / "scripts" / "washing-machine" / "shelf-writer.sh"
 EXTRACTION_SCHEMA_VERSION = "1.0"
 ALL_ITEMS_REJECTED_SKIP_REASON = "all_items_rejected_after_validation"
+HOME_NO_PUBLICATION_DUE = "no_new_reconciliation_or_pending_publication"
 MAX_EXTRACTOR_STDOUT_BYTES = 1_000_000
 MAX_EXTRACTOR_STDERR_BYTES = 200_000
 DEFAULT_EXTRACTOR_TIMEOUT_SECONDS = 1200
@@ -4627,6 +4628,8 @@ def publish_memory_state(
     preflight: Callable[[Path], dict] | None = None,
     publisher_func: Callable[..., dict] | None = None,
     check_only: bool = False,
+    native_smb: bool = False,
+    include_receipt: bool = False,
 ) -> dict:
     """Lazy boundary to the separately reviewed Home publication adapter."""
 
@@ -4634,19 +4637,141 @@ def publish_memory_state(
         raise PermissionError("memory publication requires the Home writer")
     if type(check_only) is not bool:
         raise ValueError("publication check_only must be a boolean")
+    if type(native_smb) is not bool:
+        raise ValueError("publication native_smb must be a boolean")
+    if native_smb:
+        if publisher_func is not None or preflight is not None:
+            raise ValueError("native Home publication requires the production publisher")
+        deferred = _home_native_mount_deferral(vault_root)
+        if deferred is not None:
+            return deferred
     if publisher_func is None:
         import automatic_memory_publisher
 
         publisher_func = automatic_memory_publisher.publish
     options = {"check_only": True} if check_only else {}
-    return publisher_func(
-        memory_state_path=memory_state_path,
-        state_root=state_root,
-        vault_root=vault_root,
-        writer_role="home",
-        preflight=preflight,
-        **options,
-    )
+    if native_smb:
+        options["require_smb"] = True
+    if include_receipt:
+        options["include_receipt"] = True
+    try:
+        return publisher_func(
+            memory_state_path=memory_state_path,
+            state_root=state_root,
+            vault_root=vault_root,
+            writer_role="home",
+            preflight=preflight,
+            **options,
+        )
+    except PermissionError as exc:
+        if native_smb and isinstance(exc, automatic_memory_publisher.HomeMountUnavailable):
+            return {"status": "not_attempted", "reason": native_job_status.PUBLICATION_MOUNT_UNAVAILABLE}
+        if native_smb and isinstance(exc, automatic_memory_publisher.SmbProbeTimeout):
+            return {"status": "not_attempted", "reason": native_job_status.PUBLICATION_MOUNT_PROBE_TIMEOUT}
+        raise
+
+
+def _home_native_mount_deferral(vault_root: Path) -> dict | None:
+    import automatic_memory_publisher
+
+    binding = automatic_memory_publisher.SMB_STORAGE
+    try:
+        evidence = automatic_memory_publisher._smb_readiness(vault_root, binding)
+    except automatic_memory_publisher.HomeMountUnavailable:
+        return {"status": "not_attempted", "reason": native_job_status.PUBLICATION_MOUNT_UNAVAILABLE}
+    except automatic_memory_publisher.SmbProbeTimeout:
+        return {"status": "not_attempted", "reason": native_job_status.PUBLICATION_MOUNT_PROBE_TIMEOUT}
+    except (OSError, ValueError, RuntimeError, TypeError, subprocess.SubprocessError) as exc:
+        return _home_publication_evidence_failure(
+            type(exc).__name__, _sanitize_log_value(exc)[:500] or "Home SMB readiness probe failed")
+    if isinstance(evidence, dict) and evidence.get("storage") == "smb-ready" and evidence.get("binding") == binding:
+        return None
+    return _home_publication_evidence_failure(
+        "InvalidMountEvidence", "Home SMB readiness probe did not return evidence for the approved binding")
+
+
+def _home_publication_evidence_failure(error_type: str, message: str) -> dict:
+    return {"status": "failed", "diagnostic": "memory_publication_failed",
+            "error_type": error_type, "message": message}
+
+
+def _native_home_publication_result(state_root: Path, vault_root: Path, memory_path: Path,
+                                    drain: dict, publication: dict | None, *, started_at: str | None = None) -> dict:
+    """Check claimed completion or determine what prevented an absent publication."""
+    drain_status = drain.get("status")
+    if drain_status == "failed":
+        if publication is not None and publication.get("status") != "not_attempted":
+            return _home_publication_evidence_failure(
+                "UnexpectedPublicationEvidence", "publication output conflicts with a failed Home drain")
+        # The recorder preserves the drain error. A failed drain precludes
+        # this run's publication step regardless of any deferral artifact.
+        return {"status": "not_attempted", "reason": "drain_failed"}
+    conflicts = drain.get("reconciliation_conflicts")
+    remaining = drain.get("unreconciled_remaining")
+    reconciled = drain.get("reconciled")
+    # The drain intersects conflicts with its remaining acceptance paths.
+    if (drain_status not in ("idle", "reconciled", "needs_attention")
+            or any(type(count) is not int or count < 0 for count in (conflicts, remaining, reconciled))
+            or conflicts > remaining):
+        return _home_publication_evidence_failure(
+            "InvalidDrainEvidence", "Home reconciliation counts could not be verified")
+    published = publication is not None and publication.get("status") == "published"
+    if publication is not None:
+        quiet = (publication.get("status") == "not_attempted"
+                 and publication.get("reason") == HOME_NO_PUBLICATION_DUE)
+        if quiet and (reconciled or remaining):
+            return _home_publication_evidence_failure(
+                "InvalidPublicationEvidence", "quiet publication claim conflicts with the Home drain")
+        if not published and not quiet:
+            return publication  # The recorder validates non-success evidence.
+    if remaining:
+        if published:
+            return _home_publication_evidence_failure(
+                "InvalidPublicationEvidence", "published claim conflicts with unreconciled Home work")
+        reason = "reconciliation_needs_attention" if conflicts else "unreconciled_backlog_remaining"
+        return {"status": "not_attempted", "reason": reason}
+    if published:
+        import automatic_memory_publisher
+
+        problem = automatic_memory_publisher.native_run_receipt_problem(state_root, publication, started_at)
+        if problem is not None:
+            return _home_publication_evidence_failure("InvalidPublicationEvidence", problem)
+        if not publication["duplicate"]:
+            return publication
+    # Read current publication evidence without starting a second writer.
+    options = {"check_only": True, "native_smb": True}
+    if reconciled and publication is None:
+        options["include_receipt"] = True
+    try:
+        decision = publish_memory_state(memory_path, state_root, vault_root, "home", **options)
+    except Exception as exc:
+        return _home_publication_evidence_failure(
+            type(exc).__name__, _sanitize_log_value(exc)[:500] or "publication check failed")
+    if isinstance(decision, dict) and decision.get("status") in ("not_attempted", "failed"):
+        return decision
+    if not isinstance(decision, dict) or type(decision.get("publication_due")) is not bool:
+        return _home_publication_evidence_failure(
+            "InvalidPublicationEvidence", "Home publication eligibility could not be verified")
+    if decision["publication_due"] is False:
+        if published:
+            return publication
+        if not reconciled:
+            return {"status": "not_attempted", "reason": HOME_NO_PUBLICATION_DUE}
+        recovered = decision.get("publication_receipt")
+        if isinstance(recovered, dict) and started_at and isinstance(recovered.get("published_at"), str):
+            import automatic_memory_publisher
+
+            try:
+                publication_time = _memory_instant(recovered["published_at"], "publication time")
+                run_start = _memory_instant(started_at, "run start")
+            except ValueError:
+                return _home_publication_evidence_failure(
+                    "InvalidPublicationEvidence", "could not verify the recovered publication timestamp")
+            recovered = {**recovered, "duplicate": publication_time < run_start}
+            if automatic_memory_publisher.native_run_receipt_problem(state_root, recovered, started_at) is None:
+                return recovered
+    return _home_publication_evidence_failure(
+        "MissingRunEvidence", "approved SMB is ready but publication evidence was not recorded")
 
 
 def accept_memory_envelope(
@@ -5619,7 +5744,8 @@ def _build_native_run_receipt(
             }
         publication_status = publication_result.get("status")
         publication_reason = publication_result.get("reason")
-        waiting_for_mount = publication_reason == native_job_status.PUBLICATION_MOUNT_UNAVAILABLE
+        waiting_for_mount = (isinstance(publication_reason, str)
+                             and publication_reason in native_job_status.HOME_MOUNT_WAIT_REASONS)
         if publication_status not in ("not_attempted", "published", "failed"):
             raise _MemoryRunError("home_publication_status_invalid")
         if waiting_for_mount and (publication_status != "not_attempted"
@@ -5635,9 +5761,9 @@ def _build_native_run_receipt(
         if drain_status != "failed":
             if (publication_status == "not_attempted"
                     and publication_reason not in (
-                        "no_new_reconciliation_or_pending_publication",
+                        HOME_NO_PUBLICATION_DUE,
                         "unreconciled_backlog_remaining", "reconciliation_needs_attention",
-                        native_job_status.PUBLICATION_MOUNT_UNAVAILABLE,
+                        *native_job_status.HOME_MOUNT_WAIT_REASONS,
                     )):
                 raise _MemoryRunError("publication_eligibility_unverified")
             unreconciled = drain_result.get("unreconciled_remaining")
@@ -5670,8 +5796,8 @@ def _build_native_run_receipt(
                 # checking the mount. Otherwise this reason can defer, but
                 # cannot prove publication or mark the run completed.
                 expected_reason = reason if unreconciled else (
-                    native_job_status.PUBLICATION_MOUNT_UNAVAILABLE if waiting_for_mount
-                    else "no_new_reconciliation_or_pending_publication"
+                    publication_reason if waiting_for_mount
+                    else HOME_NO_PUBLICATION_DUE
                 )
                 if publication_reason != expected_reason:
                     raise _MemoryRunError("publication_backlog_evidence_invalid")
@@ -8346,6 +8472,10 @@ def main(argv: list[str] | None = None) -> int:
     memory_run_parser.add_argument("--worklist-json", type=Path)
     memory_run_parser.add_argument("--drain-json", type=Path)
     memory_run_parser.add_argument("--publication-json", type=Path)
+    memory_run_parser.add_argument("--finish-home", action="store_true",
+        help="record retained Home worklist and check the approved SMB binding if publication evidence is absent")
+    memory_run_parser.add_argument("--vault-root", type=Path, help="configured Home vault for --finish-home")
+    memory_run_parser.add_argument("--memory-path", type=Path, help="memory state used by the Home drain")
     memory_drain = sub.add_parser(
         "memory-home-drain",
         help="durably accept and reconcile bounded Home and optional SJM deliveries",
@@ -8373,6 +8503,8 @@ def main(argv: list[str] | None = None) -> int:
     memory_publish.add_argument("--vault-root", type=Path, required=True)
     memory_publish.add_argument("--check-only", action="store_true",
                                 help="check publication eligibility without writing or taking locks")
+    memory_publish.add_argument("--native-smb", action="store_true",
+        help="require the exact approved Home SMB binding before checking or publishing")
     memory_publish.add_argument(
         "--writer-role", choices=("home", "sjm-source-only"), required=True
     )
@@ -8676,9 +8808,13 @@ def main(argv: list[str] | None = None) -> int:
                 vault_root=args.vault_root,
                 writer_role=args.writer_role,
                 check_only=args.check_only,
+                native_smb=args.native_smb,
             )
-        except (OSError, ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
-            print(f"eod-capture: memory publication failed: {_sanitize_log_value(exc)}", file=sys.stderr)
+            if not isinstance(result, dict):
+                raise ValueError("publication helper did not return a JSON object")
+        except (OSError, ValueError, RuntimeError, TypeError, subprocess.SubprocessError) as exc:
+            print(f"eod-capture: memory publication failed ({type(exc).__name__}): {_sanitize_log_value(exc)}",
+                  file=sys.stderr)
             result = {"status": "failed", "diagnostic": "memory_publication_failed",
                       "error_type": type(exc).__name__, "message": _sanitize_log_value(exc)[:500]}
             if args.check_only:
@@ -8686,7 +8822,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, sort_keys=True))
             return 2
         print(json.dumps(result, sort_keys=True))
-        return 0
+        return 2 if args.native_smb and result.get("status") == "failed" else 0
 
     if args.cmd == "memory-queue-reviewed":
         try:
@@ -8759,6 +8895,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "memory-record-run":
+        if args.finish_home and (args.writer_role != "home" or args.worklist_json
+                                 or not (args.started_at or "").strip()):
+            print("eod-capture: --finish-home requires Home, retains its worklist and needs the original run start",
+                  file=sys.stderr)
+            return 2
+        if args.finish_home:
+            try:
+                _memory_instant(args.started_at, "original Home run start")
+            except ValueError as exc:
+                print(f"eod-capture: {_sanitize_log_value(exc)}", file=sys.stderr)
+                return 2
         try:
             exceptions = (_read_memory_json_list(args.exceptions_json, "exceptions JSON")
                           if args.exceptions_json else None)
@@ -8768,6 +8915,12 @@ def main(argv: list[str] | None = None) -> int:
                             if args.drain_json else None)
             publication_result = (_read_memory_json(args.publication_json, "publication JSON")
                                   if args.publication_json else None)
+            if args.finish_home:
+                if drain_result is None or args.vault_root is None or args.memory_path is None:
+                    raise ValueError("native Home finishing requires actual drain JSON, vault root and memory path")
+                publication_result = _native_home_publication_result(
+                    args.state_root, args.vault_root, args.memory_path,
+                    drain_result, publication_result, started_at=args.started_at)
         except (OSError, ValueError, RuntimeError) as exc:
             # A valid start/role must still leave durable failed run evidence,
             # never an evidence gap the status reader cannot distinguish from
