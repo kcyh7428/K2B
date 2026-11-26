@@ -192,17 +192,22 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    persistent failure, genuine ambiguity, exhausted quota, or required user
    action.
 4. On Home only, run `scripts/eod-capture.py memory-home-drain --writer-role home
-   --pull-sjm --limit 24` with the configured machine-local state root.
+   --pull-sjm --limit 24 --memory-path <state>/memory.json` with the configured
+   machine-local state root.
    The command may use only the established `sjm-ai` connection and must report
    Home/SJM downtime honestly.
-   Save the actual output of this run's drain invocation at a new path
-   inside its private run artifacts. Read `reconciliation_conflicts` and
+   Save the actual drain output under the private run-artifacts directory
+   with a name that identifies this run. Read `reconciliation_conflicts` and
    `unreconciled_remaining` from that output only. Both must be
-   nonnegative integers. Report missing or invalid
-   counts and defer publication with status `not_attempted` and reason
-   `reconciliation_counts_unverifiable`. Do not invoke publication for this
-   run. The receipt command records a run-level failure without assigning a
-   failed extraction to any turn. Report missing fields as possible drain
+   nonnegative integers. Report missing or invalid counts and omit
+   publication JSON. Do not invoke publication for this run.
+   Report the recorder's actual diagnostic and retain local turn receipts.
+   Invalid or missing backlog counts can yield
+   `publication_backlog_evidence_invalid` with exit 2. If the backlog counts
+   are valid but `reconciled` is invalid, the receipt can record a publication
+   failure with `InvalidDrainEvidence` and exit 3. Unreadable drain JSON has
+   its own `command_json_unreadable` diagnostic.
+   Report missing fields as possible drain
    command incompatibility only if the drain command succeeded and omitted the
    fields. Report a failed invocation or unreadable output as such. An SJM
    connection wait can appear in valid Home drain JSON. In the user-facing
@@ -210,67 +215,89 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    resolution, or report that the counts could not be verified. Preserve
    accepted deliveries and diagnostics.
 
-5. On Home only, use the existing command with per-invocation
-   `K2B_COMPILE_INDEX_LOCK="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/.k2b-compile-index.lock.d"`
-   and `K2B_WIKI_LOG="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/wiki/log.md"`
-   prefixed to `scripts/eod-capture.py memory-publish`, using
-   the configured state root, `--writer-role home`, and the exact Home vault.
-   Follow the effective-setting readback and busy-lock runbook in
-   `k2b-vault-writer` after fresh mount/alias verification. In one subshell
-   export those bindings and the verified resolved `K2B_VAULT_PATH`; import
-   the installed compile helper without main and compare its `LOCK_DIR`
-   to that NAS root's `.k2b-compile-index.lock.d`. Retain the setting,
-   source hash and publication command identity privately. Missing, default,
-   mismatched or unreadable settings defer publication. Launch the existing
-   publication command with the same host Python 3.12 interpreter and unchanged
-   exported environment in that subshell. Retain the existing run budget;
-   unknown lock ownership stays blocked and never permits timeout deletion.
+5. On Home only, decide whether publication is due. The read-only
+   preflight and publisher both use
+   `scripts/eod-capture.py memory-publish --native-smb` with the configured
+   state root, `--writer-role home`, the exact Home vault and
+   `--memory-path <state>/memory.json`. Add `--check-only` for the read-only
+   operation.
    Read `reconciliation_conflicts` and `unreconciled_remaining` directly from
    this run's saved drain JSON. Two integer zeroes are verified counts,
-   including when `reconciled` is zero. If either backlog count is missing or invalid, defer with
-   `reconciliation_counts_unverifiable` as in step 4. If the drain JSON itself
-   is unreadable, do not invoke publication. Record `not_attempted` with that
-   same reason, and pass the expected drain path to the receipt command.
+   including when `reconciled` is zero. If either backlog count is missing or
+   invalid, follow step 4 and omit publication JSON. If the drain JSON itself
+   is unreadable, do not invoke publication. Pass the expected drain path
+   to the receipt command without publication JSON.
    The next scheduled run uses fresh drain output and may
    publish when its own verified counts and the normal eligibility check pass.
    If the drain reports either `reconciliation_conflicts` or
-   `unreconciled_remaining` greater than zero, defer publication with
-   status `not_attempted`. Use reason `reconciliation_needs_attention` if
+   `unreconciled_remaining` greater than zero, omit publication JSON.
+   The recorder supplies `reconciliation_needs_attention` if
    `reconciliation_conflicts` is positive, otherwise use
    `unreconciled_backlog_remaining`. For backlog alone, the next bounded drain
    can continue automatically. Report the verified remaining count and
    deferral reason in the user-facing run summary. If this run reports
    `reconciled: 0` while accepted work remains, flag Home operator
-   investigation. Replays are verification of earlier work.
+   investigation. A drain labeled `reconciled` can have `reconciled: 0`
+   and verified replays. Replays confirm earlier work.
    Attempt publication only if both counts are verified zero and either a new
    reconciliation occurred or a prior durable reconciliation still awaits
    publication. Once both backlog counts are verified zero, require
    `reconciled` to be a nonnegative integer in the same drain output. A missing
-   or invalid `reconciled` count defers with `reconciliation_counts_unverifiable`.
-   With those drain counts verified, check the mount table before traversing
-   the configured SMB path. If the approved binding is absent or fails
-   preflight, save `{"status":"not_attempted","reason":"publication_mount_unavailable"}`
-   for `--publication-json` and skip the publisher, including `--check-only`.
-   Keep the verified local extraction and drain outcomes. The run receipt
-   reports publication waiting for the approved binding. A recovered mount
-   requires the full binding checks before any write.
-   After the binding preflight succeeds, if `reconciled: 0`, run the same
-   Home command and arguments with `--check-only` after preflight. Keep its
-   actual JSON in the private run artifacts. This check does not write or take
-   writer locks. On exit 0 with `publication_due: false`, record
-   `not_attempted` with reason `no_new_reconciliation_or_pending_publication`.
-   On exit 0 with `publication_due: true`, invoke the normal publication
-   command without `--check-only`. If the check fails or the decision is
-   missing, malformed, or unclear, do not invoke publication. Pass a
-   publication deferral artifact with status `not_attempted` and reason
-   `publication_eligibility_unverified`. This evidence is insufficient for
-   a completed run. The receipt command exits 2 and leaves a durable
-   `failed` run receipt with diagnostic `publication_eligibility_unverified`.
-   Report the diagnostic and retain the receipt path returned by the command.
+   or invalid `reconciled` count also requires omitting publication JSON.
+   With those drain counts verified, run `memory-publish --native-smb --check-only`
+   as the read-only preflight, including when the mount appears absent or uncertain.
+   The command itself verifies the binding before any vault read and takes no
+   writer locks. If a publish or eligibility command returns
+   `not_attempted` with reason `publication_mount_unavailable` or
+   `publication_mount_probe_timed_out`, pass that actual JSON and
+   skip any further publication attempt. Never infer the
+   SMB source from the local mount folder.
+   Always pass actual mount deferral JSON when available. Never write a mount
+   deferral by hand. If the publisher produced no usable result and the
+   recorder independently finds the binding unavailable, it records the wait.
+   If the binding is ready at that check, publication is still due and there
+   is no verified publisher receipt, the recorder reports `MissingRunEvidence`.
+   With otherwise valid evidence the recorder returns status `recorded`,
+   outcome `failed` and exit 3. Valid local turn receipts stay verified.
+   The next normal run can attempt publication.
+   With otherwise valid evidence, an absent or replaced binding records
+   outcome `waiting`, exit 3, and the diagnostic
+   `Home publication waiting for the approved SMB binding`. Keep the verified
+   local extraction and drain outcomes. A timed-out probe also records
+   `waiting` with exit 3 and a separate timeout diagnostic. An approved
+   but read-only mount or malformed probe result records a publication
+   failure while keeping the local turn results. A recovered mount requires the full
+   binding checks before any write.
+   Keep the preflight's actual JSON in the private run artifacts. On exit 0
+   with `publication_due: false`, omit publication JSON. The recorder verifies
+   current publication evidence. On exit 0 with `publication_due: true`,
+   continue through the write gates below. If the check fails or the decision is
+   missing, malformed, or unclear, do not invoke publication. Pass the helper's
+   actual structured failure or mount deferral JSON whenever present. It takes
+   precedence over an eligibility fallback. Only if the check returned neither
+   a usable decision nor a structured failure or deferral, keep the actual exit
+   code and sanitized output privately and pass `not_attempted` with reason `publication_eligibility_unverified`, which
+   the recorder rejects with exit 2, diagnostic
+   `publication_eligibility_unverified` and a durable failed run receipt.
+   Retain the returned receipt path and report its outcome and diagnostic.
    Pass the publication result, a structured failure emitted by the check,
    or the recorded deferral to the run receipt. A bare eligibility decision
-   is not a publication result. The separately provisioned Home
-   publication authority, approved policy-ledger hash, exclusive managed paths,
+   is not a publication result.
+
+   Before the normal publication command, verify the current mount and alias.
+   In one subshell set `K2B_COMPILE_INDEX_LOCK="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/.k2b-compile-index.lock.d"`
+   and `K2B_WIKI_LOG="/Users/keithmbpm2/Projects/K2B-NAS/K2B-Vault/wiki/log.md"`.
+   Follow the effective-setting readback and busy-lock runbook in
+   `k2b-vault-writer`. In that subshell export both bindings and the verified
+   resolved `K2B_VAULT_PATH`. Import
+   the installed compile helper without main and compare its `LOCK_DIR`
+   to that NAS root's `.k2b-compile-index.lock.d`. Retain the setting,
+   source hash and publication command identity privately. Missing, default,
+   mismatched or unreadable settings defer publication. In that subshell
+   run the publication command without `--check-only` using Home Python 3.12
+   and the verified exported environment. Retain the existing run budget.
+   Unknown lock ownership stays blocked and never permits timeout deletion.
+   The separately provisioned Home publication authority, approved policy-ledger hash, exclusive managed paths,
    publisher locks and the approved exact SMB publication-authority/live
    preflight remain mandatory. The imported index helper inherits the NAS
    compile-lock binding; private publication/reconciliation locks remain intact.
@@ -278,28 +305,78 @@ drain/publication and the canonical receipt inside the 20-minute total budget.
    A blocked publication is waiting/failed, never published; do not bypass checks or edit
    shared memory/index/log files yourself. SJM must never run this step.
 
-Save actual drain and publication command JSON to private files. When publication
-is correctly not attempted, use status `not_attempted` and its reason above,
-or `no_new_reconciliation_or_pending_publication` only if both counts are verified zero
-and no publication is due.
-Whenever the worklist command ran, save its final JSON under this run's
-private local artifacts and pass it via
-`--worklist-json` regardless of status or selection count. The helper
-verifies this final selection against the run's attempted and deferred IDs.
-The Home receipt also checks the result retained by the worklist command for
-the same original run start. With a clear hold, missing or unverified
-worklist evidence means the run cannot report `completed`. Preserve the
-producer's evidence file as generated. Preserve actual
-source-bound extraction receipts even when another stage cannot finish.
-Pass the final result even if it selected zero turns. The attempted and
-deferred IDs represent the whole run. Retain earlier results privately.
-If there is no readable worklist output, supply its expected path. The receipt
-command records a run-level failure for missing or invalid command evidence
-without assigning a failed extraction to a turn. A `blocked`
-worklist exits normally with zero selections. Home still proceeds with its
-independently eligible work. Generate the canonical run receipt
-with `scripts/eod-capture.py memory-record-run --writer-role <role> --state-root
-<state> --started-at <UTC-start>` and one `--work-id` for each attempted turn.
+Save actual drain and publication command JSON to private files. The only
+handwritten publication artifact allowed here is the explicit
+`publication_eligibility_unverified` error when the eligibility command
+has no usable result. That artifact can only produce a failed run receipt.
+Never handwrite a mount deferral or success.
+Generate the canonical run receipt with `scripts/eod-capture.py memory-record-run
+--writer-role <role> --state-root <state> --started-at <UTC-start>` and one
+`--work-id` for each attempted turn.
+
+### Home run receipt
+
+Add `--finish-home` and
+`--drain-json <actual-drain-output>`, `--vault-root <configured-vault>` and
+`--memory-path <actual-memory-path>`. Pass the same machine-local memory
+path to all three Home commands. The registered job uses `<state>/memory.json`.
+Use the first Home command's printed UTC start verbatim in every selection
+and the recorder. The first command captures it once in UTC with six
+fractional-second digits and a trailing `Z`. The helpers parse the timestamp
+and derive the filename from its normalized UTC value. The selector
+atomically retains evidence under that key. Recover a lost start only
+from the first tool result in this wake. If that result cannot establish
+the start, stop and report a specific operator alert in the permanent
+chat. Leave receipt status at the last verified run and report any
+per-turn receipts actually verified from this wake.
+The recorder uses that start to find the exact
+`home-worklist-evidence-<UTC-start>.json` file under the private state root.
+Omit `--worklist-json` on Home. If this evidence is missing, unreadable
+or has a different start, preserve it as found and report the returned
+producer-evidence diagnostic and receipt path. With a clear hold such a
+run cannot record `completed`. Keep a missing selection pending for a fresh
+scheduled run. Pass the actual
+`--publication-json <actual-publication-output>` when available.
+A claim of a new publication in this wake requires a durable publisher
+receipt for the approved binding with `published_at` at or after this
+wake's original UTC start. An older duplicate attests only that the shared
+publication was already current. Its original timestamp is preserved. The
+recorder independently verifies the exact current SMB binding,
+reconciliation watermark and shared artifact hashes before accepting that
+readback. Report it as already current. Claim a new write only when the
+actual publisher output proves a new write in this wake.
+
+When publication JSON is absent, the recorder checks the actual drain
+counts and approved SMB binding without writing. Missing JSON by itself
+proves neither a mount wait nor publication. A verified durable current
+publisher receipt can recover an omitted result under the same rules. If
+recovery returns mismatched or unreadable receipt evidence, report the
+recorder's specific validation diagnostic.
+The same-run worklist and turn evidence come from this wake's original UTC
+start and attempted turn receipts. An older duplicate can establish current
+shared state only. It cannot establish this wake's worklist or any new write.
+If publication becomes due again between an actual duplicate response and
+the recorder's check, the recorder saves a `publication_due_again` wait. The
+next eligible Home run retries. If a different publication is already current,
+the older supplied duplicate cannot establish this run's publication result.
+If the approved SMB binding is ready, publication remains due and no same-run
+receipt can be recovered, the recorder saves a publication failure with
+error type `MissingRunEvidence`. With otherwise valid evidence, the command
+returns status `recorded`, outcome `failed` and exit 3. Verified local turn
+results are retained.
+
+### SJM run receipt
+
+On SJM only, pass the final selection via `--worklist-json` whenever the
+tool ran, even if it selected zero turns. If unreadable, use its expected
+path on SJM. Preserve both hosts' actual source-bound turn receipts and earlier
+worklist results. Home's local work remains eligible through a publication
+wait. A `blocked` worklist still stops extraction and exits normally.
+
+### Receipt arguments for both hosts
+
+Home omits `--worklist-json` and follows the retained producer evidence
+procedure above.
 A selected or prepared turn stays pending if extraction never started.
 Leave that work ID out of `--work-id`.
 Pass each selected-but-unread boundary deferral with `--deferred-work-id` and its
@@ -313,8 +390,7 @@ malformed exceptions fail the run instead of completing it. The helper discovers
 input views prepared since the original start time, and a prepared-but-unaccounted
 turn makes the outcome ambiguous rather than failed, so a prepared turn cannot
 silently vanish from the receipt; it cannot prove that a concurrent producer
-prepared nothing. On Home also supply `--drain-json <actual-drain-output>` and
-`--publication-json <actual-publication-output>`. Do not handwrite
+prepared nothing. Do not handwrite
 native-run-receipts: the helper validates per-turn extraction artifacts, writes
 schema version 2 on Home and 1 on SJM, and leaves durable failed evidence with a sanitized
 diagnostic when command JSON is unreadable or the evidence is malformed. Never

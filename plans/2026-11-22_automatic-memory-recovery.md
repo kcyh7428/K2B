@@ -197,3 +197,51 @@ Compare each work-ID list length with its corresponding exception count to
 identify a bounded sample. A mismatched binding can be reviewed separately
 using the exact work ID, stored source path and current active copy. Keep
 old files and receipts together during any approved repair.
+
+## 26 November Home run bookkeeping
+
+Keith approved this repair in Codex thread
+`01a2030e-0540-7f53-8fff-9110f3557ab2` after the 22:12 HKT run processed a
+turn but failed to retain worklist and publication evidence in the batch
+receipt. Home still selects and reviews local turns first. The existing
+drain retains its output. The Home publisher checks its configured SMB
+source and target in Python. Run the read-only eligibility check even when
+the mount appears absent. Full mount and writer checks gate publication
+writes.
+The approved Tailscale binding is the one recorded in
+`plans/2026-11-25_k2b-tailscale-vault.md`.
+
+The worker calls `memory-record-run --finish-home` with the original UTC
+start, attempted turn IDs, actual drain JSON, configured vault root and
+machine-local memory path. The recorder reads the
+worklist evidence already saved by the selector. It takes the actual
+publication JSON when present, checking a published claim against the
+durable publisher receipt for the approved binding. If no output exists, it checks
+the reconciliation backlog and exact SMB binding. The former LAN source
+mounted at the expected folder must record a publication wait and preserve
+valid per-turn evidence. A quiet drain checks whether earlier reconciliation
+is awaiting publication. The publisher's read-only check can recover a
+missing result when a durable receipt matches the current shared state and
+reconciliation watermark. A new write requires a receipt timestamp at
+or after the wake's original UTC start. An earlier receipt describes shared
+state that is already current only after exact watermark and artifact
+readback. The earlier timestamp cannot establish a new write or this
+wake's local turn evidence.
+An inconclusive probe timeout records a wait with its own diagnostic.
+With SMB ready and publication still due, missing evidence records a
+`MissingRunEvidence` publication failure. With otherwise valid evidence,
+the recorder returns status `recorded`, outcome `failed` and exit 3.
+Verified local extraction receipts are retained.
+Only the existing publisher writes shared artifacts and indexes.
+
+Before activating the updated prompt, the Home operator verifies the private
+run artifacts directory resolves to the expected local path, is owned by
+the Home account and has mode 0700. The worker uses the existing
+machine-local state root for private run artifacts. The permanent chat retains the
+first command output containing the original UTC start. If that evidence
+becomes irretrievable, the permanent chat records an operator alert and
+receipt status keeps the last verified run.
+
+Verify the next scheduled Home run against its actual turn and worklist
+receipts and shared publication result. The cadence, extraction budgets,
+source scope and SJM hold stay in force.

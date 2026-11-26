@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -368,6 +369,24 @@ def test_omitted_home_publication_reports_corrupt_receipt(namespace_migration, m
     assert failed["status"] == "failed"
     assert failed["error_type"] == "MissingRunEvidence"
     assert failed["message"] == "matching durable publication receipt could not be read safely"
+
+
+@pytest.mark.parametrize("bad_count", [-1, "zero"])
+def test_home_invalid_reconciled_count_records_publication_failure(tmp_path, capsys, bad_count):
+    drain_path = tmp_path / "drain.json"
+    drain = eod_capture.drain_home_memory(tmp_path, writer_role="home")
+    drain["reconciled"] = bad_count
+    drain_path.write_text(json.dumps(drain))
+    started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    assert eod_capture.main([
+        "memory-record-run", "--finish-home", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--started-at", started, "--drain-json", str(drain_path),
+        "--vault-root", str(tmp_path / "vault"), "--memory-path", str(tmp_path / "memory.json"),
+    ]) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert (result["status"], result["outcome"]) == ("recorded", "failed")
+    receipt = json.loads(Path(result["receipt_path"]).read_bytes())
+    assert receipt["commands"]["memory_publish"]["error_type"] == "InvalidDrainEvidence"
 
 
 def _namespace_history(env, kind, monkeypatch, *, previous_smb=False, smb_alias=False):
