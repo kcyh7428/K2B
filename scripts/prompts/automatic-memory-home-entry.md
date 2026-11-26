@@ -1,6 +1,6 @@
 At every Home heartbeat, run local selection as the first tool action. Run
-the following from the Home checkout. Record the printed UTC start and keep
-it for every selection and for the final receipt in this batch.
+the following from the Home checkout. Record the printed UTC start once
+and reuse it verbatim for every selection and the final receipt.
 
 ```sh
 run_start=$(/usr/local/bin/python3.12 -c '
@@ -39,12 +39,49 @@ continue independently eligible Steps 4 and 5 and record actual outcomes. A miss
 SMB mount affects publication only. A run without verified local worklist
 evidence cannot report completion. Only the worklist command writes its
 retained evidence. Preserve that file as generated.
+Recover the original UTC value from the first tool result in this scheduled
+turn. This permanent chat already retains that result. Save this run's drain,
+publication and backlog outputs to private files under its configured
+machine-local state root. If the original start cannot be recovered, report an operator
+alert in this permanent chat. Report that the recorder was never invoked
+and list any per-turn receipts you can verify from this wake. Receipt-based
+status can only show the last verified run until the next receipt. Use
+the wake's retained tool evidence for operator investigation. Never select
+a timestamp from another wake or create a substitute receipt.
 
-Finish every batch with the native prompt's `memory-record-run` command,
-including a `blocked` or `needs_attention` stop. Use the original UTC start
-and pass the final worklist JSON whenever the tool returned it.
+Finish every batch with `memory-record-run --finish-home`, including a
+`blocked` or `needs_attention` stop. Pass `--writer-role home`, the
+configured `--state-root`, original UTC `--started-at`,
+actual `--drain-json`, configured `--vault-root` and machine-local
+`--memory-path`. Include
+one `--work-id` per attempted turn and use `--deferred-work-id` with its
+actual `--deferred-reason` for an eligible deferral. Use the actual
+`--publication-json` when available and the native prompt's
+`--exceptions-json` rules. Preserve the producer's
+worklist evidence. The recorder reads that file for the original start.
+Follow Step 5 for the publication decision. The read-only
+`memory-publish --native-smb --check-only` is the mount preflight when the
+mount is absent or uncertain. Use it after verifying the drain counts.
+Publication writes require fresh mount and alias verification, compile-helper
+readback, and the per-invocation `K2B_COMPILE_INDEX_LOCK` and `K2B_WIKI_LOG`
+bindings.
+If no publication JSON exists, the receipt command checks approved publication
+evidence without writing to the vault.
 
-If setup fails, report the failed step, UTC start and missing receipt. If setup
-passes, exit 3 with valid worklist JSON is a recorded stop. Preserve that JSON.
+Read the run recorder's top-level status, outcome and exit code together.
+A failed publication command can sit inside a successfully written run receipt.
+
+| Exit | Returned status | Outcome and reporting |
+| --- | --- | --- |
+| 0 | `recorded` | `completed` |
+| 3 | `recorded` | Report the actual outcome and diagnostic. A mount wait is `waiting`. `MissingRunEvidence` is `failed`, with verified local turn receipts retained. It can mean the mount became ready after publication had been deferred. |
+| 2 | `failed` if recorder JSON includes `receipt_path` | Report the actual diagnostic and durable failed receipt. Missing or invalid reconciliation backlog counts yield `publication_backlog_evidence_invalid`. An unverifiable eligibility artifact yields `publication_eligibility_unverified`. |
+| 2 | No `receipt_path` | Setup, inputs or receipt writing failed before yielding durable evidence. Treat missing or invalid JSON and JSON without a receipt path the same way. Report the actual error and the missing receipt. |
+
+If setup fails, report the failed step, UTC start and missing receipt.
+If exit 2 has no usable receipt path, report the sanitized stderr and flag
+a missing receipt for operator attention.
+The separate worklist command can return exit 3 with valid worklist JSON.
+Preserve that JSON and follow its stop decision.
 If the worklist command fails without valid JSON, use the receipt failure path
 in the worker prompt. An absent receipt requires attention.

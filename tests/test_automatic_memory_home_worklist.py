@@ -656,10 +656,14 @@ def test_home_can_process_local_turn_with_no_nas_and_keep_its_receipt(
         scoped.setattr(eod_capture, "publish_memory_state", check)
         assert eod_capture.main(command) == 3
         missing = json.loads(capsys.readouterr().out)
-        assert missing["outcome"] == "failed" and missing["completed"] == 1
-        record = json.loads(Path(missing["receipt_path"]).read_bytes())
+        assert (missing["status"], missing["outcome"], missing["completed"]) == ("recorded", "failed", 1)
+        receipt_path = Path(missing["receipt_path"])
+        assert receipt_path.is_file()
+        record = json.loads(receipt_path.read_bytes())
         assert record["commands"]["memory_worklist"]["evidence_verified"] is True
         assert record["commands"]["memory_publish"]["error_type"] == "MissingRunEvidence"
+        assert eod_capture._validate_memory_extraction_receipt(
+            state, work_id, bundle, read_only=True)["result"]["status"] == "queued"
     run = _record(state, started, work_ids=[work_id], worklist_result=worklist,
                   publication_result={"status": "failed", "diagnostic": "memory_publication_failed",
                                       "error_type": "PermissionError", "message": "SMB mount is absent"})
@@ -847,7 +851,7 @@ def test_native_cli_publication_boundary(namespace_migration, capsys, monkeypatc
                              "--started-at", started, "--drain-json", str(drain)]) == 3
     result = json.loads(capsys.readouterr().out)
     receipt = json.loads(Path(result["receipt_path"]).read_bytes())
-    assert result["outcome"] == outcome
+    assert (result["status"], result["outcome"]) == ("recorded", outcome)
     if change == "timeout":
         assert timeout_calls == [5, 5]
     if reason:

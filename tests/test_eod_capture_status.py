@@ -5274,7 +5274,7 @@ def test_memory_status_registration_unknown_is_not_disabled(
     assert status["native_diagnostic"] is not None
 
 
-def test_native_automatic_memory_prompt_uses_public_flow_without_publication() -> None:
+def test_native_automatic_memory_prompt_uses_the_approved_home_workflow() -> None:
     prompt = (
         ROOT / "scripts" / "prompts" / "automatic-memory-native.md"
     ).read_text(encoding="utf-8")
@@ -5284,20 +5284,52 @@ def test_native_automatic_memory_prompt_uses_public_flow_without_publication() -
         "memory-record-extraction",
         "memory-home-drain",
         "--pull-sjm",
+        "memory-publish --native-smb",
+        "--finish-home",
+        "--vault-root <configured-vault>",
     ):
         assert command in prompt
     assert "--publish" not in prompt
     assert "cron" not in prompt.lower()
+    home_text, tail = prompt.split("### Home run receipt", 1)[1].split("### SJM run receipt", 1)
+    sjm_text = tail.split("### Receipt arguments for both hosts", 1)[0]
+    assert "Omit `--worklist-json` on Home" in home_text
+    assert "`--worklist-json` whenever" in sjm_text
+    assert "--finish-home" not in sjm_text
+    assert "`MissingRunEvidence`" in home_text
+    assert "outcome `waiting`, exit 3" in prompt
+    entry = (ROOT / "scripts/prompts/automatic-memory-home-entry.md").read_text()
+    run_flags = ("--finish-home", "--writer-role", "--state-root", "--started-at",
+                 "--drain-json", "--vault-root", "--memory-path", "--work-id",
+                 "--deferred-work-id", "--deferred-reason", "--publication-json", "--exceptions-json")
+    for flag in run_flags:
+        assert flag in entry
+    assert "K2B_COMPILE_INDEX_LOCK" in entry and "K2B_WIKI_LOG" in entry
+    for row in ("| 0 | `recorded` | `completed` |", "| 3 | `recorded` |",
+                "| 2 | `failed` if recorder JSON includes `receipt_path` |", "| 2 | No `receipt_path` |"):
+        assert row in entry
+    assert "`MissingRunEvidence` is `failed`" in entry
+    assert "first tool result in this scheduled" in entry
+    command = [sys.executable, str(ROOT / "scripts/eod-capture.py")]
+    publish_flags = ("--native-smb", "--check-only", "--writer-role", "--state-root", "--vault-root", "--memory-path")
+    for name, flags in (("memory-record-run", run_flags), ("memory-publish", publish_flags)):
+        result = subprocess.run([*command, name, "--help"], check=True, capture_output=True, text=True)
+        assert all(flag in result.stdout for flag in flags)
 
-@pytest.mark.parametrize(("mode", "exit_code", "outcome"), [
-    ("missing_worklist", 3, "needs_attention"),
-    ("bad_eligibility", 2, "failed"),
+
+@pytest.mark.parametrize(("mode", "exit_code", "status", "outcome"), [
+    ("missing_worklist", 3, "recorded", "needs_attention"),
+    ("bad_eligibility", 2, "failed", "failed"),
+    ("invalid_backlog_counts", 2, "failed", "failed"),
 ])
-def test_documented_home_receipt_outcomes(tmp_path, monkeypatch, capsys, mode, exit_code, outcome):
+def test_documented_home_receipt_outcomes(tmp_path, monkeypatch, capsys, mode, exit_code, status, outcome):
     import automatic_memory_publisher as publisher
 
     drain_path = tmp_path / "drain.json"
-    drain_path.write_text(json.dumps(eod_capture.drain_home_memory(tmp_path, writer_role="home")))
+    drain = eod_capture.drain_home_memory(tmp_path, writer_role="home")
+    if mode == "invalid_backlog_counts":
+        drain.pop("unreconciled_remaining")
+    drain_path.write_text(json.dumps(drain))
     started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(timespec="microseconds").replace("+00:00", "Z")
     command = ["memory-record-run", "--finish-home", "--writer-role", "home",
                "--state-root", str(tmp_path), "--started-at", started, "--drain-json", str(drain_path),
@@ -5313,12 +5345,14 @@ def test_documented_home_receipt_outcomes(tmp_path, monkeypatch, capsys, mode, e
         monkeypatch.setattr(publisher, "publish", lambda **kwargs: {"publication_due": False})
     assert eod_capture.main(command) == exit_code
     result = json.loads(capsys.readouterr().out)
-    assert result["outcome"] == outcome
+    assert (result["status"], result["outcome"]) == (status, outcome)
     assert Path(result["receipt_path"]).is_file()
     if mode == "missing_worklist":
         assert "Home producer worklist evidence is missing" in result["diagnostic"]
-    else:
+    elif mode == "bad_eligibility":
         assert result["diagnostic"] == "publication_eligibility_unverified"
+    else:
+        assert result["diagnostic"] == "publication_backlog_evidence_invalid"
 
 
 def test_home_receipt_matches_producer_start_in_both_utc_spellings(tmp_path, monkeypatch, capsys):
@@ -5354,6 +5388,7 @@ def test_home_receipt_matches_producer_start_in_both_utc_spellings(tmp_path, mon
             "--state-root", str(tmp_path), "--started-at", spelling, "--drain-json", str(drain),
             "--vault-root", str(tmp_path / "vault"), "--memory-path", str(tmp_path / "memory.json")]) == 0
         result = json.loads(capsys.readouterr().out)
+        assert (result["status"], result["outcome"]) == ("recorded", "completed")
         receipt = json.loads(Path(result["receipt_path"]).read_bytes())
         assert datetime.fromisoformat(receipt["started_at"]) == started
         assert datetime.fromisoformat(receipt["finished_at"]) == now
