@@ -344,6 +344,32 @@ def test_home_duplicate_cannot_borrow_a_newer_publication(namespace_migration, m
     assert missing["error_type"] == "MissingRunEvidence"
 
 
+def test_omitted_home_publication_reports_corrupt_receipt(namespace_migration, monkeypatch):
+    env = namespace_migration
+    memory = env.state / "memory.json"
+    monkeypatch.setenv("K2B_COMPILE_INDEX_LOCK", str(env.vault / ".k2b-compile-index.lock.d"))
+    result = env.p.publish(memory, env.state, env.vault, "home", require_smb=True)
+    receipt = {key: value for key, value in result.items() if key != "duplicate"}
+    identity = env.p._receipt_identity(receipt)
+    receipt_path = env.state / "publication" / f"{identity}.json"
+    assert receipt_path.is_file()
+    original_read = eod_capture._read_home_evidence
+
+    def unreadable(state, path):
+        if path == receipt_path:
+            raise OSError("synthetic durable receipt read error")
+        return original_read(state, path)
+
+    monkeypatch.setattr(eod_capture, "_read_home_evidence", unreadable)
+    drain = {"status": "reconciled", "reconciled": 1, "reconciliation_conflicts": 0,
+             "unreconciled_remaining": 0}
+    failed = eod_capture._native_home_publication_result(
+        env.state, env.vault, memory, drain, None, started_at=result["published_at"])
+    assert failed["status"] == "failed"
+    assert failed["error_type"] == "MissingRunEvidence"
+    assert failed["message"] == "matching durable publication receipt could not be read safely"
+
+
 def _namespace_history(env, kind, monkeypatch, *, previous_smb=False, smb_alias=False):
     """Create invented pre-migration history, never read production receipts."""
     p, vault, state = env.p, env.vault, env.state

@@ -4786,8 +4786,10 @@ def _native_home_publication_result(state_root: Path, vault_root: Path, memory_p
                 return _home_publication_evidence_failure(
                     "InvalidPublicationEvidence", "could not verify the recovered publication timestamp")
             recovered = {**recovered, "duplicate": publication_time < run_start}
-            if automatic_memory_publisher.native_run_receipt_problem(state_root, recovered, started_at) is None:
-                return recovered
+            problem = automatic_memory_publisher.native_run_receipt_problem(state_root, recovered, started_at)
+            if problem is not None:
+                return _home_publication_evidence_failure("MissingRunEvidence", problem)
+            return recovered
     return _home_publication_evidence_failure(
         "MissingRunEvidence", "approved SMB is ready but publication evidence was not recorded")
 
