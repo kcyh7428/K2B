@@ -356,10 +356,10 @@ def test_omitted_home_publication_reports_corrupt_receipt(namespace_migration, m
     assert receipt_path.is_file()
     original_read = eod_capture._read_home_evidence
 
-    def unreadable(state, path):
+    def unreadable(state, path, **options):
         if path == receipt_path:
             raise OSError("synthetic durable receipt read error")
-        return original_read(state, path)
+        return original_read(state, path, **options)
 
     monkeypatch.setattr(eod_capture, "_read_home_evidence", unreadable)
     drain = {"status": "reconciled", "reconciled": 1, "reconciliation_conflicts": 0,

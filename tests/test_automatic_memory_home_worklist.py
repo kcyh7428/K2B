@@ -11,6 +11,7 @@ import pytest
 
 from test_eod_capture_status import _modern_session, _reviewed_memory_item, eod_capture
 from test_automatic_memory_publisher import namespace_migration
+import automatic_memory_publisher as publisher
 
 
 @pytest.fixture
@@ -449,6 +450,187 @@ def test_native_worklist_retains_the_existing_hold_as_an_empty_selection(tmp_pat
                   publication_result=QUIET)
     assert run["outcome"] == "blocked"
     assert "extraction held" in run["diagnostic"]
+
+
+def test_native_home_flags_oversized_pending_turn_and_selects_next(
+    tmp_path, capsys, native_clock, monkeypatch,
+):
+    state = tmp_path / "state"
+    sources = tmp_path / ".codex" / "sessions"
+    large = _modern_session(sources, "2026-09-13", "oversized")
+    rows = [json.loads(line) for line in large.read_text().splitlines()]
+    rows[2]["payload"]["item"]["content"][0]["text"] = "中" * 18000
+    large.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    ordinary = _modern_session(sources, "2026-09-14", "ordinary")
+    started = native_clock - timedelta(seconds=1)
+    selection = _select(state, sources, started, native_clock, capsys)
+    assert selection["status"] == "ready_with_exceptions"
+    assert selection["oversized_turns"] == selection["exception_counts"]["needs_attention"] == 1
+    assert selection["items"][0]["session_path"] == str(ordinary.resolve())
+    flagged, = (state / "oversized-turns").glob("*.json")
+    evidence = flagged.read_bytes()
+    marker = json.loads(evidence)
+    assert marker["reason"] == "input_budget_exceeded"
+    assert marker["input_bytes"] > marker["limit_bytes"] == 48000
+    assert flagged.stat().st_mode & 0o077 == 0
+    assert not (state / "extraction-hold.json").exists()
+    assert not (state / "extraction-inputs").exists()
+    assert not (state / "extraction-receipts").exists()
+
+    # Retry reuses the source-bound measurement and selects the eligible work.
+    original_prepare = eod_capture.prepare_memory_extraction_input
+
+    def prepare_other_turn(**options):
+        assert options["work_id"] != marker["work_id"]
+        return original_prepare(**options)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(eod_capture, "prepare_memory_extraction_input", prepare_other_turn)
+        assert _select(state, sources, started, native_clock, capsys) == selection
+    assert flagged.read_bytes() == evidence
+    assert json.loads(eod_capture._home_worklist_evidence_path(state, started).read_bytes())[
+        "selected_work_ids"
+    ] == [selection["items"][0]["work_id"]]
+
+    # A readable marker from another input budget is refreshed.
+    flagged.write_text(json.dumps({**marker, "limit_bytes": 45000}))
+    assert _select(state, sources, started, native_clock, capsys) == selection
+    assert flagged.read_bytes() == evidence
+
+    # A damaged review marker stays available for diagnosis. The measured
+    # turn remains pending and the ordinary turn can still complete.
+    flagged.write_bytes(b"{")
+    with_marker_error = _select(state, sources, started, native_clock, capsys)
+    assert with_marker_error == {**selection, "oversized_review_errors": 1}
+    assert flagged.read_bytes() == b"{"
+
+    work = selection["items"][0]
+    work_id = work["work_id"]
+    prepared = eod_capture.prepare_memory_extraction_input(
+        state_root=state, work_id=work_id, writer_role="home",
+    )
+    _stamp(Path(prepared["input_path"]), native_clock)
+    bundle = json.loads(Path(work["source_bundle_path"]).read_bytes())
+    reviewed = _reviewed_memory_item(bundle, value="Checked")
+    reviewed.update(items=[], reviewed_empty=True)
+    assert eod_capture.record_memory_extraction(
+        state_root=state, work_id=work_id, writer_role="home", reviewed=reviewed,
+    )["status"] == "reviewed_empty"
+    run = _record(state, started, work_ids=[work_id], publication_result=QUIET)
+    assert run["outcome"] == "completed" and run["failed"] == 0
+    receipt = json.loads(Path(run["receipt_path"]).read_bytes())
+    assert receipt["attempted_work_ids"] == [work_id]
+    assert receipt["commands"]["memory_worklist"]["oversized_turns"] == 1
+    assert receipt["commands"]["memory_worklist"]["oversized_review_errors"] == 1
+
+    only_oversized = _select(state, sources, started + timedelta(seconds=1), native_clock,
+                             capsys, expected_exit=3)
+    assert only_oversized["status"] == "needs_attention"
+    assert only_oversized["oversized_turns"] == 1 and only_oversized["selected"] == 0
+
+    sjm_state = tmp_path / "sjm"
+    sjm = eod_capture.build_memory_worklist(
+        state_root=sjm_state, codex_root=sources, writer_role="sjm-source-only",
+        since="2026-09-13", through="2026-09-14", limit=1,
+    )
+    assert sjm["items"][0]["session_path"] == str(large.resolve())
+    assert not (sjm_state / "oversized-turns").exists()
+    # The original Home evidence flag is still refused on the SJM CLI.
+    assert eod_capture.main([
+        "memory-worklist", "--state-root", str(sjm_state), "--codex-root", str(sources),
+        "--writer-role", "sjm-source-only", "--since", "2026-09-13", "--through", "2026-09-14",
+        "--limit", "1", "--run-started-at", started.isoformat(),
+    ]) == 2
+    assert "native worklist evidence requires Home" in capsys.readouterr().err
+
+    flagged.write_bytes(evidence)
+    monkeypatch.setattr(eod_capture, "MEMORY_RUN_PER_TURN_BYTES", 100000)
+    after_limit_change = _select(state, sources, native_clock, native_clock, capsys)
+    assert after_limit_change["items"][0]["work_id"] == marker["work_id"]
+    assert after_limit_change["oversized_turns"] == 0
+    assert not flagged.exists()
+
+    ordinary_marker = flagged.with_name(work_id + ".json")
+    eod_capture._atomic_write_json(ordinary_marker, {})
+    ordinary_marker.write_bytes(b"{")
+    eod_capture._atomic_write_json(flagged, {})
+    flagged.write_bytes(b"{")
+    after_marker_damage = _select(state, sources, native_clock, native_clock, capsys)
+    assert after_marker_damage["items"][0]["work_id"] == marker["work_id"]
+    assert after_marker_damage["oversized_turns"] == 0
+    assert after_marker_damage["oversized_review_errors"] == 1
+    assert flagged.read_bytes() == b"{"
+    large.unlink()
+    after_receipt = _select(state, sources, native_clock, native_clock, capsys)
+    assert after_receipt["status"] == "idle"
+    assert after_receipt["oversized_review_errors"] == 1
+    assert ordinary_marker.read_bytes() == b"{"
+
+
+@pytest.mark.parametrize(("mode", "outcome"), [
+    ("valid", "completed"), ("held", "blocked"), ("too_large", "failed"),
+    ("symlink", "failed"), ("malformed", "failed"), ("changed", "failed"),
+    ("nonprivate", "failed"),
+])
+def test_finish_home_validates_large_saved_publication_receipts(
+    tmp_path, capsys, native_clock, mode, outcome,
+):
+    sources = tmp_path / ".codex" / "sessions"
+    sources.mkdir(parents=True)
+    started = native_clock - timedelta(seconds=1)
+    if mode == "held":
+        eod_capture._atomic_write_json(tmp_path / "extraction-hold.json",
+                                       {"created_at": started.isoformat()})
+    _select(tmp_path, sources, started, native_clock, capsys)
+    receipt = {
+        "schema_version": 1, "status": "published", "writer_role": "home",
+        "binding": publisher.SMB_STORAGE, "storage": "smb-ready",
+        "published_at": native_clock.isoformat(),
+        "reconciliation_watermark": {
+            f"delivery:{i:064x}": f"{i:064x}" for i in range(2000)
+        },
+    }
+    saved = tmp_path / "publication" / (publisher._receipt_identity(receipt) + ".json")
+    durable = {**receipt, "published_at": started.isoformat()} if mode == "changed" else receipt
+    eod_capture._atomic_write_json(saved, durable)
+    assert saved.stat().st_size > 240477
+    if mode == "too_large":
+        with saved.open("r+b") as handle:
+            handle.truncate(publisher.NATIVE_PUBLICATION_RECEIPT_MAX_BYTES + 1)
+    if mode == "symlink":
+        other = saved.with_suffix(".saved")
+        saved.rename(other)
+        saved.symlink_to(other)
+    if mode == "nonprivate":
+        saved.chmod(0o644)
+    if mode == "malformed":
+        saved.write_bytes(b"{")
+    output = tmp_path / "publisher-output.json"
+    eod_capture._atomic_write_json(output, {**receipt, "duplicate": False})
+    drain = tmp_path / "drain.json"
+    eod_capture._atomic_write_json(drain, {
+        **eod_capture.drain_home_memory(tmp_path, writer_role="home"),
+        "status": "reconciled", "reconciled": 1,
+        "reconciliation_conflicts": 0, "unreconciled_remaining": 0,
+    })
+    assert eod_capture.main([
+        "memory-record-run", "--finish-home", "--writer-role", "home",
+        "--state-root", str(tmp_path), "--started-at", started.isoformat(),
+        "--drain-json", str(drain), "--publication-json", str(output),
+        "--vault-root", str(tmp_path / "vault"), "--memory-path", str(tmp_path / "memory.json"),
+    ]) == (0 if outcome == "completed" else 3)
+    run = json.loads(capsys.readouterr().out)
+    assert (run["status"], run["outcome"]) == ("recorded", outcome)
+    run_path = Path(run["receipt_path"])
+    assert run_path.stat().st_size < eod_capture.native_job_status.MAX_READ_BYTES
+    publication = json.loads(run_path.read_bytes())["commands"]["memory_publish"]
+    if outcome == "failed":
+        assert publication["error_type"] == "InvalidPublicationEvidence"
+    else:
+        assert publication["status"] == "published"
+    if outcome == "blocked":
+        assert "extraction held" in run["diagnostic"]
+        assert "Home publication completed" in run["diagnostic"]
 
 
 def test_native_worklist_reports_an_unverifiable_hold(tmp_path, capsys, native_clock):

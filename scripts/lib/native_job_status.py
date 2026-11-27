@@ -156,20 +156,22 @@ def _safe_stat(
         current = current.parent
 
 
-def _safe_read(path: Path, root: Path) -> tuple[str, bytes | None]:
+def _safe_read(
+    path: Path, root: Path, *, max_bytes: int = MAX_READ_BYTES,
+) -> tuple[str, bytes | None]:
     """Read a regular file without following links; reject oversize input
     instead of truncating it into an apparently valid prefix."""
     status, st = _safe_stat(path, root)
     if status != "ok" or st is None:
         return status, None
-    if st.st_size > MAX_READ_BYTES:
+    if st.st_size > max_bytes:
         return "oversize", None
     try:
         with open(path, "rb") as handle:
-            data = handle.read(MAX_READ_BYTES + 1)
+            data = handle.read(max_bytes + 1)
     except OSError:
         return "unreadable", None
-    if len(data) > MAX_READ_BYTES:
+    if len(data) > max_bytes:
         return "oversize", None
     return "ok", data
 

@@ -34,6 +34,9 @@ JSON_REL = automatic_memory_proofs.JSON_REL
 NOTE_REL = automatic_memory_proofs.NOTE_REL
 INDEX_REL = "wiki/context/index.md"
 REPO = Path(__file__).resolve().parents[2]
+# Publication receipts retain the full delivery watermark. Other native
+# status and worklist evidence keep their independent, smaller read limit.
+NATIVE_PUBLICATION_RECEIPT_MAX_BYTES = 8 * 1024 * 1024
 SMB_STORAGE = {
     "kind": "smb",
     "mount_point": "/Users/keithmbpm2/Projects/K2B-NAS",
@@ -98,7 +101,10 @@ def native_run_receipt_problem(state_root: Path, publication: dict, started_at: 
     except ValueError:
         return "publication time is malformed"
     try:
-        saved = eod_capture._read_home_evidence(state_root, path)
+        saved = eod_capture._read_home_evidence(
+            state_root, path, max_bytes=NATIVE_PUBLICATION_RECEIPT_MAX_BYTES,
+            require_private=True,
+        )
     except FileNotFoundError:
         return "matching durable publication receipt is missing"
     except (OSError, ValueError):

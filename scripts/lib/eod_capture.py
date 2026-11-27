@@ -3416,6 +3416,7 @@ def build_memory_worklist(
     """Persist a bounded list of eligible immutable completed-turn sources."""
 
     role = _memory_writer_role(writer_role)
+    native_home = constrain_retained_sources and role == "home"
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("automatic memory worklist limit must be from 1 through 100")
     selection_at = _memory_instant(now, "automatic memory worklist timestamp")
@@ -3444,6 +3445,9 @@ def build_memory_worklist(
     if constrain_retained_sources:
         result["retained_scope_work_ids"] = retained_scope_work_ids
         result["retained_scope_unreadable_work_ids"] = retained_scope_unreadable_work_ids
+    if native_home:
+        result["oversized_turns"] = 0
+        result["oversized_review_errors"] = 0
     hold, hold_diagnostic = native_job_status._read_hold(state_root)
     if hold != "absent":
         return {
@@ -3689,6 +3693,10 @@ def build_memory_worklist(
                 _validate_memory_extraction_receipt(
                     state_root, work_id, bundle
                 )
+                if native_home:
+                    result["oversized_review_errors"] += int(
+                        _retire_home_size_review(state_root, work_id)
+                    )
                 skipped_receipted += 1
                 continue
             diagnostic_path = _memory_work_path(
@@ -3708,6 +3716,17 @@ def build_memory_worklist(
                 if selection_at < retry_at:
                     exception_counts["retry_backoff"] += 1
                     continue
+            if native_home:
+                oversized, needs_repair = _check_home_turn_size(state_root, work_id, bundle)
+                result["oversized_review_errors"] += int(needs_repair)
+                if oversized:
+                    result["oversized_turns"] += 1
+                    exception_counts["needs_attention"] += 1
+                    continue
+                if time.monotonic() >= persistence_deadline:
+                    parse_exception_counts["source_persistence_time_budget"] = 1
+                    persistence_unverified_source = current_bundle["session_path"]
+                    break
             selected.append(
                 {
                     "work_id": work_id,
@@ -3745,6 +3764,71 @@ def build_memory_worklist(
     }
 
 
+def _check_home_turn_size(state_root: Path, work_id: str, bundle: dict) -> tuple[bool, bool]:
+    """Return whether the turn is oversized and its review record needs repair."""
+    path = _memory_work_path(state_root, work_id, "oversized-turns")
+    identity = {
+        "schema_version": 1, "work_id": work_id, "status": "needs_attention",
+        "reason": "input_budget_exceeded", "limit_bytes": MEMORY_RUN_PER_TURN_BYTES,
+        "input_schema_version": MEMORY_RUN_INPUT_SCHEMA,
+        "completed_prefix_sha256": bundle["completed_prefix_sha256"],
+        "transcript_sha256": bundle["transcript_sha256"],
+    }
+    saved = None
+    unreadable = False
+    try:
+        saved = _read_home_evidence(state_root, path, require_private=True)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        unreadable = True
+    if saved is not None:
+        size = saved.get("input_bytes")
+        if (type(size) is int and size > MEMORY_RUN_PER_TURN_BYTES
+                and saved == {**identity, "input_bytes": size}):
+            return True, False
+
+    # Missing, damaged or stale metadata does not determine eligibility.
+    measured = prepare_memory_extraction_input(
+        state_root=state_root, work_id=work_id, writer_role="home", save_view=False,
+    )
+    if measured["status"] != "input_budget_exceeded":
+        needs_repair = unreadable or (
+            saved is not None and _retire_home_size_review(state_root, work_id)
+        )
+        return False, needs_repair
+    if unreadable or path.parent.is_symlink():
+        return True, True
+
+    record = {**identity, "input_bytes": measured["input_bytes"]}
+    try:
+        _atomic_write_json(path, record, replace=saved is not None)
+    except FileExistsError:
+        try:
+            return True, _read_home_evidence(state_root, path, require_private=True) != record
+        except (OSError, ValueError):
+            return True, True
+    except OSError:
+        return True, True
+    return True, False
+
+
+def _retire_home_size_review(state_root: Path, work_id: str) -> bool:
+    """Drop a readable review record and report any unresolved evidence error."""
+    path = _memory_work_path(state_root, work_id, "oversized-turns")
+    try:
+        _read_home_evidence(state_root, path, require_private=True)
+        path.unlink()
+        _fsync_dir(path.parent)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        # A damaged marker is retained for review. The verified source or
+        # extraction receipt remains the authority for the worklist.
+        return True
+    return False
+
+
 def prepare_memory_extraction_input(
     *, state_root: Path, work_id: str, writer_role: str, save_view: bool = True,
 ) -> dict:
@@ -3779,7 +3863,7 @@ def prepare_memory_extraction_input(
     )}
     prior = events[:next(i for i, event in enumerate(events)
                          if event["turn_id"] == bundle["completed_turn_id"])]
-    view.update(input_schema_version=1, work_id=work_id, dialogue_events=current,
+    view.update(input_schema_version=MEMORY_RUN_INPUT_SCHEMA, work_id=work_id, dialogue_events=current,
                 context_events=[], context_omitted_events=len(prior))
 
     def refresh_attachments() -> None:
@@ -3794,9 +3878,9 @@ def prepare_memory_extraction_input(
         return len((json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode())
 
     size = byte_size(view)
-    if size > 48000:
+    if size > MEMORY_RUN_PER_TURN_BYTES:
         return {"status": "input_budget_exceeded", "work_id": work_id,
-                "input_bytes": size, "limit_bytes": 48000}
+                "input_bytes": size, "limit_bytes": MEMORY_RUN_PER_TURN_BYTES}
     if not save_view:
         return {"status": "within_input_budget", "work_id": work_id}
     # Add a contiguous suffix of whole prior events, never fragments or a
@@ -3809,7 +3893,7 @@ def prepare_memory_extraction_input(
         view["context_events"].insert(0, event)
         view["context_omitted_events"] -= 1
         refresh_attachments()
-        if byte_size(view) > 48000:
+        if byte_size(view) > MEMORY_RUN_PER_TURN_BYTES:
             view["context_events"].pop(0)
             view["context_omitted_events"] += 1
             refresh_attachments()
@@ -3818,7 +3902,7 @@ def prepare_memory_extraction_input(
     target = _memory_work_path(state_root, work_id, "extraction-inputs")
     _atomic_write_json(target, view)
     return {"status": "ready", "work_id": work_id, "input_path": str(target),
-            "input_bytes": byte_size(view), "limit_bytes": 48000,
+            "input_bytes": byte_size(view), "limit_bytes": MEMORY_RUN_PER_TURN_BYTES,
             "context_omitted_events": view["context_omitted_events"]}
 
 
@@ -5127,6 +5211,7 @@ MEMORY_RUN_MAX_TURNS = 12
 MEMORY_RUN_MAX_INPUT_BYTES = 240000
 MEMORY_RUN_MAX_SECONDS = 1200
 MEMORY_RUN_PER_TURN_BYTES = 48000
+MEMORY_RUN_INPUT_SCHEMA = 1
 MEMORY_RUN_DEFER_REASONS = ("byte_budget", "time_budget", "turn_budget")
 # The prompt stops selecting new turns after 18 minutes, so a time_budget
 # deferral is only honest once that selection cutoff has actually elapsed.
@@ -5256,21 +5341,26 @@ def _read_current_home_hold_evidence(
 
 def _read_home_evidence(
     state_root: Path, path: Path, *, started: datetime | None = None,
-    observed: datetime | None = None,
+    observed: datetime | None = None, max_bytes: int = native_job_status.MAX_READ_BYTES,
+    require_private: bool = False,
 ) -> dict:
     """Read a bounded private JSON object without accepting changed bytes."""
     info = path.lstat()
     if (path.is_symlink() or not path.is_file()
             or not path.resolve().is_relative_to(state_root.resolve())):
         raise ValueError("unsafe Home evidence path")
+    if require_private and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise ValueError("Home evidence is not private to its owner")
     if (started is not None and observed is not None
             and not started.timestamp() <= info.st_mtime <= observed.timestamp()):
         raise ValueError("extraction hold evidence is outside the current Home run")
-    status, contents = native_job_status._safe_read(path, state_root)
+    status, contents = native_job_status._safe_read(path, state_root, max_bytes=max_bytes)
     after = path.lstat()
     if (status != "ok" or contents is None
-            or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                info.st_uid, info.st_mode)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+                after.st_uid, after.st_mode)):
         raise OSError("Home evidence is unreadable or changed")
     data = json.loads(contents)
     if not isinstance(data, dict):
@@ -5629,13 +5719,23 @@ def _build_native_run_receipt(
         ):
             raise _MemoryRunError("worklist_evidence_invalid")
         status = worklist_result["status"]
-        # ready_with_exceptions describes other turns held by earlier
-        # failures or backoff, not exceptions authored by this run.
+        # ready_with_exceptions describes other pending turns, independently
+        # of the outcome of this run's selected turns.
         # Keep producer evidence distinct from the hold observed at receipt time.
         commands["memory_worklist"]["observed_status"] = status
         selected = worklist_result["selected"]
         if role == "home":
             commands["memory_worklist"]["observed_selected"] = selected
+            oversized = worklist_result.get("oversized_turns", 0)
+            review_errors = worklist_result.get("oversized_review_errors", 0)
+            if (type(oversized) is not int or type(review_errors) is not int
+                    or oversized < 0 or review_errors < 0):
+                raise _MemoryRunError("worklist_evidence_invalid")
+            if home_worklist_evidence == "verified":
+                if oversized:
+                    commands["memory_worklist"]["oversized_turns"] = oversized
+                if review_errors:
+                    commands["memory_worklist"]["oversized_review_errors"] = review_errors
         items = worklist_result.get("items")
         if not isinstance(items, list) or len(items) != selected:
             raise _MemoryRunError("worklist_evidence_invalid")
